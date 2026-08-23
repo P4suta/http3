@@ -9,6 +9,10 @@ pub fn recognizes_standard_and_reserved_versions_test() -> Nil {
   assert !version.is_reserved(version.Version1)
   assert version.from_wire(-1) == Error(version.OutOfRange)
   assert version.from_wire(0x1_0000_0000) == Error(version.OutOfRange)
+  assert version.to_wire(version.Unknown(0)) == Error(version.OutOfRange)
+  assert version.to_wire(version.Unknown(1)) == Error(version.OutOfRange)
+  assert version.to_wire(version.Unknown(0x6b33_43cf))
+    == Error(version.OutOfRange)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

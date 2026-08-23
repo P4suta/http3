@@ -13,6 +13,9 @@ imply a tag, a hosted release, or publication to Hex.
   variable-length integer and packet-number reconstruction primitives, QUIC
   v1/v2 packet headers, all standard transport frames plus DATAGRAM, bounded
   transport parameters and their published vectors and negative tests.
+- Native HKDF-SHA256, QUIC v1/v2 Initial key derivation, AES-128-GCM payload
+  protection, AES header protection, packet-number encoding, and Retry
+  integrity with RFC 5869, RFC 9001, and RFC 9369 vectors.
 - A public v1 completion contract covering the native QUIC/TLS/HTTP/3 scope,
   standards baseline, draft policy, FFI boundary, and verification gates.
 - A bounded one-shot HTTP/3 client using `gleam/http` request and response

@@ -111,11 +111,11 @@ isolated benchmark claims.
 
 ## 5. Native wire core
 
-**Status:** in progress as of 2026-08-23. The separate `gleam_quic` package,
+**Status:** in progress as of 2026-08-24. The separate `gleam_quic` package,
 RFC 9000 variable-length integer codec, packet-number reconstruction, QUIC v1
 and v2 long-header mappings, bounded invariant packet parsing, the complete
 RFC 9000/RFC 9221 frame codec, and bounded transport parameters from RFC 9000,
-RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 25
+RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 62
 focused tests and its own format, warnings-as-errors build, docs, and lint
 gate.
 
@@ -125,7 +125,11 @@ wire behavior starts with RFC vectors and negative/truncation tests.
 
 ## 6. Native TLS 1.3 and packet protection
 
-**Status:** not complete.
+**Status:** in progress as of 2026-08-24. RFC 5869 HKDF-SHA256, QUIC v1/v2
+Initial key derivation, AES-128-GCM payload and AES header protection,
+packet-number encoding, and v1/v2 Retry integrity match published vectors.
+TLS handshake coordination, certificate validation, non-Initial cipher suites,
+key lifecycle, tickets, and 0-RTT are not complete.
 
 Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
 key schedule, transport-parameter extension, Retry integrity, header and

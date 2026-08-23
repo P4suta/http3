@@ -5,9 +5,10 @@ target. It is an unpublished work in progress and is not yet suitable for
 applications.
 
 Protocol parsing, state machines, recovery, congestion control, TLS 1.3
-coordination, and packet protection are implemented in Gleam. Small Erlang
-FFI modules may expose only runtime primitives such as UDP, monotonic time,
-secure randomness, cryptographic operations, and X.509 path validation.
+coordination, and packet protection are implemented or will be implemented in
+Gleam. Small Erlang FFI modules may expose only runtime primitives such as UDP,
+monotonic time, secure randomness, cryptographic operations, and X.509 path
+validation.
 
 The public completion requirements are defined in
 [the repository v1 gate](../../docs/V1.md). The external `quic` package remains

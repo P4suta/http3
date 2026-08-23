@@ -214,7 +214,13 @@ isolated best-case numbers are not sufficient.
   preservation, duplicate rejection, sender roles, semantic ranges, required
   handshake parameters, downgrade-information structure, and count/value
   limits.
-- `mise run core-check` runs package format, warnings-as-errors build, 25 tests,
+- RFC 5869, RFC 9001, and RFC 9369 vectors cover multi-block HKDF-SHA256,
+  Initial secrets and directional keys, AES-128-GCM payload protection, header
+  protection sampling and masking, packet-number encoding, authenticated
+  decryption failure, and v1/v2 Retry Integrity Tags. Negative cases cover
+  alignment, lengths, unsupported versions, ambiguity, and tampering without
+  leaking runtime exceptions.
+- `mise run core-check` runs package format, warnings-as-errors build, 62 tests,
   documentation, and glinter. The root `mise run check` includes this gate so
   native-core regressions cannot pass the existing wrapper checks.
 

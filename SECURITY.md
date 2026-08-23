@@ -56,3 +56,7 @@ channel.
   protocol code in `gleam_quic` must pass the cryptographic, amplification,
   parser, replay, interoperability, and resource-exhaustion gates in
   [Public v1 gate](docs/V1.md).
+- Native Initial secrets and packet keys stay inside internal Gleam modules;
+  the Erlang FFI exposes only HMAC and AES primitives, validates binary sizes,
+  catches runtime failures, and returns closed typed errors. Retry and packet
+  authentication failures do not compare tags in application code.

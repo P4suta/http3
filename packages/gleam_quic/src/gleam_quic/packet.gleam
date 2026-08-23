@@ -42,6 +42,233 @@ pub type Error {
   InvalidVersionNegotiation
   InvalidRetry
   InvalidPacketType
+  InvalidHeader
+}
+
+/// Encode one long-header packet without following coalesced packets.
+pub fn encode_long(packet: Packet) -> Result(BitArray, Error) {
+  case packet_is_byte_aligned(packet) {
+    False -> Error(NonByteAligned)
+    True ->
+      case packet {
+        VersionNegotiation(header, versions) ->
+          encode_version_negotiation(header, versions)
+        UnknownVersion(header, payload) -> encode_unknown(header, payload)
+        Initial(header, token, protected_payload) ->
+          encode_initial(header, token, protected_payload)
+        ZeroRtt(header, protected_payload) ->
+          encode_length_bearing(header, protected_payload, version.ZeroRtt)
+        Handshake(header, protected_payload) ->
+          encode_length_bearing(header, protected_payload, version.Handshake)
+        Retry(header, token, integrity_tag) ->
+          encode_retry(header, token, integrity_tag)
+      }
+  }
+}
+
+/// Encode one complete protected short-header packet.
+pub fn encode_short(header: ShortHeader) -> Result(BitArray, Error) {
+  let ShortHeader(first_byte, destination, protected_payload) = header
+  case
+    bit_array.bit_size(destination) % 8 == 0
+    && bit_array.bit_size(protected_payload) % 8 == 0
+  {
+    False -> Error(NonByteAligned)
+    True ->
+      case
+        first_byte < 0
+        || first_byte > 255
+        || int.bitwise_and(first_byte, 0x80) != 0
+      {
+        True -> Error(NotShortHeader)
+        False ->
+          case
+            bit_array.byte_size(destination) > 20
+            || bit_array.byte_size(protected_payload) < 20
+          {
+            True -> Error(InvalidHeader)
+            False ->
+              Ok(<<first_byte, destination:bits, protected_payload:bits>>)
+          }
+      }
+  }
+}
+
+fn packet_is_byte_aligned(packet: Packet) -> Bool {
+  case packet {
+    VersionNegotiation(header, _) -> header_is_byte_aligned(header)
+    UnknownVersion(header, payload)
+    | ZeroRtt(header, payload)
+    | Handshake(header, payload) ->
+      header_is_byte_aligned(header) && bit_array.bit_size(payload) % 8 == 0
+    Initial(header, token, protected_payload)
+    | Retry(header, token, protected_payload) ->
+      header_is_byte_aligned(header)
+      && bit_array.bit_size(token) % 8 == 0
+      && bit_array.bit_size(protected_payload) % 8 == 0
+  }
+}
+
+fn header_is_byte_aligned(header: LongHeader) -> Bool {
+  bit_array.bit_size(header.destination_connection_id) % 8 == 0
+  && bit_array.bit_size(header.source_connection_id) % 8 == 0
+}
+
+fn encode_version_negotiation(
+  header: LongHeader,
+  versions: List(Version),
+) -> Result(BitArray, Error) {
+  case header.version, versions {
+    version.Negotiation, [] -> Error(InvalidVersionNegotiation)
+    version.Negotiation, _ -> {
+      use invariant <- result.try(encode_invariant_header(header, 255))
+      use encoded_versions <- result.try(encode_versions(versions, <<>>))
+      Ok(<<invariant:bits, encoded_versions:bits>>)
+    }
+    _, _ -> Error(InvalidVersionNegotiation)
+  }
+}
+
+fn encode_versions(
+  versions: List(Version),
+  accumulator: BitArray,
+) -> Result(BitArray, Error) {
+  case versions {
+    [] -> Ok(accumulator)
+    [version.Negotiation, ..] -> Error(InvalidVersionNegotiation)
+    [next, ..rest] ->
+      case version.to_wire(next) {
+        Error(_) -> Error(InvalidVersionNegotiation)
+        Ok(encoded) ->
+          encode_versions(rest, <<accumulator:bits, encoded:size(32)>>)
+      }
+  }
+}
+
+fn encode_unknown(
+  header: LongHeader,
+  payload: BitArray,
+) -> Result(BitArray, Error) {
+  case header.version {
+    version.Unknown(_) -> {
+      use invariant <- result.try(encode_invariant_header(header, 255))
+      Ok(<<invariant:bits, payload:bits>>)
+    }
+    _ -> Error(InvalidHeader)
+  }
+}
+
+fn encode_initial(
+  header: LongHeader,
+  token: BitArray,
+  protected_payload: BitArray,
+) -> Result(BitArray, Error) {
+  use invariant <- result.try(encode_supported_header(header, version.Initial))
+  use token_length <- result.try(encode_length(bit_array.byte_size(token)))
+  use payload_length <- result.try(encode_protected_payload_length(
+    protected_payload,
+  ))
+  Ok(<<
+    invariant:bits,
+    token_length:bits,
+    token:bits,
+    payload_length:bits,
+    protected_payload:bits,
+  >>)
+}
+
+fn encode_length_bearing(
+  header: LongHeader,
+  protected_payload: BitArray,
+  packet_type: version.LongPacketType,
+) -> Result(BitArray, Error) {
+  use invariant <- result.try(encode_supported_header(header, packet_type))
+  use payload_length <- result.try(encode_protected_payload_length(
+    protected_payload,
+  ))
+  Ok(<<invariant:bits, payload_length:bits, protected_payload:bits>>)
+}
+
+fn encode_retry(
+  header: LongHeader,
+  token: BitArray,
+  integrity_tag: BitArray,
+) -> Result(BitArray, Error) {
+  case
+    bit_array.byte_size(token) > 0 && bit_array.byte_size(integrity_tag) == 16
+  {
+    False -> Error(InvalidRetry)
+    True -> {
+      use invariant <- result.try(encode_supported_header(header, version.Retry))
+      Ok(<<invariant:bits, token:bits, integrity_tag:bits>>)
+    }
+  }
+}
+
+fn encode_supported_header(
+  header: LongHeader,
+  expected_type: version.LongPacketType,
+) -> Result(BitArray, Error) {
+  case header.version {
+    version.Version1 | version.Version2 -> {
+      let type_bits =
+        header.first_byte
+        |> int.bitwise_shift_right(4)
+        |> int.bitwise_and(3)
+      case version.long_packet_type(header.version, type_bits) {
+        Ok(found) if found == expected_type ->
+          encode_invariant_header(header, 20)
+        _ -> Error(InvalidPacketType)
+      }
+    }
+    _ -> Error(InvalidPacketType)
+  }
+}
+
+fn encode_invariant_header(
+  header: LongHeader,
+  maximum_connection_id_length: Int,
+) -> Result(BitArray, Error) {
+  let destination_length = bit_array.byte_size(header.destination_connection_id)
+  let source_length = bit_array.byte_size(header.source_connection_id)
+  case
+    header.first_byte < 0
+    || header.first_byte > 255
+    || int.bitwise_and(header.first_byte, 0x80) == 0
+    || destination_length > maximum_connection_id_length
+    || source_length > maximum_connection_id_length
+  {
+    True -> Error(InvalidHeader)
+    False ->
+      case version.to_wire(header.version) {
+        Error(_) -> Error(InvalidHeader)
+        Ok(wire_version) ->
+          Ok(<<
+            header.first_byte,
+            wire_version:size(32),
+            destination_length,
+            header.destination_connection_id:bits,
+            source_length,
+            header.source_connection_id:bits,
+          >>)
+      }
+  }
+}
+
+fn encode_protected_payload_length(
+  protected_payload: BitArray,
+) -> Result(BitArray, Error) {
+  case bit_array.byte_size(protected_payload) < 20 {
+    True -> Error(InvalidHeader)
+    False -> encode_length(bit_array.byte_size(protected_payload))
+  }
+}
+
+fn encode_length(length: Int) -> Result(BitArray, Error) {
+  case varint.encode(length) {
+    Ok(encoded) -> Ok(encoded)
+    Error(_) -> Error(InvalidHeader)
+  }
 }
 
 /// Parse one long-header packet from a UDP datagram.
@@ -199,6 +426,7 @@ fn parse_versions(
     <<>> -> Ok(list.reverse(reversed))
     <<wire_version:size(32), rest:bits>> -> {
       case version.from_wire(wire_version) {
+        Ok(version.Negotiation) -> Error(Nil)
         Ok(parsed) -> parse_versions(rest, [parsed, ..reversed])
         Error(_) -> Error(Nil)
       }

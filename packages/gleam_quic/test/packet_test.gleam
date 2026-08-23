@@ -85,6 +85,8 @@ pub fn rejects_malformed_packet_headers_test() -> Nil {
     == Error(packet.InvalidVersionNegotiation)
   assert packet.parse_long(<<0x80, 0:32, 0, 0, 1, 2, 3>>)
     == Error(packet.InvalidVersionNegotiation)
+  assert packet.parse_long(<<0x80, 0:32, 0, 0, 0:32>>)
+    == Error(packet.InvalidVersionNegotiation)
   assert packet.parse_long(<<0xc0, 1:32, 21, 0:size(168), 0>>)
     == Error(packet.InvalidConnectionIdLength(21))
   assert packet.parse_long(<<0xc0, 1:32, 0, 0, 0, 4, 1, 2>>)
@@ -93,4 +95,94 @@ pub fn rejects_malformed_packet_headers_test() -> Nil {
   assert packet.parse_short(<<0x40, 1>>, 21)
     == Error(packet.InvalidConnectionIdLength(21))
   assert packet.parse_short(<<0x80, 1>>, 0) == Error(packet.NotShortHeader)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn encodes_and_round_trips_long_and_short_headers_test() -> Nil {
+  let protected = <<0:160>>
+  let initial_header =
+    packet.LongHeader(0xc0, version.Version1, <<1, 2, 3, 4>>, <<5, 6, 7, 8>>)
+  let initial = packet.Initial(initial_header, <<9, 10>>, protected)
+  let assert Ok(encoded_initial) = packet.encode_long(initial)
+  assert packet.parse_long(encoded_initial) == Ok(#(initial, <<>>))
+
+  let retry_header = packet.LongHeader(0xc0, version.Version2, <<1>>, <<2, 3>>)
+  let retry =
+    packet.Retry(retry_header, <<"token":utf8>>, <<
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+    >>)
+  let assert Ok(encoded_retry) = packet.encode_long(retry)
+  assert packet.parse_long(encoded_retry) == Ok(#(retry, <<>>))
+
+  let negotiation =
+    packet.VersionNegotiation(
+      packet.LongHeader(0x80, version.Negotiation, <<1, 2>>, <<3, 4>>),
+      [version.Version2, version.Version1, version.Unknown(0x1a2a_3a4a)],
+    )
+  let assert Ok(encoded_negotiation) = packet.encode_long(negotiation)
+  assert packet.parse_long(encoded_negotiation) == Ok(#(negotiation, <<>>))
+
+  let unknown =
+    packet.UnknownVersion(
+      packet.LongHeader(0xc0, version.Unknown(0x0a0a_0a0a), <<1>>, <<2>>),
+      <<3, 4, 5>>,
+    )
+  let assert Ok(encoded_unknown) = packet.encode_long(unknown)
+  assert packet.parse_long(encoded_unknown) == Ok(#(unknown, <<>>))
+
+  let short = packet.ShortHeader(0x40, <<1, 2, 3, 4>>, protected)
+  let assert Ok(encoded_short) = packet.encode_short(short)
+  assert packet.parse_short(encoded_short, 4) == Ok(short)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_invalid_packet_encoding_test() -> Nil {
+  let protected = <<0:160>>
+  assert packet.encode_long(
+      packet.VersionNegotiation(
+        packet.LongHeader(0x80, version.Negotiation, <<>>, <<>>),
+        [],
+      ),
+    )
+    == Error(packet.InvalidVersionNegotiation)
+  assert packet.encode_long(
+      packet.VersionNegotiation(
+        packet.LongHeader(0x80, version.Negotiation, <<>>, <<>>),
+        [version.Negotiation],
+      ),
+    )
+    == Error(packet.InvalidVersionNegotiation)
+  assert packet.encode_long(packet.Initial(
+      packet.LongHeader(0xd0, version.Version1, <<>>, <<>>),
+      <<>>,
+      protected,
+    ))
+    == Error(packet.InvalidPacketType)
+  assert packet.encode_long(
+      packet.Retry(packet.LongHeader(0xc0, version.Version2, <<>>, <<>>), <<>>, <<
+        0:128,
+      >>),
+    )
+    == Error(packet.InvalidRetry)
+  assert packet.encode_short(packet.ShortHeader(0x80, <<>>, protected))
+    == Error(packet.NotShortHeader)
+  assert packet.encode_short(packet.ShortHeader(0x40, <<>>, <<0:152>>))
+    == Error(packet.InvalidHeader)
+  assert packet.encode_short(packet.ShortHeader(0x40, <<>>, <<1:size(1)>>))
+    == Error(packet.NonByteAligned)
 }

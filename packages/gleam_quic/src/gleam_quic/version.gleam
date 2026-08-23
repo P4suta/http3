@@ -43,7 +43,12 @@ pub fn to_wire(version: Version) -> Result(Int, Error) {
     Version1 -> Ok(1)
     Version2 -> Ok(0x6b33_43cf)
     Unknown(identifier) ->
-      case identifier >= 0 && identifier <= 0xffff_ffff {
+      case
+        identifier > 0
+        && identifier <= 0xffff_ffff
+        && identifier != 1
+        && identifier != 0x6b33_43cf
+      {
         True -> Ok(identifier)
         False -> Error(OutOfRange)
       }
