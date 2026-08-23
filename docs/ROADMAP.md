@@ -89,6 +89,12 @@ test-only surface.
 
 ## Continuous verification
 
+**Status:** active and implemented. The repository retains fixed benchmark,
+32-connection load, and 160,000-stream soak tasks with warm-up, repeated trials
+where applicable, bounded cleanup, process and mailbox convergence checks,
+environment metadata, and raw CSV results. These localhost measurements are
+verification evidence rather than production throughput claims.
+
 Verification is not deferred to a late implementation phase. Every change
 uses the applicable pure, adapter, and real-UDP loopback tests and passes
 `mise run check`. Each phase completes with an independent HTTP/3 peer,

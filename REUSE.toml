@@ -11,6 +11,7 @@ path = [
   "*.md",
   "*.toml",
   "LICENSE",
+  "benchmarks/**",
   "docs/**",
   "src/**",
   "test/**",

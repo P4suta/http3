@@ -1,0 +1,17 @@
+recorded_at=2026-08-23 Asia/Tokyo
+source_revision=035c89bc30d5217fbe2a25942a48d911f2ff5a8e
+operating_system=Linux 6.8.0-138-generic x86_64 GNU/Linux
+cpu=Intel(R) Core(TM) i7-7700K CPU @ 4.20GHz
+cpu_topology=1 socket, 4 cores, 2 threads per core, 8 logical CPUs
+cpu_frequency_range_mhz=800-4500
+memory_bytes=16703741952
+swap_bytes=8589926400
+gleam=1.18.1
+otp=29
+erts=17.0.5
+online_schedulers=8
+rebar3=3.27.0
+quic_backend=1.8.1
+transport=real UDP over localhost, same-backend public client and server
+cpu_affinity=not pinned
+cpu_governor=not controlled

@@ -172,6 +172,25 @@ not independent interoperability evidence.
 Performance claims must identify the benchmark procedure and uncertainty;
 isolated best-case numbers are not sufficient.
 
+### Performance verification — 2026-08-23
+
+- `mise run benchmark` completed one warm-up and five measured trials using
+  four reusable connections, 100 requests per connection, and 1 KiB request
+  and response bodies. Measured throughput ranged from 1,133 through 1,181
+  requests/second, with a median of 1,173.
+- `mise run load` completed one warm-up and three measured trials using 32
+  reusable connections, 100 requests per connection, and 16 KiB bodies.
+  Measured throughput ranged from 1,239 through 1,311 requests/second, with a
+  median of 1,291.
+- `mise run soak` completed an 80,000-stream warm-up and an 80,000-stream
+  measured trial on eight reusable connections. The measured trial took
+  76.018408 seconds. Process counts returned below their starting values and
+  total mailbox messages returned to zero after both iterations.
+- The harness uses only public client and server APIs over real loopback UDP,
+  verifies every echoed body, and applies fixed operation, worker, and cleanup
+  timeouts. The exact methodology, uncertainty, environment, and all raw rows
+  are retained in [Performance](../benchmarks/README.md).
+
 ## Timeouts
 
 Every wait for a process, message, stream, connection, listener, or peer must

@@ -127,6 +127,7 @@ locally because early data can be replayed.
 | Streaming, backpressure, and cancellation | Implemented; phase 2 verification complete |
 | HTTP/3 server | Implemented; phase 3 verification complete |
 | Advanced typed capabilities | Implemented; phase 4 verification complete |
+| Load, soak, and benchmark verification | Implemented; raw local results retained |
 
 APIs are added only when they perform real protocol work and have tests.
 
@@ -151,7 +152,8 @@ Markdown, TOML, GitHub Actions, spelling, and licence checks.
 
 See [Architecture](docs/ARCHITECTURE.md) for the backend boundary,
 [Testing](docs/TESTING.md) for the required development and verification
-workflow, and [Roadmap](docs/ROADMAP.md) for the implementation order.
+workflow, [Performance](benchmarks/README.md) for the reproducible local
+workloads, and [Roadmap](docs/ROADMAP.md) for the implementation order.
 
 ## Security
 

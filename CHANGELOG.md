@@ -36,6 +36,9 @@ imply a tag, a hosted release, or publication to Hex.
   control, ping, MTU, and connection and path statistics.
 - Recorded independent aioquic 1.3.0 interoperability for Datagrams, migration,
   qlog, and an actual request sent before handshake completion.
+- Reproducible public-API benchmark, controlled load, and sustained soak tasks
+  with bounded cleanup, process and mailbox convergence, environment metadata,
+  and retained raw results.
 
 ### Changed
 

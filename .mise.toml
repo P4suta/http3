@@ -20,6 +20,18 @@ run = "gleam build --warnings-as-errors"
 description = "Run the gleeunit test suite"
 run = "gleam test"
 
+[tasks.benchmark]
+description = "Run one warm-up and five repeatable local benchmark trials"
+run = "gleam run -m http3_benchmark -- benchmark"
+
+[tasks.load]
+description = "Run the controlled high-concurrency HTTP/3 load workload"
+run = "gleam run -m http3_benchmark -- load"
+
+[tasks.soak]
+description = "Run a sustained 160,000-stream HTTP/3 soak workload"
+run = "gleam run -m http3_benchmark -- soak"
+
 [tasks.docs]
 description = "Build package documentation"
 run = "gleam docs build"
