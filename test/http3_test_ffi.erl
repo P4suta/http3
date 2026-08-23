@@ -8,22 +8,18 @@
     connection_owner_cleanup/3,
     checkpoint/1,
     await_task/1,
-    handle_request/5,
     new_signal/0,
     release_signal/1,
     repeated_bytes/1,
     server_credentials/0,
     server_owner_cleanup/1,
     start_task/1,
-    with_lossy_server/1,
+    with_lossy_proxy/3,
     with_qlog_directory/1,
-    with_reordering_proxy/1,
-    with_server/1
+    with_reordering_proxy/3
 ]).
 
--define(SERVER, http3_loopback_test).
 -define(FIXTURE_TIMEOUT, 2000).
--define(MAX_ECHO_BODY, 1048576).
 -define(CONCURRENCY_TIMEOUT, 5000).
 
 -spec with_qlog_directory(fun((binary()) -> term())) -> term().
@@ -322,64 +318,17 @@ await_process_down(Pid, Monitor) ->
         end
     end.
 
--spec with_server(fun((inet:port_number(), binary()) -> Result)) -> Result.
-with_server(Fun) when is_function(Fun, 2) ->
-    with_test_server(Fun).
+-spec with_lossy_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_lossy_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, packet_loss, Fun, CaCert).
 
--spec with_lossy_server(fun((inet:port_number(), binary()) -> Result)) -> Result.
-with_lossy_server(Fun) when is_function(Fun, 2) ->
-    with_test_server(fun(ServerPort, CaCert) ->
-        with_proxy(ServerPort, packet_loss, Fun, CaCert)
-    end).
-
--spec with_reordering_proxy(fun((inet:port_number(), binary()) -> Result)) -> Result.
-with_reordering_proxy(Fun) when is_function(Fun, 2) ->
-    with_test_server(fun(ServerPort, CaCert) ->
-        with_proxy(ServerPort, reordering, Fun, CaCert)
-    end).
-
-with_test_server(Fun) ->
-    {ok, _} = application:ensure_all_started(quic),
-    stop_stale_server(),
-    Cert = read_certificate("server.pem"),
-    Key = read_private_key("server-key.pem"),
-    CaCert = read_certificate("ca.pem"),
-    {ok, Server} = quic_h3:start_server(?SERVER, 0, #{
-        cert => Cert,
-        key => Key,
-        handler => ?MODULE,
-        quic_opts => #{pool_size => 0}
-    }),
-    Monitor = monitor(process, Server),
-    {ok, Port} = quic:get_server_port(?SERVER),
-    try
-        Fun(Port, CaCert)
-    after
-        stop_server(Server, Monitor)
-    end.
-
--spec handle_request(pid(), non_neg_integer(), binary(), binary(), list()) -> ok.
-handle_request(Conn, StreamId, Method, Path, Headers) ->
-    case Path of
-        <<"/echo", _/binary>> ->
-            TestHeader = proplists:get_value(<<"x-test">>, Headers, <<"missing">>),
-            receive_request_body(Conn, StreamId, Method, Path, TestHeader);
-        <<"/large", _/binary>> ->
-            respond(Conn, StreamId, 200, binary:copy(<<"x">>, 64));
-        <<"/timeout", _/binary>> ->
-            ok;
-        <<"/stream-close", _/binary>> ->
-            close_after_request_fin(Conn, StreamId);
-        <<"/close", _/binary>> ->
-            safe_close_connection(Conn);
-        <<"/empty", _/binary>> ->
-            safe_respond(Conn, StreamId, 204, <<"ignored">>),
-            ok;
-        <<"/chunks", _/binary>> ->
-            respond_in_chunks(Conn, StreamId);
-        _ ->
-            respond(Conn, StreamId, 404, <<"not found">>)
-    end.
+-spec with_reordering_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_reordering_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, reordering, Fun, CaCert).
 
 with_proxy(ServerPort, Mode, Fun, CaCert) ->
     {Proxy, Monitor, ProxyPort} = start_proxy(ServerPort, Mode),
@@ -488,215 +437,10 @@ await_proxy_down(Proxy, Monitor) ->
         end
     end.
 
-receive_request_body(Conn, StreamId, Method, Path, TestHeader) ->
-    case safe_set_stream_handler(Conn, StreamId) of
-        ok ->
-            receive_request_body(Conn, StreamId, Method, Path, TestHeader, [], 0);
-        {ok, Buffered} ->
-            consume_buffered(Conn, StreamId, Method, Path, TestHeader, Buffered, [], 0);
-        {error, _Reason} ->
-            safe_respond(Conn, StreamId, 500, <<"stream handler error">>)
-    end.
-
-close_after_request_fin(Conn, StreamId) ->
-    case safe_set_stream_handler(Conn, StreamId) of
-        ok ->
-            await_request_fin_and_close(Conn, StreamId);
-        {ok, Buffered} ->
-            case lists:any(fun({_Data, Fin}) -> Fin =:= true end, Buffered) of
-                true -> safe_close_connection(Conn);
-                false -> await_request_fin_and_close(Conn, StreamId)
-            end;
-        {error, _Reason} ->
-            safe_close_connection(Conn)
-    end.
-
-await_request_fin_and_close(Conn, StreamId) ->
-    receive
-        {quic_h3, Conn, {data, StreamId, _Data, true}} ->
-            safe_close_connection(Conn);
-        {quic_h3, Conn, {data, StreamId, _Data, false}} ->
-            await_request_fin_and_close(Conn, StreamId);
-        {quic_h3, Conn, {stream_reset, StreamId, _ErrorCode}} ->
-            safe_close_connection(Conn);
-        {quic_h3, Conn, {closed, _Reason}} ->
-            ok;
-        {quic_h3, Conn, closed} ->
-            ok
-    after ?CONCURRENCY_TIMEOUT ->
-        safe_close_connection(Conn)
-    end.
-
-safe_close_connection(Conn) ->
-    try quic_h3:close(Conn) of
-        _ -> ok
-    catch
-        exit:{noproc, _} -> ok;
-        exit:{normal, _} -> ok
-    end.
-
-safe_set_stream_handler(Conn, StreamId) ->
-    try quic_h3:set_stream_handler(Conn, StreamId, self()) of
-        Result -> Result
-    catch
-        exit:Reason -> {error, Reason}
-    end.
-
-consume_buffered(Conn, StreamId, Method, Path, TestHeader, Buffered, Chunks, Size) ->
-    case Buffered of
-        [] ->
-            receive_request_body(Conn, StreamId, Method, Path, TestHeader, Chunks, Size);
-        [{Data, Fin} | Rest] ->
-            NewSize = Size + byte_size(Data),
-            case NewSize > ?MAX_ECHO_BODY of
-                true ->
-                    respond(Conn, StreamId, 413, <<"request body too large">>);
-                false when Fin =:= true ->
-                    Body = iolist_to_binary(lists:reverse([Data | Chunks])),
-                    respond_echo(Conn, StreamId, Method, Path, TestHeader, Body);
-                false ->
-                    consume_buffered(
-                        Conn,
-                        StreamId,
-                        Method,
-                        Path,
-                        TestHeader,
-                        Rest,
-                        [Data | Chunks],
-                        NewSize
-                    )
-            end
-    end.
-
-receive_request_body(Conn, StreamId, Method, Path, TestHeader, Chunks, Size) ->
-    receive
-        {quic_h3, Conn, {data, StreamId, Data, Fin}} ->
-            NewSize = Size + byte_size(Data),
-            case NewSize > ?MAX_ECHO_BODY of
-                true ->
-                    respond(Conn, StreamId, 413, <<"request body too large">>);
-                false when Fin =:= true ->
-                    Body = iolist_to_binary(lists:reverse([Data | Chunks])),
-                    respond_echo(Conn, StreamId, Method, Path, TestHeader, Body);
-                false ->
-                    receive_request_body(
-                        Conn,
-                        StreamId,
-                        Method,
-                        Path,
-                        TestHeader,
-                        [Data | Chunks],
-                        NewSize
-                    )
-            end;
-        {quic_h3, Conn, {stream_reset, StreamId, _ErrorCode}} ->
-            ok;
-        {quic_h3, Conn, {closed, _Reason}} ->
-            ok;
-        {quic_h3, Conn, closed} ->
-            ok
-    after ?FIXTURE_TIMEOUT ->
-        safe_respond(Conn, StreamId, 408, <<"request body timeout">>)
-    end.
-
-respond_echo(Conn, StreamId, Method, Path, TestHeader, Body) ->
-    Headers = [
-        {<<"content-type">>, <<"application/octet-stream">>},
-        {<<"x-request-method">>, Method},
-        {<<"x-request-path">>, Path},
-        {<<"x-received-test">>, TestHeader}
-    ],
-    ok = quic_h3:send_response(Conn, StreamId, 200, Headers),
-    Deadline = erlang:monotonic_time(millisecond) + ?CONCURRENCY_TIMEOUT,
-    ok = send_response_body(Conn, StreamId, Body, Deadline),
-    ok.
-
-send_response_body(Conn, StreamId, <<>>, Deadline) ->
-    send_response_chunk(Conn, StreamId, <<>>, true, Deadline);
-send_response_body(Conn, StreamId, Body, Deadline) ->
-    ChunkSize = min(byte_size(Body), 16384),
-    <<Chunk:ChunkSize/binary, Rest/binary>> = Body,
-    Fin = Rest =:= <<>>,
-    case send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline) of
-        ok when Fin -> ok;
-        ok -> send_response_body(Conn, StreamId, Rest, Deadline);
-        Error -> Error
-    end.
-
-send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline) ->
-    case quic_h3:send_data(Conn, StreamId, Chunk, Fin) of
-        ok -> ok;
-        {error, {flow_control_blocked, _}} ->
-            case erlang:monotonic_time(millisecond) >= Deadline of
-                true -> {error, response_flow_control_timeout};
-                false ->
-                    receive after 1 -> ok end,
-                    send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline)
-            end;
-        Error -> Error
-    end.
-
-respond(Conn, StreamId, Status, Body) ->
-    ok = quic_h3:respond(
-        Conn,
-        StreamId,
-        Status,
-        [{<<"content-type">>, <<"text/plain">>}],
-        Body
-    ),
-    ok.
-
-safe_respond(Conn, StreamId, Status, Body) ->
-    try respond(Conn, StreamId, Status, Body) of
-        Result -> Result
-    catch
-        exit:{noproc, _} -> ok;
-        exit:{normal, _} -> ok
-    end.
-
-respond_in_chunks(Conn, StreamId) ->
-    ok = quic_h3:send_response(
-        Conn,
-        StreamId,
-        200,
-        [{<<"content-type">>, <<"text/plain">>}]
-    ),
-    ok = quic_h3:send_data(Conn, StreamId, <<"one-">>, false),
-    ok = quic_h3:send_data(Conn, StreamId, <<"two">>, true),
-    ok.
-
-stop_stale_server() ->
-    ignore_stop_error().
-
-stop_server(Server, Monitor) ->
-    ok = ignore_stop_error(),
-    receive
-        {'DOWN', Monitor, process, Server, _Reason} ->
-            ok
-    after ?FIXTURE_TIMEOUT ->
-        exit(Server, kill),
-        receive
-            {'DOWN', Monitor, process, Server, _Reason} -> ok
-        after ?FIXTURE_TIMEOUT -> ok
-        end
-    end.
-
-ignore_stop_error() ->
-    try quic_h3:stop_server(?SERVER) of
-        _ -> ok
-    catch
-        _:_ -> ok
-    end.
-
 read_certificate(Name) ->
     {ok, Pem} = file:read_file(fixture_path(Name)),
     [{_, Der, _}] = public_key:pem_decode(Pem),
     Der.
-
-read_private_key(Name) ->
-    {ok, Pem} = file:read_file(fixture_path(Name)),
-    [Entry] = public_key:pem_decode(Pem),
-    public_key:pem_entry_decode(Entry).
 
 fixture_path(Name) ->
     filename:join(["test", "fixtures", Name]).

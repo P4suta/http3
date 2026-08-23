@@ -1,6 +1,7 @@
 -module(gleam_quic_crypto_ffi).
 
 -export([
+    is_supported/0,
     aes_128_ecb_encrypt/2,
     aes_128_gcm_decrypt/4,
     aes_128_gcm_encrypt/4,
@@ -19,6 +20,40 @@
     x25519_public/1,
     x25519_shared/2
 ]).
+
+-spec is_supported() -> boolean().
+is_supported() ->
+    case ensure_crypto() of
+        ok ->
+            try
+                _ = crypto:strong_rand_bytes(1),
+                _ = crypto:hash(sha256, <<>>),
+                {_PublicKey, _PrivateKey} = crypto:generate_key(ecdh, x25519),
+                {_AesCiphertext, _AesTag} = crypto:crypto_one_time_aead(
+                    aes_128_gcm,
+                    <<0:128>>,
+                    <<0:96>>,
+                    <<>>,
+                    <<>>,
+                    16,
+                    true
+                ),
+                {_ChaChaCiphertext, _ChaChaTag} = crypto:crypto_one_time_aead(
+                    chacha20_poly1305,
+                    <<0:256>>,
+                    <<0:96>>,
+                    <<>>,
+                    <<>>,
+                    16,
+                    true
+                ),
+                true
+            catch
+                _Class:_Reason -> false
+            end;
+        error ->
+            false
+    end.
 
 -spec hash_sha256(binary()) -> {ok, binary()} | {error, 1 | 2}.
 hash_sha256(Data) when is_binary(Data) ->

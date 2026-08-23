@@ -2,7 +2,7 @@ name = "http3"
 version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.18.1"
-description = "A Gleam-native HTTP/3 stack with a replaceable QUIC backend"
+description = "A Gleam-native HTTP/3 stack with a repository-owned QUIC core"
 licences = ["MIT", "Apache-2.0"]
 internal_modules = ["http3/internal/**"]
 
@@ -10,7 +10,6 @@ internal_modules = ["http3/internal/**"]
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_quic = { path = "packages/gleam_quic" }
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
-quic = ">= 1.8.1 and < 2.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
@@ -33,3 +32,11 @@ warnings_as_errors = true
 avoid_panic = "error"
 avoid_todo = "error"
 unused_exports = "error"
+
+[tools.glinter.ignore]
+# The loopback fixture deliberately fails fast on invalid static credentials
+# and treats listener shutdown/read cancellation as expected teardown.
+"test/http3_test_support.gleam" = [
+  "assert_ok_pattern",
+  "thrown_away_error",
+]

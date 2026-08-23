@@ -27,6 +27,8 @@ unused_exports = "error"
 
 [tools.glinter.ignore]
 "test/**/*.gleam" = ["assert_ok_pattern"]
+# The path-dependent parent package consumes this capability probe.
+"src/gleam_quic.gleam" = ["unused_exports"]
 # These actors deliberately terminate, retry, or discard best-effort cleanup
 # results at a single supervised process boundary. Glinter cannot model that
 # message-loop ownership, while exhaustive runtime tests cover each boundary.

@@ -2030,6 +2030,7 @@ fn shutdown(worker: Worker, reason: String) -> Nil {
   let worker =
     fail_request_ids(worker, dict.keys(worker.requests), ListenerClosed)
   close_connections(
+    worker.socket,
     dict.values(worker.connections),
     udp.monotonic_millisecond(),
     reason,
@@ -2055,12 +2056,37 @@ fn open_qlog(directory: String) -> Result(Option(qlog.Writer), qlog.Error) {
   }
 }
 
-fn close_connections(peers: List(PeerState), now: Int, reason: String) -> Nil {
+fn close_connections(
+  socket: udp.Socket,
+  peers: List(PeerState),
+  now: Int,
+  reason: String,
+) -> Nil {
   case peers {
     [] -> Nil
     [peer, ..rest] -> {
-      let _ = server_connection.close(peer.connection, 0x100, reason, now)
-      close_connections(rest, now, reason)
+      let connection =
+        server_connection.close(peer.connection, 0x100, reason, now)
+      case
+        server_connection.prepare_datagram(
+          connection,
+          maximum_frame_data_bytes,
+          now,
+        )
+      {
+        Ok(Some(prepared)) -> {
+          let _sent =
+            udp.send(
+              socket,
+              server_connection.peer(connection),
+              server_connection.prepared_bytes(prepared),
+              ecn.NotEct,
+            )
+          Nil
+        }
+        _ -> Nil
+      }
+      close_connections(socket, rest, now, reason)
     }
   }
 }

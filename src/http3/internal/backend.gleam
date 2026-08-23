@@ -1,7 +1,7 @@
-//// The boundary between the public HTTP/3 API and the current QUIC backend.
-////
-//// Backend-specific handles, atoms, maps, and messages must not cross this
-//// module boundary into public types.
+//// Runtime capability boundary for the repository-owned QUIC core.
 
-@external(erlang, "http3_internal_backend_ffi", "is_supported")
-pub fn is_supported() -> Bool
+import gleam_quic
+
+pub fn is_supported() -> Bool {
+  gleam_quic.is_supported()
+}
