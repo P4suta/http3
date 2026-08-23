@@ -33,6 +33,14 @@ protocol work.
 
 ## 2. Streaming, backpressure, and cancellation
 
+**Status:** complete as of 2026-08-23. The reusable client exposes opaque
+connection and stream values, synchronous producer backpressure, bounded
+pull-based response events, total stream deadlines, race-safe idempotent
+cancellation, and deterministic owner/connection cleanup. Verification covers
+independent aioquic 1.3.0 streaming interoperation, backend conformance, real
+UDP multiplexing, flow-control pressure, cancellation races, slow consumers,
+packet loss, early responses, peer failure, and resource limits.
+
 Add streaming request and response bodies without changing the bounded helper
 into an unbounded collector. Preserve flow-control backpressure, expose
 end-of-stream and transport failures, and make cancellation observable,

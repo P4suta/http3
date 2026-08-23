@@ -10,13 +10,13 @@ project that needs those capabilities should compose them outside `http3`.
 > [!WARNING]
 > This package is pre-alpha, is not published to Hex, and is not recommended
 > for production use. The version in `gleam.toml` is tool metadata, not a
-> publication or feature milestone. A bounded one-shot client is implemented;
-> connection reuse, streaming, and a server are not.
+> publication or feature milestone. The bounded and streaming clients are
+> implemented; a server is not yet implemented.
 
 ## Current API
 
-The package exposes a runtime capability probe and a bounded client. The probe
-does not make a network connection:
+The package exposes a runtime capability probe plus bounded and streaming
+clients. The probe does not make a network connection:
 
 ```gleam
 import http3
@@ -55,22 +55,47 @@ limited to 8 MiB. TLS certificate-chain and hostname verification are always
 enabled. Typed configuration functions can change the limits, timeout, or
 explicit CA trust set without exposing backend values.
 
+For connection reuse and streaming bodies, establish a connection, open one
+or more streams, send request chunks, and pull response events:
+
+```gleam
+let assert Ok(connection) = client.connect(configuration, "example.com", 443)
+let request =
+  request.new()
+  |> request.set_host("example.com")
+  |> request.set_body(Nil)
+let assert Ok(stream) = client.open_stream(connection, request)
+let assert Ok(Nil) = client.finish(stream)
+
+case client.next_event(stream) {
+  Ok(client.Response(_, _)) -> Nil
+  Ok(client.Data(_)) -> Nil
+  Ok(client.End) -> Nil
+  // InformationalResponse and Trailers are also observable events.
+  _ -> Nil
+}
+```
+
+Request chunk calls synchronously preserve backend flow-control pressure.
+Response events are pulled one at a time, and unconsumed data is bounded per
+stream. Cancellation and connection close are observable and idempotent.
+
 ## Status
 
 | Capability | Status |
 | --- | --- |
 | Backend availability probe | Implemented |
 | Bounded buffered HTTP/3 client | Implemented; phase 1 verification complete |
-| Streaming, backpressure, and cancellation | Planned next |
+| Streaming, backpressure, and cancellation | Implemented; phase 2 verification complete |
 | HTTP/3 server | Planned |
 | Advanced typed capabilities | Planned |
 
-No placeholder server or streaming functions are exported. APIs are added only
-when they perform real protocol work and have tests.
+No placeholder server functions are exported. APIs are added only when they
+perform real protocol work and have tests.
 
-Implementation is client-first: bounded buffered requests and responses,
-then streaming with backpressure and cancellation, then the server, and then
-advanced capabilities. Progress is gated by tested behavior, not by a GitHub
+Implementation is client-first: the bounded and streaming clients are now
+complete; the server and advanced capabilities follow. Progress is gated by
+tested behavior, not by a GitHub
 or Hex publication, tag, release, or version change; those operations remain
 optional and outside this roadmap.
 

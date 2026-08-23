@@ -1,9 +1,9 @@
-//// A bounded, buffered HTTP/3 client for the Erlang target.
+//// An HTTP/3 client for the Erlang target.
 ////
-//// Each call to `send` owns one HTTP/3 connection, waits for one complete
-//// response, and closes the connection before returning. Request and response
-//// bodies are `BitArray` values and are rejected when they exceed their
-//// configured limits.
+//// `send` owns one connection, collects one response within explicit limits,
+//// and closes the connection before returning. `connect` instead creates a
+//// reusable connection whose streams use synchronous request-body
+//// backpressure and pull-based response events with bounded buffering.
 ////
 //// ```gleam
 //// import gleam/http/request
@@ -20,9 +20,10 @@
 import gleam/bit_array
 import gleam/bool
 import gleam/http/request.{type Request}
-import gleam/http/response.{type Response, Response}
+import gleam/http/response.{type Response}
 import http3/internal/client_backend
 import http3/internal/client_request
+import http3/internal/client_stream_backend
 
 const default_timeout_milliseconds = 30_000
 
@@ -32,14 +33,58 @@ const default_response_body_limit = 8_388_608
 
 const default_request_body_limit = 8_388_608
 
+const default_stream_buffer_limit = 262_144
+
 /// Configuration for one-shot HTTP/3 requests.
 pub opaque type Client {
   Client(
     timeout_milliseconds: Int,
     request_body_limit: Int,
     response_body_limit: Int,
+    stream_buffer_limit: Int,
     ca_certificates: List(BitArray),
   )
+}
+
+/// A reusable secure HTTP/3 connection.
+pub opaque type Connection {
+  Connection(handle: client_stream_backend.ConnectionHandle)
+}
+
+/// One request and response stream on an HTTP/3 connection.
+pub opaque type Stream {
+  Stream(handle: client_stream_backend.StreamHandle)
+}
+
+/// One event from a streaming response.
+pub type ResponseEvent {
+  /// An informational response from status 100 through 199.
+  InformationalResponse(status: Int, headers: List(#(String, String)))
+
+  /// The final response head.
+  Response(status: Int, headers: List(#(String, String)))
+
+  /// A non-empty response-body chunk.
+  Data(BitArray)
+
+  /// Response trailers.
+  Trailers(List(#(String, String)))
+
+  /// The response stream ended successfully.
+  End
+}
+
+/// The result of an idempotent stream cancellation.
+pub type Cancellation {
+  Cancelled
+  AlreadyCancelled
+  AlreadyCompleted
+}
+
+/// The result of idempotently closing a connection.
+pub type CloseResult {
+  Closed
+  AlreadyClosed
 }
 
 /// An invalid client configuration value.
@@ -52,6 +97,9 @@ pub type ConfigurationError {
 
   /// A request body limit must be greater than zero bytes.
   InvalidRequestBodyLimit
+
+  /// A streaming response buffer limit must be greater than zero bytes.
+  InvalidStreamBufferLimit
 
   /// A CA certificate must be a non-empty, byte-aligned DER certificate.
   InvalidCaCertificate
@@ -109,6 +157,24 @@ pub type Error {
 
   /// The backend failed in an unexpected way.
   BackendFailure(String)
+
+  /// A streaming consumer did not pull data before its buffer filled.
+  ConsumerTooSlow(limit: Int)
+
+  /// More than one process tried to receive from the same stream.
+  ConcurrentReceive
+
+  /// Request data was sent after its stream was finished.
+  RequestAlreadyFinished
+
+  /// No more response events are available from this completed stream.
+  StreamFinished
+
+  /// The stream was cancelled locally.
+  StreamCancelled
+
+  /// A request does not match the connection's host and port.
+  OriginMismatch
 }
 
 /// Construct a client with secure TLS verification and bounded defaults.
@@ -121,6 +187,7 @@ pub fn new() -> Client {
     timeout_milliseconds: default_timeout_milliseconds,
     request_body_limit: default_request_body_limit,
     response_body_limit: default_response_body_limit,
+    stream_buffer_limit: default_stream_buffer_limit,
     ca_certificates: [],
   )
 }
@@ -153,6 +220,15 @@ pub fn with_request_body_limit(
 ) -> Result(Client, ConfigurationError) {
   use <- bool.guard(when: bytes <= 0, return: Error(InvalidRequestBodyLimit))
   Ok(Client(..client, request_body_limit: bytes))
+}
+
+/// Set the maximum unconsumed response data retained per stream.
+pub fn with_stream_buffer_limit(
+  client client: Client,
+  bytes bytes: Int,
+) -> Result(Client, ConfigurationError) {
+  use <- bool.guard(when: bytes <= 0, return: Error(InvalidStreamBufferLimit))
+  Ok(Client(..client, stream_buffer_limit: bytes))
 }
 
 /// Add a DER-encoded CA certificate without disabling TLS verification.
@@ -205,9 +281,119 @@ fn send_prepared(
       client.response_body_limit,
     )
   {
-    Ok(#(status, headers, body)) -> Ok(Response(status, headers, body))
+    Ok(#(status, headers, body)) -> Ok(response.Response(status, headers, body))
     Error(error) ->
       Error(from_backend_failure(error, client.response_body_limit))
+  }
+}
+
+/// Establish a reusable HTTP/3 connection with TLS verification enabled.
+///
+/// All streams opened on the connection must use the same host and port. The
+/// connection is owned by the process that calls this function and is closed
+/// automatically if that process exits.
+pub fn connect(
+  client client: Client,
+  host host: String,
+  port port: Int,
+) -> Result(Connection, Error) {
+  case client_request.prepare_origin(host, port) {
+    Ok(_) ->
+      case
+        client_stream_backend.connect(
+          host,
+          port,
+          client.ca_certificates,
+          client.timeout_milliseconds,
+          client.stream_buffer_limit,
+        )
+      {
+        Ok(handle) -> Ok(Connection(handle))
+        Error(error) ->
+          Error(from_backend_failure(error, client.response_body_limit))
+      }
+    Error(error) -> Error(from_preparation_error(error))
+  }
+}
+
+/// Open a request stream, leaving its request body open for chunks.
+pub fn open_stream(
+  connection connection: Connection,
+  request request: Request(Nil),
+) -> Result(Stream, Error) {
+  let Connection(handle) = connection
+  case client_request.prepare_streaming(request) {
+    Ok(prepared) ->
+      case client_stream_backend.open_stream(handle, prepared) {
+        Ok(stream) -> Ok(Stream(stream))
+        Error(error) -> Error(from_backend_failure(error, 0))
+      }
+    Error(error) -> Error(from_preparation_error(error))
+  }
+}
+
+/// Send one byte-aligned request-body chunk.
+///
+/// The call does not return successfully until the backend accepts the chunk,
+/// so a producer observes QUIC flow-control pressure.
+pub fn send_chunk(
+  stream stream: Stream,
+  chunk chunk: BitArray,
+) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: bit_array.bit_size(chunk) % 8 != 0,
+    return: Error(InvalidBody),
+  )
+  let Stream(handle) = stream
+  case client_stream_backend.send_chunk(handle, chunk) {
+    Ok(value) -> Ok(value)
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Finish a streaming request body.
+pub fn finish(stream: Stream) -> Result(Nil, Error) {
+  let Stream(handle) = stream
+  case client_stream_backend.finish(handle) {
+    Ok(value) -> Ok(value)
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Pull the next response event, waiting up to the configured stream timeout.
+pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
+  let Stream(handle) = stream
+  case client_stream_backend.next_event(handle) {
+    Ok(#(1, status, headers, _)) -> Ok(InformationalResponse(status, headers))
+    Ok(#(2, status, headers, _)) -> Ok(Response(status, headers))
+    Ok(#(3, _, _, chunk)) -> Ok(Data(chunk))
+    Ok(#(4, _, trailers, _)) -> Ok(Trailers(trailers))
+    Ok(#(5, _, _, _)) -> Ok(End)
+    Ok(_) -> Error(BackendFailure("invalid streaming event"))
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Cancel a request stream idempotently.
+pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
+  let Stream(handle) = stream
+  case client_stream_backend.cancel(handle) {
+    Ok(1) -> Ok(Cancelled)
+    Ok(2) -> Ok(AlreadyCancelled)
+    Ok(3) -> Ok(AlreadyCompleted)
+    Ok(_) -> Error(BackendFailure("invalid cancellation status"))
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Close a connection and all of its streams idempotently.
+pub fn close(connection: Connection) -> Result(CloseResult, Error) {
+  let Connection(handle) = connection
+  case client_stream_backend.close(handle) {
+    Ok(1) -> Ok(Closed)
+    Ok(2) -> Ok(AlreadyClosed)
+    Ok(_) -> Error(BackendFailure("invalid close status"))
+    Error(error) -> Error(from_backend_failure(error, 0))
   }
 }
 
@@ -237,6 +423,13 @@ fn from_backend_failure(
     client_backend.ConnectionClosed -> ConnectionClosed
     client_backend.StreamReset(code) -> StreamReset(code)
     client_backend.ProtocolError(code, message) -> ProtocolError(code, message)
+    client_backend.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
+    client_backend.ConcurrentReceive -> ConcurrentReceive
+    client_backend.RequestAlreadyFinished -> RequestAlreadyFinished
+    client_backend.StreamFinished -> StreamFinished
+    client_backend.StreamCancelled -> StreamCancelled
+    client_backend.OriginMismatch -> OriginMismatch
+    client_backend.InvalidContentLength -> InvalidContentLength
     client_backend.BackendFailure(message) -> BackendFailure(message)
   }
 }

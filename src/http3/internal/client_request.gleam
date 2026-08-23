@@ -20,6 +20,16 @@ pub type PreparedRequest {
   )
 }
 
+/// Request metadata ready to open a streaming HTTP/3 request.
+pub type PreparedStreamingRequest {
+  PreparedStreamingRequest(
+    host: String,
+    port: Int,
+    headers: List(#(String, String)),
+    declared_content_length: Option(Int),
+  )
+}
+
 /// A pure request-normalization failure.
 pub type Error {
   InvalidScheme
@@ -38,6 +48,26 @@ pub fn prepare(request: Request(BitArray)) -> Result(PreparedRequest, Error) {
     http.Https -> prepare_https_request(request)
     _ -> Error(InvalidScheme)
   }
+}
+
+/// Validate and normalize a request head for streaming request data.
+pub fn prepare_streaming(
+  request: Request(Nil),
+) -> Result(PreparedStreamingRequest, Error) {
+  case request.scheme {
+    http.Https -> prepare_https_streaming_request(request)
+    _ -> Error(InvalidScheme)
+  }
+}
+
+/// Validate a secure connection origin.
+pub fn prepare_origin(
+  host host: String,
+  port port: Int,
+) -> Result(#(String, Int), Error) {
+  use _ <- result.try(validate_host(host))
+  use _ <- result.try(validate_port(port))
+  Ok(#(host, port))
 }
 
 fn prepare_https_request(
@@ -70,6 +100,41 @@ fn prepare_https_request(
   ]
 
   Ok(PreparedRequest(request.host, port, headers, request.body))
+}
+
+fn prepare_https_streaming_request(
+  request: Request(Nil),
+) -> Result(PreparedStreamingRequest, Error) {
+  use _ <- result.try(validate_host(request.host))
+
+  let port = case request.port {
+    Some(port) -> port
+    None -> 443
+  }
+  use _ <- result.try(validate_port(port))
+
+  let method = http.method_to_string(request.method)
+  use _ <- result.try(validate_method(method))
+  use target <- result.try(request_target(request.path, request.query))
+  use #(headers, declared_content_length) <- result.try(
+    validate_streaming_headers(request.headers),
+  )
+
+  let authority = authority(request.host, port)
+  let headers = [
+    #(":method", method),
+    #(":scheme", "https"),
+    #(":path", target),
+    #(":authority", authority),
+    ..headers
+  ]
+
+  Ok(PreparedStreamingRequest(
+    request.host,
+    port,
+    headers,
+    declared_content_length,
+  ))
 }
 
 fn validate_host(host: String) -> Result(Nil, Error) {
@@ -175,6 +240,49 @@ fn validate_headers(
   )
 }
 
+fn validate_streaming_headers(
+  headers: List(#(String, String)),
+) -> Result(#(List(#(String, String)), Option(Int)), Error) {
+  validate_streaming_headers_loop(
+    headers: headers,
+    declared_content_length: None,
+    validated: [],
+  )
+}
+
+fn validate_streaming_headers_loop(
+  headers headers: List(#(String, String)),
+  declared_content_length declared_content_length: Option(Int),
+  validated validated: List(#(String, String)),
+) -> Result(#(List(#(String, String)), Option(Int)), Error) {
+  case headers {
+    [] -> Ok(#(list.reverse(validated), declared_content_length))
+    [#(name, value), ..rest] -> {
+      use _ <- result.try(validate_header(name, value))
+      case name {
+        "content-length" -> {
+          use <- bool.guard(
+            when: declared_content_length != None,
+            return: Error(InvalidContentLength),
+          )
+          use length <- result.try(parse_content_length(value))
+          validate_streaming_headers_loop(
+            headers: rest,
+            declared_content_length: Some(length),
+            validated: [#(name, value), ..validated],
+          )
+        }
+        _ ->
+          validate_streaming_headers_loop(
+            headers: rest,
+            declared_content_length: declared_content_length,
+            validated: [#(name, value), ..validated],
+          )
+      }
+    }
+  }
+}
+
 fn validate_headers_loop(
   headers headers: List(#(String, String)),
   body_size body_size: Int,
@@ -221,13 +329,17 @@ fn validate_content_length(
   value: String,
   body_size: Int,
 ) -> Result(Nil, Error) {
+  use length <- result.try(parse_content_length(value))
+  case length == body_size {
+    True -> Ok(Nil)
+    False -> Error(InvalidContentLength)
+  }
+}
+
+fn parse_content_length(value: String) -> Result(Int, Error) {
   case int.parse(string.trim(value)) {
-    Ok(length) ->
-      case length == body_size {
-        True -> Ok(Nil)
-        False -> Error(InvalidContentLength)
-      }
-    Error(_) -> Error(InvalidContentLength)
+    Ok(length) if length >= 0 -> Ok(length)
+    _ -> Error(InvalidContentLength)
   }
 }
 

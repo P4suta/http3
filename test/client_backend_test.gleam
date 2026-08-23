@@ -19,6 +19,24 @@ pub fn backend_stream_reset_is_normalized_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn backend_streaming_failures_are_normalized_test() -> Nil {
+  assert client_backend.normalize_error(#(14, 0, "invalid content length"))
+    == client_backend.InvalidContentLength
+  assert client_backend.normalize_error(#(15, 128, "consumer too slow"))
+    == client_backend.ConsumerTooSlow(128)
+  assert client_backend.normalize_error(#(16, 0, "concurrent receive"))
+    == client_backend.ConcurrentReceive
+  assert client_backend.normalize_error(#(17, 0, "request finished"))
+    == client_backend.RequestAlreadyFinished
+  assert client_backend.normalize_error(#(18, 0, "stream finished"))
+    == client_backend.StreamFinished
+  assert client_backend.normalize_error(#(19, 0, "stream cancelled"))
+    == client_backend.StreamCancelled
+  assert client_backend.normalize_error(#(20, 0, "origin mismatch"))
+    == client_backend.OriginMismatch
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn backend_protocol_error_is_normalized_test() -> Nil {
   assert client_backend.normalize_error(#(7, 257, "protocol failure"))
     == client_backend.ProtocolError(257, "protocol failure")

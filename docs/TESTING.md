@@ -82,6 +82,30 @@ not independent interoperability evidence.
 - The completion command is `mise run check`. The recorded run completed all
   project checks and 37 repository tests with no failures.
 
+### Streaming, backpressure, and cancellation — 2026-08-23
+
+- The repository suite exercises reusable connections and concurrent request
+  streams over real UDP, multi-chunk request and response bodies, early
+  responses, declared content lengths, fixed total stream timeouts, slow
+  consumer limits, finish-state errors, peer termination, and owner cleanup.
+- Race fixtures start two receivers or cancellers together without arbitrary
+  sleeps. They verify one blocked receiver is released by cancellation,
+  concurrent receive is rejected, and simultaneous cancellation returns one
+  `Cancelled` plus one `AlreadyCancelled` result.
+- Send-side pressure uses sixteen 16 KiB chunks with synchronous backend
+  acceptance and a 256 KiB echoed response. Fault coverage repeats the
+  streaming path through deterministic initial UDP packet loss.
+- Independent interoperability used aioquic 1.3.0 as the server. The public
+  streaming API connected with the local CA and hostname verification,
+  transmitted two request chunks, observed response headers and two response
+  data writes, and verified the complete body before idempotent shutdown.
+- Applicable wire conformance remains the resolved quic 1.8.1 HTTP/3
+  compliance module: 185 RFC 9114 and RFC 9204 tests completed without
+  failures. Wrapper tests cover the lifecycle and event semantics added in
+  this phase.
+- The completion command is `mise run check`. The recorded run completed all
+  project checks and 57 repository tests with no failures.
+
 ### During performance work
 
 - Use load tests to measure behavior under controlled concurrency and

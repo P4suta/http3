@@ -22,6 +22,13 @@ pub type Failure {
   ConnectionClosed
   StreamReset(Int)
   ProtocolError(Int, String)
+  ConsumerTooSlow(Int)
+  ConcurrentReceive
+  RequestAlreadyFinished
+  StreamFinished
+  StreamCancelled
+  OriginMismatch
+  InvalidContentLength
   BackendFailure(String)
 }
 
@@ -75,6 +82,13 @@ pub fn normalize_error(error: RawError) -> Failure {
     #(5, _, _) -> ConnectionClosed
     #(6, code, _) -> StreamReset(code)
     #(7, code, message) -> ProtocolError(code, message)
+    #(14, _, _) -> InvalidContentLength
+    #(15, limit, _) -> ConsumerTooSlow(limit)
+    #(16, _, _) -> ConcurrentReceive
+    #(17, _, _) -> RequestAlreadyFinished
+    #(18, _, _) -> StreamFinished
+    #(19, _, _) -> StreamCancelled
+    #(20, _, _) -> OriginMismatch
     #(_, _, message) -> BackendFailure(message)
   }
 }

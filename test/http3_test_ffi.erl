@@ -1,10 +1,127 @@
 -module(http3_test_ffi).
 
--export([handle_request/5, with_lossy_server/1, with_reordering_proxy/1, with_server/1]).
+-export([
+    concurrent_cancellations/1,
+    concurrent_next_events/1,
+    connection_owner_cleanup/3,
+    handle_request/5,
+    with_lossy_server/1,
+    with_reordering_proxy/1,
+    with_server/1
+]).
 
 -define(SERVER, http3_loopback_test).
 -define(FIXTURE_TIMEOUT, 2000).
 -define(MAX_ECHO_BODY, 1048576).
+-define(CONCURRENCY_TIMEOUT, 5000).
+
+-spec concurrent_next_events(term()) -> [term()].
+concurrent_next_events(Stream) ->
+    Parent = self(),
+    StartRef = make_ref(),
+    Workers = [
+        spawn_monitor(fun() ->
+            receive
+                {start, StartRef} ->
+                    Parent ! {StartRef, self(), http3@client:next_event(Stream)}
+            end
+        end)
+     || _ <- lists:seq(1, 2)
+    ],
+    [Pid ! {start, StartRef} || {Pid, _Monitor} <- Workers],
+    First = receive
+        {StartRef, _FirstPid, FirstResult} -> FirstResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(concurrent_receive_timeout)
+    end,
+    _ = http3@client:cancel(Stream),
+    Second = receive
+        {StartRef, _SecondPid, SecondResult} -> SecondResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(blocked_receive_cleanup_timeout)
+    end,
+    await_test_workers(Workers),
+    [First, Second].
+
+-spec concurrent_cancellations(term()) -> [term()].
+concurrent_cancellations(Stream) ->
+    Parent = self(),
+    StartRef = make_ref(),
+    Workers = [
+        spawn_monitor(fun() ->
+            receive
+                {start, StartRef} ->
+                    Parent ! {StartRef, self(), http3@client:cancel(Stream)}
+            end
+        end)
+     || _ <- lists:seq(1, 2)
+    ],
+    [Pid ! {start, StartRef} || {Pid, _Monitor} <- Workers],
+    Results = collect_test_results(StartRef, 2, []),
+    await_test_workers(Workers),
+    Results.
+
+-spec connection_owner_cleanup(term(), binary(), inet:port_number()) -> boolean().
+connection_owner_cleanup(Configuration, Host, Port) ->
+    Parent = self(),
+    Ref = make_ref(),
+    {Creator, CreatorMonitor} = spawn_monitor(fun() ->
+        case http3@client:connect(Configuration, Host, Port) of
+            {ok, {connection, {http3_connection, Worker, _Timeout}}} ->
+                Parent ! {Ref, worker, Worker};
+            Error ->
+                Parent ! {Ref, error, Error}
+        end
+    end),
+    receive
+        {Ref, worker, Worker} ->
+            WorkerMonitor = monitor(process, Worker),
+            await_process_down(Creator, CreatorMonitor),
+            receive
+                {'DOWN', WorkerMonitor, process, Worker, _Reason} -> true
+            after ?CONCURRENCY_TIMEOUT ->
+                demonitor(WorkerMonitor, [flush]),
+                false
+            end;
+        {Ref, error, _Error} ->
+            await_process_down(Creator, CreatorMonitor),
+            false;
+        {'DOWN', CreatorMonitor, process, Creator, _Reason} ->
+            false
+    after ?CONCURRENCY_TIMEOUT ->
+        exit(Creator, kill),
+        await_process_down(Creator, CreatorMonitor),
+        false
+    end.
+
+collect_test_results(_Ref, 0, Results) ->
+    Results;
+collect_test_results(Ref, Remaining, Results) ->
+    receive
+        {Ref, _Pid, Result} ->
+            collect_test_results(Ref, Remaining - 1, [Result | Results])
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(concurrent_operation_timeout)
+    end.
+
+await_test_workers(Workers) ->
+    lists:foreach(
+        fun({Pid, Monitor}) -> await_process_down(Pid, Monitor) end,
+        Workers
+    ).
+
+await_process_down(Pid, Monitor) ->
+    receive
+        {'DOWN', Monitor, process, Pid, _Reason} -> ok
+    after ?CONCURRENCY_TIMEOUT ->
+        exit(Pid, kill),
+        receive
+            {'DOWN', Monitor, process, Pid, _Reason} -> ok
+        after ?FIXTURE_TIMEOUT ->
+            demonitor(Monitor, [flush]),
+            ok
+        end
+    end.
 
 -spec with_server(fun((inet:port_number(), binary()) -> Result)) -> Result.
 with_server(Fun) when is_function(Fun, 2) ->
@@ -172,13 +289,20 @@ await_proxy_down(Proxy, Monitor) ->
     end.
 
 receive_request_body(Conn, StreamId, Method, Path, TestHeader) ->
-    case quic_h3:set_stream_handler(Conn, StreamId, self()) of
+    case safe_set_stream_handler(Conn, StreamId) of
         ok ->
             receive_request_body(Conn, StreamId, Method, Path, TestHeader, [], 0);
         {ok, Buffered} ->
             consume_buffered(Conn, StreamId, Method, Path, TestHeader, Buffered, [], 0);
         {error, _Reason} ->
-            respond(Conn, StreamId, 500, <<"stream handler error">>)
+            safe_respond(Conn, StreamId, 500, <<"stream handler error">>)
+    end.
+
+safe_set_stream_handler(Conn, StreamId) ->
+    try quic_h3:set_stream_handler(Conn, StreamId, self()) of
+        Result -> Result
+    catch
+        exit:Reason -> {error, Reason}
     end.
 
 consume_buffered(Conn, StreamId, Method, Path, TestHeader, Buffered, Chunks, Size) ->
@@ -227,9 +351,15 @@ receive_request_body(Conn, StreamId, Method, Path, TestHeader, Chunks, Size) ->
                         [Data | Chunks],
                         NewSize
                     )
-            end
+            end;
+        {quic_h3, Conn, {stream_reset, StreamId, _ErrorCode}} ->
+            ok;
+        {quic_h3, Conn, {closed, _Reason}} ->
+            ok;
+        {quic_h3, Conn, closed} ->
+            ok
     after ?FIXTURE_TIMEOUT ->
-        respond(Conn, StreamId, 408, <<"request body timeout">>)
+        safe_respond(Conn, StreamId, 408, <<"request body timeout">>)
     end.
 
 respond_echo(Conn, StreamId, Method, Path, TestHeader, Body) ->
@@ -251,6 +381,14 @@ respond(Conn, StreamId, Status, Body) ->
         Body
     ),
     ok.
+
+safe_respond(Conn, StreamId, Status, Body) ->
+    try respond(Conn, StreamId, Status, Body) of
+        Result -> Result
+    catch
+        exit:{noproc, _} -> ok;
+        exit:{normal, _} -> ok
+    end.
 
 respond_in_chunks(Conn, StreamId) ->
     ok = quic_h3:send_response(

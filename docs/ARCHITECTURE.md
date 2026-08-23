@@ -7,8 +7,8 @@ Erlang target. Applications should depend on stable HTTP concepts rather than
 a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
 and the JavaScript target are non-goals and belong in separate projects.
 
-The current surface exposes capability discovery and a bounded one-shot
-client. It does not contain connection, streaming, or server placeholders.
+The current surface exposes capability discovery plus bounded and streaming
+clients. It does not contain server placeholders.
 The version in `gleam.toml` is required tool metadata, not an implementation,
 publication, or quality milestone.
 
@@ -17,7 +17,7 @@ publication, or quality milestone.
 ```text
 Application
     |
-Public http3 modules and opaque configuration / future connection values
+Public http3 modules and opaque configuration / connection / stream values
     |
 http3/internal adapters and event normalization
     |
@@ -26,10 +26,10 @@ Small Erlang FFI modules
 QUIC backend
 ```
 
-The public client uses `gleam/http` request and response types and owns its
-configuration and error types. `Client` is opaque. Future `Connection` and
-`Stream` values will also be opaque, so callers cannot depend on the
-representation selected by a backend.
+The public client uses `gleam/http` request and response concepts and owns its
+configuration, event, and error types. `Client`, `Connection`, and `Stream`
+are opaque, so callers cannot depend on the representation selected by a
+backend.
 
 The internal adapter is responsible for translating backend results and
 events into those public types. Backend PIDs, references, atoms, maps, records,
@@ -81,6 +81,25 @@ response within the configured byte limit, normalizes events into primitive
 result data, and waits for connection shutdown before returning. Raw PIDs,
 atoms, maps, references, and mailbox events do not cross the FFI boundary.
 
+The streaming call path retains one monitored worker for a reusable
+connection:
+
+```text
+http3/client.connect() / open_stream() / send_chunk() / next_event()
+    -> http3/internal/client_stream_backend
+    -> http3_internal_stream_ffi
+    -> owner-monitored connection worker
+    -> quic_h3
+```
+
+The worker multiplexes stream identifiers internally, retries only backend
+send results that report flow-control or queue pressure, and applies one
+monotonic deadline per stream. A pull waiter receives the next event directly;
+otherwise response data enters a per-stream bounded queue. Filling that queue
+cancels the stream with `ConsumerTooSlow`. Cancellation, connection close, and
+owner termination have fixed cleanup bounds. Backend identities and messages
+remain below the adapter boundary.
+
 ## HTTP data model
 
 The bounded client uses the request and response concepts from `gleam/http`.
@@ -102,7 +121,8 @@ Protocol work proceeds in dependency order:
 
 1. the bounded buffered HTTP/3 client, whose independent interoperability,
    conformance, and fault-injection phase gate is complete;
-2. streaming request and response bodies with backpressure and cancellation;
+2. streaming request and response bodies with backpressure and cancellation,
+   whose independent interoperability and fault-injection gate is complete;
 3. an HTTP/3 server built on the exercised connection and stream model; and
 4. advanced capabilities exposed through typed, backend-neutral APIs where
    possible.
