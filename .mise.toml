@@ -1,0 +1,53 @@
+[tools]
+gleam = "1.18.1"
+erlang = "29.0.5"
+rebar = "3.27.0"
+actionlint = "1.7.12"
+taplo = "0.10.0"
+typos = "1.49.0"
+markdownlint-cli2 = "0.22.1"
+"pipx:reuse" = "6.2.0"
+
+[tasks.format]
+description = "Check Gleam source formatting"
+run = "gleam format --check src test"
+
+[tasks.build]
+description = "Build with compiler warnings treated as errors"
+run = "gleam build --warnings-as-errors"
+
+[tasks.test]
+description = "Run the gleeunit test suite"
+run = "gleam test"
+
+[tasks.docs]
+description = "Build package documentation"
+run = "gleam docs build"
+
+[tasks.lint]
+description = "Run source, prose, configuration, workflow, spelling, and licence linters"
+run = [
+  "gleam run -m glinter",
+  "markdownlint-cli2 \"**/*.md\" \"#build/**\"",
+  "taplo fmt --check",
+  "taplo lint",
+  "actionlint",
+  "typos",
+  "reuse lint",
+]
+
+[tasks.check]
+description = "Run every required local verification"
+run = [
+  "gleam format --check src test",
+  "gleam build --warnings-as-errors",
+  "gleam test",
+  "gleam docs build",
+  "gleam run -m glinter",
+  "markdownlint-cli2 \"**/*.md\" \"#build/**\"",
+  "taplo fmt --check",
+  "taplo lint",
+  "actionlint",
+  "typos",
+  "reuse lint",
+]

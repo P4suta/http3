@@ -1,0 +1,6 @@
+[files]
+extend-exclude = ["LICENSES/", "build/"]
+
+[default.extend-words]
+gleeunit = "gleeunit"
+QPACK = "QPACK"

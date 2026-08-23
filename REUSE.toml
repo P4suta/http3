@@ -1,0 +1,20 @@
+version = 1
+
+[[annotations]]
+path = [
+  ".github/**",
+  ".gitignore",
+  ".markdownlint-cli2.yaml",
+  ".mise.toml",
+  ".taplo.toml",
+  "_typos.toml",
+  "*.md",
+  "*.toml",
+  "LICENSE",
+  "docs/**",
+  "src/**",
+  "test/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 the http3 contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"

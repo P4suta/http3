@@ -1,0 +1,30 @@
+name = "http3"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.1"
+description = "A Gleam-native HTTP/3 stack with a replaceable QUIC backend"
+licences = ["MIT", "Apache-2.0"]
+internal_modules = ["http3/internal/**"]
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+quic = ">= 1.8.1 and < 2.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+glinter = ">= 2.19.2 and < 3.0.0"
+
+[documentation]
+pages = [
+  { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
+  { title = "Roadmap", path = "roadmap.html", source = "docs/ROADMAP.md" },
+]
+
+[tools.glinter]
+include = ["src/", "test/"]
+warnings_as_errors = true
+
+[tools.glinter.rules]
+avoid_panic = "error"
+avoid_todo = "error"
+unused_exports = "error"
