@@ -86,6 +86,55 @@ pub fn streaming_server_round_trip_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let connection =
+        client.connect(client_configuration(ca_certificate), "localhost", port)
+        |> should.be_ok
+      let request =
+        streaming_request(port, "/trailers")
+        |> request.set_method(http.Post)
+      let stream = client.open_stream(connection, request) |> should.be_ok
+      client.send_chunk(stream, <<"request":utf8>>) |> should.be_ok
+      client.send_trailers(stream, [#("digest", "request-digest")])
+      |> should.be_ok
+      assert client.finish(stream) == Error(client.RequestAlreadyFinished)
+      let events = collect_response_events(stream, [])
+      let _closed = client.close(connection)
+      events
+    })
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.next_event(incoming) == Ok(server.Data(<<"request":utf8>>))
+  assert server.next_event(incoming)
+    == Ok(server.Trailers([#("digest", "request-digest")]))
+  assert server.next_event(incoming) == Ok(server.End)
+  server.send_informational(incoming, 103, [#("link", "</style.css>")])
+  |> should.be_ok
+  server.send_response(incoming, 200, [#("x-final", "yes")])
+  |> should.be_ok
+  assert server.send_informational(incoming, 103, [])
+    == Error(server.ResponseAlreadyStarted)
+  server.send_chunk(incoming, <<"response":utf8>>) |> should.be_ok
+  server.send_trailers(incoming, [#("digest", "response-digest")])
+  |> should.be_ok
+  assert server.finish_response(incoming)
+    == Error(server.ResponseAlreadyFinished)
+
+  assert http3_test_support.await_task(client_task)
+    == [
+      client.InformationalResponse(103, [#("link", "</style.css>")]),
+      client.Response(200, [#("x-final", "yes")]),
+      client.Data(<<"response":utf8>>),
+      client.Trailers([#("digest", "response-digest")]),
+      client.End,
+    ]
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn server_multiplexes_concurrent_requests_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let first = start_bounded_client(port, ca_certificate, "/first")
@@ -356,6 +405,17 @@ fn receive_client_response(
     client.Response(status, headers) ->
       receive_client_body(stream, status, headers, chunks)
     _ -> receive_client_response(stream, chunks)
+  }
+}
+
+fn collect_response_events(
+  stream: client.Stream,
+  events: List(client.ResponseEvent),
+) -> List(client.ResponseEvent) {
+  let event = client.next_event(stream) |> should.be_ok
+  case event {
+    client.End -> list.reverse([event, ..events])
+    _ -> collect_response_events(stream, [event, ..events])
   }
 }
 

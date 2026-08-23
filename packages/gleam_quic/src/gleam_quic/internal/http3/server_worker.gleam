@@ -127,6 +127,12 @@ type Command {
     declared_content_length: Option(Int),
     reply: Subject(Result(Nil, Error)),
   )
+  SendInformational(
+    request_id: Int,
+    status: Int,
+    headers: List(#(String, String)),
+    reply: Subject(Result(Nil, Error)),
+  )
   SendChunk(
     request_id: Int,
     bytes: BitArray,
@@ -134,6 +140,11 @@ type Command {
     deadline: Int,
   )
   FinishResponse(request_id: Int, reply: Subject(Result(Nil, Error)))
+  FinishWithTrailers(
+    request_id: Int,
+    headers: List(#(String, String)),
+    reply: Subject(Result(Nil, Error)),
+  )
   Stop(reply: Subject(Result(StopResult, Error)))
   Capabilities(
     request_id: Int,
@@ -340,6 +351,17 @@ pub fn send_response(
   })
 }
 
+/// Queue one informational response head before the final response.
+pub fn send_informational(
+  request: Request,
+  status: Int,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  call(request.listener, fn(reply) {
+    SendInformational(request.identifier, status, headers, reply)
+  })
+}
+
 /// Queue one response chunk with producer backpressure.
 pub fn send_chunk(request: Request, bytes: BitArray) -> Result(Nil, Error) {
   let deadline =
@@ -354,6 +376,16 @@ pub fn send_chunk(request: Request, bytes: BitArray) -> Result(Nil, Error) {
 /// Validate response framing and queue FIN.
 pub fn finish_response(request: Request) -> Result(Nil, Error) {
   call(request.listener, fn(reply) { FinishResponse(request.identifier, reply) })
+}
+
+/// Queue response trailers and the terminal FIN atomically.
+pub fn send_trailers(
+  request: Request,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  call(request.listener, fn(reply) {
+    FinishWithTrailers(request.identifier, headers, reply)
+  })
 }
 
 /// Stop all connections and release the listener socket idempotently.
@@ -559,10 +591,14 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       handle_next(worker, identifier, reply, deadline)
     SendResponse(identifier, status, headers, declared, reply) ->
       handle_send_response(worker, identifier, status, headers, declared, reply)
+    SendInformational(identifier, status, headers, reply) ->
+      handle_send_informational(worker, identifier, status, headers, reply)
     SendChunk(identifier, bytes, reply, deadline) ->
       handle_send_chunk(worker, identifier, bytes, reply, deadline)
     FinishResponse(identifier, reply) ->
       handle_finish_response(worker, identifier, reply)
+    FinishWithTrailers(identifier, headers, reply) ->
+      handle_send_trailers(worker, identifier, headers, reply)
     Stop(reply) -> {
       process.send(reply, Ok(Stopped))
       shutdown(worker, "application stop")
@@ -702,6 +738,8 @@ fn handle_send_response(
       process.send(reply, Error(StreamFinished))
       Ok(worker)
     }
+    Ok(_) if status < 200 || status > 599 ->
+      reply_error(worker, reply, InvalidInput)
     Ok(request) ->
       case
         request.response_started,
@@ -766,6 +804,54 @@ fn handle_send_response(
                       declared_content_length: declared_content_length,
                     ),
                   ))
+                }
+              }
+          }
+      }
+  }
+}
+
+fn handle_send_informational(
+  worker: Worker,
+  identifier: Int,
+  status: Int,
+  headers: List(#(String, String)),
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.requests, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(_) if status < 100 || status >= 200 || status == 101 ->
+      reply_error(worker, reply, InvalidInput)
+    Ok(request) ->
+      case
+        request.response_started,
+        request.response_finished,
+        request.failure
+      {
+        _, _, Some(error) -> reply_error(worker, reply, error)
+        True, _, _ -> reply_error(worker, reply, ResponseAlreadyStarted)
+        _, True, _ -> reply_error(worker, reply, ResponseAlreadyFinished)
+        False, False, None ->
+          case response_headers(status, headers) {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(encoded) ->
+              case
+                update_peer_connection(
+                  worker,
+                  request.connection_id,
+                  fn(connection) {
+                    server_connection.send_response_headers(
+                      connection,
+                      request.stream_id,
+                      encoded,
+                    )
+                  },
+                )
+              {
+                Error(error) -> reply_error(worker, reply, error)
+                Ok(worker) -> {
+                  process.send(reply, Ok(Nil))
+                  Ok(worker)
                 }
               }
           }
@@ -867,6 +953,73 @@ fn handle_finish_response(
                 RequestState(..request, response_finished: True),
               ))
             }
+          }
+      }
+  }
+}
+
+fn handle_send_trailers(
+  worker: Worker,
+  identifier: Int,
+  headers: List(#(String, String)),
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.requests, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(request) ->
+      case
+        request.response_started,
+        request.response_finished,
+        request.pending_send,
+        request.failure,
+        declared_length_matches(
+          request.declared_content_length,
+          request.response_body_bytes,
+        )
+      {
+        False, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
+        _, True, _, _, _ -> reply_error(worker, reply, ResponseAlreadyFinished)
+        _, _, Some(_), _, _ ->
+          reply_error(
+            worker,
+            reply,
+            BackendFailure("response send in progress"),
+          )
+        _, _, _, Some(error), _ -> reply_error(worker, reply, error)
+        _, _, _, _, False -> reply_error(worker, reply, InvalidContentLength)
+        True, False, None, None, True ->
+          case encode_headers(headers) {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(encoded) ->
+              case
+                update_peer_connection(
+                  worker,
+                  request.connection_id,
+                  fn(connection) {
+                    use connection <- result.try(
+                      server_connection.send_trailers(
+                        connection,
+                        request.stream_id,
+                        encoded,
+                      ),
+                    )
+                    server_connection.finish_stream(
+                      connection,
+                      request.stream_id,
+                    )
+                  },
+                )
+              {
+                Error(error) -> reply_error(worker, reply, error)
+                Ok(worker) -> {
+                  process.send(reply, Ok(Nil))
+                  Ok(put_request(
+                    worker,
+                    identifier,
+                    RequestState(..request, response_finished: True),
+                  ))
+                }
+              }
           }
       }
   }

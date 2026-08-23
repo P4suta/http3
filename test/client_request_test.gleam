@@ -41,3 +41,13 @@ pub fn streaming_request_rejects_negative_content_length_test() -> Nil {
   assert client_request.prepare_streaming(request)
     == Error(client_request.InvalidContentLength)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn request_trailers_reject_message_control_fields_test() -> Nil {
+  assert client_request.prepare_trailers([#("digest", "sha-256=:abc=:")])
+    == Ok([#("digest", "sha-256=:abc=:")])
+  assert client_request.prepare_trailers([#("content-length", "0")])
+    == Error(client_request.InvalidHeader("content-length"))
+  assert client_request.prepare_trailers([#(":method", "GET")])
+    == Error(client_request.InvalidHeader(":method"))
+}

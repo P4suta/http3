@@ -100,6 +100,61 @@ pub fn static_request_response_round_trip_cleans_transaction_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn informational_final_body_and_trailers_are_ordered_test() -> Nil {
+  let #(client, server) = ready_pair()
+  let assert Ok(#(client, request_bytes)) =
+    connection_state.open_request(client, 0, get_headers(), False)
+  let assert Ok(#(server, _)) =
+    connection_state.receive_request_frame(
+      server,
+      0,
+      decode_frame(request_bytes),
+    )
+
+  let informational = [
+    Header(<<":status">>, <<"103">>, False),
+    Header(<<"link">>, <<"</style.css>">>, False),
+  ]
+  let assert Ok(#(server, informational_bytes)) =
+    connection_state.send_response_headers(server, 0, informational, False)
+  let assert Ok(#(server, final_bytes)) =
+    connection_state.send_response_headers(
+      server,
+      0,
+      [Header(<<":status">>, <<"200">>, False)],
+      False,
+    )
+  let assert Ok(#(server, data_bytes)) =
+    connection_state.send_data(server, 0, <<"response">>)
+  let assert Ok(#(server, trailer_bytes)) =
+    connection_state.send_trailers(
+      server,
+      0,
+      [Header(<<"digest">>, <<"response-digest">>, False)],
+      False,
+    )
+  let assert Ok(_) = connection_state.finish_send(server, 0)
+
+  let assert Ok(#(client, [connection_state.InformationalResponse(0, _)])) =
+    connection_state.receive_request_frame(
+      client,
+      0,
+      decode_frame(informational_bytes),
+    )
+  let assert Ok(#(client, [connection_state.ResponseHeaders(0, _)])) =
+    connection_state.receive_request_frame(client, 0, decode_frame(final_bytes))
+  let assert Ok(#(client, [connection_state.Data(0, <<"response">>)])) =
+    connection_state.receive_request_frame(client, 0, decode_frame(data_bytes))
+  let assert Ok(#(_client, [connection_state.Trailers(0, _)])) =
+    connection_state.receive_request_frame(
+      client,
+      0,
+      decode_frame(trailer_bytes),
+    )
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn qpack_blocking_resumes_after_ordered_encoder_instructions_test() -> Nil {
   let #(client, server) = ready_pair()
   let dynamic = Header(<<"x-dynamic">>, <<"indexed">>, False)

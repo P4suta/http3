@@ -35,6 +35,28 @@ pub fn prepare_streaming(
   Ok(#(headers, declared_content_length))
 }
 
+/// Validate one informational response head. HTTP/3 forbids status 101 and
+/// informational responses cannot carry a Content-Length field.
+pub fn prepare_informational(
+  status status: Int,
+  headers headers: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  use _ <- result.try(validate_informational_status(status))
+  use headers <- result.try(validate_headers(headers, None))
+  use declared_content_length <- result.try(find_content_length(headers))
+  case declared_content_length {
+    Some(_) -> Error(InvalidContentLength)
+    None -> Ok(headers)
+  }
+}
+
+/// Validate a trailer field section without message-control fields.
+pub fn prepare_trailers(
+  headers: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  validate_trailers(headers, [])
+}
+
 fn find_content_length(
   headers: List(#(String, String)),
 ) -> Result(Option(Int), Error) {
@@ -52,6 +74,31 @@ fn validate_status(status: Int) -> Result(Nil, Error) {
     return: Error(InvalidStatus(status)),
   )
   Ok(Nil)
+}
+
+fn validate_informational_status(status: Int) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: status < 100 || status >= 200 || status == 101,
+    return: Error(InvalidStatus(status)),
+  )
+  Ok(Nil)
+}
+
+fn validate_trailers(
+  headers: List(#(String, String)),
+  validated: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  case headers {
+    [] -> Ok(list.reverse(validated))
+    [#(name, value) as field, ..rest] -> {
+      use _ <- result.try(validate_header(name, value))
+      use <- bool.guard(
+        when: forbidden_trailer(name),
+        return: Error(InvalidHeader(name)),
+      )
+      validate_trailers(rest, [field, ..validated])
+    }
+  }
 }
 
 fn validate_headers(
@@ -177,4 +224,23 @@ fn forbidden_header(name: String, value: String) -> Bool {
     "te" -> string.lowercase(string.trim(value)) != "trailers"
     _ -> False
   }
+}
+
+fn forbidden_trailer(name: String) -> Bool {
+  list.contains(
+    [
+      "authorization",
+      "content-encoding",
+      "content-length",
+      "content-range",
+      "content-type",
+      "host",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "www-authenticate",
+    ],
+    name,
+  )
 }

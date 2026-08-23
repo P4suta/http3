@@ -133,6 +133,27 @@ pub fn send_trailers(
   |> map_session_result("send_trailers")
 }
 
+/// Queue request trailers and the terminal FIN as one state transition.
+pub fn finish_with_trailers(
+  state: State,
+  stream_id: Int,
+  headers: List(Header),
+  allow_qpack_blocking: Bool,
+) -> Result(State, Error) {
+  use with_trailers <- result.try(
+    session.send_trailers(
+      state.session,
+      stream_id,
+      headers,
+      allow_qpack_blocking,
+    )
+    |> map_session_result("send_trailers"),
+  )
+  session.finish_stream(with_trailers, stream_id)
+  |> result.map(fn(next) { State(..state, session: next) })
+  |> map_session_result("finish_trailers")
+}
+
 /// Queue a request FIN after HTTP message validation.
 pub fn finish_stream(state: State, stream_id: Int) -> Result(State, Error) {
   // A zero-length DATA frame is valid HTTP/3 and makes the terminal FIN

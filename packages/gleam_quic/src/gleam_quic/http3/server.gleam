@@ -297,6 +297,17 @@ pub fn send_response(
   |> result.map_error(map_error)
 }
 
+/// Send one informational response before the final response head.
+pub fn send_informational(
+  request: Request,
+  status: Int,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  let Request(handle) = request
+  server_worker.send_informational(handle, status, headers)
+  |> result.map_error(map_error)
+}
+
 /// Send one response-body chunk with producer backpressure.
 pub fn send_chunk(request: Request, bytes: BitArray) -> Result(Nil, Error) {
   let Request(handle) = request
@@ -307,6 +318,15 @@ pub fn send_chunk(request: Request, bytes: BitArray) -> Result(Nil, Error) {
 pub fn finish_response(request: Request) -> Result(Nil, Error) {
   let Request(handle) = request
   server_worker.finish_response(handle) |> result.map_error(map_error)
+}
+
+/// Send response trailers and finish the response atomically.
+pub fn send_trailers(
+  request: Request,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  let Request(handle) = request
+  server_worker.send_trailers(handle, headers) |> result.map_error(map_error)
 }
 
 /// Stop the listener and every owned connection idempotently.

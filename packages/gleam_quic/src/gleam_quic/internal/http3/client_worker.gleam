@@ -131,6 +131,11 @@ type Command {
     reply: Subject(Result(Nil, Error)),
     deadline: Int,
   )
+  SendTrailers(
+    stream_id: Int,
+    headers: List(Header),
+    reply: Subject(Result(Nil, Error)),
+  )
   Finish(stream_id: Int, reply: Subject(Result(Nil, Error)))
   Next(stream_id: Int, reply: Subject(Result(Event, Error)), deadline: Int)
   Cancel(stream_id: Int, reply: Subject(Result(Cancellation, Error)))
@@ -302,6 +307,16 @@ pub fn send_data(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
     stream.connection.timeout_milliseconds + worker_reply_grace_milliseconds,
     fn(reply) { Send(stream.identifier, bytes, reply, deadline) },
   )
+}
+
+/// Queue request trailers and finish the request stream atomically.
+pub fn send_trailers(
+  stream: Stream,
+  headers: List(Header),
+) -> Result(Nil, Error) {
+  call(stream.connection, fn(reply) {
+    SendTrailers(stream.identifier, headers, reply)
+  })
 }
 
 /// Finish a request body.
@@ -594,6 +609,29 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     }
     Send(identifier, bytes, reply, deadline) ->
       handle_send(worker, identifier, bytes, reply, deadline)
+    SendTrailers(identifier, headers, reply) ->
+      update_stream(worker, identifier, reply, fn(worker, stream) {
+        case stream.cancelled, stream.request_finished, stream.pending_send {
+          True, _, _ -> Error(StreamCancelled)
+          _, True, _ -> Error(RequestAlreadyFinished)
+          False, False, Some(_) -> Error(TransportFailed("send in progress"))
+          False, False, None ->
+            client_connection.finish_with_trailers(
+              worker.connection,
+              identifier,
+              headers,
+              False,
+            )
+            |> result.map(fn(connection) {
+              #(
+                Worker(..worker, connection: connection),
+                StreamState(..stream, request_finished: True),
+                Nil,
+              )
+            })
+            |> result.map_error(map_connection_error)
+        }
+      })
     Finish(identifier, reply) ->
       update_stream(worker, identifier, reply, fn(worker, stream) {
         case stream.cancelled, stream.request_finished, stream.pending_send {
@@ -1231,9 +1269,9 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
     session.Http3Event(http3_state.ResponseHeaders(identifier, validated)) ->
       enqueue_validated(worker, identifier, validated, False)
     session.Http3Event(http3_state.Trailers(identifier, validated)) ->
-      case decode_validated_headers(validated) {
+      case decode_regular_headers(validated) {
         Error(error) -> fail_stream(worker, identifier, error)
-        Ok(#(_, headers)) -> enqueue(worker, identifier, Trailers(headers))
+        Ok(headers) -> enqueue(worker, identifier, Trailers(headers))
       }
     session.Http3Event(http3_state.Data(identifier, bytes)) ->
       enqueue_data(worker, identifier, bytes)
@@ -1621,6 +1659,13 @@ fn decode_validated_headers(
   })
   use headers <- result.try(decode_headers(fields))
   Ok(#(status, headers))
+}
+
+fn decode_regular_headers(
+  validated: header_semantics.Validated,
+) -> Result(List(#(String, String)), Error) {
+  let header_semantics.Validated(_, fields, _) = validated
+  decode_headers(fields)
 }
 
 fn decode_headers(

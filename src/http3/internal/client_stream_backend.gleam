@@ -89,6 +89,14 @@ pub fn send_chunk(
   native_client.send_chunk(stream, chunk) |> map_native_result
 }
 
+/// Send request trailers and the terminal FIN.
+pub fn send_trailers(
+  stream stream: StreamHandle,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, client_backend.Failure) {
+  native_client.send_trailers(stream, headers) |> map_native_result
+}
+
 /// End a request body.
 pub fn finish(stream: StreamHandle) -> Result(Nil, client_backend.Failure) {
   native_client.finish(stream) |> map_native_result

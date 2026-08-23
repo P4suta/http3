@@ -21,6 +21,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
+import gleam/result
 import http3/internal/client_backend
 import http3/internal/client_request
 import http3/internal/client_stream_backend
@@ -416,6 +417,23 @@ pub fn send_chunk(
     Ok(value) -> Ok(value)
     Error(error) -> Error(from_backend_failure(error, 0))
   }
+}
+
+/// Send request trailers and finish the request stream atomically.
+///
+/// Trailer fields that affect framing, routing, authentication, or content
+/// interpretation are rejected before reaching the connection actor.
+pub fn send_trailers(
+  stream stream: Stream,
+  trailers trailers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  use trailers <- result.try(
+    client_request.prepare_trailers(trailers)
+    |> result.map_error(from_preparation_error),
+  )
+  let Stream(handle) = stream
+  client_stream_backend.send_trailers(handle, trailers)
+  |> result.map_error(fn(error) { from_backend_failure(error, 0) })
 }
 
 /// Finish a streaming request body.

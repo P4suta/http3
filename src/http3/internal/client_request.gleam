@@ -70,6 +70,13 @@ pub fn prepare_origin(
   Ok(#(host, port))
 }
 
+/// Validate an outbound request trailer field section.
+pub fn prepare_trailers(
+  headers: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  validate_trailers(headers, [])
+}
+
 fn prepare_https_request(
   request: Request(BitArray),
 ) -> Result(PreparedRequest, Error) {
@@ -283,6 +290,23 @@ fn validate_streaming_headers_loop(
   }
 }
 
+fn validate_trailers(
+  headers: List(#(String, String)),
+  validated: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  case headers {
+    [] -> Ok(list.reverse(validated))
+    [#(name, value) as field, ..rest] -> {
+      use _ <- result.try(validate_header(name, value))
+      use <- bool.guard(
+        when: forbidden_trailer(name),
+        return: Error(InvalidHeader(name)),
+      )
+      validate_trailers(rest, [field, ..validated])
+    }
+  }
+}
+
 fn validate_headers_loop(
   headers headers: List(#(String, String)),
   body_size body_size: Int,
@@ -387,4 +411,23 @@ fn forbidden_header(name: String, value: String) -> Bool {
     "te" -> string.lowercase(string.trim(value)) != "trailers"
     _ -> False
   }
+}
+
+fn forbidden_trailer(name: String) -> Bool {
+  list.contains(
+    [
+      "authorization",
+      "content-encoding",
+      "content-length",
+      "content-range",
+      "content-type",
+      "host",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "www-authenticate",
+    ],
+    name,
+  )
 }

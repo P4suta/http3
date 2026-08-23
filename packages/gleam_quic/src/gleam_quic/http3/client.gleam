@@ -347,6 +347,18 @@ pub fn send_chunk(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
+/// Send request trailers and finish the request stream atomically.
+pub fn send_trailers(
+  stream: Stream,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  let Stream(handle) = stream
+  use encoded <- result.try(encode_headers(headers))
+  client_worker.send_trailers(handle, encoded)
+  |> result.map_error(map_worker_error)
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
 /// Finish a streaming request body.
 pub fn finish(stream: Stream) -> Result(Nil, Error) {
   let Stream(handle) = stream

@@ -155,6 +155,15 @@ pub fn send_response(
   |> result.map_error(map_native_error)
 }
 
+pub fn send_informational(
+  request request: RequestHandle,
+  status status: Int,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, Failure) {
+  native_server.send_informational(request, status, headers)
+  |> result.map_error(map_native_error)
+}
+
 pub fn send_chunk(
   request request: RequestHandle,
   chunk chunk: BitArray,
@@ -164,6 +173,14 @@ pub fn send_chunk(
 
 pub fn finish_response(request: RequestHandle) -> Result(Nil, Failure) {
   native_server.finish_response(request) |> result.map_error(map_native_error)
+}
+
+pub fn send_trailers(
+  request request: RequestHandle,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, Failure) {
+  native_server.send_trailers(request, headers)
+  |> result.map_error(map_native_error)
 }
 
 pub fn stop(listener: ListenerHandle) -> Result(Int, Failure) {

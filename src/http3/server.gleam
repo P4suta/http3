@@ -342,6 +342,26 @@ pub fn send_response(
   }
 }
 
+/// Send one informational response before the final response.
+///
+/// Status 101 is forbidden by HTTP/3. Multiple informational responses are
+/// permitted until the final response head is sent.
+pub fn send_informational(
+  request request: Request,
+  status status: Int,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  case server_response.prepare_informational(status, headers) {
+    Ok(headers) ->
+      map_backend(server_backend.send_informational(
+        request.handle,
+        status,
+        headers,
+      ))
+    Error(error) -> Error(from_response_error(error))
+  }
+}
+
 /// Send one byte-aligned streaming response-body chunk with backpressure.
 pub fn send_chunk(
   request request: Request,
@@ -357,6 +377,18 @@ pub fn send_chunk(
 /// Finish a streaming response body.
 pub fn finish_response(request: Request) -> Result(Nil, Error) {
   map_backend(server_backend.finish_response(request.handle))
+}
+
+/// Send response trailers and finish the response stream atomically.
+pub fn send_trailers(
+  request request: Request,
+  trailers trailers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  case server_response.prepare_trailers(trailers) {
+    Ok(trailers) ->
+      map_backend(server_backend.send_trailers(request.handle, trailers))
+    Error(error) -> Error(from_response_error(error))
+  }
 }
 
 /// Stop a listener and all owned connections idempotently.
