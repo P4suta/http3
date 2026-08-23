@@ -5,9 +5,10 @@ target. It is an unpublished work in progress and is not yet suitable for
 applications. Its current internal TLS layer completes an authenticated
 client/server TLS 1.3 state-model handshake through QUIC Handshake and 1-RTT
 traffic-key installation; it is not yet connected to a network transport.
-The transport foundation also includes bounded recovery, NewReno, flow
-control, path validation, anti-amplification, PMTU, key update, and ordered-byte
-reassembly models.
+The transport foundation also includes bounded recovery, NewReno and CUBIC,
+pacing, ECN validation, flow control, authenticated address tokens, stateless
+reset, connection-ID rotation, path validation, anti-amplification, PMTU, key
+update, and ordered-byte reassembly models.
 
 Protocol parsing, state machines, recovery, congestion control, TLS 1.3
 coordination, and packet protection are implemented or will be implemented in

@@ -236,7 +236,10 @@ isolated best-case numbers are not sufficient.
   integrity limits, RTT and ACK-delay formulas, packet/time-threshold loss,
   PTO, NewReno, flow-control exhaustion, anti-amplification, path validation,
   PMTU probes, stream-ID permissions, and bounded out-of-order reassembly.
-- `mise run core-check` runs package format, warnings-as-errors build, 96 tests,
+  Further path tests cover authenticated and expiring Retry/NEW_TOKEN values,
+  stateless-reset derivation, connection-ID rotation and retirement watermarks,
+  permanent ECN validation failure, CUBIC, and bounded pacing bursts.
+- `mise run core-check` runs package format, warnings-as-errors build, 108 tests,
   documentation, and glinter. The root `mise run check` includes this gate so
   native-core regressions cannot pass the existing wrapper checks.
 

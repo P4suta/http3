@@ -115,7 +115,7 @@ isolated benchmark claims.
 RFC 9000 variable-length integer codec, packet-number reconstruction, QUIC v1
 and v2 long-header mappings, bounded invariant packet parsing, the complete
 RFC 9000/RFC 9221 frame codec, and bounded transport parameters from RFC 9000,
-RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 77
+RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 108
 focused tests and its own format, warnings-as-errors build, docs, and lint
 gate.
 
@@ -148,12 +148,13 @@ selection. Keep cryptographic and X.509 runtime primitives in a narrow FFI.
 
 **Status:** in progress as of 2026-08-24. Pure bounded models now cover RFC
 9002 RTT estimation, packet/time-threshold loss detection, PTO calculation,
-NewReno, connection and stream flow control, stream ID permissions,
-anti-amplification, path challenge validation, PMTU probing, and out-of-order
-CRYPTO/STREAM reassembly with overlap and final-size enforcement. These models
-are not yet assembled into a live connection and UDP runtime; CUBIC, ECN,
-Retry/tokens, stateless reset, connection-ID rotation, migration, and complete
-recovery scheduling remain open.
+NewReno, RFC 9438 CUBIC, pacing, ECN validation, connection and stream flow
+control, stream ID permissions, anti-amplification, authenticated address
+tokens, stateless reset, connection-ID rotation, path challenge validation,
+PMTU probing, and out-of-order CRYPTO/STREAM reassembly with overlap and
+final-size enforcement. These models are not yet assembled into a live
+connection and UDP runtime; full recovery/ACK scheduling, path migration,
+socket ECN, IPv4/IPv6 operation, and deterministic shutdown remain open.
 
 Implement connection and stream state machines, flow control, loss recovery,
 PTO, ECN, NewReno and CUBIC, pacing, anti-amplification, Retry and address
