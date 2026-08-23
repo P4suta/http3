@@ -234,11 +234,12 @@ pub fn decode_signature_scheme(
 pub fn encode_client_key_shares(
   shares shares: List(KeyShare),
 ) -> Result(BitArray, Error) {
-  case shares == [] || list.length(shares) > maximum_list_entries {
+  case list.length(shares) > maximum_list_entries {
     True -> Error(InvalidLength)
     False -> {
       use encoded <- result.try(encode_key_shares(shares, dict.new(), <<>>))
-      vector16(encoded)
+      let length = bit_array.byte_size(encoded)
+      Ok(<<length:size(16), encoded:bits>>)
     }
   }
 }
@@ -287,6 +288,21 @@ pub fn decode_selected_group(
   }
 }
 
+/// Encode a non-empty HelloRetryRequest cookie as an opaque vector.
+pub fn encode_cookie(cookie cookie: BitArray) -> Result(BitArray, Error) {
+  use Nil <- result.try(require_byte_aligned(cookie))
+  vector16(cookie)
+}
+
+/// Decode a complete, non-empty HelloRetryRequest cookie vector.
+pub fn decode_cookie(bytes bytes: BitArray) -> Result(BitArray, Error) {
+  use cookie <- result.try(exact_vector16(bytes))
+  case bit_array.byte_size(cookie) > 0 {
+    True -> Ok(cookie)
+    False -> Error(InvalidLength)
+  }
+}
+
 fn encode_protocols(
   protocols: List(BitArray),
   seen: Dict(BitArray, Nil),
@@ -322,11 +338,7 @@ fn decode_protocols(
   reversed: List(BitArray),
 ) -> Result(List(BitArray), Error) {
   case bytes {
-    <<>> ->
-      case reversed {
-        [] -> Error(InvalidLength)
-        _ -> Ok(list.reverse(reversed))
-      }
+    <<>> -> Ok(list.reverse(reversed))
     <<0, _:bits>> -> Error(EmptyProtocol)
     <<length, rest:bits>> -> {
       use #(protocol, remaining) <- result.try(take(rest, length))
@@ -435,11 +447,7 @@ fn decode_key_shares(
   reversed: List(KeyShare),
 ) -> Result(List(KeyShare), Error) {
   case bytes {
-    <<>> ->
-      case reversed {
-        [] -> Error(InvalidLength)
-        _ -> Ok(list.reverse(reversed))
-      }
+    <<>> -> Ok(list.reverse(reversed))
     _ -> {
       use #(share, rest, identifier) <- result.try(decode_one_key_share(bytes))
       decode_new_key_share(share, rest, identifier, seen, count, reversed)

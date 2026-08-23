@@ -153,7 +153,10 @@ fn derive_valid_handshake_secrets(
     None -> zero
     Some(value) -> value
   }
-  use early_secret <- result.try(crypto.hkdf_extract(algorithm, zero, psk))
+  use early_secret <- result.try(derive_early_secret(
+    algorithm: algorithm,
+    pre_shared_key: psk,
+  ))
   use empty_hash <- result.try(crypto.hash(algorithm, <<>>))
   use handshake_salt <- result.try(derive_secret_from_hash(
     algorithm: algorithm,
@@ -196,6 +199,17 @@ fn derive_valid_handshake_secrets(
     server_handshake_traffic_secret:,
     master_secret:,
   ))
+}
+
+/// Derive the TLS 1.3 early secret for PSK binders and 0-RTT keys.
+pub fn derive_early_secret(
+  algorithm algorithm: HashAlgorithm,
+  pre_shared_key pre_shared_key: BitArray,
+) -> Result(BitArray, Error) {
+  case byte_aligned(pre_shared_key) {
+    False -> Error(crypto.NonByteAligned)
+    True -> crypto.hkdf_extract(algorithm, zero_hash(algorithm), pre_shared_key)
+  }
 }
 
 /// Derive application traffic and exporter secrets after server Finished.
@@ -249,7 +263,6 @@ pub fn derive_resumption_master_secret(
 }
 
 // Derive a PSK from the resumption master secret and a ticket nonce.
-// nolint: unused_exports -- consumed by session-ticket handling.
 pub fn derive_resumption_pre_shared_key(
   algorithm algorithm: HashAlgorithm,
   resumption_master_secret resumption_master_secret: BitArray,
@@ -280,7 +293,6 @@ pub fn next_traffic_secret(
 }
 
 // Derive the client 0-RTT traffic secret from the early secret.
-// nolint: unused_exports -- consumed when a ticket permits QUIC 0-RTT.
 pub fn derive_client_early_traffic_secret(
   algorithm algorithm: HashAlgorithm,
   early_secret early_secret: BitArray,
@@ -295,7 +307,6 @@ pub fn derive_client_early_traffic_secret(
 }
 
 // Derive an external-PSK or resumption-PSK binder key.
-// nolint: unused_exports -- consumed by PSK binder generation and validation.
 pub fn derive_binder_key(
   algorithm algorithm: HashAlgorithm,
   early_secret early_secret: BitArray,

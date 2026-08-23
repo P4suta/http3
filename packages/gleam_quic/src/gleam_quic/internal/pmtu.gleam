@@ -6,7 +6,12 @@ const minimum_quic_datagram_size = 1200
 
 /// One path's confirmed size, search ceiling, and outstanding probe.
 pub opaque type State {
-  State(current: Int, upper_bound: Int, probe: Option(Int))
+  State(
+    current: Int,
+    configured_ceiling: Int,
+    upper_bound: Int,
+    probe: Option(Int),
+  )
 }
 
 /// Invalid MTU configuration or probe transition.
@@ -23,7 +28,13 @@ pub fn new(maximum_datagram_size: Int) -> Result(State, Error) {
     maximum_datagram_size >= minimum_quic_datagram_size
     && maximum_datagram_size <= 65_527
   {
-    True -> Ok(State(minimum_quic_datagram_size, maximum_datagram_size, None))
+    True ->
+      Ok(State(
+        minimum_quic_datagram_size,
+        maximum_datagram_size,
+        maximum_datagram_size,
+        None,
+      ))
     False -> Error(InvalidMaximumSize)
   }
 }
@@ -73,4 +84,31 @@ pub fn black_hole_detected(state: State) -> State {
 /// Return the largest size confirmed without fragmentation.
 pub fn current(state: State) -> Int {
   state.current
+}
+
+/// Return the exact padded datagram size currently under test.
+pub fn outstanding_probe(state: State) -> Option(Int) {
+  state.probe
+}
+
+/// Cap discovery by the peer's authenticated maximum UDP payload size.
+pub fn set_peer_maximum(state: State, maximum: Int) -> Result(State, Error) {
+  case maximum < minimum_quic_datagram_size || maximum > 65_527 {
+    True -> Error(InvalidMaximumSize)
+    False -> {
+      let upper_bound = minimum(state.configured_ceiling, maximum)
+      let probe = case state.probe {
+        Some(size) if size > upper_bound -> None
+        existing -> existing
+      }
+      Ok(State(..state, upper_bound: upper_bound, probe: probe))
+    }
+  }
+}
+
+fn minimum(left: Int, right: Int) -> Int {
+  case left < right {
+    True -> left
+    False -> right
+  }
 }

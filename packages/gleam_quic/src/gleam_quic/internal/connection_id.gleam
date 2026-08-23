@@ -3,6 +3,7 @@
 import gleam/bit_array
 import gleam/list
 import gleam/result
+import gleam_quic/internal/stateless_reset
 import gleam_quic/varint
 
 const maximum_history_entries = 4096
@@ -40,6 +41,7 @@ pub type Error {
   ActiveLimitExceeded(Int)
   HistoryLimitExceeded(Int)
   NoActiveConnectionId
+  ResetCheckFailed
 }
 
 /// Start with sequence zero and the peer's authenticated initial identifier.
@@ -95,6 +97,57 @@ pub fn current(registry: Registry) -> Result(ConnectionId, Error) {
 /// Return active identifier count for limit enforcement and diagnostics.
 pub fn active_count(registry: Registry) -> Int {
   list.length(registry.active)
+}
+
+/// Return whether an authenticated sequence was already observed.
+pub fn contains_sequence(registry: Registry, sequence: Int) -> Bool {
+  case find_sequence(registry.history, sequence) {
+    SomeConnectionId(_) -> True
+    Missing -> False
+  }
+}
+
+/// Return whether a sequence remains available for packet routing.
+pub fn is_active(registry: Registry, sequence: Int) -> Bool {
+  case find_sequence(registry.active, sequence) {
+    SomeConnectionId(_) -> True
+    Missing -> False
+  }
+}
+
+/// Match an undecryptable short packet's final 16 bytes against active reset
+/// tokens without revealing which connection ID matched.
+pub fn matches_stateless_reset(
+  registry: Registry,
+  packet: BitArray,
+) -> Result(Bool, Error) {
+  let byte_size = bit_array.byte_size(packet)
+  case bit_array.bit_size(packet) % 8 == 0 && byte_size >= 21 {
+    False -> Ok(False)
+    True -> {
+      let prefix_bits = { byte_size - 16 } * 8
+      case packet {
+        <<_:bits-size(prefix_bits), suffix:bits-size(128)>> ->
+          match_active_tokens(registry.active, suffix)
+        _ -> Ok(False)
+      }
+    }
+  }
+}
+
+fn match_active_tokens(
+  entries: List(ConnectionId),
+  suffix: BitArray,
+) -> Result(Bool, Error) {
+  case entries {
+    [] -> Ok(False)
+    [entry, ..rest] ->
+      case stateless_reset.matches(entry.stateless_reset_token, suffix) {
+        Ok(True) -> Ok(True)
+        Ok(False) -> match_active_tokens(rest, suffix)
+        Error(_) -> Error(ResetCheckFailed)
+      }
+  }
 }
 
 fn receive_valid(

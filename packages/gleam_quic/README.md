@@ -4,7 +4,12 @@
 target. It is an unpublished work in progress and is not yet suitable for
 applications. Its current internal TLS layer completes an authenticated
 client/server TLS 1.3 state-model handshake through QUIC Handshake and 1-RTT
-traffic-key installation; it is not yet connected to a network transport.
+traffic-key installation, including one bounded HelloRetryRequest. Strict PSK
+binder codecs, authenticated origin-bound session tickets, ticket-age checks,
+and a bounded anti-replay cache are connected to the handshake engine's PSK
+resumption and 0-RTT path. Post-handshake ticket issue/store/reuse, remembered
+transport-parameter checks, early-data rejection, and key discard are covered
+by state-model tests. The core is not yet connected to a network transport.
 The transport foundation also includes bounded recovery, NewReno and CUBIC,
 pacing, ECN validation, flow control, authenticated address tokens, stateless
 reset, connection-ID rotation, path validation, anti-amplification, PMTU, key

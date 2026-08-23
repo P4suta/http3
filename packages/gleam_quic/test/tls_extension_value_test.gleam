@@ -66,6 +66,12 @@ pub fn round_trips_groups_signatures_and_key_shares_test() -> Nil {
     == Ok(<<0, 29>>)
   assert extension_value.decode_selected_group(<<0, 29>>)
     == Ok(extension_value.X25519)
+
+  let assert Ok(empty_shares) = extension_value.encode_client_key_shares([])
+  assert extension_value.decode_client_key_shares(empty_shares) == Ok([])
+
+  let assert Ok(cookie) = extension_value.encode_cookie(<<1, 2, 3, 4>>)
+  assert extension_value.decode_cookie(cookie) == Ok(<<1, 2, 3, 4>>)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

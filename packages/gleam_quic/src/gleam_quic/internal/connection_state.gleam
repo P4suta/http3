@@ -1,0 +1,4015 @@
+//// Pure QUIC connection orchestration over TLS, recovery, streams, and paths.
+
+import gleam/bit_array
+import gleam/dict.{type Dict}
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam_quic/frame
+import gleam_quic/internal/aead_usage
+import gleam_quic/internal/amplification
+import gleam_quic/internal/connection_id
+import gleam_quic/internal/cubic
+import gleam_quic/internal/ecn
+import gleam_quic/internal/flow_control
+import gleam_quic/internal/initial_crypto
+import gleam_quic/internal/key_phase
+import gleam_quic/internal/new_reno
+import gleam_quic/internal/pacer
+import gleam_quic/internal/packet_space
+import gleam_quic/internal/path_validation
+import gleam_quic/internal/pmtu
+import gleam_quic/internal/reassembler
+import gleam_quic/internal/rtt
+import gleam_quic/internal/stream_state
+import gleam_quic/internal/tls/engine
+import gleam_quic/internal/tls/session_ticket
+import gleam_quic/internal/traffic_keys
+import gleam_quic/internal/wire_packet
+import gleam_quic/stream_id
+import gleam_quic/transport_parameter
+import gleam_quic/varint
+import gleam_quic/version.{type Version}
+
+const timer_granularity_milliseconds = 1
+
+const maximum_crypto_buffer_bytes = 1_048_576
+
+const maximum_crypto_offset = 4_194_304
+
+/// Endpoint role fixes stream-ID ownership and amplification behavior.
+pub type Role {
+  Client
+  Server
+}
+
+/// Congestion controller selected for the current path.
+pub type CongestionAlgorithm {
+  NewReno
+  Cubic
+}
+
+/// Read or write packet-protection direction.
+pub type KeyDirection {
+  Read
+  Write
+}
+
+/// Stable connection lifecycle visible to the runtime adapter.
+pub type Phase {
+  Handshaking
+  Established
+  Closing
+  Draining
+  Closed
+}
+
+/// Resource and transport policy for one connection.
+pub type Config {
+  Config(
+    role: Role,
+    version: Version,
+    congestion_algorithm: CongestionAlgorithm,
+    maximum_ack_delay_milliseconds: Int,
+    maximum_ack_ranges: Int,
+    maximum_outstanding_packets: Int,
+    initial_receive_data: Int,
+    receive_data_window: Int,
+    maximum_receive_data: Int,
+    initial_receive_stream_data: Int,
+    receive_stream_window: Int,
+    maximum_receive_stream_data: Int,
+    maximum_peer_streams_bidirectional: Int,
+    maximum_peer_streams_unidirectional: Int,
+    maximum_stream_receive_buffer: Int,
+    maximum_stream_send_buffer: Int,
+    maximum_stream_final_size: Int,
+    maximum_total_streams: Int,
+    maximum_udp_payload_size: Int,
+    maximum_datagram_frame_size: Int,
+    idle_timeout_milliseconds: Int,
+    draining_timeout_milliseconds: Int,
+  )
+}
+
+/// Ordered notifications consumed by HTTP/3 or the runtime owner.
+pub type Event {
+  PeerParametersApplied
+  EarlyDataWasAccepted
+  EarlyDataWasRejected
+  HandshakeEstablished
+  SessionTicketStored(session_ticket.ClientTicket)
+  StreamOpened(Int)
+  StreamReadable(Int)
+  StreamWasReset(Int, application_error_code: Int)
+  DatagramReceived(BitArray)
+  NewTokenReceived(BitArray)
+  PathValidated
+  PathValidationFailed
+  PeerConnectionIdAvailable(sequence: Int, value: BitArray)
+  LocalConnectionIdRetirementRequested(sequence: Int)
+  StatelessResetReceived
+  PeerClosed(error_code: Int, reason: String)
+  CryptoReceived(engine.EncryptionLevel, BitArray)
+}
+
+/// Result of polling one encryption level for packet payload frames.
+pub type Preparation {
+  NoPacket(State)
+  PacketPrepared(
+    State,
+    engine.EncryptionLevel,
+    packet_number: Int,
+    frames: List(frame.Frame),
+  )
+}
+
+/// Authenticated long-header packet metadata plus remaining coalesced bytes.
+pub type LongPacketReceipt {
+  LongPacketReceipt(
+    state: State,
+    destination_connection_id: BitArray,
+    source_connection_id: BitArray,
+    rest: BitArray,
+  )
+}
+
+/// Authenticated short-header metadata after transport-frame processing.
+pub type ShortPacketReceipt {
+  ShortPacketReceipt(
+    state: State,
+    destination_connection_id: BitArray,
+    key_phase: Bool,
+    spin: Bool,
+  )
+}
+
+type LevelKeys {
+  LevelKeys(
+    read: Option(traffic_keys.TrafficKeys),
+    write: Option(traffic_keys.TrafficKeys),
+  )
+}
+
+type InitialLevelKeys {
+  InitialLevelKeys(
+    read: Option(initial_crypto.PacketKeys),
+    write: Option(initial_crypto.PacketKeys),
+  )
+}
+
+type ShortDecryption {
+  ShortDecryption(wire_packet.DecodedShort, key_phase.CandidateKind)
+}
+
+type CongestionState {
+  RenoState(new_reno.State)
+  CubicState(cubic.State)
+}
+
+type TlsEndpoint {
+  NoTlsEndpoint
+  ClientTlsEndpoint(engine.Client)
+  ServerTlsEndpoint(engine.Server)
+}
+
+/// All live protocol state; runtime handles and socket values remain outside.
+pub opaque type State {
+  State(
+    config: Config,
+    tls_endpoint: TlsEndpoint,
+    phase: Phase,
+    handshake_confirmed: Bool,
+    early_data_accepted: Bool,
+    initial_keys: InitialLevelKeys,
+    handshake_keys: LevelKeys,
+    zero_rtt_keys: LevelKeys,
+    one_rtt_keys: LevelKeys,
+    one_rtt_key_phase: Option(key_phase.State),
+    one_rtt_aead_usage: Option(aead_usage.Usage),
+    initial_space: packet_space.State,
+    handshake_space: packet_space.State,
+    application_space: packet_space.State,
+    initial_crypto_receive: reassembler.Reassembler,
+    handshake_crypto_receive: reassembler.Reassembler,
+    application_crypto_receive: reassembler.Reassembler,
+    initial_crypto_send_offset: Int,
+    handshake_crypto_send_offset: Int,
+    application_crypto_send_offset: Int,
+    initial_queue: List(frame.Frame),
+    handshake_queue: List(frame.Frame),
+    zero_rtt_queue: List(frame.Frame),
+    application_queue: List(frame.Frame),
+    streams: Dict(Int, stream_state.State),
+    stream_order: List(Int),
+    local_bidirectional_streams: flow_control.StreamLimit,
+    local_unidirectional_streams: flow_control.StreamLimit,
+    remote_bidirectional_streams: flow_control.StreamLimit,
+    remote_unidirectional_streams: flow_control.StreamLimit,
+    connection_receiver: flow_control.Receiver,
+    connection_sender: flow_control.Sender,
+    peer_stream_data_bidi_local: Int,
+    peer_stream_data_bidi_remote: Int,
+    peer_stream_data_uni: Int,
+    peer_ack_delay_exponent: Int,
+    peer_maximum_udp_payload_size: Int,
+    peer_maximum_datagram_frame_size: Int,
+    peer_disabled_active_migration: Bool,
+    estimator: rtt.Estimator,
+    congestion: CongestionState,
+    pacer: pacer.State,
+    ecn: ecn.State,
+    amplification: amplification.Budget,
+    pmtu: pmtu.State,
+    path_validator: path_validation.Validator,
+    peer_connection_ids: Option(connection_id.Registry),
+    events: List(Event),
+    last_activity_milliseconds: Int,
+    close_deadline_milliseconds: Option(Int),
+  )
+}
+
+/// Fatal configuration, peer protocol, resource, or state error.
+pub type Error {
+  InvalidConfiguration
+  InvalidInput
+  ConnectionUnavailable
+  SpaceUnavailable
+  MissingReadKeys(engine.EncryptionLevel)
+  MissingWriteKeys(engine.EncryptionLevel)
+  PacketSpaceFailure
+  FlowControlFailure
+  StreamFailure
+  UnknownStream(Int)
+  StreamLimitFailure
+  ProtocolViolation
+  CongestionLimited
+  PacingLimited(Int)
+  AmplificationLimited
+  DatagramNotNegotiated
+  DatagramTooLarge(Int)
+  InitialKeyFailure(initial_crypto.Error)
+  FrameCodecFailure(frame.Error)
+  WirePacketFailure(wire_packet.Error)
+  KeyUpdateFailure(key_phase.Error)
+  AeadUsageFailure(aead_usage.Error)
+  PathValidationFailure(path_validation.Error)
+  ActiveMigrationDisabled
+  ConnectionIdFailure(connection_id.Error)
+  PmtuFailure(pmtu.Error)
+  TlsFailure(engine.Error)
+}
+
+/// Conservative bounded defaults; authenticated transport parameters raise
+/// only peer-controlled sending limits.
+pub fn default_config(role: Role) -> Config {
+  Config(
+    role: role,
+    version: version.Version1,
+    congestion_algorithm: NewReno,
+    maximum_ack_delay_milliseconds: 25,
+    maximum_ack_ranges: 256,
+    maximum_outstanding_packets: 4096,
+    initial_receive_data: 1_048_576,
+    receive_data_window: 1_048_576,
+    maximum_receive_data: 16_777_216,
+    initial_receive_stream_data: 262_144,
+    receive_stream_window: 262_144,
+    maximum_receive_stream_data: 4_194_304,
+    maximum_peer_streams_bidirectional: 100,
+    maximum_peer_streams_unidirectional: 100,
+    maximum_stream_receive_buffer: 262_144,
+    maximum_stream_send_buffer: 262_144,
+    maximum_stream_final_size: 16_777_216,
+    maximum_total_streams: 1024,
+    maximum_udp_payload_size: 65_527,
+    maximum_datagram_frame_size: 65_535,
+    idle_timeout_milliseconds: 30_000,
+    draining_timeout_milliseconds: 3000,
+  )
+}
+
+/// Initialize all independently bounded packet, stream, and path state.
+pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
+  use _ <- result.try(validate_config(config, now_milliseconds))
+  use initial_space <- result.try(create_packet_space(
+    packet_space.Initial,
+    config,
+  ))
+  use handshake_space <- result.try(create_packet_space(
+    packet_space.Handshake,
+    config,
+  ))
+  use application_space <- result.try(create_packet_space(
+    packet_space.Application,
+    config,
+  ))
+  use initial_crypto <- result.try(create_crypto_reassembler())
+  use handshake_crypto <- result.try(create_crypto_reassembler())
+  use application_crypto <- result.try(create_crypto_reassembler())
+  use connection_receiver <- result.try(create_receiver(
+    config.initial_receive_data,
+    config.receive_data_window,
+    config.maximum_receive_data,
+  ))
+  use connection_sender <- result.try(create_sender(0))
+  use local_bidi <- result.try(create_stream_limit(0))
+  use local_uni <- result.try(create_stream_limit(0))
+  use remote_bidi <- result.try(create_stream_limit(
+    config.maximum_peer_streams_bidirectional,
+  ))
+  use remote_uni <- result.try(create_stream_limit(
+    config.maximum_peer_streams_unidirectional,
+  ))
+  use estimator <- result.try(create_rtt())
+  use congestion <- result.try(create_congestion(config))
+  use pacing <- result.try(create_pacer(config, now_milliseconds))
+  use amplification <- result.try(create_amplification(config.role))
+  use path_mtu <- result.try(create_pmtu(config.maximum_udp_payload_size))
+  Ok(State(
+    config: config,
+    tls_endpoint: NoTlsEndpoint,
+    phase: Handshaking,
+    handshake_confirmed: False,
+    early_data_accepted: False,
+    initial_keys: empty_initial_keys(),
+    handshake_keys: empty_keys(),
+    zero_rtt_keys: empty_keys(),
+    one_rtt_keys: empty_keys(),
+    one_rtt_key_phase: None,
+    one_rtt_aead_usage: None,
+    initial_space: initial_space,
+    handshake_space: handshake_space,
+    application_space: application_space,
+    initial_crypto_receive: initial_crypto,
+    handshake_crypto_receive: handshake_crypto,
+    application_crypto_receive: application_crypto,
+    initial_crypto_send_offset: 0,
+    handshake_crypto_send_offset: 0,
+    application_crypto_send_offset: 0,
+    initial_queue: [],
+    handshake_queue: [],
+    zero_rtt_queue: [],
+    application_queue: [],
+    streams: dict.new(),
+    stream_order: [],
+    local_bidirectional_streams: local_bidi,
+    local_unidirectional_streams: local_uni,
+    remote_bidirectional_streams: remote_bidi,
+    remote_unidirectional_streams: remote_uni,
+    connection_receiver: connection_receiver,
+    connection_sender: connection_sender,
+    peer_stream_data_bidi_local: 0,
+    peer_stream_data_bidi_remote: 0,
+    peer_stream_data_uni: 0,
+    peer_ack_delay_exponent: 3,
+    peer_maximum_udp_payload_size: 1200,
+    peer_maximum_datagram_frame_size: 0,
+    peer_disabled_active_migration: False,
+    estimator: estimator,
+    congestion: congestion,
+    pacer: pacing,
+    ecn: ecn.new(),
+    amplification: amplification,
+    pmtu: path_mtu,
+    path_validator: path_validation.new(),
+    peer_connection_ids: None,
+    events: [],
+    last_activity_milliseconds: now_milliseconds,
+    close_deadline_milliseconds: None,
+  ))
+}
+
+/// Attach a freshly started client TLS step and apply its Initial actions.
+pub fn attach_client_tls(
+  state: State,
+  step: engine.Step(engine.Client),
+) -> Result(State, Error) {
+  case state.config.role, state.tls_endpoint {
+    Client, NoTlsEndpoint -> {
+      let engine.Step(client, actions) = step
+      apply_tls_actions(
+        State(..state, tls_endpoint: ClientTlsEndpoint(client)),
+        actions,
+      )
+    }
+    _, _ -> Error(InvalidConfiguration)
+  }
+}
+
+/// Attach a validated server TLS state before receiving ClientHello bytes.
+pub fn attach_server_tls(
+  state: State,
+  server: engine.Server,
+) -> Result(State, Error) {
+  case state.config.role, state.tls_endpoint {
+    Server, NoTlsEndpoint ->
+      Ok(State(..state, tls_endpoint: ServerTlsEndpoint(server)))
+    _, _ -> Error(InvalidConfiguration)
+  }
+}
+
+/// Derive and install role-correct QUIC Initial packet keys from the original
+/// destination connection ID. TLS never supplies keys for this level.
+pub fn install_initial_keys(
+  state: State,
+  destination_connection_id: BitArray,
+) -> Result(State, Error) {
+  let length = bit_array.byte_size(destination_connection_id)
+  case
+    state.phase == Handshaking,
+    !packet_space.is_discarded(state.initial_space),
+    bit_array.bit_size(destination_connection_id) % 8 == 0,
+    length >= 8 && length <= 20
+  {
+    False, _, _, _ | _, False, _, _ -> Error(ConnectionUnavailable)
+    _, _, False, _ | _, _, _, False -> Error(InvalidInput)
+    True, True, True, True ->
+      case
+        initial_crypto.derive_initial(
+          state.config.version,
+          destination_connection_id,
+        )
+      {
+        Error(error) -> Error(InitialKeyFailure(error))
+        Ok(initial_crypto.InitialKeys(_, client, server)) -> {
+          let #(read, write) = case state.config.role {
+            Client -> #(server, client)
+            Server -> #(client, server)
+          }
+          Ok(
+            State(
+              ..state,
+              initial_keys: InitialLevelKeys(Some(read), Some(write)),
+            ),
+          )
+        }
+      }
+  }
+}
+
+/// Initialize the peer-issued connection-ID registry once the initial ID and
+/// authenticated stateless-reset token are both known.
+pub fn initialize_peer_connection_id(
+  state: State,
+  initial_connection_id: BitArray,
+  stateless_reset_token: BitArray,
+) -> Result(State, Error) {
+  case state.peer_connection_ids {
+    Some(_) -> Error(InvalidConfiguration)
+    None -> {
+      use registry <- result.try(
+        connection_id.new(8, initial_connection_id, stateless_reset_token)
+        |> map_connection_id_result,
+      )
+      Ok(State(..state, peer_connection_ids: Some(registry)))
+    }
+  }
+}
+
+/// Return the lowest-sequence active destination connection ID.
+pub fn current_peer_connection_id(state: State) -> Result(BitArray, Error) {
+  case state.peer_connection_ids {
+    None -> Error(ConnectionUnavailable)
+    Some(registry) ->
+      case connection_id.current(registry) {
+        Ok(connection_id.ConnectionId(_, value, _)) -> Ok(value)
+        Error(error) -> Error(ConnectionIdFailure(error))
+      }
+  }
+}
+
+/// Check an undecryptable short packet for a peer stateless reset and enter
+/// draining without transmitting a response when its active token matches.
+pub fn handle_stateless_reset_candidate(
+  state: State,
+  datagram: BitArray,
+  now_milliseconds: Int,
+) -> Result(#(State, Bool), Error) {
+  case state.peer_connection_ids, now_milliseconds >= 0 {
+    _, False -> Error(InvalidInput)
+    None, True -> Ok(#(state, False))
+    Some(registry), True -> {
+      use matched <- result.try(
+        connection_id.matches_stateless_reset(registry, datagram)
+        |> map_connection_id_result,
+      )
+      case matched {
+        False -> Ok(#(state, False))
+        True ->
+          Ok(#(
+            State(
+              ..state,
+              phase: Draining,
+              close_deadline_milliseconds: Some(
+                now_milliseconds + state.config.draining_timeout_milliseconds,
+              ),
+            )
+              |> add_event(StatelessResetReceived),
+            True,
+          ))
+      }
+    }
+  }
+}
+
+/// Ask a connected server TLS engine to issue one protected session ticket.
+pub fn issue_session_ticket(
+  state: State,
+  ticket_key: BitArray,
+  now_milliseconds: Int,
+  lifetime_seconds: Int,
+  permit_early_data: Bool,
+) -> Result(State, Error) {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) ->
+      case
+        engine.issue_new_session_ticket(
+          server,
+          ticket_key,
+          now_milliseconds,
+          lifetime_seconds,
+          permit_early_data,
+        )
+      {
+        Error(error) -> Error(TlsFailure(error))
+        Ok(engine.Step(server, actions)) ->
+          apply_tls_actions(
+            State(..state, tls_endpoint: ServerTlsEndpoint(server)),
+            actions,
+          )
+      }
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Apply ordered TLS side effects without exposing key material to callers.
+pub fn apply_tls_actions(
+  state: State,
+  actions: List(engine.Action),
+) -> Result(State, Error) {
+  case actions {
+    [] -> Ok(state)
+    [action, ..rest] -> {
+      use state <- result.try(apply_tls_action(state, action))
+      apply_tls_actions(state, rest)
+    }
+  }
+}
+
+/// Return whether packet protection exists at an encryption level/direction.
+pub fn keys_available(
+  state: State,
+  level: engine.EncryptionLevel,
+  direction: KeyDirection,
+) -> Bool {
+  case level {
+    engine.Initial ->
+      case direction, state.initial_keys {
+        Read, InitialLevelKeys(Some(_), _) -> True
+        Write, InitialLevelKeys(_, Some(_)) -> True
+        _, _ -> False
+      }
+    engine.Handshake | engine.ZeroRtt | engine.OneRtt -> {
+      let keys = traffic_keys_for_level(state, level)
+      case direction, keys {
+        Read, LevelKeys(Some(_), _) -> True
+        Write, LevelKeys(_, Some(_)) -> True
+        _, _ -> False
+      }
+    }
+  }
+}
+
+/// Return whether an Initial or Handshake packet-number space was discarded.
+pub fn packet_space_discarded(
+  state: State,
+  level: engine.EncryptionLevel,
+) -> Bool {
+  case level {
+    engine.Initial -> packet_space.is_discarded(state.initial_space)
+    engine.Handshake -> packet_space.is_discarded(state.handshake_space)
+    engine.ZeroRtt | engine.OneRtt ->
+      packet_space.is_discarded(state.application_space)
+  }
+}
+
+/// Pull and clear ordered connection events.
+pub fn take_events(state: State) -> #(State, List(Event)) {
+  #(State(..state, events: []), state.events)
+}
+
+/// Poll ACK/control/CRYPTO/STREAM work for one protected packet.
+pub fn prepare_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  maximum_frame_data_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(Preparation, Error) {
+  case connection_can_send(state), maximum_frame_data_bytes > 0 {
+    False, _ -> Error(ConnectionUnavailable)
+    _, False -> Error(InvalidInput)
+    True, True ->
+      prepare_sendable_packet(
+        state,
+        level,
+        maximum_frame_data_bytes,
+        now_milliseconds,
+      )
+  }
+}
+
+/// Commit a successfully constructed datagram to recovery and path accounting.
+pub fn commit_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  datagram_bytes: Int,
+  codepoint: ecn.Codepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case connection_can_send(state) {
+    False -> Error(ConnectionUnavailable)
+    True ->
+      commit_sendable_packet(
+        state,
+        level,
+        packet_number,
+        frames,
+        datagram_bytes,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+/// Encode and protect one Initial, 0-RTT, or Handshake packet from transport
+/// frames using keys owned by this connection.
+pub fn protect_long_packet(
+  state: State,
+  kind: wire_packet.LongKind,
+  destination_connection_id: BitArray,
+  source_connection_id: BitArray,
+  packet_number: Int,
+  frames: List(frame.Frame),
+) -> Result(BitArray, Error) {
+  let level = level_for_long_kind(kind)
+  use keys <- result.try(packet_keys_for(state, level, Write))
+  use plaintext <- result.try(frame.encode_all(frames) |> map_frame_result)
+  protect_long_payload(
+    state,
+    kind,
+    destination_connection_id,
+    source_connection_id,
+    packet_number,
+    packet_space.largest_acknowledged(packet_space_for_level(state, level)),
+    plaintext,
+    keys,
+  )
+}
+
+/// Initiate an explicit 1-RTT key update after handshake confirmation and
+/// after the current generation has been acknowledged.
+pub fn initiate_key_update(
+  state: State,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  use key_state <- result.try(require_key_phase(state))
+  use probe_timeout <- result.try(current_probe_timeout(state))
+  use key_state <- result.try(
+    key_phase.initiate(
+      key_state,
+      packet_space.next_packet_number(state.application_space),
+      now_milliseconds,
+      probe_timeout,
+    )
+    |> map_key_phase_result,
+  )
+  Ok(install_key_phase_state(state, key_state, reset_usage: True))
+}
+
+/// Begin validation of a candidate address. The runtime keeps address values
+/// outside the protocol state and switches paths only after `PathValidated`.
+pub fn begin_path_validation(
+  state: State,
+  challenge: BitArray,
+  active_migration: Bool,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case state.phase, active_migration && state.peer_disabled_active_migration {
+    Established, True -> Error(ActiveMigrationDisabled)
+    Established, False -> {
+      use probe_timeout <- result.try(current_probe_timeout(state))
+      use validator <- result.try(
+        path_validation.start(
+          state.path_validator,
+          challenge,
+          now_milliseconds,
+          3 * probe_timeout,
+        )
+        |> map_path_validation_result,
+      )
+      Ok(
+        State(..state, path_validator: validator)
+        |> queue_application_frame(frame.PathChallenge(challenge)),
+      )
+    }
+    _, _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Reserve the next exact DPLPMTUD datagram size. The runtime pads a PING
+/// packet to this size and commits that exact datagram through recovery.
+pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
+  case state.phase {
+    Established ->
+      case pmtu.start_probe(state.pmtu) {
+        Ok(#(path_mtu, size)) -> Ok(#(State(..state, pmtu: path_mtu), size))
+        Error(error) -> Error(PmtuFailure(error))
+      }
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Return the currently confirmed non-fragmenting UDP payload size.
+pub fn path_mtu(state: State) -> Int {
+  pmtu.current(state.pmtu)
+}
+
+/// Reset the confirmed size after repeated loss of formerly working large
+/// datagrams while preserving the configured discovery ceiling.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(..state, pmtu: pmtu.black_hole_detected(state.pmtu))
+}
+
+/// Encode and protect one 1-RTT short-header packet. The returned connection
+/// accounts for AEAD use and any automatic key update.
+pub fn protect_short_packet(
+  state: State,
+  destination_connection_id: BitArray,
+  packet_number: Int,
+  spin: Bool,
+  frames: List(frame.Frame),
+  now_milliseconds: Int,
+) -> Result(#(State, BitArray), Error) {
+  use state <- result.try(ensure_aead_write_capacity(state, now_milliseconds))
+  use key_state <- result.try(require_key_phase(state))
+  let keys = wire_packet.TrafficPacketKeys(key_phase.write_keys(key_state))
+  let phase_bit = key_phase.phase(key_state) == key_phase.PhaseOne
+  use plaintext <- result.try(frame.encode_all(frames) |> map_frame_result)
+  use packet <- result.try(protect_short_payload(
+    state,
+    destination_connection_id,
+    packet_number,
+    phase_bit,
+    spin,
+    plaintext,
+    keys,
+  ))
+  use usage <- result.try(record_encrypted_packet(state))
+  use key_state <- result.try(
+    key_phase.record_sent(key_state, packet_number) |> map_key_phase_result,
+  )
+  Ok(#(
+    State(
+      ..state,
+      one_rtt_key_phase: Some(key_state),
+      one_rtt_aead_usage: Some(usage),
+    ),
+    packet,
+  ))
+}
+
+/// Authenticate, decrypt, decode, and process one long-header packet. The
+/// caller records the UDP datagram exactly once before walking coalesced bytes.
+pub fn receive_protected_long_packet(
+  state: State,
+  datagram: BitArray,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(LongPacketReceipt, Error) {
+  use #(kind, packet_version) <- result.try(
+    wire_packet.inspect_long(datagram) |> map_wire_result,
+  )
+  case packet_version == state.config.version {
+    False -> Error(ProtocolViolation)
+    True ->
+      receive_versioned_long_packet(
+        state,
+        kind,
+        datagram,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+/// Authenticate, decrypt, decode, and process one complete 1-RTT packet.
+pub fn receive_protected_short_packet(
+  state: State,
+  datagram: BitArray,
+  destination_connection_id_length: Int,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(ShortPacketReceipt, Error) {
+  let expected = packet_space.expected_packet_number(state.application_space)
+  use decryption <- result.try(decrypt_short_packet(
+    state,
+    datagram,
+    destination_connection_id_length,
+    expected,
+    now_milliseconds,
+  ))
+  let ShortDecryption(decoded, candidate_kind) = decryption
+  use state <- result.try(apply_authenticated_key_phase(
+    state,
+    decoded,
+    candidate_kind,
+    now_milliseconds,
+  ))
+  let wire_packet.DecodedShort(
+    destination,
+    packet_number,
+    key_phase,
+    spin,
+    plaintext,
+  ) = decoded
+  use frames <- result.try(
+    frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
+  )
+  use state <- result.try(receive_packet(
+    state,
+    engine.OneRtt,
+    packet_number,
+    frames,
+    codepoint,
+    now_milliseconds,
+  ))
+  Ok(ShortPacketReceipt(state, destination, key_phase, spin))
+}
+
+/// Credit one UDP datagram exactly once before processing its coalesced packets.
+pub fn record_datagram_received(
+  state: State,
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case datagram_bytes > 0 && now_milliseconds >= 0 {
+    False -> Error(InvalidInput)
+    True ->
+      case amplification.record_received(state.amplification, datagram_bytes) {
+        Error(_) -> Error(InvalidInput)
+        Ok(budget) ->
+          Ok(
+            State(
+              ..state,
+              amplification: budget,
+              last_activity_milliseconds: now_milliseconds,
+            ),
+          )
+      }
+  }
+}
+
+/// Process one already authenticated packet and all decoded transport frames.
+pub fn receive_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case state.phase {
+    Closed | Draining -> Error(ConnectionUnavailable)
+    _ ->
+      receive_live_packet(
+        state,
+        level,
+        packet_number,
+        frames,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+/// Open the next locally initiated stream of one directionality class.
+pub fn open_stream(
+  state: State,
+  direction: stream_id.Direction,
+) -> Result(#(State, Int), Error) {
+  case state.phase {
+    Established -> open_established_stream(state, direction)
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Queue bounded application bytes on an existing local send direction.
+pub fn queue_stream(
+  state: State,
+  identifier: Int,
+  data: BitArray,
+  fin: Bool,
+) -> Result(State, Error) {
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) ->
+      case stream_state.queue_send(stream, data, fin) {
+        Error(_) -> Error(StreamFailure)
+        Ok(updated) ->
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(state.streams, identifier, updated),
+            ),
+          )
+      }
+  }
+}
+
+/// Queue a negotiated QUIC DATAGRAM without allowing an oversized frame into
+/// the connection's bounded application queues.
+pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
+  use encoded <- result.try(
+    frame.encode(frame.Datagram(data)) |> map_frame_result,
+  )
+  let frame_size = bit_array.byte_size(encoded)
+  case state.peer_maximum_datagram_frame_size, state.phase {
+    0, _ -> Error(DatagramNotNegotiated)
+    limit, _ if frame_size > limit -> Error(DatagramTooLarge(limit))
+    _, Established -> Ok(queue_application_frame(state, frame.Datagram(data)))
+    _, Handshaking -> queue_early_datagram(state, data)
+    _, _ -> Error(ConnectionUnavailable)
+  }
+}
+
+fn queue_early_datagram(state: State, data: BitArray) -> Result(State, Error) {
+  case
+    state.config.role == Client && keys_available(state, engine.ZeroRtt, Write)
+  {
+    False -> Error(ConnectionUnavailable)
+    True ->
+      Ok(
+        State(
+          ..state,
+          zero_rtt_queue: list.append(state.zero_rtt_queue, [
+            frame.Datagram(data),
+          ]),
+        ),
+      )
+  }
+}
+
+/// Pull bounded stream data and replenish stream and connection receive credit.
+pub fn read_stream(
+  state: State,
+  identifier: Int,
+  maximum_bytes: Int,
+) -> Result(#(State, stream_state.ReadOutcome), Error) {
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) ->
+      case stream_state.read(stream, maximum_bytes) {
+        Error(_) -> Error(StreamFailure)
+        Ok(outcome) -> apply_stream_read(state, identifier, outcome)
+      }
+  }
+}
+
+/// Extract a data event without exposing the embedded stream state.
+pub fn read_data(
+  outcome: stream_state.ReadOutcome,
+) -> Option(#(BitArray, Bool)) {
+  case outcome {
+    stream_state.ReadData(_, data, finished, _) -> Some(#(data, finished))
+    _ -> None
+  }
+}
+
+/// Enter closing and queue an application CONNECTION_CLOSE exactly once.
+pub fn close(
+  state: State,
+  application_error_code: Int,
+  reason: String,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case
+    application_error_code >= 0
+    && application_error_code <= varint.maximum
+    && now_milliseconds >= 0
+  {
+    False -> Error(InvalidInput)
+    True -> close_valid(state, application_error_code, reason, now_milliseconds)
+  }
+}
+
+/// Advance idle, closing, and recovery timers without consulting wall time.
+pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
+  case now_milliseconds < state.last_activity_milliseconds {
+    True -> Error(InvalidInput)
+    False -> {
+      let state = tick_path_validation(state, now_milliseconds)
+      tick_monotonic(state, now_milliseconds)
+    }
+  }
+}
+
+/// Return stable connection progress.
+pub fn phase(state: State) -> Phase {
+  state.phase
+}
+
+/// Return outstanding congestion-controlled bytes on the active path.
+pub fn bytes_in_flight(state: State) -> Int {
+  case state.congestion {
+    RenoState(reno) -> new_reno.bytes_in_flight(reno)
+    CubicState(cubic_state) -> cubic.bytes_in_flight(cubic_state)
+  }
+}
+
+/// Return the active path's congestion window in bytes.
+pub fn congestion_window(state: State) -> Int {
+  case state.congestion {
+    RenoState(reno) -> new_reno.congestion_window(reno)
+    CubicState(cubic_state) -> cubic.congestion_window(cubic_state)
+  }
+}
+
+fn validate_config(
+  config: Config,
+  now_milliseconds: Int,
+) -> Result(Nil, Error) {
+  case
+    now_milliseconds >= 0
+    && config.maximum_ack_delay_milliseconds >= 0
+    && config.maximum_ack_ranges > 0
+    && config.maximum_outstanding_packets > 0
+    && config.maximum_stream_receive_buffer >= 0
+    && config.maximum_stream_send_buffer >= 0
+    && config.maximum_total_streams > 0
+    && config.maximum_udp_payload_size >= 1200
+    && config.maximum_udp_payload_size <= 65_527
+    && config.maximum_datagram_frame_size >= 0
+    && config.idle_timeout_milliseconds > 0
+    && config.draining_timeout_milliseconds > 0
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_packet_space(
+  kind: packet_space.Kind,
+  config: Config,
+) -> Result(packet_space.State, Error) {
+  case
+    packet_space.new(
+      kind,
+      config.maximum_ack_delay_milliseconds,
+      config.maximum_ack_ranges,
+      config.maximum_outstanding_packets,
+    )
+  {
+    Ok(space) -> Ok(space)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_crypto_reassembler() -> Result(reassembler.Reassembler, Error) {
+  case reassembler.new(maximum_crypto_buffer_bytes, maximum_crypto_offset) {
+    Ok(state) -> Ok(state)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_receiver(
+  initial: Int,
+  window: Int,
+  maximum: Int,
+) -> Result(flow_control.Receiver, Error) {
+  case flow_control.new_receiver(initial, window, maximum) {
+    Ok(receiver) -> Ok(receiver)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_sender(initial: Int) -> Result(flow_control.Sender, Error) {
+  case flow_control.new_sender(initial) {
+    Ok(sender) -> Ok(sender)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_stream_limit(limit: Int) -> Result(flow_control.StreamLimit, Error) {
+  case flow_control.new_stream_limit(limit) {
+    Ok(stream_limit) -> Ok(stream_limit)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_rtt() -> Result(rtt.Estimator, Error) {
+  case rtt.new(333) {
+    Ok(estimator) -> Ok(estimator)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_congestion(config: Config) -> Result(CongestionState, Error) {
+  case config.congestion_algorithm {
+    NewReno ->
+      case new_reno.new(1200) {
+        Ok(state) -> Ok(RenoState(state))
+        Error(_) -> Error(InvalidConfiguration)
+      }
+    Cubic ->
+      case cubic.new(1200) {
+        Ok(state) -> Ok(CubicState(state))
+        Error(_) -> Error(InvalidConfiguration)
+      }
+  }
+}
+
+fn create_pacer(_config: Config, now: Int) -> Result(pacer.State, Error) {
+  case pacer.new(10 * 1200, now) {
+    Ok(state) -> Ok(state)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_amplification(role: Role) -> Result(amplification.Budget, Error) {
+  let amplification_role = case role {
+    Client -> amplification.Client
+    Server -> amplification.Server
+  }
+  case amplification.new(amplification_role) {
+    Ok(state) -> Ok(state)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn create_pmtu(maximum: Int) -> Result(pmtu.State, Error) {
+  case pmtu.new(maximum) {
+    Ok(state) -> Ok(state)
+    Error(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn level_for_long_kind(kind: wire_packet.LongKind) -> engine.EncryptionLevel {
+  case kind {
+    wire_packet.Initial(_) -> engine.Initial
+    wire_packet.ZeroRtt -> engine.ZeroRtt
+    wire_packet.Handshake -> engine.Handshake
+  }
+}
+
+fn packet_keys_for(
+  state: State,
+  level: engine.EncryptionLevel,
+  direction: KeyDirection,
+) -> Result(wire_packet.PacketKeys, Error) {
+  case level {
+    engine.Initial -> initial_packet_keys_for(state.initial_keys, direction)
+    engine.Handshake | engine.ZeroRtt | engine.OneRtt ->
+      traffic_packet_keys_for(
+        traffic_keys_for_level(state, level),
+        level,
+        direction,
+      )
+  }
+}
+
+fn initial_packet_keys_for(
+  keys: InitialLevelKeys,
+  direction: KeyDirection,
+) -> Result(wire_packet.PacketKeys, Error) {
+  case keys, direction {
+    InitialLevelKeys(Some(keys), _), Read ->
+      Ok(wire_packet.InitialPacketKeys(keys))
+    InitialLevelKeys(_, Some(keys)), Write ->
+      Ok(wire_packet.InitialPacketKeys(keys))
+    _, Read -> Error(MissingReadKeys(engine.Initial))
+    _, Write -> Error(MissingWriteKeys(engine.Initial))
+  }
+}
+
+fn traffic_packet_keys_for(
+  keys: LevelKeys,
+  level: engine.EncryptionLevel,
+  direction: KeyDirection,
+) -> Result(wire_packet.PacketKeys, Error) {
+  case keys, direction {
+    LevelKeys(Some(keys), _), Read -> Ok(wire_packet.TrafficPacketKeys(keys))
+    LevelKeys(_, Some(keys)), Write -> Ok(wire_packet.TrafficPacketKeys(keys))
+    _, Read -> Error(MissingReadKeys(level))
+    _, Write -> Error(MissingWriteKeys(level))
+  }
+}
+
+fn require_key_phase(state: State) -> Result(key_phase.State, Error) {
+  case state.one_rtt_key_phase {
+    Some(key_state) -> Ok(key_state)
+    None -> Error(MissingWriteKeys(engine.OneRtt))
+  }
+}
+
+fn current_probe_timeout(state: State) -> Result(Int, Error) {
+  case
+    rtt.probe_timeout(
+      state.estimator,
+      state.config.maximum_ack_delay_milliseconds,
+      True,
+      packet_space.probe_timeout_count(state.application_space),
+      timer_granularity_milliseconds,
+    )
+  {
+    Ok(timeout) -> Ok(timeout)
+    Error(_) -> Error(PacketSpaceFailure)
+  }
+}
+
+fn install_key_phase_state(
+  state: State,
+  key_state: key_phase.State,
+  reset_usage reset_usage: Bool,
+) -> State {
+  let usage = case state.one_rtt_aead_usage, reset_usage {
+    Some(usage), True -> Some(aead_usage.reset_encryption(usage))
+    usage, _ -> usage
+  }
+  State(
+    ..state,
+    one_rtt_keys: LevelKeys(
+      Some(key_phase.read_keys(key_state)),
+      Some(key_phase.write_keys(key_state)),
+    ),
+    one_rtt_key_phase: Some(key_state),
+    one_rtt_aead_usage: usage,
+  )
+}
+
+fn ensure_aead_write_capacity(
+  state: State,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case state.one_rtt_aead_usage {
+    None -> Error(MissingWriteKeys(engine.OneRtt))
+    Some(usage) ->
+      case aead_usage.needs_key_update(usage) {
+        True -> initiate_key_update(state, now_milliseconds)
+        False -> Ok(state)
+      }
+  }
+}
+
+fn record_encrypted_packet(state: State) -> Result(aead_usage.Usage, Error) {
+  case state.one_rtt_aead_usage {
+    None -> Error(MissingWriteKeys(engine.OneRtt))
+    Some(usage) -> aead_usage.record_encrypted(usage) |> map_aead_usage_result
+  }
+}
+
+fn decrypt_short_packet(
+  state: State,
+  datagram: BitArray,
+  destination_connection_id_length: Int,
+  expected_packet_number: Int,
+  now_milliseconds: Int,
+) -> Result(ShortDecryption, Error) {
+  use key_state <- result.try(require_key_phase(state))
+  try_short_candidates(
+    key_phase.decryption_candidates(key_state, now_milliseconds),
+    datagram,
+    destination_connection_id_length,
+    expected_packet_number,
+    None,
+  )
+}
+
+fn try_short_candidates(
+  candidates: List(key_phase.ReadCandidate),
+  datagram: BitArray,
+  destination_connection_id_length: Int,
+  expected_packet_number: Int,
+  last_error: Option(wire_packet.Error),
+) -> Result(ShortDecryption, Error) {
+  case candidates {
+    [] ->
+      case last_error {
+        Some(error) -> Error(WirePacketFailure(error))
+        None -> Error(WirePacketFailure(wire_packet.AuthenticationFailed))
+      }
+    [candidate, ..rest] -> {
+      let keys =
+        wire_packet.TrafficPacketKeys(key_phase.candidate_keys(candidate))
+      case
+        wire_packet.unprotect_short(
+          datagram,
+          destination_connection_id_length,
+          expected_packet_number,
+          keys,
+        )
+      {
+        Ok(decoded) ->
+          Ok(ShortDecryption(decoded, key_phase.candidate_kind(candidate)))
+        Error(error) ->
+          try_short_candidates(
+            rest,
+            datagram,
+            destination_connection_id_length,
+            expected_packet_number,
+            Some(error),
+          )
+      }
+    }
+  }
+}
+
+fn apply_authenticated_key_phase(
+  state: State,
+  decoded: wire_packet.DecodedShort,
+  candidate_kind: key_phase.CandidateKind,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  use key_state <- result.try(require_key_phase(state))
+  let wire_packet.DecodedShort(_, packet_number, phase_bit, _, _) = decoded
+  let observed_phase = case phase_bit {
+    False -> key_phase.PhaseZero
+    True -> key_phase.PhaseOne
+  }
+  let allowed =
+    key_phase.read_candidates(
+      key_state,
+      observed_phase,
+      packet_number,
+      now_milliseconds,
+    )
+  case candidate_kind_is_allowed(allowed, candidate_kind) {
+    False -> Error(ProtocolViolation)
+    True ->
+      transition_authenticated_key_phase(
+        state,
+        key_state,
+        observed_phase,
+        packet_number,
+        candidate_kind,
+        now_milliseconds,
+      )
+  }
+}
+
+fn candidate_kind_is_allowed(
+  candidates: List(key_phase.ReadCandidate),
+  expected: key_phase.CandidateKind,
+) -> Bool {
+  list.any(candidates, fn(candidate) {
+    key_phase.candidate_kind(candidate) == expected
+  })
+}
+
+fn transition_authenticated_key_phase(
+  state: State,
+  key_state: key_phase.State,
+  observed_phase: key_phase.KeyPhase,
+  packet_number: Int,
+  candidate_kind: key_phase.CandidateKind,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case candidate_kind {
+    key_phase.Current -> {
+      use key_state <- result.try(
+        key_phase.record_received(key_state, packet_number)
+        |> map_key_phase_result,
+      )
+      Ok(install_key_phase_state(state, key_state, reset_usage: False))
+    }
+    key_phase.Previous -> Ok(state)
+    key_phase.Next -> {
+      use probe_timeout <- result.try(current_probe_timeout(state))
+      use key_state <- result.try(
+        key_phase.commit_peer_update(
+          key_state,
+          observed_phase,
+          packet_number,
+          now_milliseconds,
+          probe_timeout,
+        )
+        |> map_key_phase_result,
+      )
+      Ok(install_key_phase_state(state, key_state, reset_usage: True))
+    }
+  }
+}
+
+fn protect_long_payload(
+  state: State,
+  kind: wire_packet.LongKind,
+  destination_connection_id: BitArray,
+  source_connection_id: BitArray,
+  packet_number: Int,
+  largest_acknowledged: Option(Int),
+  plaintext: BitArray,
+  keys: wire_packet.PacketKeys,
+) -> Result(BitArray, Error) {
+  let protected =
+    wire_packet.protect_long(
+      kind,
+      state.config.version,
+      destination_connection_id,
+      source_connection_id,
+      packet_number,
+      largest_acknowledged,
+      plaintext,
+      keys,
+    )
+  case protected {
+    Error(wire_packet.InsufficientHeaderProtectionSample) ->
+      wire_packet.protect_long(
+        kind,
+        state.config.version,
+        destination_connection_id,
+        source_connection_id,
+        packet_number,
+        largest_acknowledged,
+        <<plaintext:bits, 0, 0, 0>>,
+        keys,
+      )
+      |> map_wire_result
+    _ -> protected |> map_wire_result
+  }
+}
+
+fn protect_short_payload(
+  state: State,
+  destination_connection_id: BitArray,
+  packet_number: Int,
+  key_phase: Bool,
+  spin: Bool,
+  plaintext: BitArray,
+  keys: wire_packet.PacketKeys,
+) -> Result(BitArray, Error) {
+  let largest_acknowledged =
+    packet_space.largest_acknowledged(state.application_space)
+  let protected =
+    wire_packet.protect_short(
+      destination_connection_id,
+      packet_number,
+      largest_acknowledged,
+      key_phase,
+      spin,
+      plaintext,
+      keys,
+    )
+  case protected {
+    Error(wire_packet.InsufficientHeaderProtectionSample) ->
+      wire_packet.protect_short(
+        destination_connection_id,
+        packet_number,
+        largest_acknowledged,
+        key_phase,
+        spin,
+        <<plaintext:bits, 0, 0, 0>>,
+        keys,
+      )
+      |> map_wire_result
+    _ -> protected |> map_wire_result
+  }
+}
+
+fn receive_versioned_long_packet(
+  state: State,
+  inspected_kind: wire_packet.LongKind,
+  datagram: BitArray,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(LongPacketReceipt, Error) {
+  let level = level_for_long_kind(inspected_kind)
+  use keys <- result.try(packet_keys_for(state, level, Read))
+  let expected =
+    packet_space.expected_packet_number(packet_space_for_level(state, level))
+  use decoded <- result.try(
+    wire_packet.unprotect_long(datagram, expected, keys) |> map_wire_result,
+  )
+  finish_long_packet(
+    state,
+    inspected_kind,
+    level,
+    decoded,
+    codepoint,
+    now_milliseconds,
+  )
+}
+
+fn finish_long_packet(
+  state: State,
+  inspected_kind: wire_packet.LongKind,
+  level: engine.EncryptionLevel,
+  decoded: wire_packet.DecodedLong,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(LongPacketReceipt, Error) {
+  let wire_packet.DecodedLong(
+    decoded_kind,
+    packet_version,
+    destination,
+    source,
+    packet_number,
+    plaintext,
+    rest,
+  ) = decoded
+  case
+    decoded_kind == inspected_kind && packet_version == state.config.version
+  {
+    False -> Error(ProtocolViolation)
+    True ->
+      process_long_plaintext(
+        state,
+        level,
+        destination,
+        source,
+        packet_number,
+        plaintext,
+        rest,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+fn process_long_plaintext(
+  state: State,
+  level: engine.EncryptionLevel,
+  destination: BitArray,
+  source: BitArray,
+  packet_number: Int,
+  plaintext: BitArray,
+  rest: BitArray,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(LongPacketReceipt, Error) {
+  use frames <- result.try(
+    frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
+  )
+  use state <- result.try(receive_packet(
+    state,
+    level,
+    packet_number,
+    frames,
+    codepoint,
+    now_milliseconds,
+  ))
+  Ok(LongPacketReceipt(state, destination, source, rest))
+}
+
+fn empty_keys() -> LevelKeys {
+  LevelKeys(None, None)
+}
+
+fn empty_initial_keys() -> InitialLevelKeys {
+  InitialLevelKeys(None, None)
+}
+
+fn connection_can_send(state: State) -> Bool {
+  state.phase != Closed && state.phase != Draining
+}
+
+fn apply_tls_action(
+  state: State,
+  action: engine.Action,
+) -> Result(State, Error) {
+  case action {
+    engine.Send(level, bytes) -> queue_crypto(state, level, bytes)
+    engine.InstallWriteKeys(engine.Initial, _)
+    | engine.InstallReadKeys(engine.Initial, _) -> Error(InvalidConfiguration)
+    engine.InstallWriteKeys(level, keys) ->
+      install_traffic_keys(state, level, Write, keys)
+    engine.InstallReadKeys(level, keys) ->
+      install_traffic_keys(state, level, Read, keys)
+    engine.DiscardKeys(level) -> Ok(discard_level(state, level))
+    engine.PeerTransportParameters(parameters) ->
+      apply_peer_parameters(state, parameters)
+      |> result.map(add_event(_, PeerParametersApplied))
+    engine.EarlyDataAccepted ->
+      Ok(
+        State(..state, early_data_accepted: True)
+        |> add_event(EarlyDataWasAccepted),
+      )
+    engine.EarlyDataRejected ->
+      Ok(
+        State(
+          ..state,
+          early_data_accepted: False,
+          zero_rtt_queue: [],
+          zero_rtt_keys: empty_keys(),
+        )
+        |> add_event(EarlyDataWasRejected),
+      )
+    engine.StoreSessionTicket(ticket) ->
+      Ok(add_event(state, SessionTicketStored(ticket)))
+    engine.HandshakeComplete -> {
+      let confirmed = case state.config.role {
+        Server -> True
+        Client -> state.handshake_confirmed
+      }
+      let budget = case state.config.role {
+        Server -> amplification.validate(state.amplification)
+        Client -> state.amplification
+      }
+      let state =
+        State(
+          ..state,
+          phase: Established,
+          handshake_confirmed: confirmed,
+          amplification: budget,
+        )
+      let state = case state.config.role {
+        Server -> queue_application_frame(state, frame.HandshakeDone)
+        Client -> state
+      }
+      let state = case confirmed {
+        True -> confirm_key_phase(state)
+        False -> state
+      }
+      Ok(add_event(state, HandshakeEstablished))
+    }
+  }
+}
+
+fn add_event(state: State, event: Event) -> State {
+  State(..state, events: list.append(state.events, [event]))
+}
+
+fn traffic_keys_for_level(
+  state: State,
+  level: engine.EncryptionLevel,
+) -> LevelKeys {
+  case level {
+    engine.Initial -> empty_keys()
+    engine.Handshake -> state.handshake_keys
+    engine.ZeroRtt -> state.zero_rtt_keys
+    engine.OneRtt -> state.one_rtt_keys
+  }
+}
+
+fn put_traffic_keys(
+  state: State,
+  level: engine.EncryptionLevel,
+  direction: KeyDirection,
+  keys: Option(traffic_keys.TrafficKeys),
+) -> State {
+  let updated =
+    update_level_keys(traffic_keys_for_level(state, level), direction, keys)
+  case level {
+    engine.Initial -> state
+    engine.Handshake -> State(..state, handshake_keys: updated)
+    engine.ZeroRtt -> State(..state, zero_rtt_keys: updated)
+    engine.OneRtt -> State(..state, one_rtt_keys: updated)
+  }
+}
+
+fn install_traffic_keys(
+  state: State,
+  level: engine.EncryptionLevel,
+  direction: KeyDirection,
+  keys: traffic_keys.TrafficKeys,
+) -> Result(State, Error) {
+  let state = put_traffic_keys(state, level, direction, Some(keys))
+  case level {
+    engine.OneRtt -> initialize_key_phase_if_ready(state)
+    engine.Initial | engine.Handshake | engine.ZeroRtt -> Ok(state)
+  }
+}
+
+fn initialize_key_phase_if_ready(state: State) -> Result(State, Error) {
+  case state.one_rtt_keys {
+    LevelKeys(Some(read), Some(write)) -> {
+      use key_state <- result.try(
+        key_phase.new(write, read) |> map_key_phase_result,
+      )
+      let key_state = case state.handshake_confirmed {
+        True -> key_phase.confirm_handshake(key_state)
+        False -> key_state
+      }
+      use usage <- result.try(
+        aead_usage.new(write.cipher_suite) |> map_aead_usage_result,
+      )
+      Ok(
+        State(
+          ..state,
+          one_rtt_key_phase: Some(key_state),
+          one_rtt_aead_usage: Some(usage),
+        ),
+      )
+    }
+    _ -> Ok(state)
+  }
+}
+
+fn confirm_key_phase(state: State) -> State {
+  case state.one_rtt_key_phase {
+    None -> state
+    Some(key_state) ->
+      State(
+        ..state,
+        one_rtt_key_phase: Some(key_phase.confirm_handshake(key_state)),
+      )
+  }
+}
+
+fn update_level_keys(
+  current: LevelKeys,
+  direction: KeyDirection,
+  keys: Option(traffic_keys.TrafficKeys),
+) -> LevelKeys {
+  case current, direction {
+    LevelKeys(_, write), Read -> LevelKeys(keys, write)
+    LevelKeys(read, _), Write -> LevelKeys(read, keys)
+  }
+}
+
+fn discard_level(state: State, level: engine.EncryptionLevel) -> State {
+  case level {
+    engine.Initial ->
+      State(
+        ..state,
+        initial_keys: empty_initial_keys(),
+        initial_space: packet_space.discard(state.initial_space),
+        initial_queue: [],
+      )
+    engine.Handshake -> {
+      let state =
+        put_traffic_keys(
+          put_traffic_keys(state, level, Read, None),
+          level,
+          Write,
+          None,
+        )
+      State(
+        ..state,
+        handshake_space: packet_space.discard(state.handshake_space),
+        handshake_queue: [],
+      )
+    }
+    engine.ZeroRtt ->
+      State(
+        ..put_traffic_keys(
+          put_traffic_keys(state, level, Read, None),
+          level,
+          Write,
+          None,
+        ),
+        zero_rtt_queue: [],
+      )
+    engine.OneRtt -> {
+      let state =
+        put_traffic_keys(
+          put_traffic_keys(state, level, Read, None),
+          level,
+          Write,
+          None,
+        )
+      State(
+        ..state,
+        one_rtt_key_phase: None,
+        one_rtt_aead_usage: None,
+        application_space: packet_space.discard(state.application_space),
+        application_queue: [],
+      )
+    }
+  }
+}
+
+fn queue_crypto(
+  state: State,
+  level: engine.EncryptionLevel,
+  bytes: BitArray,
+) -> Result(State, Error) {
+  case bit_array.bit_size(bytes) % 8 {
+    remainder if remainder != 0 -> Error(InvalidInput)
+    _ -> queue_aligned_crypto(state, level, bytes)
+  }
+}
+
+fn queue_aligned_crypto(
+  state: State,
+  level: engine.EncryptionLevel,
+  bytes: BitArray,
+) -> Result(State, Error) {
+  let length = bit_array.byte_size(bytes)
+  case level {
+    engine.Initial -> {
+      let end = state.initial_crypto_send_offset + length
+      case end > maximum_crypto_offset {
+        True -> Error(InvalidInput)
+        False ->
+          Ok(
+            State(
+              ..state,
+              initial_crypto_send_offset: end,
+              initial_queue: list.append(state.initial_queue, [
+                frame.Crypto(state.initial_crypto_send_offset, bytes),
+              ]),
+            ),
+          )
+      }
+    }
+    engine.Handshake -> {
+      let end = state.handshake_crypto_send_offset + length
+      case end > maximum_crypto_offset {
+        True -> Error(InvalidInput)
+        False ->
+          Ok(
+            State(
+              ..state,
+              handshake_crypto_send_offset: end,
+              handshake_queue: list.append(state.handshake_queue, [
+                frame.Crypto(state.handshake_crypto_send_offset, bytes),
+              ]),
+            ),
+          )
+      }
+    }
+    engine.OneRtt -> {
+      let end = state.application_crypto_send_offset + length
+      case end > maximum_crypto_offset {
+        True -> Error(InvalidInput)
+        False ->
+          Ok(
+            State(
+              ..state,
+              application_crypto_send_offset: end,
+              application_queue: list.append(state.application_queue, [
+                frame.Crypto(state.application_crypto_send_offset, bytes),
+              ]),
+            ),
+          )
+      }
+    }
+    engine.ZeroRtt -> Error(ProtocolViolation)
+  }
+}
+
+fn apply_peer_parameters(
+  state: State,
+  parameters: List(transport_parameter.Parameter),
+) -> Result(State, Error) {
+  case parameters {
+    [] -> Ok(state)
+    [parameter, ..rest] -> {
+      use state <- result.try(apply_peer_parameter(state, parameter))
+      apply_peer_parameters(state, rest)
+    }
+  }
+}
+
+fn apply_peer_parameter(
+  state: State,
+  parameter: transport_parameter.Parameter,
+) -> Result(State, Error) {
+  case parameter {
+    transport_parameter.InitialMaxData(limit) ->
+      Ok(
+        State(
+          ..state,
+          connection_sender: flow_control.update_sender_limit(
+            state.connection_sender,
+            limit,
+          ),
+        ),
+      )
+    transport_parameter.InitialMaxStreamDataBidiLocal(limit) ->
+      Ok(State(..state, peer_stream_data_bidi_local: limit))
+    transport_parameter.InitialMaxStreamDataBidiRemote(limit) ->
+      Ok(State(..state, peer_stream_data_bidi_remote: limit))
+    transport_parameter.InitialMaxStreamDataUni(limit) ->
+      Ok(State(..state, peer_stream_data_uni: limit))
+    transport_parameter.InitialMaxStreamsBidi(limit) ->
+      Ok(
+        State(
+          ..state,
+          local_bidirectional_streams: flow_control.update_stream_limit(
+            state.local_bidirectional_streams,
+            limit,
+          ),
+        ),
+      )
+    transport_parameter.InitialMaxStreamsUni(limit) ->
+      Ok(
+        State(
+          ..state,
+          local_unidirectional_streams: flow_control.update_stream_limit(
+            state.local_unidirectional_streams,
+            limit,
+          ),
+        ),
+      )
+    transport_parameter.AckDelayExponent(exponent) ->
+      Ok(State(..state, peer_ack_delay_exponent: exponent))
+    transport_parameter.MaxAckDelay(delay) ->
+      case
+        packet_space.update_maximum_ack_delay(state.application_space, delay)
+      {
+        Error(_) -> Error(ProtocolViolation)
+        Ok(space) -> Ok(State(..state, application_space: space))
+      }
+    transport_parameter.MaxUdpPayloadSize(size) ->
+      case pmtu.set_peer_maximum(state.pmtu, size) {
+        Error(_) -> Error(ProtocolViolation)
+        Ok(path_mtu) ->
+          Ok(
+            State(..state, peer_maximum_udp_payload_size: size, pmtu: path_mtu),
+          )
+      }
+    transport_parameter.MaxDatagramFrameSize(size) ->
+      Ok(State(..state, peer_maximum_datagram_frame_size: size))
+    transport_parameter.DisableActiveMigration ->
+      Ok(State(..state, peer_disabled_active_migration: True))
+    _ -> Ok(state)
+  }
+}
+
+fn prepare_sendable_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  maximum_frame_data_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(Preparation, Error) {
+  let discarded = packet_space_discarded(state, level)
+  let writable = keys_available(state, level, Write)
+  case discarded, writable {
+    True, _ -> Error(SpaceUnavailable)
+    False, False -> Error(MissingWriteKeys(level))
+    False, True -> {
+      use #(state, acknowledgement) <- result.try(take_due_ack(
+        state,
+        level,
+        now_milliseconds,
+      ))
+      use #(state, outgoing) <- result.try(take_outgoing_frame(
+        state,
+        level,
+        maximum_frame_data_bytes,
+      ))
+      let frames = combine_optional_frames(acknowledgement, outgoing)
+      case frames {
+        [] -> Ok(NoPacket(state))
+        _ ->
+          Ok(PacketPrepared(
+            state,
+            level,
+            next_packet_number_for_level(state, level),
+            frames,
+          ))
+      }
+    }
+  }
+}
+
+fn take_due_ack(
+  state: State,
+  level: engine.EncryptionLevel,
+  now_milliseconds: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case level {
+    engine.ZeroRtt -> Ok(#(state, None))
+    engine.Initial ->
+      take_space_ack(state, state.initial_space, level, now_milliseconds)
+    engine.Handshake ->
+      take_space_ack(state, state.handshake_space, level, now_milliseconds)
+    engine.OneRtt ->
+      take_space_ack(state, state.application_space, level, now_milliseconds)
+  }
+}
+
+fn take_space_ack(
+  state: State,
+  space: packet_space.State,
+  level: engine.EncryptionLevel,
+  now_milliseconds: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case
+    packet_space.take_ack(
+      space,
+      now_milliseconds,
+      local_ack_delay_exponent(state),
+    )
+  {
+    Error(_) -> Error(PacketSpaceFailure)
+    Ok(#(space, acknowledgement)) -> {
+      let state = put_packet_space(state, level, space)
+      Ok(#(state, option_ack_frame(acknowledgement)))
+    }
+  }
+}
+
+fn local_ack_delay_exponent(_state: State) -> Int {
+  3
+}
+
+fn option_ack_frame(
+  acknowledgement: Option(frame.Acknowledgement),
+) -> Option(frame.Frame) {
+  case acknowledgement {
+    None -> None
+    Some(ack) -> Some(frame.Ack(ack))
+  }
+}
+
+fn combine_optional_frames(
+  first: Option(frame.Frame),
+  second: Option(frame.Frame),
+) -> List(frame.Frame) {
+  case first, second {
+    None, None -> []
+    Some(value), None | None, Some(value) -> [value]
+    Some(left), Some(right) -> [left, right]
+  }
+}
+
+fn take_outgoing_frame(
+  state: State,
+  level: engine.EncryptionLevel,
+  maximum_data_bytes: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case level {
+    engine.Initial ->
+      take_queue_head(state, level, state.initial_queue, maximum_data_bytes)
+    engine.Handshake ->
+      take_queue_head(state, level, state.handshake_queue, maximum_data_bytes)
+    engine.ZeroRtt ->
+      take_queue_head(state, level, state.zero_rtt_queue, maximum_data_bytes)
+    engine.OneRtt ->
+      case state.application_queue {
+        [] -> poll_stream_frame(state, maximum_data_bytes)
+        queue -> take_queue_head(state, level, queue, maximum_data_bytes)
+      }
+  }
+}
+
+fn take_queue_head(
+  state: State,
+  level: engine.EncryptionLevel,
+  queue: List(frame.Frame),
+  maximum_data_bytes: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case queue {
+    [] -> Ok(#(state, None))
+    [outgoing, ..rest] -> {
+      use #(emitted, remainder) <- result.try(split_data_frame(
+        outgoing,
+        maximum_data_bytes,
+      ))
+      let remaining = case remainder {
+        None -> rest
+        Some(value) -> [value, ..rest]
+      }
+      Ok(#(put_queue(state, level, remaining), Some(emitted)))
+    }
+  }
+}
+
+fn split_data_frame(
+  outgoing: frame.Frame,
+  maximum_data_bytes: Int,
+) -> Result(#(frame.Frame, Option(frame.Frame)), Error) {
+  case outgoing {
+    frame.Crypto(offset, data) ->
+      split_crypto_frame(offset, data, maximum_data_bytes)
+    frame.Stream(identifier, offset, data, fin) ->
+      split_stream_frame(identifier, offset, data, fin, maximum_data_bytes)
+    _ -> Ok(#(outgoing, None))
+  }
+}
+
+fn split_crypto_frame(
+  offset: Int,
+  data: BitArray,
+  maximum_data_bytes: Int,
+) -> Result(#(frame.Frame, Option(frame.Frame)), Error) {
+  case bit_array.byte_size(data) > maximum_data_bytes {
+    False -> Ok(#(frame.Crypto(offset, data), None))
+    True -> {
+      use #(prefix, suffix) <- result.try(split_bytes(data, maximum_data_bytes))
+      Ok(#(
+        frame.Crypto(offset, prefix),
+        Some(frame.Crypto(offset + maximum_data_bytes, suffix)),
+      ))
+    }
+  }
+}
+
+fn split_stream_frame(
+  identifier: Int,
+  offset: Int,
+  data: BitArray,
+  fin: Bool,
+  maximum_data_bytes: Int,
+) -> Result(#(frame.Frame, Option(frame.Frame)), Error) {
+  case bit_array.byte_size(data) > maximum_data_bytes {
+    False -> Ok(#(frame.Stream(identifier, offset, data, fin), None))
+    True -> {
+      use #(prefix, suffix) <- result.try(split_bytes(data, maximum_data_bytes))
+      Ok(#(
+        frame.Stream(identifier, offset, prefix, False),
+        Some(frame.Stream(identifier, offset + maximum_data_bytes, suffix, fin)),
+      ))
+    }
+  }
+}
+
+fn split_bytes(
+  bytes: BitArray,
+  count: Int,
+) -> Result(#(BitArray, BitArray), Error) {
+  case count <= 0 || count > bit_array.byte_size(bytes) {
+    True -> Error(InvalidInput)
+    False -> {
+      let prefix_bits = count * 8
+      case bytes {
+        <<prefix:bits-size(prefix_bits), suffix:bits>> -> Ok(#(prefix, suffix))
+        _ -> Error(InvalidInput)
+      }
+    }
+  }
+}
+
+fn put_queue(
+  state: State,
+  level: engine.EncryptionLevel,
+  queue: List(frame.Frame),
+) -> State {
+  case level {
+    engine.Initial -> State(..state, initial_queue: queue)
+    engine.Handshake -> State(..state, handshake_queue: queue)
+    engine.ZeroRtt -> State(..state, zero_rtt_queue: queue)
+    engine.OneRtt -> State(..state, application_queue: queue)
+  }
+}
+
+fn poll_stream_frame(
+  state: State,
+  maximum_data_bytes: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  poll_streams(
+    state,
+    state.stream_order,
+    list.length(state.stream_order),
+    maximum_data_bytes,
+  )
+}
+
+fn poll_streams(
+  state: State,
+  order: List(Int),
+  remaining_attempts: Int,
+  maximum_data_bytes: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case remaining_attempts, order {
+    0, _ | _, [] -> Ok(#(State(..state, stream_order: order), None))
+    attempts, [identifier, ..rest] -> {
+      let rotated = list.append(rest, [identifier])
+      case dict.has_key(state.streams, identifier) {
+        False ->
+          poll_streams(
+            State(..state, stream_order: rest),
+            rest,
+            attempts - 1,
+            maximum_data_bytes,
+          )
+        True ->
+          case dict.get(state.streams, identifier) {
+            Error(_) -> Error(StreamFailure)
+            Ok(stream) ->
+              handle_stream_poll(
+                state,
+                stream,
+                identifier,
+                rotated,
+                attempts,
+                maximum_data_bytes,
+              )
+          }
+      }
+    }
+  }
+}
+
+fn handle_stream_poll(
+  state: State,
+  original_stream: stream_state.State,
+  identifier: Int,
+  rotated: List(Int),
+  remaining_attempts: Int,
+  maximum_data_bytes: Int,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  case stream_state.poll_send(original_stream, maximum_data_bytes) {
+    Ok(stream_state.Emit(stream, emitted)) ->
+      complete_stream_emit(
+        state,
+        identifier,
+        rotated,
+        original_stream,
+        stream,
+        emitted,
+      )
+    Ok(stream_state.SendBlocked(stream, limit)) ->
+      Ok(#(
+        State(
+          ..state,
+          streams: dict.insert(state.streams, identifier, stream),
+          stream_order: rotated,
+        ),
+        Some(frame.StreamDataBlocked(identifier, limit)),
+      ))
+    Ok(stream_state.SendIdle(stream)) ->
+      poll_streams(
+        State(
+          ..state,
+          streams: dict.insert(state.streams, identifier, stream),
+          stream_order: rotated,
+        ),
+        rotated,
+        remaining_attempts - 1,
+        maximum_data_bytes,
+      )
+    Error(stream_state.WrongDirection) ->
+      poll_streams(
+        State(..state, stream_order: rotated),
+        rotated,
+        remaining_attempts - 1,
+        maximum_data_bytes,
+      )
+    Error(_) -> Error(StreamFailure)
+  }
+}
+
+fn complete_stream_emit(
+  state: State,
+  identifier: Int,
+  rotated: List(Int),
+  original: stream_state.State,
+  stream: stream_state.State,
+  emitted: frame.Frame,
+) -> Result(#(State, Option(frame.Frame)), Error) {
+  let newly_sent =
+    stream_state.next_send_offset(stream)
+    - stream_state.next_send_offset(original)
+  case flow_control.reserve(state.connection_sender, newly_sent) {
+    Ok(sender) ->
+      Ok(#(
+        State(
+          ..state,
+          connection_sender: sender,
+          streams: dict.insert(state.streams, identifier, stream),
+          stream_order: rotated,
+        ),
+        Some(emitted),
+      ))
+    Error(flow_control.FlowControlBlocked(limit)) ->
+      Ok(#(
+        State(..state, stream_order: rotated),
+        Some(frame.DataBlocked(limit)),
+      ))
+    Error(_) -> Error(FlowControlFailure)
+  }
+}
+
+fn next_packet_number_for_level(
+  state: State,
+  level: engine.EncryptionLevel,
+) -> Int {
+  packet_space.next_packet_number(packet_space_for_level(state, level))
+}
+
+fn packet_space_for_level(
+  state: State,
+  level: engine.EncryptionLevel,
+) -> packet_space.State {
+  case level {
+    engine.Initial -> state.initial_space
+    engine.Handshake -> state.handshake_space
+    engine.ZeroRtt | engine.OneRtt -> state.application_space
+  }
+}
+
+fn put_packet_space(
+  state: State,
+  level: engine.EncryptionLevel,
+  space: packet_space.State,
+) -> State {
+  case level {
+    engine.Initial -> State(..state, initial_space: space)
+    engine.Handshake -> State(..state, handshake_space: space)
+    engine.ZeroRtt | engine.OneRtt -> State(..state, application_space: space)
+  }
+}
+
+fn commit_sendable_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  datagram_bytes: Int,
+  codepoint: ecn.Codepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case
+    valid_committed_packet(
+      state,
+      level,
+      packet_number,
+      frames,
+      datagram_bytes,
+      now_milliseconds,
+    )
+  {
+    Error(error) -> Error(error)
+    Ok(Nil) ->
+      commit_valid_packet(
+        state,
+        level,
+        frames,
+        datagram_bytes,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+fn valid_committed_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(Nil, Error) {
+  let discarded = packet_space_discarded(state, level)
+  let writable = keys_available(state, level, Write)
+  case discarded, writable {
+    True, _ -> Error(SpaceUnavailable)
+    False, False -> Error(MissingWriteKeys(level))
+    False, True -> {
+      let maximum_datagram =
+        minimum(
+          state.config.maximum_udp_payload_size,
+          state.peer_maximum_udp_payload_size,
+        )
+      case
+        frames != []
+        && packet_number == next_packet_number_for_level(state, level)
+        && datagram_bytes > 0
+        && datagram_bytes <= maximum_datagram
+        && now_milliseconds >= 0
+      {
+        True -> Ok(Nil)
+        False -> Error(InvalidInput)
+      }
+    }
+  }
+}
+
+fn commit_valid_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  frames: List(frame.Frame),
+  datagram_bytes: Int,
+  codepoint: ecn.Codepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let ack_eliciting = frames_ack_eliciting(frames)
+  let in_flight = ack_eliciting || frames_have_padding(frames)
+  use amplification <- result.try(debit_amplification(
+    state.amplification,
+    datagram_bytes,
+  ))
+  use congestion <- result.try(check_and_record_congestion_send(
+    state.congestion,
+    datagram_bytes,
+    in_flight,
+  ))
+  use pacing <- result.try(reserve_pacing(
+    state,
+    datagram_bytes,
+    in_flight,
+    now_milliseconds,
+  ))
+  let space = packet_space_for_level(state, level)
+  case
+    packet_space.record_sent(
+      space,
+      now_milliseconds,
+      ack_eliciting,
+      in_flight,
+      datagram_bytes,
+      frames,
+      codepoint,
+    )
+  {
+    Error(_) -> Error(PacketSpaceFailure)
+    Ok(#(space, _)) -> {
+      use ecn_state <- result.try(record_ecn_send(state.ecn, codepoint))
+      let state = put_packet_space(state, level, space)
+      let state =
+        State(
+          ..state,
+          congestion: congestion,
+          pacer: pacing,
+          amplification: amplification,
+          ecn: ecn_state,
+          last_activity_milliseconds: case ack_eliciting {
+            True -> now_milliseconds
+            False -> state.last_activity_milliseconds
+          },
+        )
+      Ok(state)
+    }
+  }
+}
+
+fn debit_amplification(
+  budget: amplification.Budget,
+  datagram_bytes: Int,
+) -> Result(amplification.Budget, Error) {
+  case amplification.record_sent(budget, datagram_bytes) {
+    Ok(updated) -> Ok(updated)
+    Error(amplification.AmplificationLimited(_)) -> Error(AmplificationLimited)
+    Error(_) -> Error(InvalidInput)
+  }
+}
+
+fn check_and_record_congestion_send(
+  congestion: CongestionState,
+  datagram_bytes: Int,
+  in_flight: Bool,
+) -> Result(CongestionState, Error) {
+  case congestion {
+    RenoState(state) ->
+      case !in_flight || new_reno.can_send(state, datagram_bytes) {
+        False -> Error(CongestionLimited)
+        True ->
+          case new_reno.on_packet_sent(state, datagram_bytes, in_flight) {
+            Ok(updated) -> Ok(RenoState(updated))
+            Error(_) -> Error(InvalidInput)
+          }
+      }
+    CubicState(state) ->
+      case !in_flight || cubic.can_send(state, datagram_bytes) {
+        False -> Error(CongestionLimited)
+        True ->
+          case cubic.on_packet_sent(state, datagram_bytes, in_flight) {
+            Ok(updated) -> Ok(CubicState(updated))
+            Error(_) -> Error(InvalidInput)
+          }
+      }
+  }
+}
+
+fn reserve_pacing(
+  state: State,
+  datagram_bytes: Int,
+  in_flight: Bool,
+  now_milliseconds: Int,
+) -> Result(pacer.State, Error) {
+  case in_flight {
+    False -> Ok(state.pacer)
+    True -> {
+      let rtt.Snapshot(_, smoothed, _, _) = rtt.snapshot(state.estimator)
+      case
+        pacer.reserve(
+          state.pacer,
+          datagram_bytes,
+          now_milliseconds,
+          congestion_window(state),
+          smoothed,
+        )
+      {
+        Error(_) -> Error(InvalidInput)
+        Ok(pacer.Decision(updated, pacer.SendNow)) -> Ok(updated)
+        Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) ->
+          Error(PacingLimited(deadline))
+      }
+    }
+  }
+}
+
+fn record_ecn_send(
+  state: ecn.State,
+  codepoint: ecn.Codepoint,
+) -> Result(ecn.State, Error) {
+  case ecn.record_sent(state, codepoint, 1) {
+    Ok(updated) -> Ok(updated)
+    Error(_) -> Error(InvalidInput)
+  }
+}
+
+fn frames_ack_eliciting(frames: List(frame.Frame)) -> Bool {
+  list.any(frames, frame_ack_eliciting)
+}
+
+fn frame_ack_eliciting(value: frame.Frame) -> Bool {
+  case value {
+    frame.Padding(_)
+    | frame.Ack(_)
+    | frame.ConnectionCloseTransport(_, _, _)
+    | frame.ConnectionCloseApplication(_, _) -> False
+    _ -> True
+  }
+}
+
+fn frames_have_padding(frames: List(frame.Frame)) -> Bool {
+  list.any(frames, fn(value) {
+    case value {
+      frame.Padding(_) -> True
+      _ -> False
+    }
+  })
+}
+
+fn receive_live_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let discarded = packet_space_discarded(state, level)
+  let readable = keys_available(state, level, Read)
+  let valid = now_milliseconds >= 0 && frames_valid_at_level(frames, level)
+  case discarded, readable, valid {
+    True, _, _ -> Error(SpaceUnavailable)
+    False, False, _ -> Error(MissingReadKeys(level))
+    False, True, False -> Error(ProtocolViolation)
+    False, True, True ->
+      receive_valid_packet(
+        state,
+        level,
+        packet_number,
+        frames,
+        codepoint,
+        now_milliseconds,
+      )
+  }
+}
+
+fn receive_valid_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  codepoint: packet_space.ReceivedCodepoint,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let space = packet_space_for_level(state, level)
+  case
+    packet_space.receive(
+      space,
+      packet_number,
+      frames_ack_eliciting(frames),
+      codepoint,
+      now_milliseconds,
+    )
+  {
+    Error(_) -> Error(PacketSpaceFailure)
+    Ok(packet_space.Duplicate(space)) ->
+      Ok(put_packet_space(state, level, space))
+    Ok(packet_space.Accepted(space, _)) -> {
+      let state =
+        put_packet_space(state, level, space)
+        |> update_receive_activity(now_milliseconds)
+      process_frames(state, level, frames, now_milliseconds)
+    }
+  }
+}
+
+fn update_receive_activity(state: State, now_milliseconds: Int) -> State {
+  State(..state, last_activity_milliseconds: now_milliseconds)
+}
+
+fn frames_valid_at_level(
+  frames: List(frame.Frame),
+  level: engine.EncryptionLevel,
+) -> Bool {
+  list.all(frames, fn(value) { frame_valid_at_level(value, level) })
+}
+
+fn frame_valid_at_level(
+  value: frame.Frame,
+  level: engine.EncryptionLevel,
+) -> Bool {
+  case level {
+    engine.Initial | engine.Handshake ->
+      case value {
+        frame.Padding(_)
+        | frame.Ping
+        | frame.Ack(_)
+        | frame.Crypto(_, _)
+        | frame.ConnectionCloseTransport(_, _, _) -> True
+        _ -> False
+      }
+    engine.ZeroRtt ->
+      case value {
+        frame.Padding(_)
+        | frame.Ping
+        | frame.ResetStream(_, _, _)
+        | frame.StopSending(_, _)
+        | frame.Stream(_, _, _, _)
+        | frame.MaxData(_)
+        | frame.MaxStreamData(_, _)
+        | frame.MaxStreams(_, _)
+        | frame.DataBlocked(_)
+        | frame.StreamDataBlocked(_, _)
+        | frame.StreamsBlocked(_, _)
+        | frame.ConnectionCloseApplication(_, _)
+        | frame.Datagram(_) -> True
+        _ -> False
+      }
+    engine.OneRtt -> True
+  }
+}
+
+fn process_frames(
+  state: State,
+  level: engine.EncryptionLevel,
+  frames: List(frame.Frame),
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case frames {
+    [] -> Ok(state)
+    [value, ..rest] -> {
+      use state <- result.try(process_frame(
+        state,
+        level,
+        value,
+        now_milliseconds,
+      ))
+      process_frames(state, level, rest, now_milliseconds)
+    }
+  }
+}
+
+fn process_frame(
+  state: State,
+  level: engine.EncryptionLevel,
+  value: frame.Frame,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case value {
+    frame.Padding(_) | frame.Ping -> Ok(state)
+    frame.Ack(acknowledgement) ->
+      process_ack(state, level, acknowledgement, now_milliseconds)
+    frame.Crypto(offset, data) ->
+      receive_crypto(state, level, offset, data, now_milliseconds)
+    frame.Stream(identifier, offset, data, fin) ->
+      receive_stream_frame(state, level, identifier, offset, data, fin)
+    frame.ResetStream(identifier, error_code, final_size) ->
+      receive_stream_reset(state, identifier, error_code, final_size)
+    frame.StopSending(identifier, error_code) ->
+      receive_stop_sending(state, identifier, error_code)
+    frame.MaxData(limit) ->
+      Ok(
+        State(
+          ..state,
+          connection_sender: flow_control.update_sender_limit(
+            state.connection_sender,
+            limit,
+          ),
+        ),
+      )
+    frame.MaxStreamData(identifier, limit) ->
+      update_stream_send_limit(state, identifier, limit)
+    frame.MaxStreams(direction, limit) ->
+      Ok(update_local_stream_limit(state, direction, limit))
+    frame.PathChallenge(challenge) ->
+      Ok(queue_application_frame(state, frame.PathResponse(challenge)))
+    frame.PathResponse(response) -> receive_path_response(state, response)
+    frame.ConnectionCloseTransport(error_code, _, reason)
+    | frame.ConnectionCloseApplication(error_code, reason) ->
+      Ok(enter_draining(state, error_code, reason, now_milliseconds))
+    frame.HandshakeDone -> receive_handshake_done(state)
+    frame.Datagram(data) -> receive_datagram(state, data)
+    frame.NewToken(token) -> Ok(add_event(state, NewTokenReceived(token)))
+    frame.NewConnectionId(sequence, retire_prior_to, identifier, reset_token) ->
+      receive_new_connection_id(
+        state,
+        sequence,
+        retire_prior_to,
+        identifier,
+        reset_token,
+      )
+    frame.RetireConnectionId(sequence) ->
+      Ok(add_event(state, LocalConnectionIdRetirementRequested(sequence)))
+    frame.DataBlocked(_)
+    | frame.StreamDataBlocked(_, _)
+    | frame.StreamsBlocked(_, _) -> Ok(state)
+  }
+}
+
+fn receive_crypto(
+  state: State,
+  level: engine.EncryptionLevel,
+  offset: Int,
+  data: BitArray,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case level {
+    engine.ZeroRtt -> Error(ProtocolViolation)
+    engine.Initial ->
+      insert_and_read_crypto(
+        state,
+        level,
+        state.initial_crypto_receive,
+        offset,
+        data,
+        now_milliseconds,
+      )
+    engine.Handshake ->
+      insert_and_read_crypto(
+        state,
+        level,
+        state.handshake_crypto_receive,
+        offset,
+        data,
+        now_milliseconds,
+      )
+    engine.OneRtt ->
+      insert_and_read_crypto(
+        state,
+        level,
+        state.application_crypto_receive,
+        offset,
+        data,
+        now_milliseconds,
+      )
+  }
+}
+
+fn insert_and_read_crypto(
+  state: State,
+  level: engine.EncryptionLevel,
+  byte_stream: reassembler.Reassembler,
+  offset: Int,
+  data: BitArray,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case reassembler.insert(byte_stream, offset, data, False) {
+    Error(_) -> Error(ProtocolViolation)
+    Ok(byte_stream) ->
+      case reassembler.read(byte_stream, maximum_crypto_buffer_bytes) {
+        Error(_) -> Error(ProtocolViolation)
+        Ok(reassembler.Read(byte_stream, contiguous, _)) -> {
+          let state = put_crypto_receive(state, level, byte_stream)
+          case contiguous {
+            <<>> -> Ok(state)
+            _ -> deliver_crypto(state, level, contiguous, now_milliseconds)
+          }
+        }
+      }
+  }
+}
+
+fn deliver_crypto(
+  state: State,
+  level: engine.EncryptionLevel,
+  contiguous: BitArray,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case state.tls_endpoint {
+    NoTlsEndpoint -> Ok(add_event(state, CryptoReceived(level, contiguous)))
+    ClientTlsEndpoint(client) ->
+      case
+        engine.handle_client_at(client, level, contiguous, now_milliseconds)
+      {
+        Error(error) -> Error(TlsFailure(error))
+        Ok(engine.Step(client, actions)) ->
+          apply_tls_actions(
+            State(..state, tls_endpoint: ClientTlsEndpoint(client)),
+            actions,
+          )
+      }
+    ServerTlsEndpoint(server) ->
+      case engine.handle_server(server, level, contiguous) {
+        Error(error) -> Error(TlsFailure(error))
+        Ok(engine.Step(server, actions)) ->
+          apply_tls_actions(
+            State(..state, tls_endpoint: ServerTlsEndpoint(server)),
+            actions,
+          )
+      }
+  }
+}
+
+fn put_crypto_receive(
+  state: State,
+  level: engine.EncryptionLevel,
+  byte_stream: reassembler.Reassembler,
+) -> State {
+  case level {
+    engine.Initial -> State(..state, initial_crypto_receive: byte_stream)
+    engine.Handshake -> State(..state, handshake_crypto_receive: byte_stream)
+    engine.OneRtt -> State(..state, application_crypto_receive: byte_stream)
+    engine.ZeroRtt -> state
+  }
+}
+
+fn receive_stream_frame(
+  state: State,
+  level: engine.EncryptionLevel,
+  identifier: Int,
+  offset: Int,
+  data: BitArray,
+  fin: Bool,
+) -> Result(State, Error) {
+  case stream_data_allowed(state, level) {
+    False -> Error(ProtocolViolation)
+    True -> {
+      use state <- result.try(ensure_remote_stream(state, identifier))
+      case dict.get(state.streams, identifier) {
+        Error(_) -> Error(UnknownStream(identifier))
+        Ok(stream) ->
+          apply_received_stream_data(
+            state,
+            stream,
+            identifier,
+            offset,
+            data,
+            fin,
+          )
+      }
+    }
+  }
+}
+
+fn stream_data_allowed(state: State, level: engine.EncryptionLevel) -> Bool {
+  state.phase == Established
+  || { level == engine.ZeroRtt && state.early_data_accepted }
+}
+
+fn apply_received_stream_data(
+  state: State,
+  stream: stream_state.State,
+  identifier: Int,
+  offset: Int,
+  data: BitArray,
+  fin: Bool,
+) -> Result(State, Error) {
+  case stream_state.receive_data(stream, offset, data, fin) {
+    Error(_) -> Error(StreamFailure)
+    Ok(#(stream, newly_received)) ->
+      case flow_control.receive(state.connection_receiver, newly_received) {
+        Error(_) -> Error(FlowControlFailure)
+        Ok(receiver) ->
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(state.streams, identifier, stream),
+              connection_receiver: receiver,
+            )
+            |> add_event(StreamReadable(identifier)),
+          )
+      }
+  }
+}
+
+fn receive_stream_reset(
+  state: State,
+  identifier: Int,
+  error_code: Int,
+  final_size: Int,
+) -> Result(State, Error) {
+  use state <- result.try(ensure_remote_stream(state, identifier))
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) ->
+      case stream_state.receive_reset(stream, error_code, final_size) {
+        Error(_) -> Error(StreamFailure)
+        Ok(#(stream, newly_received)) ->
+          case flow_control.receive(state.connection_receiver, newly_received) {
+            Error(_) -> Error(FlowControlFailure)
+            Ok(receiver) ->
+              Ok(
+                State(
+                  ..state,
+                  streams: dict.insert(state.streams, identifier, stream),
+                  connection_receiver: receiver,
+                )
+                |> add_event(StreamWasReset(identifier, error_code)),
+              )
+          }
+      }
+  }
+}
+
+fn receive_stop_sending(
+  state: State,
+  identifier: Int,
+  error_code: Int,
+) -> Result(State, Error) {
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) ->
+      case stream_state.reset_send(stream, error_code) {
+        Error(_) -> Error(StreamFailure)
+        Ok(#(stream, reset)) ->
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(state.streams, identifier, stream),
+            )
+            |> queue_application_frame(reset),
+          )
+      }
+  }
+}
+
+fn update_stream_send_limit(
+  state: State,
+  identifier: Int,
+  limit: Int,
+) -> Result(State, Error) {
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) ->
+      Ok(
+        State(
+          ..state,
+          streams: dict.insert(
+            state.streams,
+            identifier,
+            stream_state.update_send_limit(stream, limit),
+          ),
+        ),
+      )
+  }
+}
+
+fn update_local_stream_limit(
+  state: State,
+  direction: frame.StreamDirection,
+  limit: Int,
+) -> State {
+  case direction {
+    frame.Bidirectional ->
+      State(
+        ..state,
+        local_bidirectional_streams: flow_control.update_stream_limit(
+          state.local_bidirectional_streams,
+          limit,
+        ),
+      )
+    frame.Unidirectional ->
+      State(
+        ..state,
+        local_unidirectional_streams: flow_control.update_stream_limit(
+          state.local_unidirectional_streams,
+          limit,
+        ),
+      )
+  }
+}
+
+fn queue_application_frame(state: State, value: frame.Frame) -> State {
+  State(
+    ..state,
+    application_queue: list.append(state.application_queue, [value]),
+  )
+}
+
+fn enter_draining(
+  state: State,
+  error_code: Int,
+  reason: String,
+  now_milliseconds: Int,
+) -> State {
+  State(
+    ..state,
+    phase: Draining,
+    close_deadline_milliseconds: Some(
+      now_milliseconds + state.config.draining_timeout_milliseconds,
+    ),
+  )
+  |> add_event(PeerClosed(error_code, reason))
+}
+
+fn receive_handshake_done(state: State) -> Result(State, Error) {
+  case state.config.role, state.phase {
+    Client, Established -> confirm_client_tls(state)
+    _, _ -> Error(ProtocolViolation)
+  }
+}
+
+fn confirm_client_tls(state: State) -> Result(State, Error) {
+  case state.tls_endpoint {
+    NoTlsEndpoint ->
+      Ok(
+        State(
+          ..discard_level(state, engine.Handshake),
+          handshake_confirmed: True,
+        )
+        |> confirm_key_phase,
+      )
+    ClientTlsEndpoint(client) ->
+      case engine.confirm_client_handshake(client) {
+        Error(error) -> Error(TlsFailure(error))
+        Ok(engine.Step(client, actions)) -> {
+          use state <- result.try(apply_tls_actions(
+            State(..state, tls_endpoint: ClientTlsEndpoint(client)),
+            actions,
+          ))
+          Ok(
+            State(..state, handshake_confirmed: True)
+            |> confirm_key_phase,
+          )
+        }
+      }
+    ServerTlsEndpoint(_) -> Error(ProtocolViolation)
+  }
+}
+
+fn receive_datagram(state: State, data: BitArray) -> Result(State, Error) {
+  let negotiated = state.config.maximum_datagram_frame_size > 0
+  use encoded <- result.try(
+    frame.encode(frame.Datagram(data)) |> map_frame_result,
+  )
+  let frame_size = bit_array.byte_size(encoded)
+  case negotiated, frame_size <= state.config.maximum_datagram_frame_size {
+    False, _ -> Error(DatagramNotNegotiated)
+    True, False ->
+      Error(DatagramTooLarge(state.config.maximum_datagram_frame_size))
+    True, True -> Ok(add_event(state, DatagramReceived(data)))
+  }
+}
+
+fn receive_path_response(
+  state: State,
+  response: BitArray,
+) -> Result(State, Error) {
+  case path_validation.phase(state.path_validator) {
+    path_validation.Validating ->
+      case
+        path_validation.receive_response(
+          state.path_validator,
+          response,
+          state.last_activity_milliseconds,
+        )
+      {
+        Ok(validator) ->
+          Ok(
+            State(..state, path_validator: validator)
+            |> add_event(PathValidated),
+          )
+        Error(path_validation.ChallengeMismatch) -> Ok(state)
+        Error(error) -> Error(PathValidationFailure(error))
+      }
+    _ -> Ok(state)
+  }
+}
+
+fn receive_new_connection_id(
+  state: State,
+  sequence: Int,
+  retire_prior_to: Int,
+  identifier: BitArray,
+  reset_token: BitArray,
+) -> Result(State, Error) {
+  case state.peer_connection_ids {
+    None -> Error(ProtocolViolation)
+    Some(registry) -> {
+      let was_known = connection_id.contains_sequence(registry, sequence)
+      use update <- result.try(
+        connection_id.receive(
+          registry,
+          sequence,
+          retire_prior_to,
+          identifier,
+          reset_token,
+        )
+        |> map_connection_id_result,
+      )
+      let connection_id.Update(registry, retired_sequences) = update
+      let state =
+        State(..state, peer_connection_ids: Some(registry))
+        |> queue_retired_connection_ids(retired_sequences)
+      case !was_known && connection_id.is_active(registry, sequence) {
+        True ->
+          Ok(add_event(state, PeerConnectionIdAvailable(sequence, identifier)))
+        False -> Ok(state)
+      }
+    }
+  }
+}
+
+fn queue_retired_connection_ids(state: State, sequences: List(Int)) -> State {
+  case sequences {
+    [] -> state
+    [sequence, ..rest] ->
+      queue_application_frame(state, frame.RetireConnectionId(sequence))
+      |> queue_retired_connection_ids(rest)
+  }
+}
+
+fn tick_path_validation(state: State, now_milliseconds: Int) -> State {
+  let was_validating =
+    path_validation.phase(state.path_validator) == path_validation.Validating
+  let validator =
+    path_validation.on_timeout(state.path_validator, now_milliseconds)
+  case was_validating, path_validation.phase(validator) {
+    True, path_validation.Failed ->
+      State(..state, path_validator: validator)
+      |> add_event(PathValidationFailed)
+    _, _ -> State(..state, path_validator: validator)
+  }
+}
+
+fn ensure_remote_stream(state: State, identifier: Int) -> Result(State, Error) {
+  case dict.has_key(state.streams, identifier) {
+    True -> Ok(state)
+    False -> create_missing_remote_streams(state, identifier)
+  }
+}
+
+fn create_missing_remote_streams(
+  state: State,
+  identifier: Int,
+) -> Result(State, Error) {
+  case stream_id.decode(identifier) {
+    Error(_) -> Error(ProtocolViolation)
+    Ok(stream_id.StreamId(index, initiator, direction)) ->
+      case initiator == local_endpoint(state.config.role) {
+        True -> Error(ProtocolViolation)
+        False -> open_remote_through(state, index, direction)
+      }
+  }
+}
+
+fn open_remote_through(
+  state: State,
+  target_index: Int,
+  direction: stream_id.Direction,
+) -> Result(State, Error) {
+  let limit = remote_limit(state, direction)
+  let next_index = flow_control.opened_streams(limit)
+  case next_index > target_index {
+    True -> Error(ProtocolViolation)
+    False ->
+      open_remote_range(state, direction, next_index, target_index, limit)
+  }
+}
+
+fn open_remote_range(
+  state: State,
+  direction: stream_id.Direction,
+  index: Int,
+  target_index: Int,
+  limit: flow_control.StreamLimit,
+) -> Result(State, Error) {
+  case index > target_index {
+    True -> Ok(put_remote_limit(state, direction, limit))
+    False -> {
+      use limit <- result.try(open_limit(limit, index))
+      use identifier <- result.try(encode_stream_identifier(
+        index,
+        remote_endpoint(state.config.role),
+        direction,
+      ))
+      use state <- result.try(insert_new_stream(
+        state,
+        identifier,
+        False,
+        direction,
+      ))
+      open_remote_range(state, direction, index + 1, target_index, limit)
+    }
+  }
+}
+
+fn remote_limit(
+  state: State,
+  direction: stream_id.Direction,
+) -> flow_control.StreamLimit {
+  case direction {
+    stream_id.Bidirectional -> state.remote_bidirectional_streams
+    stream_id.Unidirectional -> state.remote_unidirectional_streams
+  }
+}
+
+fn put_remote_limit(
+  state: State,
+  direction: stream_id.Direction,
+  limit: flow_control.StreamLimit,
+) -> State {
+  case direction {
+    stream_id.Bidirectional ->
+      State(..state, remote_bidirectional_streams: limit)
+    stream_id.Unidirectional ->
+      State(..state, remote_unidirectional_streams: limit)
+  }
+}
+
+fn open_limit(
+  limit: flow_control.StreamLimit,
+  index: Int,
+) -> Result(flow_control.StreamLimit, Error) {
+  case flow_control.open_stream(limit, index) {
+    Ok(updated) -> Ok(updated)
+    Error(_) -> Error(StreamLimitFailure)
+  }
+}
+
+fn encode_stream_identifier(
+  index: Int,
+  initiator: stream_id.Initiator,
+  direction: stream_id.Direction,
+) -> Result(Int, Error) {
+  case stream_id.encode(index, initiator, direction) {
+    Ok(identifier) -> Ok(identifier)
+    Error(_) -> Error(ProtocolViolation)
+  }
+}
+
+fn local_endpoint(role: Role) -> stream_id.Initiator {
+  case role {
+    Client -> stream_id.Client
+    Server -> stream_id.Server
+  }
+}
+
+fn remote_endpoint(role: Role) -> stream_id.Initiator {
+  case role {
+    Client -> stream_id.Server
+    Server -> stream_id.Client
+  }
+}
+
+fn open_established_stream(
+  state: State,
+  direction: stream_id.Direction,
+) -> Result(#(State, Int), Error) {
+  let limit = local_limit(state, direction)
+  let index = flow_control.opened_streams(limit)
+  use limit <- result.try(open_limit(limit, index))
+  use identifier <- result.try(encode_stream_identifier(
+    index,
+    local_endpoint(state.config.role),
+    direction,
+  ))
+  let state = put_local_limit(state, direction, limit)
+  use state <- result.try(insert_new_stream(state, identifier, True, direction))
+  Ok(#(state, identifier))
+}
+
+fn local_limit(
+  state: State,
+  direction: stream_id.Direction,
+) -> flow_control.StreamLimit {
+  case direction {
+    stream_id.Bidirectional -> state.local_bidirectional_streams
+    stream_id.Unidirectional -> state.local_unidirectional_streams
+  }
+}
+
+fn put_local_limit(
+  state: State,
+  direction: stream_id.Direction,
+  limit: flow_control.StreamLimit,
+) -> State {
+  case direction {
+    stream_id.Bidirectional ->
+      State(..state, local_bidirectional_streams: limit)
+    stream_id.Unidirectional ->
+      State(..state, local_unidirectional_streams: limit)
+  }
+}
+
+fn insert_new_stream(
+  state: State,
+  identifier: Int,
+  locally_initiated: Bool,
+  direction: stream_id.Direction,
+) -> Result(State, Error) {
+  case dict.size(state.streams) >= state.config.maximum_total_streams {
+    True -> Error(StreamLimitFailure)
+    False -> {
+      let send_limit =
+        initial_stream_send_limit(state, locally_initiated, direction)
+      case
+        stream_state.new(
+          identifier,
+          local_endpoint(state.config.role),
+          state.config.initial_receive_stream_data,
+          state.config.receive_stream_window,
+          state.config.maximum_receive_stream_data,
+          send_limit,
+          state.config.maximum_stream_receive_buffer,
+          state.config.maximum_stream_send_buffer,
+          state.config.maximum_stream_final_size,
+        )
+      {
+        Error(_) -> Error(StreamFailure)
+        Ok(stream) ->
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(state.streams, identifier, stream),
+              stream_order: list.append(state.stream_order, [identifier]),
+            )
+            |> add_event(StreamOpened(identifier)),
+          )
+      }
+    }
+  }
+}
+
+fn initial_stream_send_limit(
+  state: State,
+  locally_initiated: Bool,
+  direction: stream_id.Direction,
+) -> Int {
+  case locally_initiated, direction {
+    True, stream_id.Bidirectional -> state.peer_stream_data_bidi_remote
+    True, stream_id.Unidirectional -> state.peer_stream_data_uni
+    False, stream_id.Bidirectional -> state.peer_stream_data_bidi_local
+    False, stream_id.Unidirectional -> 0
+  }
+}
+
+fn apply_stream_read(
+  state: State,
+  identifier: Int,
+  outcome: stream_state.ReadOutcome,
+) -> Result(#(State, stream_state.ReadOutcome), Error) {
+  let #(stream, consumed, new_stream_limit) = read_effects(outcome)
+  case flow_control.consume(state.connection_receiver, consumed) {
+    Error(_) -> Error(FlowControlFailure)
+    Ok(#(receiver, new_connection_limit)) -> {
+      let state =
+        State(
+          ..state,
+          streams: dict.insert(state.streams, identifier, stream),
+          connection_receiver: receiver,
+        )
+      let state =
+        queue_receive_credit_updates(
+          state,
+          identifier,
+          new_stream_limit,
+          new_connection_limit,
+        )
+      Ok(#(state, outcome))
+    }
+  }
+}
+
+fn read_effects(
+  outcome: stream_state.ReadOutcome,
+) -> #(stream_state.State, Int, Option(Int)) {
+  case outcome {
+    stream_state.ReadPending(stream) | stream_state.ReadFinished(stream) -> #(
+      stream,
+      0,
+      None,
+    )
+    stream_state.ReadData(stream, data, _, new_limit) -> #(
+      stream,
+      bit_array.byte_size(data),
+      new_limit,
+    )
+    stream_state.ReadReset(stream, _, discarded, new_limit) -> #(
+      stream,
+      discarded,
+      new_limit,
+    )
+  }
+}
+
+fn queue_receive_credit_updates(
+  state: State,
+  identifier: Int,
+  stream_limit: Option(Int),
+  connection_limit: Option(Int),
+) -> State {
+  let state = case stream_limit {
+    None -> state
+    Some(limit) ->
+      queue_application_frame(state, frame.MaxStreamData(identifier, limit))
+  }
+  case connection_limit {
+    None -> state
+    Some(limit) -> queue_application_frame(state, frame.MaxData(limit))
+  }
+}
+
+fn process_ack(
+  state: State,
+  level: engine.EncryptionLevel,
+  acknowledgement: frame.Acknowledgement,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let space = packet_space_for_level(state, level)
+  case
+    packet_space.on_ack(
+      space,
+      acknowledgement,
+      state.peer_ack_delay_exponent,
+      now_milliseconds,
+      state.estimator,
+      state.handshake_confirmed,
+      timer_granularity_milliseconds,
+    )
+  {
+    Error(_) -> Error(PacketSpaceFailure)
+    Ok(packet_space.AckOutcome(space, estimator, acknowledged, lost, _)) -> {
+      let smaller_packet_acknowledged =
+        acknowledged_smaller_than_probe(state, acknowledged)
+      let state =
+        put_packet_space(state, level, space)
+        |> set_estimator(estimator)
+      use state <- result.try(apply_acknowledged_packets(
+        state,
+        level,
+        acknowledged,
+        now_milliseconds,
+      ))
+      use state <- result.try(apply_lost_packets(
+        state,
+        level,
+        lost,
+        smaller_packet_acknowledged,
+        now_milliseconds,
+      ))
+      apply_ack_ecn(state, acknowledgement, acknowledged, now_milliseconds)
+    }
+  }
+}
+
+fn set_estimator(state: State, estimator: rtt.Estimator) -> State {
+  State(..state, estimator: estimator)
+}
+
+fn apply_acknowledged_packets(
+  state: State,
+  level: engine.EncryptionLevel,
+  packets: List(packet_space.SentPacket),
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case packets {
+    [] -> Ok(state)
+    [packet, ..rest] -> {
+      use state <- result.try(acknowledge_congestion_packet(
+        state,
+        packet,
+        now_milliseconds,
+      ))
+      use state <- result.try(acknowledge_pmtu_packet(state, packet))
+      use state <- result.try(acknowledge_packet_frames(state, packet.frames))
+      let state =
+        acknowledge_key_phase_packet(state, level, packet.packet_number)
+      apply_acknowledged_packets(state, level, rest, now_milliseconds)
+    }
+  }
+}
+
+fn acknowledge_key_phase_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+) -> State {
+  case level, state.one_rtt_key_phase {
+    engine.OneRtt, Some(key_state) ->
+      install_key_phase_state(
+        state,
+        key_phase.acknowledge(key_state, packet_number),
+        reset_usage: False,
+      )
+    _, _ -> state
+  }
+}
+
+fn acknowledge_pmtu_packet(
+  state: State,
+  packet: packet_space.SentPacket,
+) -> Result(State, Error) {
+  case pmtu.outstanding_probe(state.pmtu), packet_is_pmtu_probe(packet) {
+    Some(size), True if size == packet.sent_bytes ->
+      case pmtu.probe_acked(state.pmtu, size) {
+        Ok(path_mtu) -> Ok(State(..state, pmtu: path_mtu))
+        Error(error) -> Error(PmtuFailure(error))
+      }
+    _, _ -> Ok(state)
+  }
+}
+
+fn acknowledged_smaller_than_probe(
+  state: State,
+  packets: List(packet_space.SentPacket),
+) -> Bool {
+  case pmtu.outstanding_probe(state.pmtu) {
+    None -> False
+    Some(probe_size) ->
+      list.any(packets, fn(packet) { packet.sent_bytes < probe_size })
+  }
+}
+
+fn packet_is_pmtu_probe(packet: packet_space.SentPacket) -> Bool {
+  list.any(packet.frames, fn(value) { value == frame.Ping })
+  && list.any(packet.frames, fn(value) {
+    case value {
+      frame.Padding(_) -> True
+      _ -> False
+    }
+  })
+}
+
+fn acknowledge_congestion_packet(
+  state: State,
+  packet: packet_space.SentPacket,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case packet.in_flight {
+    False -> Ok(state)
+    True -> {
+      let congestion = case state.congestion {
+        RenoState(reno) -> acknowledge_reno(reno, packet)
+        CubicState(cubic_state) ->
+          acknowledge_cubic(
+            cubic_state,
+            packet,
+            state.estimator,
+            now_milliseconds,
+          )
+      }
+      use congestion <- result.try(congestion)
+      Ok(State(..state, congestion: congestion))
+    }
+  }
+}
+
+fn acknowledge_reno(
+  state: new_reno.State,
+  packet: packet_space.SentPacket,
+) -> Result(CongestionState, Error) {
+  case
+    new_reno.on_packet_acked(
+      state,
+      packet.sent_bytes,
+      packet.time_sent_milliseconds,
+      False,
+    )
+  {
+    Ok(updated) -> Ok(RenoState(updated))
+    Error(_) -> Error(InvalidInput)
+  }
+}
+
+fn acknowledge_cubic(
+  state: cubic.State,
+  packet: packet_space.SentPacket,
+  estimator: rtt.Estimator,
+  now_milliseconds: Int,
+) -> Result(CongestionState, Error) {
+  let rtt.Snapshot(_, smoothed, _, _) = rtt.snapshot(estimator)
+  case
+    cubic.on_packet_acked(
+      state,
+      packet.sent_bytes,
+      packet.time_sent_milliseconds,
+      now_milliseconds,
+      smoothed,
+      False,
+    )
+  {
+    Ok(updated) -> Ok(CubicState(updated))
+    Error(_) -> Error(InvalidInput)
+  }
+}
+
+fn acknowledge_packet_frames(
+  state: State,
+  frames: List(frame.Frame),
+) -> Result(State, Error) {
+  case frames {
+    [] -> Ok(state)
+    [frame.Stream(identifier, _, _, _) as sent, ..rest] -> {
+      use state <- result.try(acknowledge_stream_frame(state, identifier, sent))
+      acknowledge_packet_frames(state, rest)
+    }
+    [_, ..rest] -> acknowledge_packet_frames(state, rest)
+  }
+}
+
+fn acknowledge_stream_frame(
+  state: State,
+  identifier: Int,
+  sent: frame.Frame,
+) -> Result(State, Error) {
+  case dict.has_key(state.streams, identifier) {
+    False -> Ok(state)
+    True ->
+      case dict.get(state.streams, identifier) {
+        Error(_) -> Error(StreamFailure)
+        Ok(stream) ->
+          case stream_state.on_frame_acked(stream, sent) {
+            Error(_) -> Error(StreamFailure)
+            Ok(stream) ->
+              Ok(
+                State(
+                  ..state,
+                  streams: dict.insert(state.streams, identifier, stream),
+                ),
+              )
+          }
+      }
+  }
+}
+
+fn apply_lost_packets(
+  state: State,
+  level: engine.EncryptionLevel,
+  packets: List(packet_space.SentPacket),
+  smaller_packet_acknowledged: Bool,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case packets {
+    [] -> Ok(state)
+    [packet, ..rest] -> {
+      use state <- result.try(lose_congestion_packet(
+        state,
+        packet,
+        now_milliseconds,
+      ))
+      use state <- result.try(lose_pmtu_packet(
+        state,
+        packet,
+        smaller_packet_acknowledged,
+      ))
+      use state <- result.try(requeue_lost_frames(state, level, packet.frames))
+      apply_lost_packets(
+        state,
+        level,
+        rest,
+        smaller_packet_acknowledged,
+        now_milliseconds,
+      )
+    }
+  }
+}
+
+fn lose_pmtu_packet(
+  state: State,
+  packet: packet_space.SentPacket,
+  smaller_packet_acknowledged: Bool,
+) -> Result(State, Error) {
+  case pmtu.outstanding_probe(state.pmtu), packet_is_pmtu_probe(packet) {
+    Some(size), True if size == packet.sent_bytes ->
+      case pmtu.probe_lost(state.pmtu, size, smaller_packet_acknowledged) {
+        Ok(path_mtu) -> Ok(State(..state, pmtu: path_mtu))
+        Error(error) -> Error(PmtuFailure(error))
+      }
+    _, _ -> Ok(state)
+  }
+}
+
+fn lose_congestion_packet(
+  state: State,
+  packet: packet_space.SentPacket,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case packet.in_flight {
+    False -> Ok(state)
+    True -> {
+      let congestion = case state.congestion {
+        RenoState(reno) ->
+          case
+            new_reno.on_packet_lost(
+              reno,
+              packet.sent_bytes,
+              packet.time_sent_milliseconds,
+              now_milliseconds,
+            )
+          {
+            Ok(updated) -> Ok(RenoState(updated))
+            Error(_) -> Error(InvalidInput)
+          }
+        CubicState(cubic_state) ->
+          case
+            cubic.on_packet_lost(
+              cubic_state,
+              packet.sent_bytes,
+              packet.time_sent_milliseconds,
+              now_milliseconds,
+            )
+          {
+            Ok(updated) -> Ok(CubicState(updated))
+            Error(_) -> Error(InvalidInput)
+          }
+      }
+      use congestion <- result.try(congestion)
+      Ok(State(..state, congestion: congestion))
+    }
+  }
+}
+
+fn requeue_lost_frames(
+  state: State,
+  level: engine.EncryptionLevel,
+  frames: List(frame.Frame),
+) -> Result(State, Error) {
+  case frames {
+    [] -> Ok(state)
+    [value, ..rest] -> {
+      use state <- result.try(requeue_lost_frame(state, level, value))
+      requeue_lost_frames(state, level, rest)
+    }
+  }
+}
+
+fn requeue_lost_frame(
+  state: State,
+  level: engine.EncryptionLevel,
+  value: frame.Frame,
+) -> Result(State, Error) {
+  case value {
+    frame.Stream(identifier, _, _, _) ->
+      case dict.has_key(state.streams, identifier) {
+        False -> Ok(state)
+        True ->
+          case dict.get(state.streams, identifier) {
+            Error(_) -> Error(StreamFailure)
+            Ok(stream) ->
+              case stream_state.on_frame_lost(stream, value) {
+                Error(_) -> Error(StreamFailure)
+                Ok(stream) ->
+                  Ok(
+                    State(
+                      ..state,
+                      streams: dict.insert(state.streams, identifier, stream),
+                    ),
+                  )
+              }
+          }
+      }
+    frame.Padding(_)
+    | frame.Ack(_)
+    | frame.Datagram(_)
+    | frame.ConnectionCloseTransport(_, _, _)
+    | frame.ConnectionCloseApplication(_, _)
+    | frame.PathResponse(_) -> Ok(state)
+    _ -> Ok(prepend_queue(state, level, value))
+  }
+}
+
+fn prepend_queue(
+  state: State,
+  level: engine.EncryptionLevel,
+  value: frame.Frame,
+) -> State {
+  case level {
+    engine.Initial ->
+      State(..state, initial_queue: [value, ..state.initial_queue])
+    engine.Handshake ->
+      State(..state, handshake_queue: [value, ..state.handshake_queue])
+    engine.ZeroRtt ->
+      State(..state, zero_rtt_queue: [value, ..state.zero_rtt_queue])
+    engine.OneRtt ->
+      State(..state, application_queue: [value, ..state.application_queue])
+  }
+}
+
+fn apply_ack_ecn(
+  state: State,
+  acknowledgement: frame.Acknowledgement,
+  acknowledged: List(packet_space.SentPacket),
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let frame.Acknowledgement(_, ranges, feedback) = acknowledgement
+  case ranges {
+    [] -> Error(ProtocolViolation)
+    [frame.AckRange(_, largest), ..] -> {
+      let markings = acknowledged_markings(acknowledged, 0, 0)
+      let feedback = map_ecn_feedback(feedback)
+      case ecn.on_ack(state.ecn, largest, markings, feedback) {
+        Error(_) -> Error(ProtocolViolation)
+        Ok(ecn.AckResult(ecn_state, newly_ce)) ->
+          finish_ecn_ack(state, ecn_state, newly_ce, now_milliseconds)
+      }
+    }
+  }
+}
+
+fn finish_ecn_ack(
+  state: State,
+  ecn_state: ecn.State,
+  newly_congestion_experienced: Int,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let state = State(..state, ecn: ecn_state)
+  case newly_congestion_experienced > 0 {
+    False -> Ok(state)
+    True -> congestion_experienced(state, now_milliseconds)
+  }
+}
+
+fn acknowledged_markings(
+  packets: List(packet_space.SentPacket),
+  ect0: Int,
+  ect1: Int,
+) -> ecn.Acknowledged {
+  case packets {
+    [] -> ecn.Acknowledged(ect0, ect1)
+    [packet, ..rest] ->
+      case packet.ecn {
+        ecn.Ect0 -> acknowledged_markings(rest, ect0 + 1, ect1)
+        ecn.Ect1 -> acknowledged_markings(rest, ect0, ect1 + 1)
+        ecn.NotEct -> acknowledged_markings(rest, ect0, ect1)
+      }
+  }
+}
+
+fn map_ecn_feedback(feedback: Option(frame.EcnCounts)) -> Option(ecn.Counts) {
+  case feedback {
+    None -> None
+    Some(frame.EcnCounts(ect0, ect1, ce)) -> Some(ecn.Counts(ect0, ect1, ce))
+  }
+}
+
+fn congestion_experienced(
+  state: State,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let congestion = case state.congestion {
+    RenoState(reno) ->
+      case
+        new_reno.on_packet_lost(reno, 0, now_milliseconds, now_milliseconds)
+      {
+        Ok(updated) -> Ok(RenoState(updated))
+        Error(_) -> Error(InvalidInput)
+      }
+    CubicState(cubic_state) ->
+      case
+        cubic.on_packet_lost(cubic_state, 0, now_milliseconds, now_milliseconds)
+      {
+        Ok(updated) -> Ok(CubicState(updated))
+        Error(_) -> Error(InvalidInput)
+      }
+  }
+  use congestion <- result.try(congestion)
+  Ok(State(..state, congestion: congestion))
+}
+
+fn close_valid(
+  state: State,
+  application_error_code: Int,
+  reason: String,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let has_one_rtt = keys_available(state, engine.OneRtt, Write)
+  case state.phase, has_one_rtt {
+    Closed, _ | Draining, _ -> Error(ConnectionUnavailable)
+    Closing, _ -> Ok(state)
+    Handshaking, False -> Error(ConnectionUnavailable)
+    Handshaking, True | Established, _ ->
+      Ok(
+        State(
+          ..queue_application_frame(
+            state,
+            frame.ConnectionCloseApplication(application_error_code, reason),
+          ),
+          phase: Closing,
+          close_deadline_milliseconds: Some(
+            now_milliseconds + state.config.draining_timeout_milliseconds,
+          ),
+        ),
+      )
+  }
+}
+
+fn tick_monotonic(state: State, now_milliseconds: Int) -> Result(State, Error) {
+  case state.phase, state.close_deadline_milliseconds {
+    Closed, _ -> Ok(state)
+    Closing, Some(deadline) if now_milliseconds >= deadline ->
+      Ok(State(..state, phase: Closed))
+    Draining, Some(deadline) if now_milliseconds >= deadline ->
+      Ok(State(..state, phase: Closed))
+    Closing, _ | Draining, _ -> Ok(state)
+    _, _
+      if now_milliseconds
+      >= state.last_activity_milliseconds
+      + state.config.idle_timeout_milliseconds
+    -> Ok(State(..state, phase: Closed))
+    Handshaking, _ | Established, _ -> tick_recovery(state, now_milliseconds)
+  }
+}
+
+fn tick_recovery(state: State, now_milliseconds: Int) -> Result(State, Error) {
+  use state <- result.try(tick_packet_space(
+    state,
+    engine.Initial,
+    now_milliseconds,
+  ))
+  use state <- result.try(tick_packet_space(
+    state,
+    engine.Handshake,
+    now_milliseconds,
+  ))
+  tick_packet_space(state, engine.OneRtt, now_milliseconds)
+}
+
+fn tick_packet_space(
+  state: State,
+  level: engine.EncryptionLevel,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case packet_space_discarded(state, level) {
+    True -> Ok(state)
+    False -> {
+      let space = packet_space_for_level(state, level)
+      case
+        packet_space.on_timeout(
+          space,
+          now_milliseconds,
+          state.estimator,
+          state.handshake_confirmed,
+          timer_granularity_milliseconds,
+        )
+      {
+        Error(_) -> Error(PacketSpaceFailure)
+        Ok(packet_space.NoTimeout(space)) ->
+          Ok(put_packet_space(state, level, space))
+        Ok(packet_space.ProbeTimeout(space, _)) ->
+          Ok(
+            put_packet_space(state, level, space)
+            |> prepend_queue(level, frame.Ping)
+            |> update_ecn_timeout,
+          )
+        Ok(packet_space.LossTimeout(space, lost, _)) ->
+          put_packet_space(state, level, space)
+          |> apply_lost_packets(level, lost, False, now_milliseconds)
+      }
+    }
+  }
+}
+
+fn update_ecn_timeout(state: State) -> State {
+  State(..state, ecn: ecn.on_probe_timeout(state.ecn))
+}
+
+fn map_frame_result(value: Result(value, frame.Error)) -> Result(value, Error) {
+  case value {
+    Ok(decoded) -> Ok(decoded)
+    Error(error) -> Error(FrameCodecFailure(error))
+  }
+}
+
+fn map_wire_result(
+  value: Result(value, wire_packet.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(decoded) -> Ok(decoded)
+    Error(error) -> Error(WirePacketFailure(error))
+  }
+}
+
+fn map_key_phase_result(
+  value: Result(value, key_phase.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(KeyUpdateFailure(error))
+  }
+}
+
+fn map_aead_usage_result(
+  value: Result(value, aead_usage.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(AeadUsageFailure(error))
+  }
+}
+
+fn map_path_validation_result(
+  value: Result(value, path_validation.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(PathValidationFailure(error))
+  }
+}
+
+fn map_connection_id_result(
+  value: Result(value, connection_id.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(ConnectionIdFailure(error))
+  }
+}
+
+fn minimum(left: Int, right: Int) -> Int {
+  case left < right {
+    True -> left
+    False -> right
+  }
+}

@@ -230,7 +230,18 @@ isolated best-case numbers are not sufficient.
   localhost service identity, signature tampering, and constant-time tag
   comparison. A pure client/server state-model test completes ClientHello
   through authenticated Finished and installs matching Handshake and 1-RTT
-  traffic keys; ALPN mismatch and Finished corruption are fatal.
+  traffic keys; ALPN mismatch and Finished corruption are fatal. A deferred
+  key-share test completes one HelloRetryRequest with the required synthetic
+  message_hash transcript and verifies Initial/Handshake key-discard actions.
+  PSK tests cover strict identity/mode vectors, exact ClientHelloTruncated
+  binder input, constant-time binder verification, encrypted origin/ALPN/QUIC
+  version-bound tickets, expiry, modulo ticket age, QUIC's sole valid early-data
+  size, cache saturation, clock rollback, pruning, and replay rejection.
+  Engine tests complete a PSK handshake without certificate messages, install
+  matching client/server 0-RTT keys, reject replay or changed remembered
+  transport parameters without failing 1-RTT resumption, incrementally receive
+  a post-handshake ticket, reuse it on the next connection, and idempotently
+  discard client Handshake keys only after confirmation.
 - Native lifecycle tests additionally cover arbitrary CRYPTO fragmentation,
   key-update confirmation/ACK/three-PTO rules, AEAD confidentiality and
   integrity limits, RTT and ACK-delay formulas, packet/time-threshold loss,
@@ -239,7 +250,7 @@ isolated best-case numbers are not sufficient.
   Further path tests cover authenticated and expiring Retry/NEW_TOKEN values,
   stateless-reset derivation, connection-ID rotation and retirement watermarks,
   permanent ECN validation failure, CUBIC, and bounded pacing bursts.
-- `mise run core-check` runs package format, warnings-as-errors build, 108 tests,
+- `mise run core-check` runs package format, warnings-as-errors build, 124 tests,
   documentation, and glinter. The root `mise run check` includes this gate so
   native-core regressions cannot pass the existing wrapper checks.
 

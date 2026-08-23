@@ -239,6 +239,37 @@ pub fn candidate_kind(candidate: ReadCandidate) -> CandidateKind {
   candidate.kind
 }
 
+/// Return candidate packet keys to the internal packet-protection adapter.
+pub fn candidate_keys(candidate: ReadCandidate) -> traffic_keys.TrafficKeys {
+  candidate.keys
+}
+
+/// Return current write keys without exposing them outside the internal core.
+pub fn write_keys(state: State) -> traffic_keys.TrafficKeys {
+  state.write_keys
+}
+
+/// Return current read keys to synchronize the connection's directional set.
+pub fn read_keys(state: State) -> traffic_keys.TrafficKeys {
+  state.read_keys
+}
+
+/// Bounded key set used to remove short-header protection. Authentication and
+/// packet-number rules are checked separately before a phase transition.
+pub fn decryption_candidates(
+  state: State,
+  now_milliseconds: Int,
+) -> List(ReadCandidate) {
+  let current = ReadCandidate(Current, state.read_keys)
+  let next = ReadCandidate(Next, state.next_read_keys)
+  case state.previous_read_keys {
+    Some(PreviousReadKeys(_, keys, discard_at))
+      if now_milliseconds >= 0 && now_milliseconds < discard_at
+    -> [current, next, ReadCandidate(Previous, keys)]
+    _ -> [current, next]
+  }
+}
+
 fn candidate_for_valid_packet(
   state: State,
   observed_phase: KeyPhase,

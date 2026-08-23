@@ -133,10 +133,17 @@ handshake, extension and authentication-message codecs, X25519, the TLS 1.3
 transcript and key schedule, RFC 5280 path and RFC 9525 service-identity
 validation, CertificateVerify, constant-time Finished verification, and a
 client/server state-model handshake through 1-RTT key installation. Arbitrary
-CRYPTO fragmentation, QUIC key-phase updates, three-PTO old-key retention, and
-AEAD usage limits are also implemented. HelloRetryRequest, certificate
-selection, key discard coordination, tickets, PSK binders, anti-replay, and
-0-RTT remain open.
+CRYPTO fragmentation, one bounded HelloRetryRequest, QUIC key-phase updates,
+three-PTO old-key retention, Initial/Handshake key-discard actions, and AEAD
+usage limits are also implemented. Strict PSK identity/mode/binder codecs,
+exact ClientHelloTruncated binder hashing, AES-256-GCM protected origin-bound
+session tickets, modulo-2^32 ticket-age checks, and a bounded time-windowed
+anti-replay cache are complete. The state machine now issues, incrementally
+stores, and reuses post-handshake tickets; selects authenticated PSKs; omits
+certificate messages on resumption; installs matching 0-RTT keys; conservatively
+rejects early data when remembered transport parameters change or replay state
+rejects it; and coordinates Initial, Handshake, and 0-RTT key discard.
+Certificate selection and integration with the live transport remain open.
 
 Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
 key schedule, transport-parameter extension, Retry integrity, header and

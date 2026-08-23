@@ -80,6 +80,22 @@ pub fn buffered_bytes(state: Reassembler) -> Int {
   state.buffered_bytes
 }
 
+/// Release all unread bytes after a RESET_STREAM final size is authenticated.
+pub fn discard_to_final(state: Reassembler) -> Result(Reassembler, Error) {
+  case state.final_size {
+    None -> Error(InvalidInput)
+    Some(final_size) ->
+      Ok(
+        Reassembler(
+          ..state,
+          read_offset: final_size,
+          segments: [],
+          buffered_bytes: 0,
+        ),
+      )
+  }
+}
+
 fn insert_aligned(
   state: Reassembler,
   offset: Int,
