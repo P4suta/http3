@@ -17,6 +17,11 @@ const default_body_limit = 8_388_608
 
 const default_stream_buffer_limit = 262_144
 
+@external(erlang, "http3_internal_transport_ffi", "server_stream")
+fn make_transport_stream(
+  handle: server_backend.RequestHandle,
+) -> transport.Stream
+
 /// Secure listener configuration.
 pub opaque type Configuration {
   Configuration(
@@ -224,7 +229,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
 
 /// Obtain typed advanced controls for an accepted request stream.
 pub fn request_transport(request: Request) -> transport.Stream {
-  transport.server_stream(request.handle)
+  make_transport_stream(request.handle)
 }
 
 /// Return the listener's bound UDP port.

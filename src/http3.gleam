@@ -1,8 +1,8 @@
 //// A Gleam-native HTTP/3 API.
 ////
-//// This pre-alpha bootstrap exposes backend capability discovery and a
-//// bounded, buffered client. Streaming, connection reuse, and server APIs
-//// will be added without exposing backend-specific Erlang values.
+//// This pre-alpha package provides bounded and streaming clients and server,
+//// plus typed advanced transport controls, without exposing backend-specific
+//// Erlang values.
 
 import http3/internal/backend
 

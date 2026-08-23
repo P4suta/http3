@@ -41,6 +41,8 @@ rather than adding a test with no useful assertion.
 - Exercise affected network behavior with a local loopback test over real UDP.
   An in-memory mock is useful for unit tests but does not replace this test.
 - Run `mise run check` before considering the change complete.
+- Audit the compiler-exported package interface so internal adapter modules,
+  backend handle types, and construction bridges never enter the public API.
 
 A loopback request-response test must perform actual HTTP/3 work, use bounded
 request and response bodies, and assert the response status, headers, and
@@ -158,6 +160,10 @@ not independent interoperability evidence.
   upstream test sources, so conformance must run from that exact checkout.
 - The repository suite completed 81 tests with no failures before the final
   completion check.
+- `mise run api` exports the compiler package interface and rejects internal
+  module names, backend handle types, or construction bridges while requiring
+  the supported advanced accessors. A separate package compile confirmed the
+  public opaque types remain usable and the removed bridge is not addressable.
 
 ### During performance work
 
@@ -233,6 +239,7 @@ mise run check
 ```
 
 This checks formatting, builds with warnings as errors, runs tests, builds all
-configured documentation pages, and runs the source, Markdown, TOML, workflow,
-spelling, and REUSE licence checks. The CI matrix additionally covers
-Erlang/OTP 26 through 29 and smoke tests on Linux, macOS, and Windows.
+configured documentation pages, audits the compiler-exported public API, and
+runs the source, Markdown, TOML, workflow, spelling, and REUSE licence checks.
+The CI matrix additionally covers Erlang/OTP 26 through 29 and smoke tests on
+Linux, macOS, and Windows.

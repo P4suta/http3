@@ -137,6 +137,10 @@ default and accepts only an explicit typed directory configuration. Session
 tickets are opaque and origin-bound; the adapter retains the verified hostname
 when a resumed connection uses the prior peer address to make genuine 0-RTT
 possible. Early requests are locally restricted to replay-safe methods.
+Client and server accessors create the public opaque transport values through
+a private Gleam external backed by one small internal Erlang FFI module. No
+constructor bridge or backend handle type appears in the compiler-exported
+package interface.
 
 ## HTTP data model
 

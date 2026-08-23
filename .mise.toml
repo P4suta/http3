@@ -36,6 +36,13 @@ run = "gleam run -m http3_benchmark -- soak"
 description = "Build package documentation"
 run = "gleam docs build"
 
+[tasks.api]
+description = "Audit the compiler-exported public API boundary"
+run = [
+  "gleam export package-interface --out build/http3-package-interface.json",
+  "escript test/http3_public_api_audit.escript build/http3-package-interface.json",
+]
+
 [tasks.lint]
 description = "Run source, prose, configuration, workflow, spelling, and licence linters"
 run = [
@@ -55,6 +62,8 @@ run = [
   "gleam build --warnings-as-errors",
   "gleam test",
   "gleam docs build",
+  "gleam export package-interface --out build/http3-package-interface.json",
+  "escript test/http3_public_api_audit.escript build/http3-package-interface.json",
   "gleam run -m glinter",
   "markdownlint-cli2 \"**/*.md\" \"#build/**\"",
   "taplo fmt --check",

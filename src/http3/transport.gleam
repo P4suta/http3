@@ -368,30 +368,6 @@ pub fn connection_stats(
   }
 }
 
-@internal
-pub fn client_connection(
-  handle: client_stream_backend.ConnectionHandle,
-) -> Connection {
-  Connection(handle)
-}
-
-@internal
-pub fn client_stream(handle: client_stream_backend.StreamHandle) -> Stream {
-  ClientStream(handle)
-}
-
-@internal
-pub fn server_stream(handle: server_backend.RequestHandle) -> Stream {
-  ServerStream(handle)
-}
-
-@internal
-pub fn ticket_handle(
-  ticket: ResumptionTicket,
-) -> client_stream_backend.ResumptionTicketHandle {
-  ticket.handle
-}
-
 fn map_capabilities(
   result: Result(transport_backend.RawCapabilities, transport_backend.Failure),
 ) -> Result(Capabilities, Error) {

@@ -44,6 +44,8 @@ imply a tag, a hosted release, or publication to Hex.
 
 - Clarified the HTTP/3-only scope, client-first implementation order, backend
   boundary, and capability-based rather than publication-based milestones.
+- Confined advanced-value construction to a private internal FFI bridge and
+  added a compiler-interface audit that rejects leaked backend handle types.
 
 ## 0.1.0 - 2026-08-23
 

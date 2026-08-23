@@ -147,8 +147,9 @@ mise run check
 ```
 
 `mise run check` verifies formatting, builds with warnings treated as errors,
-runs the test suite, builds documentation, and runs the configured source,
-Markdown, TOML, GitHub Actions, spelling, and licence checks.
+runs the test suite, builds documentation, audits the compiler-exported public
+API boundary, and runs the configured source, Markdown, TOML, GitHub Actions,
+spelling, and licence checks.
 
 See [Architecture](docs/ARCHITECTURE.md) for the backend boundary,
 [Testing](docs/TESTING.md) for the required development and verification

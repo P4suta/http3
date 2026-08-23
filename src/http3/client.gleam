@@ -36,6 +36,21 @@ const default_request_body_limit = 8_388_608
 
 const default_stream_buffer_limit = 262_144
 
+@external(erlang, "http3_internal_transport_ffi", "client_connection")
+fn make_transport_connection(
+  handle: client_stream_backend.ConnectionHandle,
+) -> transport.Connection
+
+@external(erlang, "http3_internal_transport_ffi", "client_stream")
+fn make_transport_stream(
+  handle: client_stream_backend.StreamHandle,
+) -> transport.Stream
+
+@external(erlang, "http3_internal_transport_ffi", "ticket_handle")
+fn resumption_ticket_handle(
+  ticket: transport.ResumptionTicket,
+) -> client_stream_backend.ResumptionTicketHandle
+
 /// Configuration for one-shot HTTP/3 requests.
 pub opaque type Client {
   Client(
@@ -226,7 +241,7 @@ pub fn with_resumption_ticket(
   client client: Client,
   ticket ticket: transport.ResumptionTicket,
 ) -> Client {
-  Client(..client, resumption_tickets: [transport.ticket_handle(ticket)])
+  Client(..client, resumption_tickets: [resumption_ticket_handle(ticket)])
 }
 
 /// Set the total request timeout from one millisecond through one hour.
@@ -359,7 +374,7 @@ pub fn connect(
 /// Obtain typed advanced controls for a reusable connection.
 pub fn connection_transport(connection: Connection) -> transport.Connection {
   let Connection(handle) = connection
-  transport.client_connection(handle)
+  make_transport_connection(handle)
 }
 
 /// Open a request stream, leaving its request body open for chunks.
@@ -381,7 +396,7 @@ pub fn open_stream(
 /// Obtain typed advanced controls for a request stream.
 pub fn stream_transport(stream: Stream) -> transport.Stream {
   let Stream(handle) = stream
-  transport.client_stream(handle)
+  make_transport_stream(handle)
 }
 
 /// Send one byte-aligned request-body chunk.
