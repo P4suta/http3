@@ -261,6 +261,22 @@ pub fn tick(state: State, now_ms: Int) -> Result(State, Error) {
   Ok(State(..state, quic: quic))
 }
 
+/// Enter QUIC application closing while retaining HTTP/3 orchestration state.
+pub fn close(
+  state state: State,
+  application_error_code application_error_code: Int,
+  reason reason: String,
+  now_ms now_ms: Int,
+) -> Result(State, Error) {
+  use quic <- result.try(
+    driver.update_connection(state.quic, fn(connection) {
+      transport.close(connection, application_error_code, reason, now_ms)
+    })
+    |> map_driver_result,
+  )
+  Ok(State(..state, quic: quic))
+}
+
 fn start_established(
   quic: driver.State,
   config: http3_state.Config,

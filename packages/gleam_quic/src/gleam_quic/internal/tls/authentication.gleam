@@ -30,6 +30,14 @@ pub type Error {
 @external(erlang, "gleam_quic_tls_ffi", "trust_store_from_pem")
 fn raw_trust_store_from_pem(pem: BitArray) -> Result(TrustStore, Int)
 
+@external(erlang, "gleam_quic_tls_ffi", "trust_store_from_der")
+fn raw_trust_store_from_der(
+  certificates: List(BitArray),
+) -> Result(TrustStore, Int)
+
+@external(erlang, "gleam_quic_tls_ffi", "system_trust_store")
+fn raw_system_trust_store() -> Result(TrustStore, Int)
+
 @external(erlang, "gleam_quic_tls_ffi", "certificate_chain_from_pem")
 fn raw_certificate_chain_from_pem(pem: BitArray) -> Result(List(BitArray), Int)
 
@@ -65,6 +73,22 @@ fn raw_constant_time_equal(left: BitArray, right: BitArray) -> Result(Bool, Int)
 pub fn trust_store_from_pem(pem pem: BitArray) -> Result(TrustStore, Error) {
   use Nil <- result.try(require_byte_aligned(pem))
   raw_trust_store_from_pem(pem) |> map_result
+}
+
+/// Validate non-empty DER trust anchors and retain them in runtime-owned form.
+pub fn trust_store_from_der(
+  certificates certificates: List(BitArray),
+) -> Result(TrustStore, Error) {
+  case certificates, all_byte_aligned(certificates) {
+    [], _ -> Error(EmptyCertificateChain)
+    _, False -> Error(NonByteAligned)
+    _, True -> raw_trust_store_from_der(certificates) |> map_result
+  }
+}
+
+/// Load the operating system trust anchors through Erlang/OTP `public_key`.
+pub fn system_trust_store() -> Result(TrustStore, Error) {
+  raw_system_trust_store() |> map_result
 }
 
 /// Decode a leaf-first PEM certificate chain into DER messages.

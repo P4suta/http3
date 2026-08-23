@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/list
 import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/udp
@@ -17,6 +18,16 @@ pub fn validates_ipv4_and_ipv6_endpoints_test() -> Nil {
   assert bit_array.byte_size(ipv6_bytes) == 16
   assert ipv6_port == 8443
   assert udp.ipv6(65_536, 0, 0, 0, 0, 0, 0, 1) == Error(udp.InvalidInput)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn resolves_literal_addresses_without_runtime_terms_test() -> Nil {
+  let assert Ok(addresses) = udp.resolve("127.0.0.1", udp.Ipv4)
+  assert list.any(addresses, fn(address) {
+    udp.address_bytes(address) == <<127, 0, 0, 1>>
+  })
+  assert udp.resolve("", udp.Any) == Error(udp.InvalidInput)
+  assert udp.resolve("bad\u{0000}name", udp.Any) == Error(udp.InvalidInput)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

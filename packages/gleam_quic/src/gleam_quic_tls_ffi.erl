@@ -5,6 +5,8 @@
     constant_time_equal/2,
     sign/3,
     signing_key_from_pem/1,
+    system_trust_store/0,
+    trust_store_from_der/1,
     trust_store_from_pem/1,
     validate_server_certificate/3,
     verify/4
@@ -27,6 +29,42 @@ trust_store_from_pem(Pem) when is_binary(Pem) ->
     end;
 trust_store_from_pem(_Pem) ->
     {error, 3}.
+
+-spec trust_store_from_der([binary()]) -> {ok, tuple()} | {error, 2 | 3}.
+trust_store_from_der(Certificates) when is_list(Certificates), Certificates =/= [] ->
+    case ensure_public_key() of
+        ok ->
+            try
+                lists:foreach(
+                    fun(Der) when is_binary(Der) ->
+                        public_key:pkix_decode_cert(Der, otp)
+                    end,
+                    Certificates
+                ),
+                {ok, {gleam_quic_trust_store, Certificates}}
+            catch
+                _Class:_Reason -> {error, 3}
+            end;
+        error ->
+            {error, 2}
+    end;
+trust_store_from_der(_Certificates) ->
+    {error, 3}.
+
+-spec system_trust_store() -> {ok, tuple()} | {error, 2 | 3}.
+system_trust_store() ->
+    case ensure_public_key() of
+        ok ->
+            try public_key:cacerts_get() of
+                [] -> {error, 3};
+                Certificates when is_list(Certificates) ->
+                    {ok, {gleam_quic_trust_store, Certificates}}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end.
 
 -spec certificate_chain_from_pem(binary()) ->
     {ok, [binary()]} | {error, 2 | 3}.

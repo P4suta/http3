@@ -320,13 +320,19 @@ fn prepare_levels(
             now_ms,
           )
         Ok(connection_state.PacketPrepared(connection, _, packet_number, frames)) ->
-          protect_prepared(
-            State(..state, connection: connection),
-            level,
-            packet_number,
-            frames,
-            now_ms,
-          )
+          case
+            protect_prepared(
+              State(..state, connection: connection),
+              level,
+              packet_number,
+              frames,
+              now_ms,
+            )
+          {
+            Error(ConnectionFailure(connection_state.MissingWriteKeys(_))) ->
+              prepare_levels(state, rest, maximum_frame_data_bytes, now_ms)
+            outcome -> outcome
+          }
       }
   }
 }
@@ -587,7 +593,7 @@ fn receive_short_packet(
   codepoint: packet_space.ReceivedCodepoint,
   now_ms: Int,
 ) -> Result(State, Error) {
-  use receipt <- result.try(
+  case
     connection_state.receive_protected_short_packet(
       state.connection,
       datagram,
@@ -595,12 +601,20 @@ fn receive_short_packet(
       codepoint,
       now_ms,
     )
-    |> map_connection_result,
-  )
-  let connection_state.ShortPacketReceipt(connection, destination, _, _) =
-    receipt
-  use _ <- result.try(require_destination(state, destination))
-  Ok(State(..state, connection: connection))
+  {
+    // A peer can coalesce or reorder 1-RTT before this endpoint installs both
+    // application directions. Discard that packet without rolling back the
+    // authenticated Initial/Handshake packets already processed.
+    Error(connection_state.MissingReadKeys(_))
+    | Error(connection_state.MissingWriteKeys(_)) -> Ok(state)
+    Error(error) -> Error(ConnectionFailure(error))
+    Ok(receipt) -> {
+      let connection_state.ShortPacketReceipt(connection, destination, _, _) =
+        receipt
+      use _ <- result.try(require_destination(state, destination))
+      Ok(State(..state, connection: connection))
+    }
+  }
 }
 
 fn require_destination(

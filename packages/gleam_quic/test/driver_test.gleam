@@ -98,6 +98,49 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_coalesced_handshake_progress_when_one_rtt_arrives_early_test() -> Nil {
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(peers) = send_client_datagram(Peers(client, server, 1))
+  let Peers(client, server, now_ms) = peers
+  let assert Ok(Some(prepared)) = driver.prepare_datagram(server, 1000, now_ms)
+  let initial = driver.prepared_bytes(prepared)
+  let assert Ok(server) = driver.commit_datagram(prepared, now_ms)
+  let early_one_rtt = <<0x40, client_connection_id:bits, 0:160>>
+  let assert Ok(client) =
+    driver.receive_datagram(
+      client,
+      <<initial:bits, early_one_rtt:bits>>,
+      now_ms,
+    )
+  let assert Ok(Peers(client, server, _)) =
+    drive_handshake(
+      Peers(client, server, now_ms + 100),
+      maximum_handshake_rounds,
+    )
+  assert driver.phase(client) == connection_state.Established
+  assert driver.phase(server) == connection_state.Established
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_quic_v2_protected_handshake_test() -> Nil {
   let #(client_tls_config, server_tls_config) =
     tls_configs_for_version(version.Version2)

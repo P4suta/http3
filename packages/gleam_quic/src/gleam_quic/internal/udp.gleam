@@ -1,7 +1,9 @@
 //// Typed UDP, address, ECN, and monotonic-clock runtime boundary.
 
 import gleam/bit_array
+import gleam/list
 import gleam/result
+import gleam/string
 import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
 
@@ -10,6 +12,13 @@ const maximum_udp_payload_bytes = 65_527
 /// An IPv4 or IPv6 address in network byte order.
 pub opaque type Address {
   Address(bytes: BitArray)
+}
+
+/// Address-family policy for name resolution.
+pub type AddressFamily {
+  Any
+  Ipv4
+  Ipv6
 }
 
 /// A validated UDP address and port.
@@ -46,6 +55,9 @@ fn raw_open(address: BitArray, port: Int) -> Result(Socket, Int)
 
 @external(erlang, "gleam_quic_udp_ffi", "local_endpoint")
 fn raw_local_endpoint(socket: Socket) -> Result(#(BitArray, Int), Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "resolve")
+fn raw_resolve(host: String, family: Int) -> Result(List(BitArray), Int)
 
 @external(erlang, "gleam_quic_udp_ffi", "send")
 fn raw_send(
@@ -116,6 +128,31 @@ pub fn endpoint(address: Address, port: Int) -> Result(Endpoint, Error) {
 /// Return an endpoint's address bytes and port without runtime-specific terms.
 pub fn endpoint_parts(endpoint: Endpoint) -> #(BitArray, Int) {
   #(endpoint.address.bytes, endpoint.port)
+}
+
+/// Return an address in network byte order without exposing an Erlang tuple.
+pub fn address_bytes(address: Address) -> BitArray {
+  address.bytes
+}
+
+/// Resolve a DNS name or address literal into bounded typed IP addresses.
+pub fn resolve(
+  host host: String,
+  family family: AddressFamily,
+) -> Result(List(Address), Error) {
+  case
+    string.is_empty(host)
+    || string.length(host) > 253
+    || string.contains(host, "\u{0000}")
+  {
+    True -> Error(InvalidInput)
+    False -> {
+      use addresses <- result.try(
+        raw_resolve(host, address_family_code(family)) |> map_raw_result,
+      )
+      addresses_from_bytes(addresses, [])
+    }
+  }
 }
 
 /// Bind a passive socket. Port zero asks the OS for an ephemeral port.
@@ -196,6 +233,27 @@ fn endpoint_from_bytes(bytes: BitArray, port: Int) -> Result(Endpoint, Error) {
     16, 0, value if value >= 0 && value <= 65_535 ->
       Ok(Endpoint(Address(bytes), port))
     _, _, _ -> Error(InvalidInput)
+  }
+}
+
+fn addresses_from_bytes(
+  addresses: List(BitArray),
+  reversed: List(Address),
+) -> Result(List(Address), Error) {
+  case addresses {
+    [] -> Ok(list.reverse(reversed))
+    [bytes, ..rest] -> {
+      use Endpoint(address, _) <- result.try(endpoint_from_bytes(bytes, 0))
+      addresses_from_bytes(rest, [address, ..reversed])
+    }
+  }
+}
+
+fn address_family_code(family: AddressFamily) -> Int {
+  case family {
+    Any -> 0
+    Ipv4 -> 4
+    Ipv6 -> 6
   }
 }
 

@@ -77,3 +77,14 @@ pub fn compares_authenticators_in_constant_time_test() -> Nil {
   assert authentication.constant_time_equal(<<1:size(1)>>, <<1:size(1)>>)
     == Error(authentication.NonByteAligned)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn loads_system_and_explicit_der_trust_stores_test() -> Nil {
+  let assert Ok(ca_pem) = fixture("ca.pem")
+  let assert Ok(ca_chain) = authentication.certificate_chain_from_pem(ca_pem)
+  let assert Ok(_) = authentication.trust_store_from_der(ca_chain)
+  assert authentication.trust_store_from_der([])
+    == Error(authentication.EmptyCertificateChain)
+  let assert Ok(_) = authentication.system_trust_store()
+  Nil
+}

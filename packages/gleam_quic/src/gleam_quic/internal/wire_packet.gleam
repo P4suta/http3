@@ -119,7 +119,7 @@ pub fn protect_long(
   )
 }
 
-/// Parse, remove header protection, reconstruct the PN, and authenticate one
+/// Parse, remove header protection, reconstruct the packet number, and authenticate one
 /// long-header packet while preserving following coalesced bytes.
 pub fn unprotect_long(
   datagram: BitArray,

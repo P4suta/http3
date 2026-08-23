@@ -1,9 +1,9 @@
 //// Typed normalization around the Erlang HTTP/3 client FFI.
 
+import gleam/int
+import gleam/result
+import gleam_quic/http3/client as native_client
 import http3/internal/client_request.{type PreparedRequest, PreparedRequest}
-
-@external(erlang, "http3_internal_client_ffi", "valid_ca_certificate")
-fn raw_valid_ca_certificate(certificate: BitArray) -> Bool
 
 /// A response returned by the backend boundary.
 pub type Response =
@@ -36,19 +36,8 @@ pub type Failure {
 
 /// Return whether bytes decode as one DER X.509 certificate.
 pub fn is_valid_ca_certificate(certificate: BitArray) -> Bool {
-  raw_valid_ca_certificate(certificate)
+  native_client.is_valid_ca_certificate(certificate)
 }
-
-@external(erlang, "http3_internal_client_ffi", "send")
-fn raw_send(
-  host: String,
-  port: Int,
-  headers: List(#(String, String)),
-  body: BitArray,
-  ca_certificates: List(BitArray),
-  timeout_milliseconds: Int,
-  response_body_limit: Int,
-) -> Result(Response, RawError)
 
 /// Execute one prepared request through the backend adapter.
 pub fn send(
@@ -58,19 +47,64 @@ pub fn send(
   response_body_limit response_body_limit: Int,
 ) -> Result(Response, Failure) {
   let PreparedRequest(host, port, headers, body) = request
-  case
-    raw_send(
-      host,
-      port,
-      headers,
-      body,
-      ca_certificates,
-      timeout_milliseconds,
-      response_body_limit,
-    )
-  {
-    Ok(response) -> Ok(response)
-    Error(error) -> Error(normalize_error(error))
+  use client <- result.try(
+    native_client.new(host, port)
+    |> result.map_error(from_native_configuration_error),
+  )
+  use client <- result.try(
+    native_client.with_timeout(client, timeout_milliseconds)
+    |> result.map_error(from_native_configuration_error),
+  )
+  use client <- result.try(
+    native_client.with_response_body_limit(client, response_body_limit)
+    |> result.map_error(from_native_configuration_error),
+  )
+  use client <- result.try(case ca_certificates {
+    [] -> Ok(client)
+    certificates ->
+      native_client.with_ca_certificates(client, certificates)
+      |> result.map_error(from_native_configuration_error)
+  })
+  case native_client.send(client, headers, body) {
+    Ok(native_client.Response(status, headers, body)) ->
+      Ok(#(status, headers, body))
+    Error(error) -> Error(from_native_error(error))
+  }
+}
+
+fn from_native_configuration_error(
+  error: native_client.ConfigurationError,
+) -> Failure {
+  let message = case error {
+    native_client.InvalidHost -> "invalid native host"
+    native_client.InvalidPort(port) ->
+      "invalid native port: " <> int.to_string(port)
+    native_client.InvalidTimeout -> "invalid native timeout"
+    native_client.InvalidResponseBodyLimit -> "invalid native response limit"
+    native_client.InvalidCaCertificate -> "invalid CA certificate"
+  }
+  ConnectFailed(message)
+}
+
+fn from_native_error(error: native_client.Error) -> Failure {
+  case error {
+    native_client.InvalidRequest -> RequestFailed("invalid native request")
+    native_client.ResolutionFailed -> ConnectFailed("name resolution failed")
+    native_client.TrustStoreFailed -> ConnectFailed("trust store unavailable")
+    native_client.ConnectFailed -> ConnectFailed("UDP connection failed")
+    native_client.HandshakeFailed -> ConnectFailed("TLS handshake failed")
+    native_client.TransportError(message) ->
+      ProtocolError(0x0102, "native QUIC transport error: " <> message)
+    native_client.Http3Error(message) ->
+      ProtocolError(0x0102, "native HTTP/3 protocol error: " <> message)
+    native_client.Timeout -> Timeout
+    native_client.ConnectionClosed -> ConnectionClosed
+    native_client.StreamReset(code) -> StreamReset(code)
+    native_client.ProtocolError ->
+      ProtocolError(0x0102, "native protocol error")
+    native_client.InvalidHeaderEncoding ->
+      ProtocolError(0x0102, "response header is not UTF-8")
+    native_client.ResponseBodyTooLarge(_) -> ResponseBodyTooLarge
   }
 }
 

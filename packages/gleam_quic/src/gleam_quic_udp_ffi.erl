@@ -8,6 +8,7 @@
     monotonic_millisecond/0,
     open/2,
     recv/2,
+    resolve/2,
     send/5,
     supports_ecn/1
 ]).
@@ -50,6 +51,17 @@ local_endpoint(#{socket := Socket}) ->
         _Class:_Reason -> {error, 3}
     end;
 local_endpoint(_Socket) ->
+    {error, 1}.
+
+-spec resolve(binary(), 0 | 4 | 6) -> {ok, [binary()]} | {error, integer()}.
+resolve(Host, Family)
+    when is_binary(Host), byte_size(Host) > 0, byte_size(Host) =< 253,
+         (Family =:= 0 orelse Family =:= 4 orelse Family =:= 6) ->
+    case binary:match(Host, <<0>>) of
+        nomatch -> resolve_host(binary_to_list(Host), Family);
+        _Match -> {error, 1}
+    end;
+resolve(_Host, _Family) ->
     {error, 1}.
 
 -spec send(handle(), binary(), integer(), binary(), integer()) ->
@@ -130,6 +142,37 @@ open_address(Address, Family, Port) ->
             end;
         {error, Reason} ->
             {error, error_code(Reason)}
+    end.
+
+-spec resolve_host(string(), 0 | 4 | 6) -> {ok, [binary()]} | {error, integer()}.
+resolve_host(Host, 4) ->
+    resolve_family(Host, inet);
+resolve_host(Host, 6) ->
+    resolve_family(Host, inet6);
+resolve_host(Host, 0) ->
+    case {inet:getaddrs(Host, inet6), inet:getaddrs(Host, inet)} of
+        {{ok, V6}, {ok, V4}} -> encode_addresses(V4 ++ V6);
+        {{ok, V6}, {error, _}} -> encode_addresses(V6);
+        {{error, _}, {ok, V4}} -> encode_addresses(V4);
+        {{error, _}, {error, Reason}} -> {error, error_code(Reason)}
+    end.
+
+-spec resolve_family(string(), inet | inet6) ->
+    {ok, [binary()]} | {error, integer()}.
+resolve_family(Host, Family) ->
+    case inet:getaddrs(Host, Family) of
+        {ok, Addresses} -> encode_addresses(Addresses);
+        {error, Reason} -> {error, error_code(Reason)}
+    end.
+
+-spec encode_addresses([inet:ip_address()]) ->
+    {ok, [binary()]} | {error, integer()}.
+encode_addresses(Addresses) ->
+    try [Bytes || Address <- Addresses, {ok, Bytes} <- [encode_address(Address)]] of
+        [] -> {error, 6};
+        Encoded -> {ok, Encoded}
+    catch
+        _Class:_Reason -> {error, 8}
     end.
 
 -spec family_options(4 | 6) -> [gen_udp:option()].
