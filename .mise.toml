@@ -10,7 +10,26 @@ markdownlint-cli2 = "0.22.1"
 
 [tasks.format]
 description = "Check Gleam source formatting"
+run = [
+  "gleam format --check src test",
+  "mise run core-format",
+]
+
+[tasks.core-format]
+description = "Check the native QUIC core source formatting"
+dir = "{{ config_root }}/packages/gleam_quic"
 run = "gleam format --check src test"
+
+[tasks.core-check]
+description = "Run every native QUIC core package check"
+dir = "{{ config_root }}/packages/gleam_quic"
+run = [
+  "gleam format --check src test",
+  "gleam build --warnings-as-errors",
+  "gleam test",
+  "gleam docs build",
+  "gleam run -m glinter",
+]
 
 [tasks.build]
 description = "Build with compiler warnings treated as errors"
@@ -47,7 +66,7 @@ run = [
 description = "Run source, prose, configuration, workflow, spelling, and licence linters"
 run = [
   "gleam run -m glinter",
-  "markdownlint-cli2 \"**/*.md\" \"#build/**\"",
+  "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#packages/gleam_quic/build/**\"",
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
@@ -58,6 +77,7 @@ run = [
 [tasks.check]
 description = "Run every required local verification"
 run = [
+  "mise run core-check",
   "gleam format --check src test",
   "gleam build --warnings-as-errors",
   "gleam test",
@@ -65,7 +85,7 @@ run = [
   "gleam export package-interface --out build/http3-package-interface.json",
   "escript test/http3_public_api_audit.escript build/http3-package-interface.json",
   "gleam run -m glinter",
-  "markdownlint-cli2 \"**/*.md\" \"#build/**\"",
+  "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#packages/gleam_quic/build/**\"",
   "taplo fmt --check",
   "taplo lint",
   "actionlint",

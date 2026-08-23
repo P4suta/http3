@@ -17,6 +17,7 @@ glinter = ">= 2.19.2 and < 3.0.0"
 
 [documentation]
 pages = [
+  { title = "Public v1 gate", path = "v1.html", source = "docs/V1.md" },
   { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
   { title = "Testing", path = "testing.html", source = "docs/TESTING.md" },
   { title = "Performance", path = "performance.html", source = "benchmarks/README.md" },

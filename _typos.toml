@@ -3,4 +3,5 @@ extend-exclude = ["LICENSES/", "build/"]
 
 [default.extend-words]
 gleeunit = "gleeunit"
+ect = "ect"
 QPACK = "QPACK"

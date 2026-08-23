@@ -9,6 +9,12 @@ imply a tag, a hosted release, or publication to Hex.
 
 ### Added
 
+- The separate in-repository `gleam_quic` package, beginning with RFC 9000
+  variable-length integer and packet-number reconstruction primitives, QUIC
+  v1/v2 packet headers, all standard transport frames plus DATAGRAM, bounded
+  transport parameters and their published vectors and negative tests.
+- A public v1 completion contract covering the native QUIC/TLS/HTTP/3 scope,
+  standards baseline, draft policy, FFI boundary, and verification gates.
 - A bounded one-shot HTTP/3 client using `gleam/http` request and response
   types, secure TLS defaults, explicit request and response limits, and a total
   timeout.
@@ -42,6 +48,8 @@ imply a tag, a hosted release, or publication to Hex.
 
 ### Changed
 
+- Reclassified the four completed external-backend phases as the bootstrap API
+  rather than public v1, and made native-backend cutover a publication gate.
 - Clarified the HTTP/3-only scope, client-first implementation order, backend
   boundary, and capability-based rather than publication-based milestones.
 - Confined advanced-value construction to a private internal FFI bridge and

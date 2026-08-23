@@ -7,9 +7,11 @@ Erlang target. Applications should depend on stable HTTP concepts rather than
 a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
 and the JavaScript target are non-goals and belong in separate projects.
 
-The current surface exposes capability discovery, bounded and streaming
-clients, a bounded and streaming server, and typed advanced transport
-capabilities.
+The current bootstrap surface exposes capability discovery, bounded and
+streaming clients, a bounded and streaming server, and typed advanced
+transport capabilities. Public v1 additionally requires the native transport
+and every gate in [Public v1 gate](V1.md); wrapper completion alone is not v1
+completion.
 The version in `gleam.toml` is required tool metadata, not an implementation,
 publication, or quality milestone.
 
@@ -39,9 +41,9 @@ modules perform only operations that cannot be expressed directly or safely
 in Gleam; they must not become an alternative public API or a second adapter
 layer.
 
-## Initial backend
+## Bootstrap backend
 
-The initial backend is pure Erlang
+The temporary bootstrap backend is pure Erlang
 [`quic`](https://github.com/benoitc/erlang_quic), starting at version 1.8.1.
 It already supplies QUIC transport and HTTP/3 client and server machinery
 without a native library dependency and supports the project's OTP 26–29
@@ -51,6 +53,10 @@ range. The upstream project has also discussed
 Because no maintained Gleam binding is provided, `http3` adds value by
 normalizing backend behavior behind typed HTTP/3 concepts and by making
 lifecycle, limits, backpressure, cancellation, and failures explicit.
+
+This backend is development scaffolding, not the v1 runtime. It remains useful
+as a behavior oracle and independent regression peer during native-core
+development, but the final production dependency graph must not contain it.
 
 The current call path is deliberately small:
 
@@ -159,7 +165,7 @@ observable.
 
 ## Implementation sequence
 
-Protocol work proceeds in dependency order:
+Bootstrap API work proceeded in dependency order:
 
 1. the bounded buffered HTTP/3 client, whose independent interoperability,
    conformance, and fault-injection phase gate is complete;
@@ -170,6 +176,11 @@ Protocol work proceeds in dependency order:
 4. advanced capabilities exposed through typed, backend-neutral APIs where
    possible, whose independent Datagram, migration, qlog, and actual 0-RTT
    interoperability gate is complete.
+
+Native protocol work then proceeds in the dependency order recorded in
+[Roadmap](ROADMAP.md): wire codecs and invariants; TLS and packet protection;
+transport, recovery and paths; HTTP/3 and QPACK; adapter cutover; and complete
+interop, security and performance qualification.
 
 Each behavior starts with a failing test and follows the gates in
 [Testing](TESTING.md). No stage is gated on publishing the repository or
@@ -192,13 +203,16 @@ request head. qlog output is an explicit security-sensitive choice. Resumption
 tickets have no public field or serialization access, are rejected for another
 host or port, and cannot enable a replay-unsafe early request.
 
-## Backend replacement
+## Native backend target
 
-A future pure Gleam QUIC implementation will live in a separate package. Its
-name and public API are intentionally undecided. `http3` will integrate it
-through the same internal adapter and small-FFI boundary and preserve the
-public HTTP/3 API.
+The repository-owned `gleam_quic` implementation lives in
+`packages/gleam_quic`. `http3` will integrate it through the same internal
+adapter and small-FFI boundary and preserve the public HTTP/3 API. Protocol
+state machines and wire formats belong in Gleam; Erlang FFI is restricted to
+UDP, time, randomness, cryptographic operations, and X.509 runtime primitives.
 
-Backend selection is an implementation concern. Compatibility tests will be
+Backend selection is an implementation concern. Compatibility tests are
 written against observable public behavior so the backend can be exchanged
-without asking applications to migrate types or message handling.
+without asking applications to migrate types or message handling. After
+cutover the external backend can remain an out-of-process test peer, but it
+cannot remain a runtime dependency.

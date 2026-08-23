@@ -1,6 +1,9 @@
 # Roadmap
 
-The phases below are ordered. Later phases may be designed early, but they do
+The phases below are ordered. Phases 1 through 4 are bootstrap API phases over
+the temporary external backend; they do not constitute public v1. Later phases
+replace that backend with the repository-owned QUIC stack and satisfy the
+complete [public v1 gate](V1.md). Later phases may be designed early, but they do
 not displace the compatibility and safety work required by earlier phases.
 The roadmap is exclusively for HTTP/3 on the Erlang target. HTTP/1.1, HTTP/2,
 automatic protocol fallback, and the JavaScript target belong in other
@@ -106,11 +109,65 @@ and reordering, cancellation races, peer protocol violations, resource limits,
 and graceful and abrupt shutdown. Retain raw results rather than publishing
 isolated benchmark claims.
 
-## Future pure Gleam QUIC backend
+## 5. Native wire core
 
-Develop a pure Gleam QUIC implementation as a separate package, then integrate
-it behind the established backend boundary. Preserve the public `http3` API and
-run the same compatibility suite against both backends before changing the
-default.
+**Status:** in progress as of 2026-08-23. The separate `gleam_quic` package,
+RFC 9000 variable-length integer codec, packet-number reconstruction, QUIC v1
+and v2 long-header mappings, bounded invariant packet parsing, the complete
+RFC 9000/RFC 9221 frame codec, and bounded transport parameters from RFC 9000,
+RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 25
+focused tests and its own format, warnings-as-errors build, docs, and lint
+gate.
 
-This roadmap does not assign a name or public API to that future package.
+Implement QUIC invariants, v1 and v2 packet formats, frames, transport
+parameters, version negotiation, strict bounds, and incremental parsers. Every
+wire behavior starts with RFC vectors and negative/truncation tests.
+
+## 6. Native TLS 1.3 and packet protection
+
+**Status:** not complete.
+
+Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
+key schedule, transport-parameter extension, Retry integrity, header and
+payload protection, key discard and update, session tickets, replay-safe
+0-RTT, certificate paths, service identity, SNI, and secure server certificate
+selection. Keep cryptographic and X.509 runtime primitives in a narrow FFI.
+
+## 7. Native transport, recovery, and paths
+
+**Status:** not complete.
+
+Implement connection and stream state machines, flow control, loss recovery,
+PTO, ECN, NewReno and CUBIC, pacing, anti-amplification, Retry and address
+tokens, stateless reset, connection-ID rotation, PMTU discovery, IPv4/IPv6,
+NAT rebinding, active migration, QUIC DATAGRAM, and deterministic shutdown.
+
+## 8. Native HTTP/3 and QPACK
+
+**Status:** not complete.
+
+Implement RFC 9114 and RFC 9204 end to end: control and request streams,
+settings, push, GOAWAY, graceful drain, all response stages and trailers,
+static and dynamic QPACK with Huffman coding and blocked-stream limits,
+priority, Extended CONNECT, Capsules, and correctly associated HTTP Datagrams.
+
+## 9. Adapter cutover
+
+**Status:** not complete.
+
+Run the existing public API behavior suite against `gleam_quic`, close any
+semantic gaps, make it the sole production backend, and remove the external
+`quic` dependency and all runtime calls to `quic` or `quic_h3`. Preserve public
+opaque types and typed errors unless a standards or safety correction requires
+an intentional pre-v1 break.
+
+## 10. Public v1 qualification
+
+**Status:** not complete.
+
+Complete two-peer client/server interop, QUIC v1/v2 conformance, TLS and QPACK
+vectors, fuzzing, deterministic faults, real-UDP negative tests, security
+review, supported OTP/OS matrices, load, soak, and benchmark gates. Resolve all
+required rows in [Public v1 gate](V1.md), remove temporary nonconforming test
+surfaces, run `mise run check`, and finish with signed local commits and a clean
+tree.

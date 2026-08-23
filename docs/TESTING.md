@@ -197,6 +197,27 @@ isolated best-case numbers are not sufficient.
   timeouts. The exact methodology, uncertainty, environment, and all raw rows
   are retained in [Performance](../benchmarks/README.md).
 
+### Native wire core — 2026-08-23
+
+- The separate `gleam_quic` package starts with published RFC vectors for QUIC
+  variable-length integers and packet-number reconstruction.
+- Pure tests cover QUIC v1 and v2 long-header type mappings, Version
+  Negotiation, unknown-version invariants, coalesced length-bearing packets,
+  Retry separation, short headers, connection-ID limits, truncation, and
+  non-byte-aligned input.
+- The frame suite round-trips every RFC 9000 transport frame shape plus RFC
+  9221 DATAGRAM, accepts permitted non-minimal integers and lengthless terminal
+  frames, and rejects invalid ACK arithmetic, UTF-8, connection IDs, reset
+  tokens, truncation, unknown frame types, and resource-limit violations.
+- The transport parameter suite round-trips the complete RFC 9000 registry and
+  the RFC 9221, RFC 9287, and RFC 9368 extensions. It covers unknown parameter
+  preservation, duplicate rejection, sender roles, semantic ranges, required
+  handshake parameters, downgrade-information structure, and count/value
+  limits.
+- `mise run core-check` runs package format, warnings-as-errors build, 25 tests,
+  documentation, and glinter. The root `mise run check` includes this gate so
+  native-core regressions cannot pass the existing wrapper checks.
+
 ## Timeouts
 
 Every wait for a process, message, stream, connection, listener, or peer must

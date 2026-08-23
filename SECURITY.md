@@ -3,8 +3,10 @@
 ## Project status
 
 `http3` is pre-alpha, unpublished, and not recommended for production use.
-The current surface provides bounded and streaming HTTP/3 clients and server,
-plus typed advanced transport capabilities.
+The current bootstrap surface provides bounded and streaming HTTP/3 clients
+and server, plus typed advanced transport capabilities through a temporary
+external backend. The native QUIC/TLS core and the public v1 security gate are
+not complete.
 
 The version in `gleam.toml` is tool metadata and does not indicate that a
 release exists. Security support follows the current capability surface:
@@ -50,3 +52,7 @@ channel.
   and concurrent receivers are rejected.
 - qlog is disabled by default and requires an explicit directory because trace
   files can contain connection metadata and application protocol details.
+- Public v1 cannot depend on an external production QUIC implementation;
+  protocol code in `gleam_quic` must pass the cryptographic, amplification,
+  parser, replay, interoperability, and resource-exhaustion gates in
+  [Public v1 gate](docs/V1.md).

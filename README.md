@@ -11,7 +11,9 @@ project that needs those capabilities should compose them outside `http3`.
 > This package is pre-alpha, is not published to Hex, and is not recommended
 > for production use. The version in `gleam.toml` is tool metadata, not a
 > publication or feature milestone. The bounded client, streaming client,
-> server, and typed advanced transport capabilities are implemented.
+> server, and typed advanced transport capabilities work on the temporary
+> external backend; the native QUIC core and the public v1 gate are not yet
+> complete.
 
 ## Current API
 
@@ -29,11 +31,13 @@ pub fn main() -> Nil {
 ```
 
 `is_supported()` delegates to the configured backend and does not make a
-network connection. The initial backend is the pure Erlang
+network connection. The temporary bootstrap backend is the pure Erlang
 [`quic`](https://hex.pm/packages/quic) package, which already implements QUIC
 and HTTP/3 client and server machinery. It is constrained to versions from
 1.8.1 up to, but not including, 2.0.0. This package's value is a typed,
-idiomatic Gleam API that keeps those backend details private.
+idiomatic Gleam API that keeps those backend details private. It will not be a
+production dependency of public v1: the in-repository `gleam_quic` package
+must replace it first.
 
 The client accepts `gleam/http` requests and returns `gleam/http` responses
 with `BitArray` bodies:
@@ -128,12 +132,15 @@ locally because early data can be replayed.
 | HTTP/3 server | Implemented; phase 3 verification complete |
 | Advanced typed capabilities | Implemented; phase 4 verification complete |
 | Load, soak, and benchmark verification | Implemented; raw local results retained |
+| Native `gleam_quic` transport core | In progress; not ready for network use |
+| Public v1 completion gate | Not complete; publication is blocked |
 
 APIs are added only when they perform real protocol work and have tests.
 
-All four implementation phases are complete. Progress remains gated by tested
-behavior, not by a GitHub or Hex publication, tag, release, or version change;
-those operations remain optional and outside this roadmap.
+All four bootstrap API phases are complete. They establish observable behavior
+and a replaceable boundary, but they do not complete the protocol
+implementation or public v1. The full standards, product, verification, and
+backend-removal requirements are defined in [Public v1 gate](docs/V1.md).
 
 ## Development
 
@@ -152,6 +159,7 @@ API boundary, and runs the configured source, Markdown, TOML, GitHub Actions,
 spelling, and licence checks.
 
 See [Architecture](docs/ARCHITECTURE.md) for the backend boundary,
+[Public v1 gate](docs/V1.md) for the pre-publication completion contract,
 [Testing](docs/TESTING.md) for the required development and verification
 workflow, [Performance](benchmarks/README.md) for the reproducible local
 workloads, and [Roadmap](docs/ROADMAP.md) for the implementation order.

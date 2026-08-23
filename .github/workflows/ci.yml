@@ -61,7 +61,15 @@ jobs:
       - name: Build with warnings as errors
         run: gleam build --warnings-as-errors
 
+      - name: Build native QUIC core with warnings as errors
+        working-directory: packages/gleam_quic
+        run: gleam build --warnings-as-errors
+
       - name: Run tests
+        run: gleam test
+
+      - name: Test native QUIC core
+        working-directory: packages/gleam_quic
         run: gleam test
 
   smoke:
@@ -92,5 +100,13 @@ jobs:
       - name: Build with warnings as errors
         run: gleam build --warnings-as-errors
 
+      - name: Build native QUIC core with warnings as errors
+        working-directory: packages/gleam_quic
+        run: gleam build --warnings-as-errors
+
       - name: Run tests
+        run: gleam test
+
+      - name: Test native QUIC core
+        working-directory: packages/gleam_quic
         run: gleam test

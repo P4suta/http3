@@ -1,5 +1,10 @@
 include = ["**/*.toml"]
-exclude = ["build/**", "manifest.toml"]
+exclude = [
+  "build/**",
+  "packages/**/build/**",
+  "manifest.toml",
+  "packages/**/manifest.toml",
+]
 
 [formatting]
 align_entries = false

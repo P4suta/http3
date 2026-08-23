@@ -13,6 +13,7 @@ path = [
   "LICENSE",
   "benchmarks/**",
   "docs/**",
+  "packages/**",
   "src/**",
   "test/**",
 ]
