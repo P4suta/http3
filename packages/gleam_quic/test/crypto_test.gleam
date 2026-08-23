@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam_quic/internal/crypto
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -106,4 +107,38 @@ pub fn rejects_invalid_hkdf_inputs_test() -> Nil {
     == Error(crypto.InvalidInput)
   assert crypto.hkdf_expand_sha256(pseudorandom_key, <<>>, 8161)
     == Error(crypto.OutputTooLong)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn matches_aes256_known_answer_vectors_test() -> Nil {
+  let key = <<
+    0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85,
+    0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98,
+    0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4,
+  >>
+  let block = <<
+    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73,
+    0x93, 0x17, 0x2a,
+  >>
+  assert crypto.aes_256_ecb_encrypt(key, block)
+    == Ok(<<
+      0xf3, 0xee, 0xd1, 0xbd, 0xb5, 0xd2, 0xa0, 0x3c, 0x06, 0x4b, 0x5a, 0x7e,
+      0x3d, 0xb1, 0x81, 0xf8,
+    >>)
+  assert crypto.aes_256_gcm_encrypt(<<0:256>>, <<0:96>>, <<>>, <<>>)
+    == Ok(<<
+      0x53, 0x0f, 0x8a, 0xfb, 0xc7, 0x45, 0x36, 0xb9, 0xa9, 0x63, 0xb4, 0xf1,
+      0xc4, 0xcb, 0x73, 0x8b,
+    >>)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn generates_bounded_secure_random_bytes_test() -> Nil {
+  let assert Ok(first) = crypto.secure_random(32)
+  let assert Ok(second) = crypto.secure_random(32)
+  assert bit_array.byte_size(first) == 32
+  assert bit_array.byte_size(second) == 32
+  assert first != second
+  assert crypto.secure_random(-1) == Error(crypto.InvalidInput)
+  assert crypto.secure_random(65_536) == Error(crypto.InvalidInput)
 }

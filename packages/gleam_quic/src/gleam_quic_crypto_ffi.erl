@@ -4,10 +4,17 @@
     aes_128_ecb_encrypt/2,
     aes_128_gcm_decrypt/4,
     aes_128_gcm_encrypt/4,
+    aes_256_ecb_encrypt/2,
+    aes_256_gcm_decrypt/4,
+    aes_256_gcm_encrypt/4,
+    chacha20_header_mask/2,
+    chacha20_poly1305_decrypt/4,
+    chacha20_poly1305_encrypt/4,
     hash_sha256/1,
     hash_sha384/1,
     hmac_sha256/2,
     hmac_sha384/2,
+    secure_random/1,
     x25519_generate/0,
     x25519_public/1,
     x25519_shared/2
@@ -35,6 +42,12 @@ hmac_sha256(_Key, _Data) ->
 hmac_sha384(Key, Data) when is_binary(Key), is_binary(Data) ->
     with_crypto(fun() -> crypto:mac(hmac, sha384, Key, Data) end);
 hmac_sha384(_Key, _Data) ->
+    {error, 1}.
+
+-spec secure_random(integer()) -> {ok, binary()} | {error, 1 | 2}.
+secure_random(Length) when is_integer(Length), Length >= 0, Length =< 65535 ->
+    with_crypto(fun() -> crypto:strong_rand_bytes(Length) end);
+secure_random(_Length) ->
     {error, 1}.
 
 -spec x25519_generate() -> {ok, {binary(), binary()}} | {error, 2}.
@@ -109,6 +122,22 @@ aes_128_ecb_encrypt(Key, Block)
 aes_128_ecb_encrypt(_Key, _Block) ->
     {error, 1}.
 
+-spec aes_256_ecb_encrypt(binary(), binary()) -> {ok, binary()} | {error, 1 | 2}.
+aes_256_ecb_encrypt(Key, Block)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Block), byte_size(Block) =:= 16 ->
+    with_crypto(fun() -> crypto:crypto_one_time(aes_256_ecb, Key, Block, true) end);
+aes_256_ecb_encrypt(_Key, _Block) ->
+    {error, 1}.
+
+-spec chacha20_header_mask(binary(), binary()) -> {ok, binary()} | {error, 1 | 2}.
+chacha20_header_mask(Key, Sample)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Sample), byte_size(Sample) =:= 16 ->
+    with_crypto(fun() -> crypto:crypto_one_time(chacha20, Key, Sample, <<0:40>>, true) end);
+chacha20_header_mask(_Key, _Sample) ->
+    {error, 1}.
+
 -spec aes_128_gcm_encrypt(binary(), binary(), binary(), binary()) ->
     {ok, binary()} | {error, 1 | 2}.
 aes_128_gcm_encrypt(Key, Nonce, AssociatedData, Plaintext)
@@ -169,6 +198,97 @@ aes_128_gcm_decrypt(Key, Nonce, AssociatedData, Protected)
     end;
 aes_128_gcm_decrypt(_Key, _Nonce, _AssociatedData, _Protected) ->
     {error, 1}.
+
+-spec aes_256_gcm_encrypt(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 1 | 2}.
+aes_256_gcm_encrypt(Key, Nonce, AssociatedData, Plaintext)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Nonce), byte_size(Nonce) =:= 12,
+         is_binary(AssociatedData), is_binary(Plaintext) ->
+    aead_encrypt(aes_256_gcm, Key, Nonce, AssociatedData, Plaintext);
+aes_256_gcm_encrypt(_Key, _Nonce, _AssociatedData, _Plaintext) ->
+    {error, 1}.
+
+-spec aes_256_gcm_decrypt(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 1 | 2 | 3}.
+aes_256_gcm_decrypt(Key, Nonce, AssociatedData, Protected)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Nonce), byte_size(Nonce) =:= 12,
+         is_binary(AssociatedData), is_binary(Protected), byte_size(Protected) >= 16 ->
+    aead_decrypt(aes_256_gcm, Key, Nonce, AssociatedData, Protected);
+aes_256_gcm_decrypt(_Key, _Nonce, _AssociatedData, _Protected) ->
+    {error, 1}.
+
+-spec chacha20_poly1305_encrypt(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 1 | 2}.
+chacha20_poly1305_encrypt(Key, Nonce, AssociatedData, Plaintext)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Nonce), byte_size(Nonce) =:= 12,
+         is_binary(AssociatedData), is_binary(Plaintext) ->
+    aead_encrypt(chacha20_poly1305, Key, Nonce, AssociatedData, Plaintext);
+chacha20_poly1305_encrypt(_Key, _Nonce, _AssociatedData, _Plaintext) ->
+    {error, 1}.
+
+-spec chacha20_poly1305_decrypt(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 1 | 2 | 3}.
+chacha20_poly1305_decrypt(Key, Nonce, AssociatedData, Protected)
+    when is_binary(Key), byte_size(Key) =:= 32,
+         is_binary(Nonce), byte_size(Nonce) =:= 12,
+         is_binary(AssociatedData), is_binary(Protected), byte_size(Protected) >= 16 ->
+    aead_decrypt(chacha20_poly1305, Key, Nonce, AssociatedData, Protected);
+chacha20_poly1305_decrypt(_Key, _Nonce, _AssociatedData, _Protected) ->
+    {error, 1}.
+
+-spec aead_encrypt(atom(), binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 2}.
+aead_encrypt(Cipher, Key, Nonce, AssociatedData, Plaintext) ->
+    case ensure_crypto() of
+        ok ->
+            try crypto:crypto_one_time_aead(
+                Cipher,
+                Key,
+                Nonce,
+                Plaintext,
+                AssociatedData,
+                16,
+                true
+            ) of
+                {Ciphertext, Tag} when is_binary(Ciphertext), byte_size(Tag) =:= 16 ->
+                    {ok, <<Ciphertext/binary, Tag/binary>>};
+                _Other ->
+                    {error, 2}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end.
+
+-spec aead_decrypt(atom(), binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, 2 | 3}.
+aead_decrypt(Cipher, Key, Nonce, AssociatedData, Protected) ->
+    CiphertextSize = byte_size(Protected) - 16,
+    <<Ciphertext:CiphertextSize/binary, Tag:16/binary>> = Protected,
+    case ensure_crypto() of
+        ok ->
+            try crypto:crypto_one_time_aead(
+                Cipher,
+                Key,
+                Nonce,
+                Ciphertext,
+                AssociatedData,
+                Tag,
+                false
+            ) of
+                Plaintext when is_binary(Plaintext) -> {ok, Plaintext};
+                error -> {error, 3};
+                _Other -> {error, 2}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end.
 
 -spec with_crypto(fun(() -> binary())) -> {ok, binary()} | {error, 2}.
 with_crypto(Operation) ->

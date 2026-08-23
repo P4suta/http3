@@ -2,7 +2,9 @@
 
 `gleam_quic` is the repository's native QUIC transport core for the Erlang
 target. It is an unpublished work in progress and is not yet suitable for
-applications.
+applications. Its current internal TLS layer completes an authenticated
+client/server TLS 1.3 state-model handshake through QUIC Handshake and 1-RTT
+traffic-key installation; it is not yet connected to a network transport.
 
 Protocol parsing, state machines, recovery, congestion control, TLS 1.3
 coordination, and packet protection are implemented or will be implemented in

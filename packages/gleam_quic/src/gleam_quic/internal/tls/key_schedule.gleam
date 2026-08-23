@@ -235,7 +235,6 @@ pub fn derive_application_secrets(
 }
 
 // Derive the resumption master secret after client Finished.
-// nolint: unused_exports -- consumed by session-ticket handling.
 pub fn derive_resumption_master_secret(
   algorithm algorithm: HashAlgorithm,
   master_secret master_secret: BitArray,
@@ -342,7 +341,6 @@ pub fn export_keying_material(
 }
 
 // Compute TLS 1.3 Finished.verify_data from an existing transcript hash.
-// nolint: unused_exports -- consumed by the bounded TLS state machine.
 pub fn finished_verify_data_from_hash(
   algorithm algorithm: HashAlgorithm,
   base_traffic_secret base_traffic_secret: BitArray,

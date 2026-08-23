@@ -115,7 +115,7 @@ isolated benchmark claims.
 RFC 9000 variable-length integer codec, packet-number reconstruction, QUIC v1
 and v2 long-header mappings, bounded invariant packet parsing, the complete
 RFC 9000/RFC 9221 frame codec, and bounded transport parameters from RFC 9000,
-RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 62
+RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 77
 focused tests and its own format, warnings-as-errors build, docs, and lint
 gate.
 
@@ -125,11 +125,16 @@ wire behavior starts with RFC vectors and negative/truncation tests.
 
 ## 6. Native TLS 1.3 and packet protection
 
-**Status:** in progress as of 2026-08-24. RFC 5869 HKDF-SHA256, QUIC v1/v2
-Initial key derivation, AES-128-GCM payload and AES header protection,
-packet-number encoding, and v1/v2 Retry integrity match published vectors.
-TLS handshake coordination, certificate validation, non-Initial cipher suites,
-key lifecycle, tickets, and 0-RTT are not complete.
+**Status:** in progress as of 2026-08-24. RFC 5869 HKDF-SHA256/SHA384,
+QUIC v1/v2 Initial key derivation, AES-128-GCM, AES-256-GCM and
+ChaCha20-Poly1305 payload/header protection, packet-number encoding, and v1/v2
+Retry integrity match published vectors. The TLS layer now has bounded
+handshake, extension and authentication-message codecs, X25519, the TLS 1.3
+transcript and key schedule, RFC 5280 path and RFC 9525 service-identity
+validation, CertificateVerify, constant-time Finished verification, and a
+client/server state-model handshake through 1-RTT key installation. Fragmented
+CRYPTO buffering, HelloRetryRequest, certificate selection, key discard and
+update coordination, tickets, PSK binders, anti-replay, and 0-RTT remain open.
 
 Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
 key schedule, transport-parameter extension, Retry integrity, header and

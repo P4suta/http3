@@ -220,7 +220,18 @@ isolated best-case numbers are not sufficient.
   decryption failure, and v1/v2 Retry Integrity Tags. Negative cases cover
   alignment, lengths, unsupported versions, ambiguity, and tampering without
   leaking runtime exceptions.
-- `mise run core-check` runs package format, warnings-as-errors build, 62 tests,
+- Published RFC 5869, RFC 7748, RFC 8448, RFC 9001, and RFC 9369 vectors now
+  cover SHA-256/SHA-384, X25519, the TLS 1.3 key schedule, AES-128-GCM,
+  AES-256-GCM, ChaCha20-Poly1305, header protection, traffic-key update labels,
+  Initial packets, and Retry authentication.
+- Typed TLS tests cover handshake and extension bounds, duplicate extensions,
+  SNI, ALPN, supported versions, groups and signature schemes, certificate and
+  ticket messages, transcript rewriting, trust-anchor/path validation,
+  localhost service identity, signature tampering, and constant-time tag
+  comparison. A pure client/server state-model test completes ClientHello
+  through authenticated Finished and installs matching Handshake and 1-RTT
+  traffic keys; ALPN mismatch and Finished corruption are fatal.
+- `mise run core-check` runs package format, warnings-as-errors build, 77 tests,
   documentation, and glinter. The root `mise run check` includes this gate so
   native-core regressions cannot pass the existing wrapper checks.
 
