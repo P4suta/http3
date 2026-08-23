@@ -231,7 +231,12 @@ isolated best-case numbers are not sufficient.
   comparison. A pure client/server state-model test completes ClientHello
   through authenticated Finished and installs matching Handshake and 1-RTT
   traffic keys; ALPN mismatch and Finished corruption are fatal.
-- `mise run core-check` runs package format, warnings-as-errors build, 77 tests,
+- Native lifecycle tests additionally cover arbitrary CRYPTO fragmentation,
+  key-update confirmation/ACK/three-PTO rules, AEAD confidentiality and
+  integrity limits, RTT and ACK-delay formulas, packet/time-threshold loss,
+  PTO, NewReno, flow-control exhaustion, anti-amplification, path validation,
+  PMTU probes, stream-ID permissions, and bounded out-of-order reassembly.
+- `mise run core-check` runs package format, warnings-as-errors build, 96 tests,
   documentation, and glinter. The root `mise run check` includes this gate so
   native-core regressions cannot pass the existing wrapper checks.
 

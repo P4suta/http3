@@ -594,7 +594,7 @@ pub fn streaming_client_reports_peer_termination_test() -> Nil {
   http3_test_support.with_server(fn(port, ca_certificate) {
     let connection = streaming_connection(port, ca_certificate)
     let stream =
-      streaming_request(port, "/close")
+      streaming_request(port, "/stream-close")
       |> client.open_stream(connection, _)
       |> should.be_ok
     client.finish(stream) |> should.be_ok

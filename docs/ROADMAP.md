@@ -132,9 +132,11 @@ Retry integrity match published vectors. The TLS layer now has bounded
 handshake, extension and authentication-message codecs, X25519, the TLS 1.3
 transcript and key schedule, RFC 5280 path and RFC 9525 service-identity
 validation, CertificateVerify, constant-time Finished verification, and a
-client/server state-model handshake through 1-RTT key installation. Fragmented
-CRYPTO buffering, HelloRetryRequest, certificate selection, key discard and
-update coordination, tickets, PSK binders, anti-replay, and 0-RTT remain open.
+client/server state-model handshake through 1-RTT key installation. Arbitrary
+CRYPTO fragmentation, QUIC key-phase updates, three-PTO old-key retention, and
+AEAD usage limits are also implemented. HelloRetryRequest, certificate
+selection, key discard coordination, tickets, PSK binders, anti-replay, and
+0-RTT remain open.
 
 Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
 key schedule, transport-parameter extension, Retry integrity, header and
@@ -144,7 +146,14 @@ selection. Keep cryptographic and X.509 runtime primitives in a narrow FFI.
 
 ## 7. Native transport, recovery, and paths
 
-**Status:** not complete.
+**Status:** in progress as of 2026-08-24. Pure bounded models now cover RFC
+9002 RTT estimation, packet/time-threshold loss detection, PTO calculation,
+NewReno, connection and stream flow control, stream ID permissions,
+anti-amplification, path challenge validation, PMTU probing, and out-of-order
+CRYPTO/STREAM reassembly with overlap and final-size enforcement. These models
+are not yet assembled into a live connection and UDP runtime; CUBIC, ECN,
+Retry/tokens, stateless reset, connection-ID rotation, migration, and complete
+recovery scheduling remain open.
 
 Implement connection and stream state machines, flow control, loss recovery,
 PTO, ECN, NewReno and CUBIC, pacing, anti-amplification, Retry and address

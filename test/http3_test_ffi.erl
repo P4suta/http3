@@ -355,9 +355,10 @@ handle_request(Conn, StreamId, Method, Path, Headers) ->
             respond(Conn, StreamId, 200, binary:copy(<<"x">>, 64));
         <<"/timeout", _/binary>> ->
             ok;
+        <<"/stream-close", _/binary>> ->
+            close_after_request_fin(Conn, StreamId);
         <<"/close", _/binary>> ->
-            ok = quic_h3:close(Conn),
-            ok;
+            safe_close_connection(Conn);
         <<"/empty", _/binary>> ->
             safe_respond(Conn, StreamId, 204, <<"ignored">>),
             ok;
@@ -482,6 +483,43 @@ receive_request_body(Conn, StreamId, Method, Path, TestHeader) ->
             consume_buffered(Conn, StreamId, Method, Path, TestHeader, Buffered, [], 0);
         {error, _Reason} ->
             safe_respond(Conn, StreamId, 500, <<"stream handler error">>)
+    end.
+
+close_after_request_fin(Conn, StreamId) ->
+    case safe_set_stream_handler(Conn, StreamId) of
+        ok ->
+            await_request_fin_and_close(Conn, StreamId);
+        {ok, Buffered} ->
+            case lists:any(fun({_Data, Fin}) -> Fin =:= true end, Buffered) of
+                true -> safe_close_connection(Conn);
+                false -> await_request_fin_and_close(Conn, StreamId)
+            end;
+        {error, _Reason} ->
+            safe_close_connection(Conn)
+    end.
+
+await_request_fin_and_close(Conn, StreamId) ->
+    receive
+        {quic_h3, Conn, {data, StreamId, _Data, true}} ->
+            safe_close_connection(Conn);
+        {quic_h3, Conn, {data, StreamId, _Data, false}} ->
+            await_request_fin_and_close(Conn, StreamId);
+        {quic_h3, Conn, {stream_reset, StreamId, _ErrorCode}} ->
+            safe_close_connection(Conn);
+        {quic_h3, Conn, {closed, _Reason}} ->
+            ok;
+        {quic_h3, Conn, closed} ->
+            ok
+    after ?CONCURRENCY_TIMEOUT ->
+        safe_close_connection(Conn)
+    end.
+
+safe_close_connection(Conn) ->
+    try quic_h3:close(Conn) of
+        _ -> ok
+    catch
+        exit:{noproc, _} -> ok;
+        exit:{normal, _} -> ok
     end.
 
 safe_set_stream_handler(Conn, StreamId) ->

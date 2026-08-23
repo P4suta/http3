@@ -75,6 +75,47 @@ pub fn rejects_alpn_mismatch_and_tampered_finished_test() -> Nil {
     == Error(engine.FinishedMismatch)
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn accepts_arbitrarily_fragmented_crypto_bytes_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let #(client_hello_prefix, client_hello_suffix) =
+    split_at(sent_at(client_actions, engine.Initial), 7)
+
+  let assert Ok(engine.Step(server, [])) =
+    engine.handle_server(server, engine.Initial, client_hello_prefix)
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(server, engine.Initial, client_hello_suffix)
+
+  let #(server_hello_prefix, server_hello_suffix) =
+    split_at(sent_at(server_actions, engine.Initial), 11)
+  let assert Ok(engine.Step(client, [])) =
+    engine.handle_client(client, engine.Initial, server_hello_prefix)
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(client, engine.Initial, server_hello_suffix)
+
+  let server_flight = sent_at(server_actions, engine.Handshake)
+  let #(flight_prefix, flight_rest) = split_at(server_flight, 5)
+  let #(flight_middle, flight_suffix) = split_at(flight_rest, 37)
+  let assert Ok(engine.Step(client, [])) =
+    engine.handle_client(client, engine.Handshake, flight_prefix)
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(client, engine.Handshake, flight_middle)
+  let assert Ok(engine.Step(_client, finish_actions)) =
+    engine.handle_client(client, engine.Handshake, flight_suffix)
+
+  let #(finished_prefix, finished_suffix) =
+    split_at(sent_at(finish_actions, engine.Handshake), 3)
+  let assert Ok(engine.Step(server, [])) =
+    engine.handle_server(server, engine.Handshake, finished_prefix)
+  let assert Ok(engine.Step(server, complete_actions)) =
+    engine.handle_server(server, engine.Handshake, finished_suffix)
+  assert engine.server_phase(server) == engine.Connected
+  assert has_complete(complete_actions)
+}
+
 fn configs(
   client_alpn: List(BitArray),
 ) -> #(engine.ClientConfig, engine.ServerConfig) {
@@ -163,4 +204,10 @@ fn flip_last(bytes: BitArray) -> BitArray {
     _ -> last - 1
   }
   <<prefix:bits, changed>>
+}
+
+fn split_at(bytes: BitArray, byte_count: Int) -> #(BitArray, BitArray) {
+  let prefix_size = byte_count * 8
+  let assert <<prefix:bits-size(prefix_size), suffix:bits>> = bytes
+  #(prefix, suffix)
 }

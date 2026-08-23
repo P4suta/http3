@@ -82,6 +82,7 @@ type ClientHandshakeContext {
     hash_algorithm: crypto.HashAlgorithm,
     transcript: transcript.Transcript,
     secrets: key_schedule.HandshakeSecrets,
+    pending_crypto: BitArray,
   )
 }
 
@@ -91,6 +92,7 @@ pub opaque type Client {
     config: ClientConfig,
     key_pair: key_exchange.KeyPair,
     encoded_client_hello: BitArray,
+    pending_crypto: BitArray,
   )
   ClientAwaitingEncryptedExtensions(ClientHandshakeContext)
   ClientAwaitingCertificate(ClientHandshakeContext)
@@ -113,8 +115,11 @@ type ServerHandshakeContext {
 
 /// Server TLS state. Private keys and traffic secrets have no accessors.
 pub opaque type Server {
-  ServerAwaitingClientHello(ServerConfig)
-  ServerAwaitingClientFinished(ServerHandshakeContext)
+  ServerAwaitingClientHello(config: ServerConfig, pending_crypto: BitArray)
+  ServerAwaitingClientFinished(
+    context: ServerHandshakeContext,
+    pending_crypto: BitArray,
+  )
   ServerConnected(resumption_master_secret: BitArray)
 }
 
@@ -165,7 +170,7 @@ pub fn start_client(
   )
   use encoded <- result.try(encode_message(handshake.ClientHello, body))
   Ok(
-    Step(ClientAwaitingServerHello(config, key_pair, encoded), [
+    Step(ClientAwaitingServerHello(config, key_pair, encoded, <<>>), [
       Send(Initial, encoded),
     ]),
   )
@@ -174,7 +179,7 @@ pub fn start_client(
 /// Validate a server configuration without emitting network data.
 pub fn start_server(config config: ServerConfig) -> Result(Server, Error) {
   use Nil <- result.try(validate_server_config(config))
-  Ok(ServerAwaitingClientHello(config))
+  Ok(ServerAwaitingClientHello(config, <<>>))
 }
 
 /// Feed ordered CRYPTO bytes to the client state machine.
@@ -189,7 +194,7 @@ pub fn handle_client(
     | ClientAwaitingCertificate(..), Handshake
     | ClientAwaitingCertificateVerify(..), Handshake
     | ClientAwaitingFinished(..), Handshake
-    -> process_client_flight(client, bytes, [])
+    -> prepare_client_flight(client, bytes)
     ClientConnected(_), _ -> Error(UnexpectedMessage)
     _, _ -> Error(UnexpectedEncryptionLevel)
   }
@@ -202,10 +207,10 @@ pub fn handle_server(
   bytes bytes: BitArray,
 ) -> Result(Step(Server), Error) {
   case server, level {
-    ServerAwaitingClientHello(config), Initial ->
-      handle_client_hello(config, bytes)
-    ServerAwaitingClientFinished(context), Handshake ->
-      handle_client_finished(context, bytes)
+    ServerAwaitingClientHello(config, pending), Initial ->
+      handle_client_hello(config, <<pending:bits, bytes:bits>>)
+    ServerAwaitingClientFinished(context, pending), Handshake ->
+      handle_client_finished(context, <<pending:bits, bytes:bits>>)
     ServerConnected(_), _ -> Error(UnexpectedMessage)
     _, _ -> Error(UnexpectedEncryptionLevel)
   }
@@ -226,8 +231,8 @@ pub fn client_phase(client: Client) -> Phase {
 /// Return server progress without exposing transcript or secret state.
 pub fn server_phase(server: Server) -> Phase {
   case server {
-    ServerAwaitingClientHello(_) -> AwaitingPeerHello
-    ServerAwaitingClientFinished(_) -> AwaitingPeerFinished
+    ServerAwaitingClientHello(_, _) -> AwaitingPeerHello
+    ServerAwaitingClientFinished(_, _) -> AwaitingPeerFinished
     ServerConnected(_) -> Connected
   }
 }
@@ -353,16 +358,24 @@ fn handle_client_hello(
   config: ServerConfig,
   bytes: BitArray,
 ) -> Result(Step(Server), Error) {
-  use message <- result.try(decode_exact(bytes))
-  let handshake.Message(message_type, body) = message
-  case message_type {
-    handshake.ClientHello -> {
-      use client_hello <- result.try(
-        hello.decode_client(body, hello.default_limits()) |> map_hello_result,
-      )
-      accept_client_hello(config, client_hello, bytes)
+  case handshake.decode_next(bytes, handshake.default_limits()) {
+    Ok(handshake.NeedMore) ->
+      Ok(Step(ServerAwaitingClientHello(config, bytes), []))
+    Ok(handshake.Complete(message, <<>>)) -> {
+      let handshake.Message(message_type, body) = message
+      case message_type {
+        handshake.ClientHello -> {
+          use client_hello <- result.try(
+            hello.decode_client(body, hello.default_limits())
+            |> map_hello_result,
+          )
+          accept_client_hello(config, client_hello, bytes)
+        }
+        _ -> Error(UnexpectedMessage)
+      }
     }
-    _ -> Error(UnexpectedMessage)
+    Ok(handshake.Complete(_, _)) -> Error(UnexpectedMessage)
+    Error(error) -> Error(HandshakeFailure(error))
   }
 }
 
@@ -467,7 +480,7 @@ fn build_server_flight(
       transcript: flight_transcript,
       secrets: secrets,
     )
-  Ok(Step(ServerAwaitingClientFinished(context), actions))
+  Ok(Step(ServerAwaitingClientFinished(context, <<>>), actions))
 }
 
 fn encode_server_hello(
@@ -680,8 +693,30 @@ fn handle_server_hello(
   bytes: BitArray,
 ) -> Result(Step(Client), Error) {
   case client {
-    ClientAwaitingServerHello(config, key_pair, client_hello) -> {
-      use message <- result.try(decode_exact(bytes))
+    ClientAwaitingServerHello(config, key_pair, client_hello, pending) ->
+      decode_server_hello(config, key_pair, client_hello, <<
+        pending:bits,
+        bytes:bits,
+      >>)
+    _ -> Error(UnexpectedMessage)
+  }
+}
+
+fn decode_server_hello(
+  config: ClientConfig,
+  key_pair: key_exchange.KeyPair,
+  client_hello: BitArray,
+  bytes: BitArray,
+) -> Result(Step(Client), Error) {
+  case handshake.decode_next(bytes, handshake.default_limits()) {
+    Ok(handshake.NeedMore) ->
+      Ok(
+        Step(
+          ClientAwaitingServerHello(config, key_pair, client_hello, bytes),
+          [],
+        ),
+      )
+    Ok(handshake.Complete(message, <<>>)) -> {
       let handshake.Message(message_type, body) = message
       case message_type {
         handshake.ServerHello -> {
@@ -700,7 +735,8 @@ fn handle_server_hello(
         _ -> Error(UnexpectedMessage)
       }
     }
-    _ -> Error(UnexpectedMessage)
+    Ok(handshake.Complete(_, _)) -> Error(UnexpectedMessage)
+    Error(error) -> Error(HandshakeFailure(error))
   }
 }
 
@@ -777,6 +813,7 @@ fn establish_client_handshake(
       hash_algorithm: algorithm,
       transcript: current,
       secrets: secrets,
+      pending_crypto: <<>>,
     )
   Ok(
     Step(ClientAwaitingEncryptedExtensions(context), [
@@ -784,6 +821,61 @@ fn establish_client_handshake(
       InstallReadKeys(Handshake, read_keys),
     ]),
   )
+}
+
+fn prepare_client_flight(
+  client: Client,
+  bytes: BitArray,
+) -> Result(Step(Client), Error) {
+  let #(cleared, pending) = take_client_pending(client)
+  process_client_flight(cleared, <<pending:bits, bytes:bits>>, [])
+}
+
+fn take_client_pending(client: Client) -> #(Client, BitArray) {
+  case client {
+    ClientAwaitingEncryptedExtensions(context) -> #(
+      ClientAwaitingEncryptedExtensions(clear_pending(context)),
+      context.pending_crypto,
+    )
+    ClientAwaitingCertificate(context) -> #(
+      ClientAwaitingCertificate(clear_pending(context)),
+      context.pending_crypto,
+    )
+    ClientAwaitingCertificateVerify(context, peer) -> #(
+      ClientAwaitingCertificateVerify(clear_pending(context), peer),
+      context.pending_crypto,
+    )
+    ClientAwaitingFinished(context) -> #(
+      ClientAwaitingFinished(clear_pending(context)),
+      context.pending_crypto,
+    )
+    _ -> #(client, <<>>)
+  }
+}
+
+fn set_client_pending(client: Client, pending: BitArray) -> Client {
+  case client {
+    ClientAwaitingEncryptedExtensions(context) ->
+      ClientAwaitingEncryptedExtensions(set_pending(context, pending))
+    ClientAwaitingCertificate(context) ->
+      ClientAwaitingCertificate(set_pending(context, pending))
+    ClientAwaitingCertificateVerify(context, peer) ->
+      ClientAwaitingCertificateVerify(set_pending(context, pending), peer)
+    ClientAwaitingFinished(context) ->
+      ClientAwaitingFinished(set_pending(context, pending))
+    _ -> client
+  }
+}
+
+fn clear_pending(context: ClientHandshakeContext) -> ClientHandshakeContext {
+  ClientHandshakeContext(..context, pending_crypto: <<>>)
+}
+
+fn set_pending(
+  context: ClientHandshakeContext,
+  pending: BitArray,
+) -> ClientHandshakeContext {
+  ClientHandshakeContext(..context, pending_crypto: pending)
 }
 
 fn process_client_flight(
@@ -795,7 +887,8 @@ fn process_client_flight(
     <<>> -> Ok(Step(client, actions))
     _ ->
       case handshake.decode_next(bytes, handshake.default_limits()) {
-        Ok(handshake.NeedMore) -> Error(TruncatedHandshake)
+        Ok(handshake.NeedMore) ->
+          Ok(Step(set_client_pending(client, bytes), actions))
         Ok(handshake.Complete(message, rest)) -> {
           use Step(next, new_actions) <- result.try(process_client_message(
             client,
@@ -1031,11 +1124,18 @@ fn handle_client_finished(
   context: ServerHandshakeContext,
   bytes: BitArray,
 ) -> Result(Step(Server), Error) {
-  use message <- result.try(decode_exact(bytes))
-  let handshake.Message(message_type, body) = message
-  case message_type {
-    handshake.Finished -> verify_client_finished(context, body)
-    _ -> Error(UnexpectedMessage)
+  case handshake.decode_next(bytes, handshake.default_limits()) {
+    Ok(handshake.NeedMore) ->
+      Ok(Step(ServerAwaitingClientFinished(context, bytes), []))
+    Ok(handshake.Complete(message, <<>>)) -> {
+      let handshake.Message(message_type, body) = message
+      case message_type {
+        handshake.Finished -> verify_client_finished(context, body)
+        _ -> Error(UnexpectedMessage)
+      }
+    }
+    Ok(handshake.Complete(_, _)) -> Error(UnexpectedMessage)
+    Error(error) -> Error(HandshakeFailure(error))
   }
 }
 
@@ -1462,15 +1562,6 @@ fn encode_message(
     maximum_handshake_message_length,
   )
   |> map_handshake_result
-}
-
-fn decode_exact(bytes: BitArray) -> Result(handshake.Message, Error) {
-  case handshake.decode_next(bytes, handshake.default_limits()) {
-    Ok(handshake.NeedMore) -> Error(TruncatedHandshake)
-    Ok(handshake.Complete(message, <<>>)) -> Ok(message)
-    Ok(handshake.Complete(_, _)) -> Error(UnexpectedMessage)
-    Error(error) -> Error(HandshakeFailure(error))
-  }
 }
 
 fn map_handshake_result(
