@@ -2,14 +2,15 @@
 
 ## Goals
 
-`http3` will provide an idiomatic Gleam HTTP/3 client and server on the Erlang
-target. Applications should depend on stable HTTP concepts rather than a
-specific QUIC implementation. The first usable release will include client and
-server APIs, buffered and streaming bodies, and carefully scoped low-level
-capabilities.
+`http3` will provide an idiomatic, HTTP/3-only Gleam client and server on the
+Erlang target. Applications should depend on stable HTTP concepts rather than
+a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
+and the JavaScript target are non-goals and belong in separate projects.
 
-Version 0.1.0 establishes the boundary; it does not contain connection or
-server placeholders.
+The bootstrap establishes the backend boundary and exposes only capability
+discovery. It does not contain connection, client, or server placeholders.
+The version in `gleam.toml` is required tool metadata, not an implementation,
+publication, or quality milestone.
 
 ## Layers
 
@@ -31,18 +32,23 @@ on the representation selected by a backend.
 
 The internal adapter is responsible for translating backend results and
 events into those public types. Backend PIDs, references, atoms, maps, records,
-and mailbox message formats must remain below this boundary. The Erlang FFI is
-limited to operations that cannot be expressed directly or safely in Gleam;
-it must not become an alternative public API.
+and mailbox message formats must remain below this boundary. Small Erlang FFI
+modules perform only operations that cannot be expressed directly or safely
+in Gleam; they must not become an alternative public API or a second adapter
+layer.
 
 ## Initial backend
 
 The initial backend is pure Erlang
 [`quic`](https://github.com/benoitc/erlang_quic), starting at version 1.8.1.
-It supplies QUIC transport and HTTP/3 protocol machinery without a native
-library dependency and supports the project's OTP 26–29 range. The upstream
-project has also discussed
+It already supplies QUIC transport and HTTP/3 client and server machinery
+without a native library dependency and supports the project's OTP 26–29
+range. The upstream project has also discussed
 [Gleam bindings](https://github.com/benoitc/erlang_quic/issues/21).
+
+Because no maintained Gleam binding is provided, `http3` adds value by
+normalizing backend behavior behind typed HTTP/3 concepts and by making
+lifecycle, limits, backpressure, cancellation, and failures explicit.
 
 The current call path is deliberately small:
 
@@ -57,24 +63,43 @@ Calling `http3.is_supported()` therefore verifies that the resolved Hex
 package compiled, loaded, and answered its own availability probe. It does not
 probe network reachability or peer interoperability.
 
-## HTTP compatibility
+## HTTP data model
 
 The first protocol API will use the same request and response concepts as
 `gleam/http`. The `gleam_http` dependency and any OTP integration packages are
 intentionally deferred until concrete client and server modules use them. This
 keeps the bootstrap runtime graph limited to `gleam_stdlib` and `quic`.
 
+Sharing request and response concepts does not imply HTTP/1.1 or HTTP/2
+support and does not introduce automatic fallback. Multi-protocol selection
+belongs in a separate integration project above this library.
+
 Both buffered and streaming bodies are first-class requirements. Buffered
 helpers may collect a stream within explicit limits; streaming APIs retain
 backpressure and make end-of-stream, cancellation, and transport failure
 observable.
 
+## Implementation sequence
+
+The next protocol work proceeds in dependency order:
+
+1. a bounded buffered HTTP/3 client with secure defaults and deterministic
+   cleanup;
+2. streaming request and response bodies with backpressure and cancellation;
+3. an HTTP/3 server built on the exercised connection and stream model; and
+4. advanced capabilities exposed through typed, backend-neutral APIs where
+   possible.
+
+Each behavior starts with a failing test and follows the gates in
+[Testing](TESTING.md). No stage is gated on publishing the repository or
+package, creating a tag or release, or changing the package version.
+
 ## Security boundary
 
 Normal client configuration will always verify certificate chains and hostnames
 by default. Disabling verification is never a convenience flag on the normal
-configuration. A narrowly named test or development API may permit it for
-local fixtures, with the unsafe choice visible at the call site.
+configuration. A narrowly named, test-only surface may permit it for local
+fixtures, with the unsafe choice visible at the call site.
 
 Protocol data is untrusted. Future adapters must validate sizes, identifiers,
 state transitions, and backend event shapes before constructing public values.
@@ -85,7 +110,8 @@ processes or streams.
 
 A future pure Gleam QUIC implementation will live in a separate package. Its
 name and public API are intentionally undecided. `http3` will integrate it
-through the same internal backend boundary and preserve the public HTTP/3 API.
+through the same internal adapter and small-FFI boundary and preserve the
+public HTTP/3 API.
 
 Backend selection is an implementation concern. Compatibility tests will be
 written against observable public behavior so the backend can be exchanged

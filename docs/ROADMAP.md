@@ -2,36 +2,74 @@
 
 The phases below are ordered. Later phases may be designed early, but they do
 not displace the compatibility and safety work required by earlier phases.
+The roadmap is exclusively for HTTP/3 on the Erlang target. HTTP/1.1, HTTP/2,
+automatic protocol fallback, and the JavaScript target belong in other
+projects.
 
-## 1. Minimum client and server
+Every phase uses Red-Green-Refactor and the verification layers in
+[Testing](TESTING.md). A new behavior begins with a failing test. Completion
+is based on observable behavior, cleanup, interoperability, and conformance;
+publishing to GitHub or Hex, tagging, creating a release, and changing the
+tooling version are optional operations and never phase gates.
 
-Build `gleam/http`-compatible request and response types and implement real
-HTTP/3 client and server request-response flows. Deliver both bounded buffered
-bodies and backpressured streaming bodies. Introduce opaque `Connection` and
-`Stream` values while keeping all backend handles and events internal.
+## 1. Bounded buffered client
 
-This phase also establishes secure TLS defaults, deterministic shutdown, error
-normalization, and integration tests against independent HTTP/3 peers.
+Implement a real HTTP/3 client request-response flow using `gleam/http`-
+compatible request and response concepts. Buffer request and response bodies
+only within explicit limits, reject limit violations with typed errors, and
+make connection ownership and deterministic shutdown clear.
 
-## 2. Advanced capabilities and escape hatch
+Establish certificate-chain and hostname verification by default, bounded
+operation timeouts, backend event and error normalization, and real UDP
+loopback coverage. Do not export an operation until it performs the documented
+protocol work.
 
-Add cancellation, HTTP Datagrams, stream priority, connection migration,
-0-RTT, qlog, and other transport controls behind typed capabilities. Low-level
-access must remain backend-neutral where possible and must not expose raw PIDs,
-atoms, maps, or mailbox messages.
+## 2. Streaming, backpressure, and cancellation
 
-Any certificate-verification bypass remains confined to an explicit test or
-development API.
+Add streaming request and response bodies without changing the bounded helper
+into an unbounded collector. Preserve flow-control backpressure, expose
+end-of-stream and transport failures, and make cancellation observable,
+idempotent, and race-safe.
 
-## 3. Verification depth
+Cover slow producers and consumers, early response termination, cancellation
+at each connection and stream state, and cleanup after both local and peer
+failure.
 
-Expand interoperability, conformance, load, soak, and fault-injection testing.
-Cover flow-control pressure, packet loss and reordering, cancellation races,
-peer protocol violations, resource limits, and graceful and abrupt shutdown.
-Publish repeatable performance methodology rather than isolated benchmark
-claims.
+## 3. Server
 
-## 4. Pure Gleam QUIC backend
+Implement the HTTP/3 server after the client has exercised the shared
+connection, stream, body, error, cancellation, and shutdown model. Add bounded
+buffered handling first, then streaming handlers with backpressure and
+deterministic ownership.
+
+Keep listener, connection, and request-process lifetimes explicit. Test clean
+shutdown, abrupt peer termination, malformed input, concurrent streams, and
+resource limits without exposing backend handles or mailbox formats.
+
+## 4. Advanced capabilities and escape hatch
+
+Add HTTP Datagrams, stream priority, connection migration, 0-RTT, qlog, and
+other transport controls behind typed capabilities. Low-level access must
+remain backend-neutral where possible and must not expose raw PIDs, atoms,
+maps, or mailbox messages.
+
+Any certificate-verification bypass remains confined to an explicitly named,
+test-only surface.
+
+## Continuous verification
+
+Verification is not deferred to a late implementation phase. Every change
+uses the applicable pure, adapter, and real-UDP loopback tests and passes
+`mise run check`. Each phase completes with an independent HTTP/3 peer,
+conformance coverage, and relevant fault injection.
+
+When performance becomes the focus, add controlled load and soak tests and a
+reproducible benchmark methodology. Cover flow-control pressure, packet loss
+and reordering, cancellation races, peer protocol violations, resource limits,
+and graceful and abrupt shutdown. Retain raw results rather than publishing
+isolated benchmark claims.
+
+## Future pure Gleam QUIC backend
 
 Develop a pure Gleam QUIC implementation as a separate package, then integrate
 it behind the established backend boundary. Preserve the public `http3` API and

@@ -17,6 +17,7 @@ glinter = ">= 2.19.2 and < 3.0.0"
 [documentation]
 pages = [
   { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
+  { title = "Testing", path = "testing.html", source = "docs/TESTING.md" },
   { title = "Roadmap", path = "roadmap.html", source = "docs/ROADMAP.md" },
 ]
 
