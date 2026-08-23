@@ -393,6 +393,23 @@ pub fn client_phase(client: Client) -> Phase {
   }
 }
 
+/// Retain the exact ClientHello after an authenticated QUIC Retry and mark
+/// the eventual server transport parameters as belonging to a retried path.
+pub fn accept_quic_retry(client: Client) -> Result(#(Client, BitArray), Error) {
+  case client {
+    ClientAwaitingServerHello(config, key_pair, encoded, offer, <<>>)
+      if !config.retried
+    -> {
+      let config = ClientConfig(..config, retried: True)
+      Ok(#(
+        ClientAwaitingServerHello(config, key_pair, encoded, offer, <<>>),
+        encoded,
+      ))
+    }
+    _ -> Error(UnexpectedMessage)
+  }
+}
+
 /// Return server progress without exposing transcript or secret state.
 pub fn server_phase(server: Server) -> Phase {
   case server {

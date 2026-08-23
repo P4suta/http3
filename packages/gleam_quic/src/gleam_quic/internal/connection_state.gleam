@@ -448,6 +448,75 @@ pub fn install_initial_keys(
   }
 }
 
+/// Restart Initial protection and recovery after an authenticated Retry while
+/// retaining the exact TLS ClientHello and every packet-number counter.
+pub fn process_retry(
+  state: State,
+  retry_source_connection_id: BitArray,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  let length = bit_array.byte_size(retry_source_connection_id)
+  case
+    state.config.role == Client
+    && state.phase == Handshaking
+    && !packet_space.is_discarded(state.initial_space)
+    && bit_array.bit_size(retry_source_connection_id) % 8 == 0
+    && length >= 8
+    && length <= 20
+    && now_milliseconds >= state.last_activity_milliseconds
+  {
+    False -> Error(ConnectionUnavailable)
+    True ->
+      process_valid_retry(state, retry_source_connection_id, now_milliseconds)
+  }
+}
+
+fn process_valid_retry(
+  state: State,
+  retry_source_connection_id: BitArray,
+  now_milliseconds: Int,
+) -> Result(State, Error) {
+  case state.tls_endpoint {
+    ClientTlsEndpoint(client) -> {
+      use #(client, client_hello) <- result.try(
+        engine.accept_quic_retry(client) |> map_tls_result,
+      )
+      use state <- result.try(requeue_lost_frames(
+        state,
+        engine.ZeroRtt,
+        packet_space.outstanding_frames(state.application_space),
+      ))
+      use initial_receive <- result.try(create_crypto_reassembler())
+      use estimator <- result.try(create_rtt())
+      use congestion <- result.try(create_congestion(state.config))
+      use pacing <- result.try(create_pacer(state.config, now_milliseconds))
+      use amplification <- result.try(create_amplification(Client))
+      let restarted =
+        State(
+          ..state,
+          tls_endpoint: ClientTlsEndpoint(client),
+          initial_keys: empty_initial_keys(),
+          initial_space: packet_space.reset_recovery(state.initial_space),
+          handshake_space: packet_space.reset_recovery(state.handshake_space),
+          application_space: packet_space.reset_recovery(
+            state.application_space,
+          ),
+          initial_crypto_receive: initial_receive,
+          initial_crypto_send_offset: bit_array.byte_size(client_hello),
+          initial_queue: [frame.Crypto(0, client_hello)],
+          estimator: estimator,
+          congestion: congestion,
+          pacer: pacing,
+          ecn: ecn.new(),
+          amplification: amplification,
+          last_activity_milliseconds: now_milliseconds,
+        )
+      install_initial_keys(restarted, retry_source_connection_id)
+    }
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
 /// Initialize the peer-issued connection-ID registry once the initial ID and
 /// authenticated stateless-reset token are both known.
 pub fn initialize_peer_connection_id(
@@ -3977,6 +4046,13 @@ fn map_key_phase_result(
   case value {
     Ok(updated) -> Ok(updated)
     Error(error) -> Error(KeyUpdateFailure(error))
+  }
+}
+
+fn map_tls_result(value: Result(value, engine.Error)) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(TlsFailure(error))
   }
 }
 

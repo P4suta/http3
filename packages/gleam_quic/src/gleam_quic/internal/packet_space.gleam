@@ -366,9 +366,37 @@ pub fn discard(state: State) -> State {
   )
 }
 
+/// Clear loss and congestion bookkeeping after an authenticated Retry while
+/// preserving the next packet number. Packet numbers are never reused.
+pub fn reset_recovery(state: State) -> State {
+  State(
+    ..state,
+    sent_packets: [],
+    largest_acknowledged: None,
+    loss_time_milliseconds: None,
+    probe_timeout_count: 0,
+  )
+}
+
+/// Return frames retained in outstanding packets in original send order.
+pub fn outstanding_frames(state: State) -> List(frame.Frame) {
+  outstanding_packet_frames(state.sent_packets, [])
+}
+
 /// Return the packet number that the next successful send will consume.
 pub fn next_packet_number(state: State) -> Int {
   state.next_packet_number
+}
+
+fn outstanding_packet_frames(
+  packets: List(SentPacket),
+  accumulated: List(frame.Frame),
+) -> List(frame.Frame) {
+  case packets {
+    [] -> accumulated
+    [packet, ..rest] ->
+      outstanding_packet_frames(rest, list.append(accumulated, packet.frames))
+  }
 }
 
 /// Reconstruct the next received packet number from the largest accepted one.

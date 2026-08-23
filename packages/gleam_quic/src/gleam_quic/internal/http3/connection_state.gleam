@@ -292,6 +292,11 @@ pub fn new(
   ))
 }
 
+/// Return the endpoint role fixed by this HTTP/3 connection.
+pub fn role(state: State) -> Role {
+  state.config.role
+}
+
 /// Install the three local critical streams and produce their mandatory
 /// ordered prefaces. SETTINGS is the first control-stream frame.
 pub fn bootstrap(

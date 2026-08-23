@@ -184,6 +184,32 @@ pub fn drives_pto_backoff_and_discards_key_spaces_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn retry_reset_preserves_packet_numbers_and_exposes_retransmission_test() -> Nil {
+  let assert Ok(space) = packet_space.new(packet_space.Initial, 25, 8, 8)
+  let crypto = frame.Crypto(0, <<"client hello">>)
+  let assert Ok(#(space, _)) =
+    packet_space.record_sent(
+      space,
+      0,
+      True,
+      True,
+      1200,
+      [crypto, frame.Padding(100)],
+      ecn.NotEct,
+    )
+  let assert Ok(estimator) = rtt.new(100)
+  let assert Ok(packet_space.ProbeTimeout(space, 2)) =
+    packet_space.on_timeout(space, 300, estimator, False, 1)
+  assert packet_space.outstanding_frames(space) == [crypto, frame.Padding(100)]
+
+  let space = packet_space.reset_recovery(space)
+  assert packet_space.next_packet_number(space) == 1
+  assert packet_space.outstanding_count(space) == 0
+  assert packet_space.probe_timeout_count(space) == 0
+  assert packet_space.outstanding_frames(space) == []
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn validates_configuration_and_sent_ledger_bounds_test() -> Nil {
   assert packet_space.new(packet_space.Application, -1, 8, 8)
     == Error(packet_space.InvalidInput)
