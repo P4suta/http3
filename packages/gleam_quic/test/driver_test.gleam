@@ -263,21 +263,54 @@ pub fn pads_initial_and_rejects_wrong_destination_test() -> Nil {
       client_connection_id,
       0,
     )
-  let wrong_server_connection_id = <<17, 18, 19, 20, 21, 22, 23, 24>>
+  let server_connection_id = <<17, 18, 19, 20, 21, 22, 23, 24>>
+  let wrong_client_connection_id = <<31, 32, 33, 34, 35, 36, 37, 38>>
   let assert Ok(wrong_server) =
     driver.start_server(
       connection_state.default_config(connection_state.Server),
       server_tls,
       original_destination_connection_id,
-      wrong_server_connection_id,
-      client_connection_id,
+      server_connection_id,
+      wrong_client_connection_id,
       0,
     )
   let assert Ok(Some(prepared)) = driver.prepare_datagram(client, 1000, 1)
   let datagram = driver.prepared_bytes(prepared)
   assert bit_array.byte_size(datagram) == 1200
-  assert driver.receive_datagram(wrong_server, datagram, 1)
+  let assert Ok(client) = driver.commit_datagram(prepared, 1)
+  let assert Ok(wrong_server) =
+    driver.receive_datagram(wrong_server, datagram, 1)
+  let assert Ok(Some(response)) = driver.prepare_datagram(wrong_server, 1000, 2)
+  assert driver.receive_datagram(client, driver.prepared_bytes(response), 2)
     == Error(driver.DestinationConnectionIdMismatch)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_accepts_original_destination_alias_before_own_cid_is_known_test() -> Nil {
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let server_connection_id = <<17, 18, 19, 20, 21, 22, 23, 24>>
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      server_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(Some(prepared)) = driver.prepare_datagram(client, 1000, 1)
+  assert driver.receive_datagram(server, driver.prepared_bytes(prepared), 1)
+    |> result.is_ok
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -361,13 +394,17 @@ pub fn carries_http3_request_response_over_protected_streams_test() -> Nil {
   assert session.phase(server) == connection_state.Established
 
   let assert Ok(#(client, request_id)) =
-    session.open_request(client, request_headers(), False)
+    session.open_request(client, streaming_request_headers(), False)
   assert request_id == 0
+  let assert Ok(client) = session.send_data(client, request_id, <<"hello ">>)
+  let assert Ok(client) = session.send_data(client, request_id, <<"stream">>)
   let assert Ok(client) = session.finish_stream(client, request_id)
   let assert Ok(SessionPeers(client, server, now_ms)) =
     drive_sessions(SessionPeers(client, server, now_ms), 64)
   let #(server, server_events) = session.take_events(server)
   assert has_request_headers(server_events, request_id)
+  assert has_data(server_events, request_id, <<"hello ">>)
+  assert has_data(server_events, request_id, <<"stream">>)
   assert has_stream_finished(server_events, request_id)
 
   let assert Ok(server) =
@@ -665,12 +702,13 @@ fn map_udp(value: Result(value, udp.Error)) -> Result(value, NetworkError) {
   }
 }
 
-fn request_headers() -> List(Header) {
+fn streaming_request_headers() -> List(Header) {
   [
-    Header(<<":method">>, <<"GET">>, False),
+    Header(<<":method">>, <<"POST">>, False),
     Header(<<":scheme">>, <<"https">>, False),
     Header(<<":authority">>, <<"localhost">>, False),
     Header(<<":path">>, <<"/native">>, False),
+    Header(<<"content-length">>, <<"12">>, False),
   ]
 }
 

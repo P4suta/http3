@@ -5,6 +5,7 @@
     constant_time_equal/2,
     sign/3,
     signing_key_from_pem/1,
+    signing_key_scheme/1,
     system_trust_store/0,
     trust_store_from_der/1,
     trust_store_from_pem/1,
@@ -104,6 +105,15 @@ signing_key_from_pem(Pem) when is_binary(Pem) ->
     end;
 signing_key_from_pem(_Pem) ->
     {error, 3}.
+
+-spec signing_key_scheme(tuple()) -> {ok, integer()} | {error, 1 | 8}.
+signing_key_scheme({gleam_quic_signing_key, Key}) ->
+    case private_key_scheme(Key) of
+        {ok, Scheme} -> {ok, Scheme};
+        error -> {error, 8}
+    end;
+signing_key_scheme(_Key) ->
+    {error, 1}.
 
 -spec sign(tuple(), integer(), binary()) -> {ok, binary()} | {error, 1 | 2 | 8}.
 sign({gleam_quic_signing_key, Key}, Scheme, Content)
@@ -273,6 +283,23 @@ is_private_key_entry({'OneAsymmetricKey', _Der, not_encrypted}) -> true;
 is_private_key_entry({'ECPrivateKey', _Der, not_encrypted}) -> true;
 is_private_key_entry({'RSAPrivateKey', _Der, not_encrypted}) -> true;
 is_private_key_entry(_Entry) -> false.
+
+-spec private_key_scheme(term()) -> {ok, integer()} | error.
+private_key_scheme({'ECPrivateKey', _Version, _Private, {namedCurve, ?ID_ED25519}, _Public, _Attrs}) ->
+    {ok, 16#0807};
+private_key_scheme({'ECPrivateKey', _Version, _Private, {namedCurve, ?ID_ED448}, _Public, _Attrs}) ->
+    {ok, 16#0808};
+private_key_scheme({'ECPrivateKey', _Version, _Private, {namedCurve, ?SECP256R1}, _Public, _Attrs}) ->
+    {ok, 16#0403};
+private_key_scheme({'ECPrivateKey', _Version, _Private, {namedCurve, ?SECP384R1}, _Public, _Attrs}) ->
+    {ok, 16#0503};
+private_key_scheme({'ECPrivateKey', _Version, _Private, {namedCurve, ?SECP521R1}, _Public, _Attrs}) ->
+    {ok, 16#0603};
+private_key_scheme({'RSAPrivateKey', _Version, _Modulus, _PublicExponent, _PrivateExponent,
+                    _Prime1, _Prime2, _Exponent1, _Exponent2, _Coefficient, _OtherPrimeInfos}) ->
+    {ok, 16#0804};
+private_key_scheme(_Key) ->
+    error.
 
 -spec verification_parameters(integer(), tuple()) ->
     {ok, atom(), term(), list()} | error.

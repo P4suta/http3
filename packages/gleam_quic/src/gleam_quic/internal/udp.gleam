@@ -135,6 +135,14 @@ pub fn address_bytes(address: Address) -> BitArray {
   address.bytes
 }
 
+/// Reconstruct a typed address from four or sixteen network-order bytes.
+pub fn address_from_bytes(bytes: BitArray) -> Result(Address, Error) {
+  case bit_array.byte_size(bytes), bit_array.bit_size(bytes) % 8 {
+    4, 0 | 16, 0 -> Ok(Address(bytes))
+    _, _ -> Error(InvalidInput)
+  }
+}
+
 /// Resolve a DNS name or address literal into bounded typed IP addresses.
 pub fn resolve(
   host host: String,

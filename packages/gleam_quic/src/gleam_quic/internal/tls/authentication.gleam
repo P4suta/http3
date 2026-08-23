@@ -51,6 +51,9 @@ fn raw_validate_server_certificate(
 @external(erlang, "gleam_quic_tls_ffi", "signing_key_from_pem")
 fn raw_signing_key_from_pem(pem: BitArray) -> Result(SigningKey, Int)
 
+@external(erlang, "gleam_quic_tls_ffi", "signing_key_scheme")
+fn raw_signing_key_scheme(signing_key: SigningKey) -> Result(Int, Int)
+
 @external(erlang, "gleam_quic_tls_ffi", "sign")
 fn raw_sign(
   signing_key: SigningKey,
@@ -129,6 +132,28 @@ pub fn validate_server_certificate(
 pub fn signing_key_from_pem(pem pem: BitArray) -> Result(SigningKey, Error) {
   use Nil <- result.try(require_byte_aligned(pem))
   raw_signing_key_from_pem(pem) |> map_result
+}
+
+/// Select the TLS 1.3 signature scheme implied by a decoded private key.
+///
+/// Server configuration uses this once at listener startup. The runtime key
+/// term and its algorithm identifiers remain behind the FFI boundary.
+pub fn signing_key_scheme(
+  signing_key signing_key: SigningKey,
+) -> Result(SignatureScheme, Error) {
+  use identifier <- result.try(
+    raw_signing_key_scheme(signing_key) |> map_result,
+  )
+  case identifier {
+    0x0403 -> Ok(extension_value.EcdsaSecp256r1Sha256)
+    0x0503 -> Ok(extension_value.EcdsaSecp384r1Sha384)
+    0x0603 -> Ok(extension_value.EcdsaSecp521r1Sha512)
+    0x0804 -> Ok(extension_value.RsaPssRsaeSha256)
+    0x0809 -> Ok(extension_value.RsaPssPssSha256)
+    0x0807 -> Ok(extension_value.Ed25519)
+    0x0808 -> Ok(extension_value.Ed448)
+    _ -> Error(IncompatibleSignatureScheme)
+  }
 }
 
 /// Sign exact CertificateVerify content with a negotiated TLS 1.3 scheme.

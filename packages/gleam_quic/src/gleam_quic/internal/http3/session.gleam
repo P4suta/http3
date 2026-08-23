@@ -17,7 +17,9 @@ import gleam_quic/internal/qpack/header.{type Header}
 import gleam_quic/internal/qpack/instruction
 import gleam_quic/internal/qpack/instruction_stream
 import gleam_quic/internal/stream_state
+import gleam_quic/internal/tls/anti_replay
 import gleam_quic/stream_id
+import gleam_quic/varint
 
 const maximum_stream_read_bytes = 65_536
 
@@ -210,6 +212,161 @@ pub fn finish_stream(state: State, stream_id: Int) -> Result(State, Error) {
   queue_bytes(State(..state, http3: http3), stream_id, <<>>, True)
 }
 
+/// Abort both directions of one HTTP request stream with an application code.
+pub fn abort_stream(
+  state state: State,
+  stream_id stream_id: Int,
+  application_error_code application_error_code: Int,
+) -> Result(State, Error) {
+  use connection <- result.try(
+    transport.abort_stream(
+      driver.connection(state.quic),
+      stream_id,
+      application_error_code,
+    )
+    |> map_transport_result,
+  )
+  Ok(
+    State(
+      ..state,
+      quic: driver.put_connection(state.quic, connection),
+      inputs: dict.delete(state.inputs, stream_id),
+    ),
+  )
+}
+
+/// Return whether both QUIC and HTTP/3 Datagram settings were negotiated.
+pub fn datagrams_available(state: State) -> Bool {
+  http3_state.datagrams_available(state.http3)
+}
+
+/// Return whether the peer's mandatory SETTINGS frame has arrived.
+pub fn peer_settings_received(state: State) -> Bool {
+  http3_state.peer_settings_received(state.http3)
+}
+
+/// Return the largest HTTP Datagram application payload for a request stream.
+pub fn maximum_http_datagram_size(
+  state: State,
+  stream_id: Int,
+) -> Result(Int, Error) {
+  use _ <- result.try(case http3_state.datagrams_available(state.http3) {
+    True -> Ok(Nil)
+    False -> Error(TransportFailure(transport.DatagramNotNegotiated))
+  })
+  use raw_limit <- result.try(
+    transport.maximum_datagram_data_size(driver.connection(state.quic))
+    |> map_transport_result,
+  )
+  use quarter_bytes <- result.try(
+    varint.encoded_size(stream_id / 4)
+    |> result.map_error(fn(_) {
+      Http3Failure(http3_state.InvalidStreamId(stream_id))
+    }),
+  )
+  let maximum = raw_limit - quarter_bytes
+  case stream_id >= 0 && stream_id % 4 == 0 && maximum >= 0 {
+    True -> Ok(maximum)
+    False -> Error(Http3Failure(http3_state.InvalidStreamId(stream_id)))
+  }
+}
+
+/// Queue one RFC 9297 quarter-stream-prefixed QUIC DATAGRAM.
+pub fn send_http_datagram(
+  state: State,
+  stream_id: Int,
+  payload: BitArray,
+) -> Result(State, Error) {
+  use _ <- result.try(maximum_http_datagram_size(state, stream_id))
+  use quarter_stream_id <- result.try(
+    varint.encode(stream_id / 4)
+    |> result.map_error(fn(_) {
+      Http3Failure(http3_state.InvalidStreamId(stream_id))
+    }),
+  )
+  use connection <- result.try(
+    transport.queue_datagram(driver.connection(state.quic), <<
+      quarter_stream_id:bits,
+      payload:bits,
+    >>)
+    |> map_transport_result,
+  )
+  Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+}
+
+/// Queue a request PRIORITY_UPDATE on the local control stream.
+pub fn set_request_priority(
+  state: State,
+  stream_id: Int,
+  urgency: Int,
+  incremental: Bool,
+) -> Result(State, Error) {
+  use http3_state.StreamBytes(identifier, bytes) <- result.try(
+    http3_state.request_priority_update(
+      state.http3,
+      stream_id,
+      urgency,
+      incremental,
+    )
+    |> map_http3_result,
+  )
+  queue_bytes(state, identifier, bytes, False)
+}
+
+/// Queue one QUIC PING.
+pub fn ping(state: State) -> Result(State, Error) {
+  use connection <- result.try(
+    transport.queue_ping(driver.connection(state.quic))
+    |> map_transport_result,
+  )
+  Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+}
+
+/// Change the live congestion controller.
+pub fn set_congestion_algorithm(
+  state: State,
+  algorithm: transport.CongestionAlgorithm,
+) -> Result(State, Error) {
+  use connection <- result.try(
+    transport.set_congestion_algorithm(driver.connection(state.quic), algorithm)
+    |> map_transport_result,
+  )
+  Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+}
+
+/// Begin validation for a newly selected local path.
+pub fn begin_path_validation(
+  state: State,
+  challenge: BitArray,
+  now_ms: Int,
+) -> Result(State, Error) {
+  use connection <- result.try(
+    transport.begin_path_validation(
+      driver.connection(state.quic),
+      challenge,
+      True,
+      now_ms,
+    )
+    |> map_transport_result,
+  )
+  Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+}
+
+/// Return whether active migration is currently permitted.
+pub fn active_migration_available(state: State) -> Bool {
+  transport.active_migration_available(driver.connection(state.quic))
+}
+
+/// Return the current path MTU.
+pub fn path_mtu(state: State) -> Int {
+  transport.path_mtu(driver.connection(state.quic))
+}
+
+/// Snapshot the current path.
+pub fn path_snapshot(state: State) -> transport.PathSnapshot {
+  transport.path_snapshot(driver.connection(state.quic))
+}
+
 /// Poll and protect at most one UDP datagram.
 pub fn prepare_datagram(
   state: State,
@@ -275,6 +432,34 @@ pub fn close(
     |> map_driver_result,
   )
   Ok(State(..state, quic: quic))
+}
+
+/// Queue one encrypted post-handshake session ticket on a server connection.
+pub fn issue_session_ticket(
+  state: State,
+  ticket_key: BitArray,
+  now_ms: Int,
+  lifetime_seconds: Int,
+  permit_early_data: Bool,
+) -> Result(State, Error) {
+  use quic <- result.try(
+    driver.update_connection(state.quic, fn(connection) {
+      transport.issue_session_ticket(
+        connection,
+        ticket_key,
+        now_ms,
+        lifetime_seconds,
+        permit_early_data,
+      )
+    })
+    |> map_driver_result,
+  )
+  Ok(State(..state, quic: quic))
+}
+
+/// Return the connected server TLS anti-replay cache without ticket secrets.
+pub fn server_replay_cache(state: State) -> Option(anti_replay.Cache) {
+  transport.server_replay_cache(driver.connection(state.quic))
 }
 
 fn start_established(
@@ -384,8 +569,13 @@ fn process_transport_event_list(
       process_transport_event_list(state, rest, now_ms)
     }
     [transport.StreamReadable(identifier), ..rest] -> {
-      use state <- result.try(drain_stream(state, identifier, now_ms))
-      process_transport_event_list(state, rest, now_ms)
+      case dict.has_key(state.inputs, identifier) {
+        False -> process_transport_event_list(state, rest, now_ms)
+        True -> {
+          use state <- result.try(drain_stream(state, identifier, now_ms))
+          process_transport_event_list(state, rest, now_ms)
+        }
+      }
     }
     [event, ..rest] ->
       process_transport_event_list(

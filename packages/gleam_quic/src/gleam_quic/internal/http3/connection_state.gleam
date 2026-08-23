@@ -297,6 +297,22 @@ pub fn role(state: State) -> Role {
   state.config.role
 }
 
+/// Return whether both endpoints enabled RFC 9297 over QUIC DATAGRAM.
+pub fn datagrams_available(state: State) -> Bool {
+  case state.peer_settings {
+    Some(settings) ->
+      state.quic_datagram_negotiated
+      && state.config.settings.h3_datagram
+      && settings.h3_datagram
+    None -> False
+  }
+}
+
+/// Return whether the peer's mandatory SETTINGS frame has been installed.
+pub fn peer_settings_received(state: State) -> Bool {
+  option.is_some(state.peer_settings)
+}
+
 /// Install the three local critical streams and produce their mandatory
 /// ordered prefaces. SETTINGS is the first control-stream frame.
 pub fn bootstrap(
@@ -1141,6 +1157,31 @@ pub fn receive_capsule(
 ) -> Result(datagram.CapsuleOutcome, Error) {
   datagram.receive_capsule(state.datagrams, stream_id, incoming)
   |> map_datagram_result
+}
+
+/// Encode one client request PRIORITY_UPDATE on the local control stream.
+pub fn request_priority_update(
+  state: State,
+  stream_id: Int,
+  urgency: Int,
+  incremental: Bool,
+) -> Result(StreamBytes, Error) {
+  use _ <- result.try(case state.config.role {
+    Client -> Ok(Nil)
+    Server -> Error(WrongRole)
+  })
+  use _ <- result.try(validate_request_stream(stream_id))
+  use CriticalStreams(control_stream, _, _) <- result.try(
+    require_critical_streams(state),
+  )
+  use encoded <- result.try(
+    priority.encode_update(priority.RequestUpdate(
+      stream_id,
+      priority.Priority(urgency, incremental),
+    ))
+    |> map_priority_result,
+  )
+  Ok(StreamBytes(control_stream, encoded))
 }
 
 /// Begin two-stage graceful drain and encode the initial GOAWAY frame.
@@ -2668,5 +2709,14 @@ fn map_scheduler_result(
   case value {
     Ok(updated) -> Ok(updated)
     Error(error) -> Error(SchedulerFailure(error))
+  }
+}
+
+fn map_priority_result(
+  value: Result(value, priority.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(PriorityFailure(error))
   }
 }

@@ -138,7 +138,8 @@ server_owner_cleanup(Configuration) ->
     Ref = make_ref(),
     {Creator, CreatorMonitor} = spawn_monitor(fun() ->
         case http3@server:start(Configuration) of
-            {ok, {listener, {http3_listener, Worker, _Timeout}}} ->
+            {ok, {listener, {listener, {listener, _Commands, Worker, _Timeout}}}}
+                    when is_pid(Worker) ->
                 Parent ! {Ref, worker, Worker};
             Error ->
                 Parent ! {Ref, error, Error}
@@ -253,8 +254,11 @@ connection_owner_cleanup(Configuration, Host, Port) ->
     Ref = make_ref(),
     {Creator, CreatorMonitor} = spawn_monitor(fun() ->
         case http3@client:connect(Configuration, Host, Port) of
-            {ok, {connection, {http3_connection, Worker, _Timeout}}} ->
-                Parent ! {Ref, worker, Worker};
+            {ok, Connection} ->
+                case connection_worker(Connection) of
+                    {ok, Worker} -> Parent ! {Ref, worker, Worker};
+                    error -> Parent ! {Ref, error, invalid_connection_handle}
+                end;
             Error ->
                 Parent ! {Ref, error, Error}
         end
@@ -279,6 +283,15 @@ connection_owner_cleanup(Configuration, Host, Port) ->
         await_process_down(Creator, CreatorMonitor),
         false
     end.
+
+connection_worker({connection, {http3_connection, Worker, _Timeout}}) when is_pid(Worker) ->
+    {ok, Worker};
+connection_worker(
+    {connection, {connection, {connection, _Commands, Worker, _Timeout, _Host, _Port}}}
+) when is_pid(Worker) ->
+    {ok, Worker};
+connection_worker(_Connection) ->
+    error.
 
 collect_test_results(_Ref, 0, Results) ->
     Results;
@@ -593,8 +606,35 @@ respond_echo(Conn, StreamId, Method, Path, TestHeader, Body) ->
         {<<"x-request-path">>, Path},
         {<<"x-received-test">>, TestHeader}
     ],
-    ok = quic_h3:respond(Conn, StreamId, 200, Headers, Body),
+    ok = quic_h3:send_response(Conn, StreamId, 200, Headers),
+    Deadline = erlang:monotonic_time(millisecond) + ?CONCURRENCY_TIMEOUT,
+    ok = send_response_body(Conn, StreamId, Body, Deadline),
     ok.
+
+send_response_body(Conn, StreamId, <<>>, Deadline) ->
+    send_response_chunk(Conn, StreamId, <<>>, true, Deadline);
+send_response_body(Conn, StreamId, Body, Deadline) ->
+    ChunkSize = min(byte_size(Body), 16384),
+    <<Chunk:ChunkSize/binary, Rest/binary>> = Body,
+    Fin = Rest =:= <<>>,
+    case send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline) of
+        ok when Fin -> ok;
+        ok -> send_response_body(Conn, StreamId, Rest, Deadline);
+        Error -> Error
+    end.
+
+send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline) ->
+    case quic_h3:send_data(Conn, StreamId, Chunk, Fin) of
+        ok -> ok;
+        {error, {flow_control_blocked, _}} ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> {error, response_flow_control_timeout};
+                false ->
+                    receive after 1 -> ok end,
+                    send_response_chunk(Conn, StreamId, Chunk, Fin, Deadline)
+            end;
+        Error -> Error
+    end.
 
 respond(Conn, StreamId, Status, Body) ->
     ok = quic_h3:respond(

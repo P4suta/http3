@@ -22,7 +22,9 @@ import gleam_quic/internal/pmtu
 import gleam_quic/internal/reassembler
 import gleam_quic/internal/rtt
 import gleam_quic/internal/stream_state
+import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/engine
+import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/internal/traffic_keys
 import gleam_quic/internal/wire_packet
@@ -62,6 +64,20 @@ pub type Phase {
   Closing
   Draining
   Closed
+}
+
+/// Stable live path diagnostics in milliseconds and bytes.
+pub type PathSnapshot {
+  PathSnapshot(
+    latest_rtt_milliseconds: Int,
+    smoothed_rtt_milliseconds: Int,
+    minimum_rtt_milliseconds: Int,
+    rtt_variation_milliseconds: Int,
+    congestion_window: Int,
+    bytes_in_flight: Int,
+    in_recovery: Bool,
+    congested: Bool,
+  )
 }
 
 /// Resource and transport policy for one connection.
@@ -612,6 +628,31 @@ pub fn issue_session_ticket(
   }
 }
 
+/// Replace a handshaking server's resumption policy with the listener's most
+/// recent bounded anti-replay snapshot.
+pub fn refresh_server_resumption_policy(
+  state: State,
+  policy: resumption.ServerPolicy,
+) -> Result(State, Error) {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) ->
+      engine.refresh_server_resumption_policy(server, policy)
+      |> result.map(fn(server) {
+        State(..state, tls_endpoint: ServerTlsEndpoint(server))
+      })
+      |> result.map_error(TlsFailure)
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Return only the bounded replay cache from a server TLS endpoint.
+pub fn server_replay_cache(state: State) -> Option(anti_replay.Cache) {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_replay_cache(server)
+    _ -> None
+  }
+}
+
 /// Apply ordered TLS side effects without exposing key material to callers.
 pub fn apply_tls_actions(
   state: State,
@@ -713,6 +754,40 @@ pub fn commit_packet(
   }
 }
 
+/// Check congestion, pacing, and anti-amplification budgets before a caller
+/// transmits a protected datagram. The decision is non-mutating; a successful
+/// UDP send is still recorded by `commit_packet`.
+pub fn validate_send_budget(
+  state: State,
+  frames: List(frame.Frame),
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(Nil, Error) {
+  case datagram_bytes > 0 && now_milliseconds >= 0 {
+    False -> Error(InvalidInput)
+    True -> {
+      let ack_eliciting = frames_ack_eliciting(frames)
+      let in_flight = ack_eliciting || frames_have_padding(frames)
+      use _ <- result.try(debit_amplification(
+        state.amplification,
+        datagram_bytes,
+      ))
+      use _ <- result.try(check_and_record_congestion_send(
+        state.congestion,
+        datagram_bytes,
+        in_flight,
+      ))
+      use _ <- result.try(reserve_pacing(
+        state,
+        datagram_bytes,
+        in_flight,
+        now_milliseconds,
+      ))
+      Ok(Nil)
+    }
+  }
+}
+
 /// Encode and protect one Initial, 0-RTT, or Handshake packet from transport
 /// frames using keys owned by this connection.
 pub fn protect_long_packet(
@@ -804,6 +879,11 @@ pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
 /// Return the currently confirmed non-fragmenting UDP payload size.
 pub fn path_mtu(state: State) -> Int {
   pmtu.current(state.pmtu)
+}
+
+/// Return whether the peer permits client-selected address migration.
+pub fn active_migration_available(state: State) -> Bool {
+  state.phase == Established && !state.peer_disabled_active_migration
 }
 
 /// Reset the confirmed size after repeated loss of formerly working large
@@ -998,6 +1078,46 @@ pub fn queue_stream(
   }
 }
 
+/// Abort every locally usable direction of one stream.
+///
+/// A bidirectional request stream emits both RESET_STREAM and STOP_SENDING,
+/// immediately releases locally buffered send bytes, and asks the peer to
+/// stop its response direction. Callers provide the application error code.
+pub fn abort_stream(
+  state: State,
+  identifier: Int,
+  application_error_code: Int,
+) -> Result(State, Error) {
+  case
+    state.phase == Established
+    && application_error_code >= 0
+    && application_error_code <= varint.maximum
+  {
+    False -> Error(ConnectionUnavailable)
+    True -> abort_established_stream(state, identifier, application_error_code)
+  }
+}
+
+/// Return unique stream bytes retained for sending or retransmission.
+pub fn stream_buffered_send_bytes(
+  state: State,
+  identifier: Int,
+) -> Result(Int, Error) {
+  case dict.get(state.streams, identifier) {
+    Error(_) -> Error(UnknownStream(identifier))
+    Ok(stream) -> Ok(stream_state.buffered_send_bytes(stream))
+  }
+}
+
+/// Return the largest raw QUIC DATAGRAM payload fitting the peer's frame
+/// limit. HTTP/3 callers must additionally subtract their quarter-stream ID.
+pub fn maximum_datagram_data_size(state: State) -> Result(Int, Error) {
+  case state.peer_maximum_datagram_frame_size {
+    0 -> Error(DatagramNotNegotiated)
+    limit -> datagram_payload_for_frame_limit(limit, limit - 2)
+  }
+}
+
 /// Queue a negotiated QUIC DATAGRAM without allowing an oversized frame into
 /// the connection's bounded application queues.
 pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
@@ -1011,6 +1131,25 @@ pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
     _, Established -> Ok(queue_application_frame(state, frame.Datagram(data)))
     _, Handshaking -> queue_early_datagram(state, data)
     _, _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Queue an ack-eliciting PING without opening an application stream.
+pub fn queue_ping(state: State) -> Result(State, Error) {
+  case state.phase {
+    Established -> Ok(queue_application_frame(state, frame.Ping))
+    _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Change the live congestion controller while preserving bytes in flight.
+pub fn set_congestion_algorithm(
+  state: State,
+  algorithm: CongestionAlgorithm,
+) -> Result(State, Error) {
+  case state.phase {
+    Established -> switch_congestion_algorithm(state, algorithm)
+    _ -> Error(ConnectionUnavailable)
   }
 }
 
@@ -1028,6 +1167,66 @@ fn queue_early_datagram(state: State, data: BitArray) -> Result(State, Error) {
           ]),
         ),
       )
+  }
+}
+
+fn abort_established_stream(
+  state: State,
+  identifier: Int,
+  application_error_code: Int,
+) -> Result(State, Error) {
+  use stream <- result.try(
+    dict.get(state.streams, identifier)
+    |> result.replace_error(UnknownStream(identifier)),
+  )
+  use #(stream, reset_frames) <- result.try(reset_send_direction(
+    stream,
+    identifier,
+    local_initiator(state),
+    application_error_code,
+  ))
+  let stop_frames = case
+    stream_id.can_receive(identifier, local_initiator(state))
+  {
+    True -> [frame.StopSending(identifier, application_error_code)]
+    False -> []
+  }
+  let state =
+    State(..state, streams: dict.insert(state.streams, identifier, stream))
+  Ok(queue_application_frame_list(state, list.append(reset_frames, stop_frames)))
+}
+
+fn reset_send_direction(
+  stream: stream_state.State,
+  identifier: Int,
+  local: stream_id.Initiator,
+  application_error_code: Int,
+) -> Result(#(stream_state.State, List(frame.Frame)), Error) {
+  case stream_id.can_send(identifier, local) {
+    False -> Ok(#(stream, []))
+    True ->
+      case stream_state.reset_send(stream, application_error_code) {
+        Ok(#(stream, reset)) -> Ok(#(stream, [reset]))
+        Error(_) -> Error(StreamFailure)
+      }
+  }
+}
+
+fn queue_application_frame_list(
+  state: State,
+  frames: List(frame.Frame),
+) -> State {
+  case frames {
+    [] -> state
+    [next, ..rest] ->
+      queue_application_frame_list(queue_application_frame(state, next), rest)
+  }
+}
+
+fn local_initiator(state: State) -> stream_id.Initiator {
+  case state.config.role {
+    Client -> stream_id.Client
+    Server -> stream_id.Server
   }
 }
 
@@ -1104,6 +1303,38 @@ pub fn congestion_window(state: State) -> Int {
     RenoState(reno) -> new_reno.congestion_window(reno)
     CubicState(cubic_state) -> cubic.congestion_window(cubic_state)
   }
+}
+
+/// Snapshot RTT and congestion state without exposing controller internals.
+pub fn path_snapshot(state: State) -> PathSnapshot {
+  let rtt.Snapshot(latest, smoothed, variation, minimum_rtt) =
+    rtt.snapshot(state.estimator)
+  let #(window, in_flight, recovery) = case state.congestion {
+    RenoState(reno) -> {
+      let new_reno.Snapshot(window, in_flight, phase) = new_reno.snapshot(reno)
+      #(window, in_flight, case phase {
+        new_reno.Recovery -> True
+        _ -> False
+      })
+    }
+    CubicState(cubic_state) -> {
+      let cubic.Snapshot(window, in_flight, phase) = cubic.snapshot(cubic_state)
+      #(window, in_flight, case phase {
+        cubic.Recovery -> True
+        _ -> False
+      })
+    }
+  }
+  PathSnapshot(
+    latest,
+    smoothed,
+    minimum_rtt,
+    variation,
+    window,
+    in_flight,
+    recovery,
+    in_flight >= window,
+  )
 }
 
 fn validate_config(
@@ -4080,6 +4311,64 @@ fn map_connection_id_result(
   case value {
     Ok(updated) -> Ok(updated)
     Error(error) -> Error(ConnectionIdFailure(error))
+  }
+}
+
+fn datagram_payload_for_frame_limit(
+  frame_limit: Int,
+  candidate: Int,
+) -> Result(Int, Error) {
+  case candidate < 0 {
+    True -> Error(DatagramTooLarge(frame_limit))
+    False -> {
+      use length_bytes <- result.try(
+        varint.encoded_size(candidate)
+        |> result.map_error(fn(_) { InvalidInput }),
+      )
+      let adjusted = frame_limit - 1 - length_bytes
+      case adjusted == candidate {
+        True -> Ok(candidate)
+        False -> datagram_payload_for_frame_limit(frame_limit, adjusted)
+      }
+    }
+  }
+}
+
+fn switch_congestion_algorithm(
+  state: State,
+  algorithm: CongestionAlgorithm,
+) -> Result(State, Error) {
+  case state.config.congestion_algorithm == algorithm {
+    True -> Ok(state)
+    False -> {
+      let in_flight = bytes_in_flight(state)
+      let next = case algorithm {
+        NewReno ->
+          case new_reno.new(state.config.maximum_udp_payload_size) {
+            Error(_) -> Error(InvalidConfiguration)
+            Ok(controller) ->
+              new_reno.on_packet_sent(controller, in_flight, in_flight > 0)
+              |> result.map(RenoState)
+              |> result.map_error(fn(_) { InvalidInput })
+          }
+        Cubic ->
+          case cubic.new(state.config.maximum_udp_payload_size) {
+            Error(_) -> Error(InvalidConfiguration)
+            Ok(controller) ->
+              cubic.on_packet_sent(controller, in_flight, in_flight > 0)
+              |> result.map(CubicState)
+              |> result.map_error(fn(_) { InvalidInput })
+          }
+      }
+      use next <- result.try(next)
+      Ok(
+        State(
+          ..state,
+          config: Config(..state.config, congestion_algorithm: algorithm),
+          congestion: next,
+        ),
+      )
+    }
   }
 }
 

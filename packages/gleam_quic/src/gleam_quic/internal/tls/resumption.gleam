@@ -9,6 +9,7 @@ import gleam_quic/internal/tls/extension
 import gleam_quic/internal/tls/hello
 import gleam_quic/internal/tls/pre_shared_key
 import gleam_quic/internal/tls/session_ticket
+import gleam_quic/transport_parameter
 
 /// Prepared client state for one origin-bound resumption attempt.
 pub opaque type ClientOffer {
@@ -413,7 +414,10 @@ fn authenticate_identity(
             early_data_offered,
             permit_early_data,
             algorithm,
-            remembered_transport_parameters == expected_transport_parameters,
+            remembered_transport_parameters_are_compatible(
+              remembered_transport_parameters,
+              expected_transport_parameters,
+            ),
           ))
           Ok(
             Resumed(Selected(
@@ -427,6 +431,44 @@ fn authenticate_identity(
         }
       }
     }
+  }
+}
+
+fn remembered_transport_parameters_are_compatible(
+  remembered: BitArray,
+  current: BitArray,
+) -> Bool {
+  case remembered == current {
+    True -> True
+    False ->
+      case
+        transport_parameter.decode_all(
+          remembered,
+          transport_parameter.Server,
+          transport_parameter.default_limits(),
+        ),
+        transport_parameter.decode_all(
+          current,
+          transport_parameter.Server,
+          transport_parameter.default_limits(),
+        )
+      {
+        Ok(remembered), Ok(current) ->
+          list.filter(remembered, remembered_for_zero_rtt)
+          == list.filter(current, remembered_for_zero_rtt)
+        _, _ -> False
+      }
+  }
+}
+
+fn remembered_for_zero_rtt(parameter: transport_parameter.Parameter) -> Bool {
+  case parameter {
+    transport_parameter.OriginalDestinationConnectionId(_)
+    | transport_parameter.InitialSourceConnectionId(_)
+    | transport_parameter.RetrySourceConnectionId(_)
+    | transport_parameter.StatelessResetToken(_)
+    | transport_parameter.PreferredAddressParameter(_) -> False
+    _ -> True
   }
 }
 

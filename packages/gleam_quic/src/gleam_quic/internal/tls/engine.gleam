@@ -475,6 +475,27 @@ pub fn server_replay_cache(server server: Server) -> Option(anti_replay.Cache) {
   }
 }
 
+/// Refresh the listener-owned replay policy before processing more of a
+/// possibly fragmented ClientHello. A listener serializes this transition so
+/// concurrent handshakes do not complete against stale replay snapshots.
+pub fn refresh_server_resumption_policy(
+  server server: Server,
+  policy policy: resumption.ServerPolicy,
+) -> Result(Server, Error) {
+  case server {
+    ServerAwaitingClientHello(config, pending, _) ->
+      Ok(ServerAwaitingClientHello(config, pending, Some(policy)))
+    ServerAwaitingSecondClientHello(context, pending) ->
+      Ok(ServerAwaitingSecondClientHello(
+        ServerRetryContext(..context, resumption_policy: Some(policy)),
+        pending,
+      ))
+    // The ClientHello and its binder have already been consumed. Refreshing
+    // after this point has no semantic effect and is safely idempotent.
+    ServerAwaitingClientFinished(..) | ServerConnected(..) -> Ok(server)
+  }
+}
+
 /// Confirm the client handshake after HANDSHAKE_DONE and discard its keys.
 pub fn confirm_client_handshake(
   client client: Client,
@@ -2868,8 +2889,10 @@ fn supported_cipher_suites() -> List(hello.CipherSuite) {
 fn supported_signature_schemes() -> List(extension_value.SignatureScheme) {
   [
     extension_value.Ed25519,
+    extension_value.Ed448,
     extension_value.EcdsaSecp256r1Sha256,
     extension_value.EcdsaSecp384r1Sha384,
+    extension_value.EcdsaSecp521r1Sha512,
     extension_value.RsaPssRsaeSha256,
     extension_value.RsaPssRsaeSha384,
     extension_value.RsaPssRsaeSha512,

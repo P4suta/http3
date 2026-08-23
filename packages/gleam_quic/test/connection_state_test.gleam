@@ -177,6 +177,36 @@ pub fn sends_streams_round_robin_and_recovers_congestion_credit_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn aborts_both_directions_of_a_bidirectional_stream_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(
+      connection,
+      identifier,
+      <<"discard me">>,
+      False,
+    )
+
+  let assert Ok(connection) =
+    connection_state.abort_stream(connection, identifier, 0x10c)
+  assert connection_state.stream_buffered_send_bytes(connection, identifier)
+    == Ok(0)
+
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    0,
+    [reset],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  assert reset == frame.ResetStream(identifier, 0x10c, 0)
+  let assert Ok(connection_state.PacketPrepared(_, engine.OneRtt, 0, [stop])) =
+    connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  assert stop == frame.StopSending(identifier, 0x10c)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn enforces_connection_send_credit_without_consuming_stream_data_test() -> Nil {
   let assert Ok(connection) =
     connection_state.new(

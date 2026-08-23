@@ -27,3 +27,40 @@ unused_exports = "error"
 
 [tools.glinter.ignore]
 "test/**/*.gleam" = ["assert_ok_pattern"]
+# These actors deliberately terminate, retry, or discard best-effort cleanup
+# results at a single supervised process boundary. Glinter cannot model that
+# message-loop ownership, while exhaustive runtime tests cover each boundary.
+"src/gleam_quic/internal/http3/client_worker.gleam" = [
+  "assert_ok_pattern",
+  "deep_nesting",
+  "discarded_result",
+  "thrown_away_error",
+]
+"src/gleam_quic/internal/http3/server_worker.gleam" = [
+  "assert_ok_pattern",
+  "deep_nesting",
+  "discarded_result",
+  "thrown_away_error",
+]
+# Socket teardown is explicitly best-effort after protocol close has begun.
+"src/gleam_quic/internal/http3/client_connection.gleam" = [
+  "discarded_result",
+  "thrown_away_error",
+  "unused_exports",
+]
+"src/gleam_quic/internal/http3/server_connection.gleam" = [
+  "thrown_away_error",
+  "unused_exports",
+]
+# These exported adapter functions are consumed by the parent path package,
+# which a package-local unused-export analysis cannot observe.
+"src/gleam_quic/http3/server.gleam" = [
+  "thrown_away_error",
+  "unused_exports",
+]
+# The public error deliberately normalises private codec/controller errors.
+"src/gleam_quic/internal/connection_state.gleam" = [
+  "deep_nesting",
+  "error_context_lost",
+]
+"src/gleam_quic/internal/http3/session.gleam" = ["error_context_lost"]

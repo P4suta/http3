@@ -81,7 +81,9 @@ fn from_native_configuration_error(
       "invalid native port: " <> int.to_string(port)
     native_client.InvalidTimeout -> "invalid native timeout"
     native_client.InvalidResponseBodyLimit -> "invalid native response limit"
+    native_client.InvalidStreamBufferLimit -> "invalid native stream buffer"
     native_client.InvalidCaCertificate -> "invalid CA certificate"
+    native_client.InvalidQlogDirectory -> "invalid qlog directory"
   }
   ConnectFailed(message)
 }
@@ -104,7 +106,26 @@ fn from_native_error(error: native_client.Error) -> Failure {
       ProtocolError(0x0102, "native protocol error")
     native_client.InvalidHeaderEncoding ->
       ProtocolError(0x0102, "response header is not UTF-8")
+    native_client.InvalidContentLength -> InvalidContentLength
     native_client.ResponseBodyTooLarge(_) -> ResponseBodyTooLarge
+    native_client.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
+    native_client.ConcurrentReceive -> ConcurrentReceive
+    native_client.RequestAlreadyFinished -> RequestAlreadyFinished
+    native_client.StreamFinished -> StreamFinished
+    native_client.StreamCancelled -> StreamCancelled
+    native_client.OriginMismatch -> OriginMismatch
+    native_client.UnsafeEarlyDataMethod(method) -> UnsafeEarlyDataMethod(method)
+    native_client.ResumptionOriginMismatch -> ResumptionOriginMismatch
+    native_client.DatagramsNotNegotiated
+    | native_client.DatagramTooLarge(_)
+    | native_client.DatagramBufferExceeded(_)
+    | native_client.ConcurrentDatagramReceive
+    | native_client.MigrationUnavailable
+    | native_client.CongestionLimited
+    | native_client.UnsupportedCongestionControl
+    | native_client.TicketUnavailable
+    | native_client.QlogUnavailable ->
+      BackendFailure("unexpected native advanced transport error")
   }
 }
 

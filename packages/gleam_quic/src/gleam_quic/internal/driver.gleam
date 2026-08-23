@@ -352,10 +352,11 @@ fn protect_prepared(
         frames,
         0,
         maximum_padding_adjustments,
+        now_ms,
       )
     engine.Handshake | engine.ZeroRtt -> {
       use bytes <- result.try(protect_long(state, level, packet_number, frames))
-      Ok(Some(PreparedDatagram(state, level, packet_number, frames, bytes)))
+      make_prepared(state, level, packet_number, frames, bytes, now_ms)
     }
     engine.OneRtt -> {
       use #(connection, bytes) <- result.try(
@@ -369,14 +370,13 @@ fn protect_prepared(
         )
         |> map_connection_result,
       )
-      Ok(
-        Some(PreparedDatagram(
-          State(..state, connection: connection),
-          level,
-          packet_number,
-          frames,
-          bytes,
-        )),
+      make_prepared(
+        State(..state, connection: connection),
+        level,
+        packet_number,
+        frames,
+        bytes,
+        now_ms,
       )
     }
   }
@@ -388,6 +388,7 @@ fn protect_padded_initial(
   frames: List(frame.Frame),
   padding: Int,
   attempts: Int,
+  now_ms: Int,
 ) -> Result(Option(PreparedDatagram), Error) {
   let padded_frames = case padding > 0 {
     True -> list.append(frames, [frame.Padding(padding)])
@@ -402,14 +403,13 @@ fn protect_padded_initial(
   let size = bit_array.byte_size(bytes)
   case size, attempts {
     value, _ if value == minimum_initial_datagram_bytes ->
-      Ok(
-        Some(PreparedDatagram(
-          state,
-          engine.Initial,
-          packet_number,
-          padded_frames,
-          bytes,
-        )),
+      make_prepared(
+        state,
+        engine.Initial,
+        packet_number,
+        padded_frames,
+        bytes,
+        now_ms,
       )
     _, 0 -> Error(InvalidInput)
     value, _ -> {
@@ -423,10 +423,31 @@ fn protect_padded_initial(
             frames,
             adjusted,
             attempts - 1,
+            now_ms,
           )
       }
     }
   }
+}
+
+fn make_prepared(
+  state: State,
+  level: engine.EncryptionLevel,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  bytes: BitArray,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  use Nil <- result.try(
+    connection_state.validate_send_budget(
+      state.connection,
+      frames,
+      bit_array.byte_size(bytes),
+      now_ms,
+    )
+    |> map_connection_result,
+  )
+  Ok(Some(PreparedDatagram(state, level, packet_number, frames, bytes)))
 }
 
 fn protect_long(
@@ -621,7 +642,15 @@ fn require_destination(
   state: State,
   destination: BitArray,
 ) -> Result(Nil, Error) {
-  case destination == state.local_connection_id {
+  // Before a client receives the server's first Initial it continues to use
+  // the original destination connection ID that it selected. A server is
+  // therefore required to route both that temporary alias and its own source
+  // connection ID during the handshake (RFC 9000 sections 7.2 and 17.2.2).
+  let original_server_initial =
+    state.role == Server
+    && connection_state.phase(state.connection) == connection_state.Handshaking
+    && destination == state.original_destination_connection_id
+  case destination == state.local_connection_id || original_server_initial {
     True -> Ok(Nil)
     False -> Error(DestinationConnectionIdMismatch)
   }

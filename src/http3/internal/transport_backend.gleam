@@ -1,5 +1,8 @@
 //// Typed normalization for advanced QUIC and HTTP/3 transport controls.
 
+import gleam/result
+import gleam_quic/http3/client as native_client
+import gleam_quic/http3/server as native_server
 import http3/internal/client_stream_backend
 import http3/internal/server_backend
 
@@ -34,182 +37,70 @@ pub type Failure {
   BackendFailure(String)
 }
 
-@external(erlang, "http3_internal_stream_ffi", "transport_capabilities")
-fn raw_client_capabilities(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(RawCapabilities, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "transport_stream_capabilities")
-fn raw_client_stream_capabilities(
-  stream: client_stream_backend.StreamHandle,
-) -> Result(RawCapabilities, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "max_datagram_size")
-fn raw_client_max_datagram_size(
-  stream: client_stream_backend.StreamHandle,
-) -> Result(Int, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "send_datagram")
-fn raw_client_send_datagram(
-  stream: client_stream_backend.StreamHandle,
-  payload: BitArray,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "next_datagram")
-fn raw_client_next_datagram(
-  stream: client_stream_backend.StreamHandle,
-) -> Result(BitArray, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "set_priority")
-fn raw_client_set_priority(
-  stream: client_stream_backend.StreamHandle,
-  urgency: Int,
-  incremental: Bool,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "get_priority")
-fn raw_client_get_priority(
-  stream: client_stream_backend.StreamHandle,
-) -> Result(#(Int, Bool), RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "early_data_status")
-fn raw_client_early_data_status(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(Int, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "stream_early_data_status")
-fn raw_client_stream_early_data_status(
-  stream: client_stream_backend.StreamHandle,
-) -> Result(Int, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "resumption_ticket")
-fn raw_resumption_ticket(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(client_stream_backend.ResumptionTicketHandle, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "migrate")
-fn raw_migrate(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "set_congestion_control")
-fn raw_set_congestion_control(
-  connection: client_stream_backend.ConnectionHandle,
-  algorithm: Int,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "ping")
-fn raw_ping(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "maximum_transmission_unit")
-fn raw_maximum_transmission_unit(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(Int, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "path_stats")
-fn raw_path_stats(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(RawPathStats, RawError)
-
-@external(erlang, "http3_internal_stream_ffi", "connection_stats")
-fn raw_connection_stats(
-  connection: client_stream_backend.ConnectionHandle,
-) -> Result(RawConnectionStats, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "transport_stream_capabilities")
-fn raw_server_stream_capabilities(
-  request: server_backend.RequestHandle,
-) -> Result(RawCapabilities, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "max_datagram_size")
-fn raw_server_max_datagram_size(
-  request: server_backend.RequestHandle,
-) -> Result(Int, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "send_datagram")
-fn raw_server_send_datagram(
-  request: server_backend.RequestHandle,
-  payload: BitArray,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "next_datagram")
-fn raw_server_next_datagram(
-  request: server_backend.RequestHandle,
-) -> Result(BitArray, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "set_priority")
-fn raw_server_set_priority(
-  request: server_backend.RequestHandle,
-  urgency: Int,
-  incremental: Bool,
-) -> Result(Nil, RawError)
-
-@external(erlang, "http3_internal_server_ffi", "get_priority")
-fn raw_server_get_priority(
-  request: server_backend.RequestHandle,
-) -> Result(#(Int, Bool), RawError)
-
-@external(erlang, "http3_internal_server_ffi", "early_data_status")
-fn raw_server_early_data_status(
-  request: server_backend.RequestHandle,
-) -> Result(Int, RawError)
-
 pub fn client_capabilities(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(RawCapabilities, Failure) {
-  raw_client_capabilities(connection) |> normalize_result
+  native_client.capabilities(connection)
+  |> result.map(fn(capabilities) {
+    let native_client.Capabilities(a, b, c, d) = capabilities
+    #(a, b, c, d)
+  })
+  |> map_native_result
 }
 
 pub fn client_stream_capabilities(
   stream: client_stream_backend.StreamHandle,
 ) -> Result(RawCapabilities, Failure) {
-  raw_client_stream_capabilities(stream) |> normalize_result
+  native_client.capabilities_for_stream(stream)
+  |> result.map(fn(capabilities) {
+    let native_client.Capabilities(a, b, c, d) = capabilities
+    #(a, b, c, d)
+  })
+  |> map_native_result
 }
 
 pub fn server_stream_capabilities(
   request: server_backend.RequestHandle,
 ) -> Result(RawCapabilities, Failure) {
-  raw_server_stream_capabilities(request) |> normalize_result
+  native_server.capabilities(request) |> map_native_server_result
 }
 
 pub fn client_max_datagram_size(
   stream: client_stream_backend.StreamHandle,
 ) -> Result(Int, Failure) {
-  raw_client_max_datagram_size(stream) |> normalize_result
+  native_client.maximum_datagram_size(stream) |> map_native_result
 }
 
 pub fn server_max_datagram_size(
   request: server_backend.RequestHandle,
 ) -> Result(Int, Failure) {
-  raw_server_max_datagram_size(request) |> normalize_result
+  native_server.maximum_datagram_size(request) |> map_native_server_result
 }
 
 pub fn client_send_datagram(
   stream stream: client_stream_backend.StreamHandle,
   payload payload: BitArray,
 ) -> Result(Nil, Failure) {
-  raw_client_send_datagram(stream, payload) |> normalize_result
+  native_client.send_datagram(stream, payload) |> map_native_result
 }
 
 pub fn server_send_datagram(
   request request: server_backend.RequestHandle,
   payload payload: BitArray,
 ) -> Result(Nil, Failure) {
-  raw_server_send_datagram(request, payload) |> normalize_result
+  native_server.send_datagram(request, payload) |> map_native_server_result
 }
 
 pub fn client_next_datagram(
   stream: client_stream_backend.StreamHandle,
 ) -> Result(BitArray, Failure) {
-  raw_client_next_datagram(stream) |> normalize_result
+  native_client.next_datagram(stream) |> map_native_result
 }
 
 pub fn server_next_datagram(
   request: server_backend.RequestHandle,
 ) -> Result(BitArray, Failure) {
-  raw_server_next_datagram(request) |> normalize_result
+  native_server.next_datagram(request) |> map_native_server_result
 }
 
 pub fn client_set_priority(
@@ -217,7 +108,7 @@ pub fn client_set_priority(
   urgency urgency: Int,
   incremental incremental: Bool,
 ) -> Result(Nil, Failure) {
-  raw_client_set_priority(stream, urgency, incremental) |> normalize_result
+  native_client.set_priority(stream, urgency, incremental) |> map_native_result
 }
 
 pub fn server_set_priority(
@@ -225,80 +116,98 @@ pub fn server_set_priority(
   urgency urgency: Int,
   incremental incremental: Bool,
 ) -> Result(Nil, Failure) {
-  raw_server_set_priority(request, urgency, incremental) |> normalize_result
+  native_server.set_priority(request, urgency, incremental)
+  |> map_native_server_result
 }
 
 pub fn client_get_priority(
   stream: client_stream_backend.StreamHandle,
 ) -> Result(#(Int, Bool), Failure) {
-  raw_client_get_priority(stream) |> normalize_result
+  native_client.get_priority(stream) |> map_native_result
 }
 
 pub fn server_get_priority(
   request: server_backend.RequestHandle,
 ) -> Result(#(Int, Bool), Failure) {
-  raw_server_get_priority(request) |> normalize_result
+  native_server.get_priority(request) |> map_native_server_result
 }
 
 pub fn client_early_data_status(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(Int, Failure) {
-  raw_client_early_data_status(connection) |> normalize_result
+  native_client.early_data_status(connection)
+  |> result.map(early_data_code)
+  |> map_native_result
 }
 
 pub fn client_stream_early_data_status(
   stream: client_stream_backend.StreamHandle,
 ) -> Result(Int, Failure) {
-  raw_client_stream_early_data_status(stream) |> normalize_result
+  native_client.early_data_status_for_stream(stream)
+  |> result.map(early_data_code)
+  |> map_native_result
 }
 
 pub fn server_early_data_status(
   request: server_backend.RequestHandle,
 ) -> Result(Int, Failure) {
-  raw_server_early_data_status(request) |> normalize_result
+  native_server.early_data_status(request)
+  |> result.map(server_early_data_code)
+  |> map_native_server_result
 }
 
 pub fn resumption_ticket(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(client_stream_backend.ResumptionTicketHandle, Failure) {
-  raw_resumption_ticket(connection) |> normalize_result
+  native_client.resumption_ticket(connection) |> map_native_result
 }
 
 pub fn migrate(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(Nil, Failure) {
-  raw_migrate(connection) |> normalize_result
+  native_client.migrate(connection) |> map_native_result
 }
 
 pub fn set_congestion_control(
   connection connection: client_stream_backend.ConnectionHandle,
   algorithm algorithm: Int,
 ) -> Result(Nil, Failure) {
-  raw_set_congestion_control(connection, algorithm) |> normalize_result
+  native_client.set_congestion_control(connection, algorithm)
+  |> map_native_result
 }
 
 pub fn ping(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(Nil, Failure) {
-  raw_ping(connection) |> normalize_result
+  native_client.ping(connection) |> map_native_result
 }
 
 pub fn maximum_transmission_unit(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(Int, Failure) {
-  raw_maximum_transmission_unit(connection) |> normalize_result
+  native_client.maximum_transmission_unit(connection) |> map_native_result
 }
 
 pub fn path_stats(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(RawPathStats, Failure) {
-  raw_path_stats(connection) |> normalize_result
+  native_client.path_stats(connection)
+  |> result.map(fn(stats) {
+    let native_client.PathStats(a, b, c, d, e, f, g, h) = stats
+    #(a, b, c, d, e, f, g, h)
+  })
+  |> map_native_result
 }
 
 pub fn connection_stats(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(RawConnectionStats, Failure) {
-  raw_connection_stats(connection) |> normalize_result
+  native_client.connection_stats(connection)
+  |> result.map(fn(stats) {
+    let native_client.ConnectionStats(a, b, c, d, e, f, g, h) = stats
+    #(a, b, c, d, e, f, g, h)
+  })
+  |> map_native_result
 }
 
 pub fn normalize_error(error: RawError) -> Failure {
@@ -317,9 +226,71 @@ pub fn normalize_error(error: RawError) -> Failure {
   }
 }
 
-fn normalize_result(result: Result(value, RawError)) -> Result(value, Failure) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(error) -> Error(normalize_error(error))
+fn map_native_result(
+  value: Result(value, native_client.Error),
+) -> Result(value, Failure) {
+  result.map_error(value, map_native_error)
+}
+
+fn map_native_server_result(
+  value: Result(value, native_server.Error),
+) -> Result(value, Failure) {
+  result.map_error(value, map_native_server_error)
+}
+
+fn map_native_error(error: native_client.Error) -> Failure {
+  case error {
+    native_client.ConnectionClosed -> ConnectionClosed
+    native_client.Timeout | native_client.TicketUnavailable -> Timeout
+    native_client.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    native_client.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
+    native_client.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
+    native_client.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
+    native_client.MigrationUnavailable -> MigrationUnavailable
+    native_client.CongestionLimited -> CongestionLimited
+    native_client.StreamFinished
+    | native_client.StreamCancelled
+    | native_client.StreamReset(_) -> UnknownStream
+    native_client.ConnectFailed
+    | native_client.HandshakeFailed
+    | native_client.ResolutionFailed
+    | native_client.TrustStoreFailed -> NotConnected
+    native_client.UnsupportedCongestionControl ->
+      BackendFailure("unsupported congestion control")
+    _ -> BackendFailure("native transport operation failed")
+  }
+}
+
+fn map_native_server_error(error: native_server.Error) -> Failure {
+  case error {
+    native_server.ConnectionClosed | native_server.ListenerClosed ->
+      ConnectionClosed
+    native_server.Timeout -> Timeout
+    native_server.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    native_server.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
+    native_server.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
+    native_server.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
+    native_server.CongestionLimited -> CongestionLimited
+    native_server.StreamFinished | native_server.StreamReset(_) -> UnknownStream
+    native_server.BackendFailure(message) -> BackendFailure(message)
+    _ -> BackendFailure("native server transport operation failed")
+  }
+}
+
+fn early_data_code(status: native_client.EarlyDataStatus) -> Int {
+  case status {
+    native_client.NotAttempted -> 0
+    native_client.Pending -> 1
+    native_client.Accepted -> 2
+    native_client.Rejected -> 3
+  }
+}
+
+fn server_early_data_code(status: native_server.EarlyDataStatus) -> Int {
+  case status {
+    native_server.NotAttempted -> 0
+    native_server.Pending -> 1
+    native_server.Accepted -> 2
+    native_server.Rejected -> 3
   }
 }
