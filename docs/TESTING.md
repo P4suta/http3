@@ -106,6 +106,29 @@ not independent interoperability evidence.
 - The completion command is `mise run check`. The recorded run completed all
   project checks and 57 repository tests with no failures.
 
+### Server — 2026-08-23
+
+- The repository suite exercises the public server over real UDP, including
+  bounded and multi-chunk request and response bodies, request metadata,
+  declared content lengths, same-connection multiplexing, concurrent clients,
+  concurrent accept rejection, fixed timeouts, and idempotent shutdown.
+- Limit and lifecycle fixtures cover request and response body limits, bounded
+  unconsumed request data, abrupt peer termination, blocked accept release,
+  listener-owner termination, invalid credentials, and removal of completed
+  request state. Pure tests cover response header validation and backend error
+  normalization, including HTTP/3 stream-reset code 270.
+- Independent interoperability used aioquic 1.3.0 as the client. It verified
+  the local certificate and hostname, sent a two-chunk `POST` body, and
+  consumed the public Gleam server's two-chunk response with status 202 and a
+  declared content length.
+- Applicable wire conformance remains the resolved quic 1.8.1 HTTP/3
+  compliance module at commit
+  `149301743b3607b5f6075dd5d58871ebadc57a2a`: 185 RFC 9114 and RFC 9204 tests
+  completed without failures. The backend suite covers malformed wire input;
+  wrapper tests separately cover normalization and resource ownership.
+- The completion command is `mise run check`. The recorded repository test
+  count before that command is 74 tests with no failures.
+
 ### During performance work
 
 - Use load tests to measure behavior under controlled concurrency and

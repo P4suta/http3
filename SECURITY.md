@@ -3,15 +3,15 @@
 ## Project status
 
 `http3` is pre-alpha, unpublished, and not recommended for production use.
-The current surface can make bounded one-shot HTTP/3 client requests. It has no
-connection reuse, streaming API, or server API.
+The current surface provides bounded and streaming HTTP/3 clients and a
+bounded and streaming HTTP/3 server.
 
 The version in `gleam.toml` is tool metadata and does not indicate that a
 release exists. Security support follows the current capability surface:
 
 | Surface | Supported |
 | --- | --- |
-| Current bounded client | Security fixes |
+| Current client and server | Security fixes |
 | Earlier local states | Not supported |
 
 ## Reporting a vulnerability
@@ -39,5 +39,8 @@ channel.
   cross the public API boundary.
 - Untrusted protocol inputs are bounded and validated before allocation or
   dispatch.
-- Each request has a fixed total timeout, explicit request and response body
-  limits, and deterministic connection cleanup.
+- Client streams and server operations have fixed timeouts, explicit request
+  and response body limits, bounded unconsumed stream data, and deterministic
+  connection and listener cleanup.
+- Server certificate and private-key material is validated before listener
+  startup, and listener names come from a fixed atom pool rather than input.

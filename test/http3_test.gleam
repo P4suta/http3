@@ -1,6 +1,8 @@
 import gleeunit
 import http3
 import http3/client
+import http3/server
+import http3_test_support
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -50,4 +52,13 @@ pub fn client_rejects_malformed_ca_certificate_test() -> Nil {
 pub fn client_rejects_non_positive_stream_buffer_limit_test() -> Nil {
   assert client.with_stream_buffer_limit(client.new(), 0)
     == Error(client.InvalidStreamBufferLimit)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_rejects_invalid_port_test() -> Nil {
+  let #(certificate, private_key, _) = http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key)
+  // nolint: assert_ok_pattern -- valid fixtures are part of the test setup.
+  let assert Ok(configuration) = configuration
+  assert server.with_port(configuration, -1) == Error(server.InvalidPort(-1))
 }

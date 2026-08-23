@@ -7,8 +7,8 @@ Erlang target. Applications should depend on stable HTTP concepts rather than
 a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
 and the JavaScript target are non-goals and belong in separate projects.
 
-The current surface exposes capability discovery plus bounded and streaming
-clients. It does not contain server placeholders.
+The current surface exposes capability discovery, bounded and streaming
+clients, and a bounded and streaming server.
 The version in `gleam.toml` is required tool metadata, not an implementation,
 publication, or quality milestone.
 
@@ -100,6 +100,25 @@ cancels the stream with `ConsumerTooSlow`. Cancellation, connection close, and
 owner termination have fixed cleanup bounds. Backend identities and messages
 remain below the adapter boundary.
 
+The server mirrors the same boundary and keeps listener names, connections,
+stream identifiers, handlers, monitors, and backend events private:
+
+```text
+http3/server.start() / accept() / next_event() / send_chunk()
+    -> http3/internal/server_backend
+    -> http3_internal_server_ffi
+    -> owner-monitored listener worker and request handlers
+    -> quic_h3
+```
+
+The listener uses a fixed atom pool rather than constructing atoms from user
+input. A monitored worker owns the backend listener and all accepted
+connections. Request data is delivered through a bounded per-stream queue;
+pull waiters receive an event directly when possible. Response chunk calls
+synchronously retain backend pressure. Completed requests are removed from
+worker state, and stop or owner termination releases blocked accept and event
+calls within fixed cleanup bounds.
+
 ## HTTP data model
 
 The bounded client uses the request and response concepts from `gleam/http`.
@@ -123,7 +142,8 @@ Protocol work proceeds in dependency order:
    conformance, and fault-injection phase gate is complete;
 2. streaming request and response bodies with backpressure and cancellation,
    whose independent interoperability and fault-injection gate is complete;
-3. an HTTP/3 server built on the exercised connection and stream model; and
+3. an HTTP/3 server built on the exercised connection and stream model, whose
+   independent interoperability, lifecycle, and limit gate is complete; and
 4. advanced capabilities exposed through typed, backend-neutral APIs where
    possible.
 

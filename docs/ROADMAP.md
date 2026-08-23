@@ -52,6 +52,14 @@ failure.
 
 ## 3. Server
 
+**Status:** complete as of 2026-08-23. The server exposes opaque configuration,
+listener, and request values; bounded and pull-based streaming request bodies;
+synchronous streaming responses; typed limits and failures; and deterministic
+ownership and shutdown. Verification covers an independent aioquic 1.3.0
+client, backend conformance, real-UDP bounded and streaming round trips,
+same-connection multiplexing, concurrent accepts, peer failure, malformed
+event normalization, declared content lengths, and resource limits.
+
 Implement the HTTP/3 server after the client has exercised the shared
 connection, stream, body, error, cancellation, and shutdown model. Add bounded
 buffered handling first, then streaming handlers with backpressure and

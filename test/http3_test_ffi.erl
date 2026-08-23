@@ -2,9 +2,17 @@
 
 -export([
     concurrent_cancellations/1,
+    concurrent_accepts/1,
     concurrent_next_events/1,
     connection_owner_cleanup/3,
+    checkpoint/1,
+    await_task/1,
     handle_request/5,
+    new_signal/0,
+    release_signal/1,
+    server_credentials/0,
+    server_owner_cleanup/1,
+    start_task/1,
     with_lossy_server/1,
     with_reordering_proxy/1,
     with_server/1
@@ -14,6 +22,133 @@
 -define(FIXTURE_TIMEOUT, 2000).
 -define(MAX_ECHO_BODY, 1048576).
 -define(CONCURRENCY_TIMEOUT, 5000).
+
+-spec start_task(fun(() -> term())) -> tuple().
+start_task(Fun) when is_function(Fun, 0) ->
+    Owner = self(),
+    Ref = make_ref(),
+    {Pid, Monitor} = spawn_monitor(fun() ->
+        Outcome = try Fun() of
+            Result -> {ok, Result}
+        catch
+            Class:Reason:Stacktrace -> {raised, Class, Reason, Stacktrace}
+        end,
+        Owner ! {Ref, task_result, Outcome}
+    end),
+    {http3_test_task, Pid, Monitor, Ref}.
+
+-spec await_task(tuple()) -> term().
+await_task({http3_test_task, Pid, Monitor, Ref}) ->
+    receive
+        {Ref, task_result, {ok, Result}} ->
+            await_process_down(Pid, Monitor),
+            Result;
+        {Ref, task_result, {raised, Class, Reason, Stacktrace}} ->
+            await_process_down(Pid, Monitor),
+            erlang:raise(Class, Reason, Stacktrace);
+        {'DOWN', Monitor, process, Pid, Reason} ->
+            receive
+                {Ref, task_result, {ok, Result}} -> Result;
+                {Ref, task_result, {raised, Class, RaisedReason, Stacktrace}} ->
+                    erlang:raise(Class, RaisedReason, Stacktrace)
+            after 0 ->
+                erlang:error({test_task_stopped, Reason})
+            end
+    after ?CONCURRENCY_TIMEOUT * 2 ->
+        exit(Pid, kill),
+        await_process_down(Pid, Monitor),
+        erlang:error(test_task_timeout)
+    end.
+
+-spec server_credentials() -> {binary(), binary(), binary()}.
+server_credentials() ->
+    {ok, CertificatePem} = file:read_file(fixture_path("server.pem")),
+    {ok, PrivateKeyPem} = file:read_file(fixture_path("server-key.pem")),
+    {CertificatePem, PrivateKeyPem, read_certificate("ca.pem")}.
+
+-spec new_signal() -> tuple().
+new_signal() ->
+    {http3_test_signal, self(), make_ref()}.
+
+-spec checkpoint(tuple()) -> nil.
+checkpoint({http3_test_signal, Owner, Ref}) ->
+    Owner ! {Ref, checkpoint, self()},
+    receive
+        {Ref, continue} -> nil
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(checkpoint_timeout)
+    end.
+
+-spec release_signal(tuple()) -> nil.
+release_signal({http3_test_signal, Owner, Ref}) when Owner =:= self() ->
+    receive
+        {Ref, checkpoint, Process} ->
+            Process ! {Ref, continue},
+            nil
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(signal_timeout)
+    end.
+
+-spec concurrent_accepts(term()) -> [term()].
+concurrent_accepts(Listener) ->
+    Parent = self(),
+    StartRef = make_ref(),
+    Workers = [
+        spawn_monitor(fun() ->
+            receive
+                {start, StartRef} ->
+                    Parent ! {StartRef, self(), http3@server:accept(Listener)}
+            end
+        end)
+     || _ <- lists:seq(1, 2)
+    ],
+    [Pid ! {start, StartRef} || {Pid, _Monitor} <- Workers],
+    First = receive
+        {StartRef, _FirstPid, FirstResult} -> FirstResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(concurrent_accept_timeout)
+    end,
+    _ = http3@server:stop(Listener),
+    Second = receive
+        {StartRef, _SecondPid, SecondResult} -> SecondResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(blocked_accept_cleanup_timeout)
+    end,
+    await_test_workers(Workers),
+    [First, Second].
+
+-spec server_owner_cleanup(term()) -> boolean().
+server_owner_cleanup(Configuration) ->
+    Parent = self(),
+    Ref = make_ref(),
+    {Creator, CreatorMonitor} = spawn_monitor(fun() ->
+        case http3@server:start(Configuration) of
+            {ok, {listener, {http3_listener, Worker, _Timeout}}} ->
+                Parent ! {Ref, worker, Worker};
+            Error ->
+                Parent ! {Ref, error, Error}
+        end
+    end),
+    receive
+        {Ref, worker, Worker} ->
+            WorkerMonitor = monitor(process, Worker),
+            await_process_down(Creator, CreatorMonitor),
+            receive
+                {'DOWN', WorkerMonitor, process, Worker, _Reason} -> true
+            after ?CONCURRENCY_TIMEOUT ->
+                demonitor(WorkerMonitor, [flush]),
+                false
+            end;
+        {Ref, error, _Error} ->
+            await_process_down(Creator, CreatorMonitor),
+            false;
+        {'DOWN', CreatorMonitor, process, Creator, _Reason} ->
+            false
+    after ?CONCURRENCY_TIMEOUT ->
+        exit(Creator, kill),
+        await_process_down(Creator, CreatorMonitor),
+        false
+    end.
 
 -spec concurrent_next_events(term()) -> [term()].
 concurrent_next_events(Stream) ->
@@ -173,7 +308,7 @@ handle_request(Conn, StreamId, Method, Path, Headers) ->
             ok = quic_h3:close(Conn),
             ok;
         <<"/empty", _/binary>> ->
-            ok = quic_h3:respond(Conn, StreamId, 204, [], <<"ignored">>),
+            safe_respond(Conn, StreamId, 204, <<"ignored">>),
             ok;
         <<"/chunks", _/binary>> ->
             respond_in_chunks(Conn, StreamId);

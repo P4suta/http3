@@ -10,13 +10,14 @@ project that needs those capabilities should compose them outside `http3`.
 > [!WARNING]
 > This package is pre-alpha, is not published to Hex, and is not recommended
 > for production use. The version in `gleam.toml` is tool metadata, not a
-> publication or feature milestone. The bounded and streaming clients are
-> implemented; a server is not yet implemented.
+> publication or feature milestone. The bounded client, streaming client, and
+> server are implemented; advanced transport capabilities remain planned.
 
 ## Current API
 
-The package exposes a runtime capability probe plus bounded and streaming
-clients. The probe does not make a network connection:
+The package exposes a runtime capability probe, bounded and streaming clients,
+and a bounded and streaming server. The probe does not make a network
+connection:
 
 ```gleam
 import http3
@@ -80,6 +81,23 @@ Request chunk calls synchronously preserve backend flow-control pressure.
 Response events are pulled one at a time, and unconsumed data is bounded per
 stream. Cancellation and connection close are observable and idempotent.
 
+The server requires PEM certificate and private-key bytes, owns its listener
+and connections, and pulls request heads and body events with fixed timeouts:
+
+```gleam
+let assert Ok(configuration) = server.new(certificate, private_key)
+let assert Ok(listener) = server.start(configuration)
+let assert Ok(incoming) = server.accept(listener)
+let assert Ok(body) = server.read_body(incoming)
+let assert Ok(Nil) = server.respond(incoming, 200, [], body)
+let assert Ok(server.Stopped) = server.stop(listener)
+```
+
+Request and response bodies have independent limits. Streaming request events
+and response writes preserve bounded buffering and flow-control pressure;
+listener shutdown, owner termination, and repeated stop calls clean up
+deterministically.
+
 ## Status
 
 | Capability | Status |
@@ -87,17 +105,15 @@ stream. Cancellation and connection close are observable and idempotent.
 | Backend availability probe | Implemented |
 | Bounded buffered HTTP/3 client | Implemented; phase 1 verification complete |
 | Streaming, backpressure, and cancellation | Implemented; phase 2 verification complete |
-| HTTP/3 server | Planned |
+| HTTP/3 server | Implemented; phase 3 verification complete |
 | Advanced typed capabilities | Planned |
 
-No placeholder server functions are exported. APIs are added only when they
-perform real protocol work and have tests.
+APIs are added only when they perform real protocol work and have tests.
 
-Implementation is client-first: the bounded and streaming clients are now
-complete; the server and advanced capabilities follow. Progress is gated by
-tested behavior, not by a GitHub
-or Hex publication, tag, release, or version change; those operations remain
-optional and outside this roadmap.
+Implementation is client-first: the bounded client, streaming client, and
+server are complete; advanced capabilities follow. Progress is gated by tested
+behavior, not by a GitHub or Hex publication, tag, release, or version change;
+those operations remain optional and outside this roadmap.
 
 ## Development
 
@@ -121,8 +137,9 @@ workflow, and [Roadmap](docs/ROADMAP.md) for the implementation order.
 ## Security
 
 TLS certificate-chain and hostname verification are enabled for the client.
-There is no public option that disables either check. See
-[SECURITY.md](SECURITY.md) for reporting guidance.
+The server requires valid certificate and private-key material. There is no
+public option that disables client verification. See [SECURITY.md](SECURITY.md)
+for reporting guidance.
 
 ## Licence
 

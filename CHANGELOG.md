@@ -24,6 +24,13 @@ imply a tag, a hosted release, or publication to Hex.
   backend's RFC 9114 and RFC 9204 compliance suite.
 - A testing guide covering Red-Green-Refactor, regression tests, verification
   layers, fixed timeouts, resource cleanup, and reproducible performance work.
+- Reusable streaming client connections with multiplexed request streams,
+  pull-based bounded response events, synchronous producer pressure,
+  cancellation, fixed deadlines, and deterministic cleanup.
+- A bounded and streaming HTTP/3 server with opaque listener and request
+  values, pull-based request bodies, synchronous response chunks, independent
+  request and response limits, and idempotent shutdown.
+- Recorded streaming-client and server interoperability with aioquic 1.3.0.
 
 ### Changed
 
