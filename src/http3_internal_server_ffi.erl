@@ -2,14 +2,21 @@
 
 -export([
     accept/1,
+    early_data_status/1,
     finish_response/1,
+    get_priority/1,
+    max_datagram_size/1,
     next_event/1,
+    next_datagram/1,
     port/1,
     respond/4,
     send_chunk/2,
+    send_datagram/2,
     send_response/4,
-    start/7,
+    set_priority/3,
+    start/9,
     stop/1,
+    transport_stream_capabilities/1,
     valid_certificate/1,
     valid_private_key/1
 ]).
@@ -36,6 +43,17 @@
 -define(ERROR_RESPONSE_FINISHED, 14).
 -define(ERROR_CONTENT_LENGTH, 15).
 -define(ERROR_BACKEND, 99).
+
+-define(TRANSPORT_ERROR_CLOSED, 1).
+-define(TRANSPORT_ERROR_TIMEOUT, 2).
+-define(TRANSPORT_ERROR_DATAGRAMS_DISABLED, 3).
+-define(TRANSPORT_ERROR_DATAGRAM_TOO_LARGE, 4).
+-define(TRANSPORT_ERROR_CONGESTION, 5).
+-define(TRANSPORT_ERROR_UNKNOWN_STREAM, 6).
+-define(TRANSPORT_ERROR_DATAGRAM_BUFFER, 7).
+-define(TRANSPORT_ERROR_CONCURRENT_DATAGRAM, 8).
+-define(TRANSPORT_ERROR_NOT_CONNECTED, 10).
+-define(TRANSPORT_ERROR_BACKEND, 99).
 
 -define(EVENT_DATA, 1).
 -define(EVENT_TRAILERS, 2).
@@ -64,9 +82,29 @@ valid_private_key(Pem) when is_binary(Pem), byte_size(Pem) > 0 ->
 valid_private_key(_Pem) ->
     false.
 
--spec start(binary(), binary(), non_neg_integer(), pos_integer(), pos_integer(), pos_integer(), pos_integer()) ->
+-spec start(
+    binary(),
+    binary(),
+    non_neg_integer(),
+    pos_integer(),
+    pos_integer(),
+    pos_integer(),
+    pos_integer(),
+    boolean(),
+    binary()
+) ->
     result(listener_handle()).
-start(CertificatePem, PrivateKeyPem, Port, Timeout, RequestLimit, ResponseLimit, BufferLimit) when
+start(
+    CertificatePem,
+    PrivateKeyPem,
+    Port,
+    Timeout,
+    RequestLimit,
+    ResponseLimit,
+    BufferLimit,
+    Datagrams,
+    QlogDirectory
+) when
     is_binary(CertificatePem),
     is_binary(PrivateKeyPem),
     is_integer(Port),
@@ -79,7 +117,9 @@ start(CertificatePem, PrivateKeyPem, Port, Timeout, RequestLimit, ResponseLimit,
     is_integer(ResponseLimit),
     ResponseLimit > 0,
     is_integer(BufferLimit),
-    BufferLimit > 0
+    BufferLimit > 0,
+    is_boolean(Datagrams),
+    is_binary(QlogDirectory)
 ->
     Owner = self(),
     ReplyRef = make_ref(),
@@ -93,7 +133,9 @@ start(CertificatePem, PrivateKeyPem, Port, Timeout, RequestLimit, ResponseLimit,
             Timeout,
             RequestLimit,
             ResponseLimit,
-            BufferLimit
+            BufferLimit,
+            Datagrams,
+            QlogDirectory
         )
     end),
     receive
@@ -114,7 +156,17 @@ start(CertificatePem, PrivateKeyPem, Port, Timeout, RequestLimit, ResponseLimit,
         await_worker_down(Worker, Monitor),
         timeout_error()
     end;
-start(_Certificate, _PrivateKey, _Port, _Timeout, _RequestLimit, _ResponseLimit, _BufferLimit) ->
+start(
+    _Certificate,
+    _PrivateKey,
+    _Port,
+    _Timeout,
+    _RequestLimit,
+    _ResponseLimit,
+    _BufferLimit,
+    _Datagrams,
+    _QlogDirectory
+) ->
     backend_error(invalid_start_arguments).
 
 -spec port(listener_handle()) -> result(inet:port_number()).
@@ -187,6 +239,68 @@ finish_response({http3_request, Worker, RequestId, Timeout}) when
 finish_response(_Request) ->
     backend_error(invalid_finish_response_arguments).
 
+-spec transport_stream_capabilities(request_handle()) -> result(tuple()).
+transport_stream_capabilities({http3_request, Worker, RequestId, Timeout}) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout)
+->
+    call_transport_worker(Worker, {transport_stream_capabilities, RequestId}, Timeout);
+transport_stream_capabilities(_Request) ->
+    transport_backend_error(invalid_request_handle).
+
+-spec max_datagram_size(request_handle()) -> result(non_neg_integer()).
+max_datagram_size({http3_request, Worker, RequestId, Timeout}) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout)
+->
+    call_transport_worker(Worker, {max_datagram_size, RequestId}, Timeout);
+max_datagram_size(_Request) ->
+    transport_backend_error(invalid_request_handle).
+
+-spec send_datagram(request_handle(), bitstring()) -> result(nil).
+send_datagram({http3_request, Worker, RequestId, Timeout}, Payload) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout), is_binary(Payload)
+->
+    call_transport_worker(Worker, {send_datagram, RequestId, Payload}, Timeout);
+send_datagram(_Request, _Payload) ->
+    transport_backend_error(invalid_datagram_arguments).
+
+-spec next_datagram(request_handle()) -> result(binary()).
+next_datagram({http3_request, Worker, RequestId, Timeout}) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout)
+->
+    call_transport_worker(Worker, {next_datagram, RequestId}, Timeout);
+next_datagram(_Request) ->
+    transport_backend_error(invalid_request_handle).
+
+-spec set_priority(request_handle(), 0..7, boolean()) -> result(nil).
+set_priority({http3_request, Worker, RequestId, Timeout}, Urgency, Incremental) when
+    is_pid(Worker),
+    is_integer(RequestId),
+    is_integer(Timeout),
+    is_integer(Urgency),
+    Urgency >= 0,
+    Urgency =< 7,
+    is_boolean(Incremental)
+->
+    call_transport_worker(Worker, {set_priority, RequestId, Urgency, Incremental}, Timeout);
+set_priority(_Request, _Urgency, _Incremental) ->
+    transport_backend_error(invalid_priority).
+
+-spec get_priority(request_handle()) -> result({0..7, boolean()}).
+get_priority({http3_request, Worker, RequestId, Timeout}) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout)
+->
+    call_transport_worker(Worker, {get_priority, RequestId}, Timeout);
+get_priority(_Request) ->
+    transport_backend_error(invalid_request_handle).
+
+-spec early_data_status(request_handle()) -> result(0..3).
+early_data_status({http3_request, Worker, RequestId, Timeout}) when
+    is_pid(Worker), is_integer(RequestId), is_integer(Timeout)
+->
+    call_transport_worker(Worker, {early_data_status, RequestId}, Timeout);
+early_data_status(_Request) ->
+    transport_backend_error(invalid_request_handle).
+
 -spec stop(listener_handle()) -> result(integer()).
 stop({http3_listener, Worker, Timeout}) when is_pid(Worker), is_integer(Timeout) ->
     case is_process_alive(Worker) of
@@ -204,6 +318,33 @@ call_worker(Worker, Request, Timeout) ->
             Monitor = monitor(process, Worker),
             Worker ! {server_call, self(), Ref, Request},
             await_call(Worker, Monitor, Ref, Timeout + ?WORKER_GRACE)
+    end.
+
+call_transport_worker(Worker, Request, Timeout) ->
+    case is_process_alive(Worker) of
+        false -> transport_closed_error();
+        true ->
+            Ref = make_ref(),
+            Monitor = monitor(process, Worker),
+            Worker ! {server_call, self(), Ref, Request},
+            await_transport_call(Worker, Monitor, Ref, Timeout + ?WORKER_GRACE)
+    end.
+
+await_transport_call(Worker, Monitor, Ref, Timeout) ->
+    receive
+        {Ref, Result} ->
+            demonitor(Monitor, [flush]),
+            Result;
+        {'DOWN', Monitor, process, Worker, _Reason} ->
+            receive
+                {Ref, Result} -> Result
+            after 0 ->
+                transport_closed_error()
+            end
+    after Timeout ->
+        exit(Worker, kill),
+        await_worker_down(Worker, Monitor),
+        transport_timeout_error()
     end.
 
 call_worker_for_stop(Worker, Timeout) ->
@@ -255,10 +396,21 @@ initialise(
     Timeout,
     RequestLimit,
     ResponseLimit,
-    BufferLimit
+    BufferLimit,
+    Datagrams,
+    QlogDirectory
 ) ->
     process_flag(trap_exit, true),
-    Result = try initialise_listener(CertificatePem, PrivateKeyPem, Port, Timeout) of
+    Result = try
+        initialise_listener(
+            CertificatePem,
+            PrivateKeyPem,
+            Port,
+            Timeout,
+            Datagrams,
+            QlogDirectory
+        )
+    of
         Value -> Value
     catch
         Class:Reason -> start_error({Class, Reason})
@@ -277,10 +429,13 @@ initialise(
                 request_limit => RequestLimit,
                 response_limit => ResponseLimit,
                 buffer_limit => BufferLimit,
+                datagrams_configured => Datagrams,
+                qlog_enabled => QlogDirectory =/= <<>>,
                 next_id => 0,
                 requests => #{},
                 stream_index => #{},
                 orphan_errors => #{},
+                orphan_datagrams => #{},
                 pending => queue:new(),
                 accept_waiter => undefined
             });
@@ -288,32 +443,99 @@ initialise(
             Owner ! {ReplyRef, Error}
     end.
 
-initialise_listener(CertificatePem, PrivateKeyPem, Port, Timeout) ->
+initialise_listener(CertificatePem, PrivateKeyPem, Port, Timeout, Datagrams, QlogDirectory) ->
     case {decode_certificate(CertificatePem), decode_private_key(PrivateKeyPem)} of
         {{ok, Certificate}, {ok, PrivateKey}} ->
             case application:ensure_all_started(quic) of
                 {ok, _Started} ->
-                    start_with_available_name(Certificate, PrivateKey, Port, Timeout);
+                    ok = ensure_resumption_ticket_store(),
+                    start_with_available_name(
+                        Certificate,
+                        PrivateKey,
+                        Port,
+                        Timeout,
+                        Datagrams,
+                        QlogDirectory
+                    );
                 {error, Reason} -> start_error(Reason)
             end;
         {{error, Reason}, _} -> start_error({invalid_certificate, Reason});
         {_, {error, Reason}} -> start_error({invalid_private_key, Reason})
     end.
 
-start_with_available_name(Certificate, PrivateKey, Port, Timeout) ->
+ensure_resumption_ticket_store() ->
+    case whereis(http3_quic_ticket_keeper) of
+        Keeper when is_pid(Keeper) ->
+            ok;
+        undefined ->
+            Parent = self(),
+            Ref = make_ref(),
+            _ = spawn(fun() -> start_ticket_keeper(Parent, Ref) end),
+            receive
+                {Ref, ticket_keeper_ready} -> ok;
+                {Ref, ticket_keeper_existing} -> ok
+            after ?CLEANUP_TIMEOUT ->
+                ok
+            end
+    end.
+
+start_ticket_keeper(Parent, Ref) ->
+    try register(http3_quic_ticket_keeper, self()) of
+        true ->
+            own_ticket_table(),
+            Parent ! {Ref, ticket_keeper_ready},
+            ticket_keeper_loop()
+    catch
+        error:badarg ->
+            Parent ! {Ref, ticket_keeper_existing}
+    end.
+
+own_ticket_table() ->
+    case ets:whereis(quic_server_tickets) of
+        undefined ->
+            _ = ets:new(quic_server_tickets, [
+                named_table,
+                public,
+                ordered_set,
+                {read_concurrency, true},
+                {write_concurrency, auto}
+            ]),
+            ok;
+        _Existing ->
+            ok
+    end.
+
+ticket_keeper_loop() ->
+    case whereis(quic_sup) of
+        Supervisor when is_pid(Supervisor) ->
+            Monitor = monitor(process, Supervisor),
+            receive
+                {'DOWN', Monitor, process, Supervisor, _Reason} -> ok
+            end;
+        undefined ->
+            ok
+    end.
+
+start_with_available_name(Certificate, PrivateKey, Port, Timeout, Datagrams, QlogDirectory) ->
     Worker = self(),
     Handler = fun(Conn, StreamId, Method, Path, Headers) ->
         request_handler(Worker, Conn, StreamId, Method, Path, Headers, Timeout)
     end,
+    QuicOptions = maybe_add_qlog(#{pool_size => 0}, QlogDirectory),
     Options = #{
         cert => Certificate,
         key => PrivateKey,
         handler => Handler,
         connection_handler => fun(_QuicConnection) -> #{owner => Worker} end,
         settings => #{max_field_section_size => 65536},
-        quic_opts => #{pool_size => 0}
+        h3_datagram_enabled => Datagrams,
+        quic_opts => QuicOptions
     },
     try_server_names(server_names(), Port, Options).
+
+maybe_add_qlog(Options, <<>>) -> Options;
+maybe_add_qlog(Options, Directory) ->
+    Options#{qlog => #{enabled => true, dir => binary_to_list(Directory)}}.
 
 try_server_names([], _Port, _Options) ->
     start_error(listener_capacity_exhausted);
@@ -441,7 +663,12 @@ loop(State) ->
                     Streams = maps:get(requests, NextState),
                     RequestState = maps:get(RequestId, Streams),
                     Waiting = RequestState#{waiter => {From, Ref}},
-                    loop(NextState#{requests => Streams#{RequestId => Waiting}})
+                    loop(NextState#{requests => Streams#{RequestId => Waiting}});
+                {wait_datagram_request, RequestId, NextState} ->
+                    Requests = maps:get(requests, NextState),
+                    RequestState = maps:get(RequestId, Requests),
+                    Waiting = RequestState#{datagram_waiter => {From, Ref}},
+                    loop(NextState#{requests => Requests#{RequestId => Waiting}})
             end;
         {incoming_request, Conn, StreamId, Method, Path, Headers} ->
             loop(add_request(Conn, StreamId, Method, Path, Headers, State));
@@ -459,6 +686,8 @@ loop(State) ->
             loop(fail_request_by_stream(Conn, StreamId, protocol_error(0, reason_text(Reason)), State));
         {quic_h3, Conn, {stream_reset, StreamId, ErrorCode}} ->
             loop(fail_request_by_stream(Conn, StreamId, stream_reset_error(ErrorCode), State));
+        {quic_h3, Conn, {datagram, StreamId, Payload}} when is_binary(Payload) ->
+            loop(handle_request_datagram(Conn, StreamId, Payload, State));
         {quic_h3, Conn, {closed, _Reason}} ->
             loop(fail_connection_requests(Conn, State));
         {quic_h3, Conn, closed} ->
@@ -479,10 +708,31 @@ safely_handle_call(Request, State) ->
     try handle_call(Request, State) of
         Result -> Result
     catch
-        exit:timeout -> {reply, timeout_error(), State};
-        exit:{timeout, _} -> {reply, timeout_error(), State};
-        Class:Reason -> {reply, backend_error({Class, Reason}), State}
+        exit:timeout -> {reply, call_timeout_error(Request), State};
+        exit:{timeout, _} -> {reply, call_timeout_error(Request), State};
+        Class:Reason -> {reply, call_backend_error(Request, {Class, Reason}), State}
     end.
+
+call_timeout_error(Request) ->
+    case is_transport_call(Request) of
+        true -> transport_timeout_error();
+        false -> timeout_error()
+    end.
+
+call_backend_error(Request, Reason) ->
+    case is_transport_call(Request) of
+        true -> transport_backend_error(Reason);
+        false -> backend_error(Reason)
+    end.
+
+is_transport_call({transport_stream_capabilities, _}) -> true;
+is_transport_call({max_datagram_size, _}) -> true;
+is_transport_call({send_datagram, _, _}) -> true;
+is_transport_call({next_datagram, _}) -> true;
+is_transport_call({set_priority, _, _, _}) -> true;
+is_transport_call({get_priority, _}) -> true;
+is_transport_call({early_data_status, _}) -> true;
+is_transport_call(_) -> false.
 
 handle_call(port, State) ->
     {reply, {ok, maps:get(port, State)}, State};
@@ -519,6 +769,32 @@ handle_call({finish_response, RequestId}, State) ->
     with_request(RequestId, State, fun(Request) ->
         finish_streaming_response(Request, State)
     end);
+handle_call({transport_stream_capabilities, RequestId}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        request_transport_capabilities(Request, State)
+    end);
+handle_call({max_datagram_size, RequestId}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        request_max_datagram_size(Request, State)
+    end);
+handle_call({send_datagram, RequestId, Payload}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        send_request_datagram(Request, Payload, State)
+    end);
+handle_call({next_datagram, RequestId}, State) ->
+    next_request_datagram(RequestId, State);
+handle_call({set_priority, RequestId, Urgency, Incremental}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        set_request_priority(Request, Urgency, Incremental, State)
+    end);
+handle_call({get_priority, RequestId}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        get_request_priority(Request, State)
+    end);
+handle_call({early_data_status, RequestId}, State) ->
+    with_transport_request(RequestId, State, fun(Request) ->
+        request_early_data_status(Request, State)
+    end);
 handle_call(_Request, State) ->
     {reply, backend_error(unknown_server_call), State}.
 
@@ -550,7 +826,11 @@ add_request(Conn, StreamId, Method, Path, Headers, State) ->
                 accepted => false,
                 response_state => idle,
                 response_size => 0,
-                response_declared => undefined
+                response_declared => undefined,
+                datagram_queue => queue:new(),
+                datagram_bytes => 0,
+                datagram_waiter => undefined,
+                datagram_error => undefined
             },
             Request1 = case DeclaredLength of
                 invalid ->
@@ -566,13 +846,29 @@ add_request(Conn, StreamId, Method, Path, Headers, State) ->
                 {Error, Rest} -> {set_terminal(Request1, Error), Rest};
                 error -> {Request1, OrphanErrors}
             end,
+            OrphanDatagrams = maps:get(orphan_datagrams, State),
+            {RequestWithDatagrams, RemainingDatagrams} =
+                case maps:take(StreamKey, OrphanDatagrams) of
+                    {{Payloads, _Bytes}, RestDatagrams} ->
+                        BufferedRequest = lists:foldl(
+                            fun(Payload, Acc) ->
+                                enqueue_request_datagram(Payload, Acc, State)
+                            end,
+                            Request,
+                            lists:reverse(Payloads)
+                        ),
+                        {BufferedRequest, RestDatagrams};
+                    error ->
+                        {Request, OrphanDatagrams}
+                end,
             Requests = maps:get(requests, State),
             Index = maps:get(stream_index, State),
             NextState = State#{
                 next_id => RequestId + 1,
-                requests => Requests#{RequestId => Request},
+                requests => Requests#{RequestId => RequestWithDatagrams},
                 stream_index => Index#{StreamKey => RequestId},
-                orphan_errors => RemainingOrphans
+                orphan_errors => RemainingOrphans,
+                orphan_datagrams => RemainingDatagrams
             },
             dispatch_request(RequestId, NextState)
     end.
@@ -605,6 +901,57 @@ incoming_value(Request, State) ->
         maps:get(path, Request),
         maps:get(headers, Request)
     }.
+
+handle_request_datagram(Conn, StreamId, Payload, State) ->
+    StreamKey = {Conn, StreamId},
+    case maps:find(StreamKey, maps:get(stream_index, State)) of
+        {ok, RequestId} ->
+            Requests = maps:get(requests, State),
+            Request = maps:get(RequestId, Requests),
+            Updated = enqueue_request_datagram(Payload, Request, State),
+            State#{requests => Requests#{RequestId => Updated}};
+        error ->
+            store_orphan_datagram(StreamKey, Payload, State)
+    end.
+
+store_orphan_datagram(StreamKey, Payload, State) ->
+    Orphans = maps:get(orphan_datagrams, State),
+    Limit = maps:get(buffer_limit, State),
+    {Payloads, Bytes} = maps:get(StreamKey, Orphans, {[], 0}),
+    NewBytes = Bytes + byte_size(Payload),
+    HasStream = maps:is_key(StreamKey, Orphans),
+    HasCapacity = HasStream orelse map_size(Orphans) < ?MAX_PENDING_REQUESTS,
+    case NewBytes =< Limit andalso HasCapacity of
+        true ->
+            State#{orphan_datagrams => Orphans#{StreamKey => {[Payload | Payloads], NewBytes}}};
+        false ->
+            State
+    end.
+
+enqueue_request_datagram(Payload, Request, State) ->
+    case {maps:get(datagram_waiter, Request), maps:get(datagram_error, Request)} of
+        {{From, Ref}, undefined} ->
+            reply(From, Ref, {ok, Payload}),
+            Request#{datagram_waiter => undefined};
+        {undefined, undefined} ->
+            Bytes = maps:get(datagram_bytes, Request) + byte_size(Payload),
+            Limit = maps:get(buffer_limit, State),
+            case Bytes > Limit of
+                true ->
+                    Request#{
+                        datagram_queue => queue:new(),
+                        datagram_bytes => 0,
+                        datagram_error => transport_datagram_buffer_raw(Limit)
+                    };
+                false ->
+                    Request#{
+                        datagram_queue => queue:in(Payload, maps:get(datagram_queue, Request)),
+                        datagram_bytes => Bytes
+                    }
+            end;
+        _ ->
+            Request
+    end.
 
 handle_request_data(Conn, StreamId, Data, Fin, State) when is_binary(Data) ->
     update_request_by_stream(Conn, StreamId, State, fun(Request) ->
@@ -751,6 +1098,156 @@ with_request(RequestId, State, Fun) ->
         error -> {reply, connection_closed_error(), State}
     end.
 
+with_transport_request(RequestId, State, Fun) ->
+    case maps:find(RequestId, maps:get(requests, State)) of
+        {ok, Request} -> Fun(Request);
+        error -> {reply, transport_unknown_stream_error(), State}
+    end.
+
+request_transport_capabilities(Request, State) ->
+    case request_connections(Request) of
+        {ok, H3Connection, QuicConnection} ->
+            Datagrams = quic_h3:h3_datagrams_enabled(H3Connection),
+            Migration = active_migration_allowed(QuicConnection),
+            Early = quic_h3:early_data_accepted(H3Connection) =:= true,
+            Qlog = maps:get(qlog_enabled, State),
+            {reply, {ok, {Datagrams, Migration, Early, Qlog}}, State};
+        {error, Error} ->
+            {reply, Error, State}
+    end.
+
+active_migration_allowed(QuicConnection) ->
+    case quic:get_peer_transport_params(QuicConnection) of
+        {ok, Parameters} -> not maps:get(disable_active_migration, Parameters, false);
+        {error, _} -> false
+    end.
+
+request_max_datagram_size(Request, State) ->
+    H3Connection = maps:get(conn, Request),
+    case quic_h3:h3_datagrams_enabled(H3Connection) of
+        false -> {reply, transport_datagrams_disabled_error(), State};
+        true ->
+            Maximum = quic_h3:max_datagram_size(
+                H3Connection, maps:get(stream_id, Request)
+            ),
+            {reply, {ok, Maximum}, State}
+    end.
+
+send_request_datagram(Request, Payload, State) ->
+    H3Connection = maps:get(conn, Request),
+    StreamId = maps:get(stream_id, Request),
+    Maximum = quic_h3:max_datagram_size(H3Connection, StreamId),
+    case {quic_h3:h3_datagrams_enabled(H3Connection), byte_size(Payload) =< Maximum} of
+        {false, _} ->
+            {reply, transport_datagrams_disabled_error(), State};
+        {true, false} ->
+            {reply, transport_datagram_too_large_error(Maximum), State};
+        {true, true} ->
+            case quic_h3:send_datagram(H3Connection, StreamId, Payload) of
+                ok -> {reply, {ok, nil}, State};
+                {error, h3_datagrams_disabled} ->
+                    {reply, transport_datagrams_disabled_error(), State};
+                {error, unknown_stream} ->
+                    {reply, transport_unknown_stream_error(), State};
+                {error, datagram_too_large} ->
+                    {reply, transport_datagram_too_large_error(Maximum), State};
+                {error, datagram_too_large_for_path} ->
+                    {reply, transport_datagram_too_large_error(Maximum), State};
+                {error, congestion_limited} ->
+                    {reply, transport_congestion_error(), State};
+                {error, Reason} ->
+                    {reply, transport_backend_error(Reason), State}
+            end
+    end.
+
+next_request_datagram(RequestId, State) ->
+    case maps:find(RequestId, maps:get(requests, State)) of
+        error ->
+            {reply, transport_unknown_stream_error(), State};
+        {ok, Request} ->
+            case queue:out(maps:get(datagram_queue, Request)) of
+                {{value, Payload}, Queue} ->
+                    Bytes = max(0, maps:get(datagram_bytes, Request) - byte_size(Payload)),
+                    update_transport_request_reply(
+                        Request#{datagram_queue => Queue, datagram_bytes => Bytes},
+                        {ok, Payload},
+                        State
+                    );
+                {empty, _} ->
+                    next_empty_request_datagram(RequestId, Request, State)
+            end
+    end.
+
+next_empty_request_datagram(RequestId, Request, State) ->
+    case maps:get(datagram_error, Request) of
+        undefined ->
+            case {maps:get(terminal, Request), maps:get(datagram_waiter, Request)} of
+                {Terminal, _} when Terminal =/= undefined ->
+                    {reply, transport_closed_error(), State};
+                {_, undefined} ->
+                    {wait_datagram_request, RequestId, State};
+                _ ->
+                    {reply, transport_concurrent_datagram_error(), State}
+            end;
+        Error ->
+            update_transport_request_reply(
+                Request#{datagram_error => undefined}, {error, Error}, State
+            )
+    end.
+
+update_transport_request_reply(Request, Result, State) ->
+    RequestId = maps:get(id, Request),
+    Requests = maps:get(requests, State),
+    {reply, Result, State#{requests => Requests#{RequestId => Request}}}.
+
+set_request_priority(Request, Urgency, Incremental, State) ->
+    case request_connections(Request) of
+        {ok, _H3Connection, QuicConnection} ->
+            case quic:set_stream_priority(
+                QuicConnection, maps:get(stream_id, Request), Urgency, Incremental
+            ) of
+                ok -> {reply, {ok, nil}, State};
+                {error, unknown_stream} -> {reply, transport_unknown_stream_error(), State};
+                {error, Reason} -> {reply, transport_backend_error(Reason), State}
+            end;
+        {error, Error} ->
+            {reply, Error, State}
+    end.
+
+get_request_priority(Request, State) ->
+    case request_connections(Request) of
+        {ok, _H3Connection, QuicConnection} ->
+            case quic:get_stream_priority(QuicConnection, maps:get(stream_id, Request)) of
+                {ok, Priority} -> {reply, {ok, Priority}, State};
+                {error, unknown_stream} -> {reply, transport_unknown_stream_error(), State};
+                {error, Reason} -> {reply, transport_backend_error(Reason), State}
+            end;
+        {error, Error} ->
+            {reply, Error, State}
+    end.
+
+request_early_data_status(Request, State) ->
+    case maps:get(conn, Request, undefined) of
+        undefined ->
+            {reply, transport_closed_error(), State};
+        H3Connection ->
+            Status = case quic_h3:early_data_accepted(H3Connection) of
+                unknown -> 1;
+                true -> 2;
+                false -> 0
+            end,
+            {reply, {ok, Status}, State}
+    end.
+
+request_connections(Request) ->
+    case maps:get(conn, Request, undefined) of
+        undefined -> {error, transport_closed_error()};
+        H3Connection ->
+            try {ok, H3Connection, quic_h3:get_quic_conn(H3Connection)} catch
+                _:_ -> {error, transport_closed_error()}
+            end
+    end.
+
 bounded_respond(Status, Headers, Body, Request, State) ->
     case response_operation_error(Request, idle) of
         {error, Error} -> {reply, Error, State};
@@ -878,9 +1375,20 @@ update_request_reply(Request, Result, State) ->
     {reply, Result, State#{requests => Requests#{RequestId => Request}}}.
 
 maybe_finalize_request_reply(Request, Result, State) ->
-    case request_can_be_removed(Request) of
-        true -> {reply, Result, remove_request(maps:get(id, Request), State)};
-        false -> update_request_reply(Request, Result, State)
+    FinalRequest = case {maps:get(body_state, Request), maps:get(response_state, Request)} of
+        {complete, finished} ->
+            close_request_datagram_waiter(Request, transport_unknown_stream_error());
+        _ ->
+            Request
+    end,
+    case request_can_be_removed(FinalRequest) of
+        true ->
+            Requests = maps:get(requests, State),
+            RequestId = maps:get(id, FinalRequest),
+            NextState = State#{requests => Requests#{RequestId => FinalRequest}},
+            {reply, Result, remove_request(RequestId, NextState)};
+        false ->
+            update_request_reply(FinalRequest, Result, State)
     end.
 
 update_request_by_stream(Conn, StreamId, State, Fun) ->
@@ -926,7 +1434,21 @@ fail_connection_requests(Conn, State) ->
         end,
         maps:get(requests, State)
     ),
-    sweep_removable(State#{requests => Requests}).
+    OrphanErrors = maps:filter(
+        fun({Connection, _StreamId}, _Error) -> Connection =/= Conn end,
+        maps:get(orphan_errors, State)
+    ),
+    OrphanDatagrams = maps:filter(
+        fun({Connection, _StreamId}, _Payloads) -> Connection =/= Conn end,
+        maps:get(orphan_datagrams, State)
+    ),
+    sweep_removable(
+        State#{
+            requests => Requests,
+            orphan_errors => OrphanErrors,
+            orphan_datagrams => OrphanDatagrams
+        }
+    ).
 
 set_terminal(Request, ErrorResult) ->
     Error = case ErrorResult of
@@ -939,14 +1461,31 @@ set_terminal(Request, ErrorResult) ->
             true;
         undefined -> false
     end,
+    case maps:get(datagram_waiter, Request) of
+        {DatagramFrom, DatagramRef} ->
+            reply(DatagramFrom, DatagramRef, transport_closed_error());
+        undefined -> ok
+    end,
     Request#{
         queue => queue:new(),
         queued_bytes => 0,
         waiter => undefined,
+        datagram_queue => queue:new(),
+        datagram_bytes => 0,
+        datagram_waiter => undefined,
         terminal => Error,
         terminal_delivered => Delivered,
         body_state => failed
     }.
+
+close_request_datagram_waiter(Request, Result) ->
+    case maps:get(datagram_waiter, Request) of
+        {From, Ref} ->
+            reply(From, Ref, Result),
+            Request#{datagram_waiter => undefined};
+        undefined ->
+            Request
+    end.
 
 request_can_be_removed(Request) ->
     maps:get(accepted, Request) andalso
@@ -1047,6 +1586,11 @@ close_waiters(State) ->
                     reply(RequestFrom, RequestRef, listener_closed_error());
                 undefined -> ok
             end,
+            case maps:get(datagram_waiter, Request) of
+                {DatagramFrom, DatagramRef} ->
+                    reply(DatagramFrom, DatagramRef, transport_closed_error());
+                undefined -> ok
+            end,
             Request
         end,
         maps:get(requests, State)
@@ -1133,6 +1677,25 @@ response_finished_error() ->
 content_length_error() ->
     {error, {?ERROR_CONTENT_LENGTH, 0, <<"invalid response content length">>}}.
 backend_error(Reason) -> {error, {?ERROR_BACKEND, 0, reason_text(Reason)}}.
+
+transport_closed_error() ->
+    {error, {?TRANSPORT_ERROR_CLOSED, 0, <<"transport connection closed">>}}.
+transport_timeout_error() ->
+    {error, {?TRANSPORT_ERROR_TIMEOUT, 0, <<"transport operation timeout">>}}.
+transport_datagrams_disabled_error() ->
+    {error, {?TRANSPORT_ERROR_DATAGRAMS_DISABLED, 0, <<"HTTP Datagrams not negotiated">>}}.
+transport_datagram_too_large_error(Maximum) ->
+    {error, {?TRANSPORT_ERROR_DATAGRAM_TOO_LARGE, Maximum, <<"HTTP Datagram too large">>}}.
+transport_congestion_error() ->
+    {error, {?TRANSPORT_ERROR_CONGESTION, 0, <<"datagram congestion limited">>}}.
+transport_unknown_stream_error() ->
+    {error, {?TRANSPORT_ERROR_UNKNOWN_STREAM, 0, <<"unknown transport stream">>}}.
+transport_datagram_buffer_raw(Limit) ->
+    {?TRANSPORT_ERROR_DATAGRAM_BUFFER, Limit, <<"datagram receive buffer limit exceeded">>}.
+transport_concurrent_datagram_error() ->
+    {error, {?TRANSPORT_ERROR_CONCURRENT_DATAGRAM, 0, <<"concurrent datagram receive">>}}.
+transport_backend_error(Reason) ->
+    {error, {?TRANSPORT_ERROR_BACKEND, 0, reason_text(Reason)}}.
 
 reason_text(Reason) when is_binary(Reason) -> truncate_reason(Reason);
 reason_text(Reason) -> truncate_reason(iolist_to_binary(io_lib:format("~0p", [Reason]))).

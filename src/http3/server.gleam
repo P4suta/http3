@@ -7,6 +7,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import http3/internal/server_backend
 import http3/internal/server_response
+import http3/transport
 
 const default_timeout_milliseconds = 30_000
 
@@ -26,6 +27,8 @@ pub opaque type Configuration {
     request_body_limit: Int,
     response_body_limit: Int,
     stream_buffer_limit: Int,
+    http_datagrams: Bool,
+    qlog_directory: String,
   )
 }
 
@@ -116,7 +119,25 @@ pub fn new(
     request_body_limit: default_body_limit,
     response_body_limit: default_body_limit,
     stream_buffer_limit: default_stream_buffer_limit,
+    http_datagrams: False,
+    qlog_directory: "",
   ))
+}
+
+/// Enable RFC 9297 HTTP Datagrams for accepted connections.
+pub fn with_http_datagrams(configuration: Configuration) -> Configuration {
+  Configuration(..configuration, http_datagrams: True)
+}
+
+/// Enable qlog tracing for accepted connections.
+///
+/// Trace files can contain sensitive connection metadata. qlog remains off
+/// unless this function is called explicitly.
+pub fn with_qlog(
+  configuration configuration: Configuration,
+  qlog qlog: transport.Qlog,
+) -> Configuration {
+  Configuration(..configuration, qlog_directory: transport.qlog_directory(qlog))
 }
 
 /// Set the UDP port, using zero for an operating-system-assigned port.
@@ -180,6 +201,8 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     request_limit,
     response_limit,
     buffer_limit,
+    http_datagrams,
+    qlog_directory,
   ) = configuration
   case
     server_backend.start(
@@ -190,11 +213,18 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
       request_limit,
       response_limit,
       buffer_limit,
+      http_datagrams,
+      qlog_directory,
     )
   {
     Ok(handle) -> Ok(Listener(handle))
     Error(error) -> Error(from_backend_failure(error))
   }
+}
+
+/// Obtain typed advanced controls for an accepted request stream.
+pub fn request_transport(request: Request) -> transport.Stream {
+  transport.server_stream(request.handle)
 }
 
 /// Return the listener's bound UDP port.

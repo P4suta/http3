@@ -10,14 +10,14 @@ project that needs those capabilities should compose them outside `http3`.
 > [!WARNING]
 > This package is pre-alpha, is not published to Hex, and is not recommended
 > for production use. The version in `gleam.toml` is tool metadata, not a
-> publication or feature milestone. The bounded client, streaming client, and
-> server are implemented; advanced transport capabilities remain planned.
+> publication or feature milestone. The bounded client, streaming client,
+> server, and typed advanced transport capabilities are implemented.
 
 ## Current API
 
 The package exposes a runtime capability probe, bounded and streaming clients,
-and a bounded and streaming server. The probe does not make a network
-connection:
+a bounded and streaming server, and typed advanced transport controls. The
+probe does not make a network connection:
 
 ```gleam
 import http3
@@ -98,6 +98,26 @@ and response writes preserve bounded buffering and flow-control pressure;
 listener shutdown, owner termination, and repeated stop calls clean up
 deterministically.
 
+Advanced controls are obtained from an existing public connection or stream;
+they never expose backend processes or message formats:
+
+```gleam
+let connection_transport = client.connection_transport(connection)
+let assert Ok(capabilities) = transport.capabilities(connection_transport)
+let assert Ok(Nil) = transport.ping(connection_transport)
+
+let stream_transport = client.stream_transport(stream)
+let assert Ok(priority) = transport.priority(1, True)
+let assert Ok(Nil) = transport.set_priority(stream_transport, priority)
+```
+
+The typed surface covers negotiated HTTP Datagrams, RFC 9218 priority,
+connection migration, congestion control, MTU and transport statistics, ping,
+qlog, and origin-bound session resumption. qlog is opt-in because traces can
+contain sensitive metadata. A 0-RTT connection accepts only GET, HEAD, and
+OPTIONS until its early-data outcome is known; unsafe methods are rejected
+locally because early data can be replayed.
+
 ## Status
 
 | Capability | Status |
@@ -106,12 +126,11 @@ deterministically.
 | Bounded buffered HTTP/3 client | Implemented; phase 1 verification complete |
 | Streaming, backpressure, and cancellation | Implemented; phase 2 verification complete |
 | HTTP/3 server | Implemented; phase 3 verification complete |
-| Advanced typed capabilities | Planned |
+| Advanced typed capabilities | Implemented; phase 4 verification complete |
 
 APIs are added only when they perform real protocol work and have tests.
 
-Implementation is client-first: the bounded client, streaming client, and
-server are complete; advanced capabilities follow. Progress is gated by tested
+All four implementation phases are complete. Progress remains gated by tested
 behavior, not by a GitHub or Hex publication, tag, release, or version change;
 those operations remain optional and outside this roadmap.
 

@@ -12,6 +12,9 @@ pub type ConnectionHandle
 /// Opaque backend-owned request-stream identity.
 pub type StreamHandle
 
+/// Opaque backend-owned TLS resumption material.
+pub type ResumptionTicketHandle
+
 /// Primitive event data returned across the FFI boundary.
 pub type RawEvent =
   #(Int, Int, List(#(String, String)), BitArray)
@@ -23,6 +26,9 @@ fn raw_connect(
   ca_certificates: List(BitArray),
   timeout_milliseconds: Int,
   stream_buffer_limit: Int,
+  http_datagrams: Bool,
+  qlog_directory: String,
+  resumption_tickets: List(ResumptionTicketHandle),
 ) -> Result(ConnectionHandle, client_backend.RawError)
 
 @external(erlang, "http3_internal_stream_ffi", "open_stream")
@@ -63,6 +69,9 @@ pub fn connect(
   ca_certificates ca_certificates: List(BitArray),
   timeout_milliseconds timeout_milliseconds: Int,
   stream_buffer_limit stream_buffer_limit: Int,
+  http_datagrams http_datagrams: Bool,
+  qlog_directory qlog_directory: String,
+  resumption_tickets resumption_tickets: List(ResumptionTicketHandle),
 ) -> Result(ConnectionHandle, client_backend.Failure) {
   raw_connect(
     host,
@@ -70,6 +79,9 @@ pub fn connect(
     ca_certificates,
     timeout_milliseconds,
     stream_buffer_limit,
+    http_datagrams,
+    qlog_directory,
+    resumption_tickets,
   )
   |> normalize_result
 }

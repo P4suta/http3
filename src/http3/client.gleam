@@ -24,6 +24,7 @@ import gleam/http/response.{type Response}
 import http3/internal/client_backend
 import http3/internal/client_request
 import http3/internal/client_stream_backend
+import http3/transport
 
 const default_timeout_milliseconds = 30_000
 
@@ -43,6 +44,9 @@ pub opaque type Client {
     response_body_limit: Int,
     stream_buffer_limit: Int,
     ca_certificates: List(BitArray),
+    http_datagrams: Bool,
+    qlog_directory: String,
+    resumption_tickets: List(client_stream_backend.ResumptionTicketHandle),
   )
 }
 
@@ -175,6 +179,12 @@ pub type Error {
 
   /// A request does not match the connection's host and port.
   OriginMismatch
+
+  /// A resumed 0-RTT connection only permits replay-safe request methods.
+  UnsafeEarlyDataMethod(String)
+
+  /// A resumption ticket belongs to a different host or port.
+  ResumptionOriginMismatch
 }
 
 /// Construct a client with secure TLS verification and bounded defaults.
@@ -189,7 +199,34 @@ pub fn new() -> Client {
     response_body_limit: default_response_body_limit,
     stream_buffer_limit: default_stream_buffer_limit,
     ca_certificates: [],
+    http_datagrams: False,
+    qlog_directory: "",
+    resumption_tickets: [],
   )
+}
+
+/// Enable RFC 9297 HTTP Datagrams for reusable connections.
+pub fn with_http_datagrams(client: Client) -> Client {
+  Client(..client, http_datagrams: True)
+}
+
+/// Enable qlog tracing for reusable connections.
+///
+/// Trace files can contain sensitive connection metadata. qlog remains off
+/// unless this function is called explicitly.
+pub fn with_qlog(client client: Client, qlog qlog: transport.Qlog) -> Client {
+  Client(..client, qlog_directory: transport.qlog_directory(qlog))
+}
+
+/// Attach one origin-bound session ticket for an explicit 0-RTT attempt.
+///
+/// Early requests are restricted to GET, HEAD, and OPTIONS because 0-RTT data
+/// can be replayed by the network.
+pub fn with_resumption_ticket(
+  client client: Client,
+  ticket ticket: transport.ResumptionTicket,
+) -> Client {
+  Client(..client, resumption_tickets: [transport.ticket_handle(ticket)])
 }
 
 /// Set the total request timeout from one millisecond through one hour.
@@ -306,6 +343,9 @@ pub fn connect(
           client.ca_certificates,
           client.timeout_milliseconds,
           client.stream_buffer_limit,
+          client.http_datagrams,
+          client.qlog_directory,
+          client.resumption_tickets,
         )
       {
         Ok(handle) -> Ok(Connection(handle))
@@ -314,6 +354,12 @@ pub fn connect(
       }
     Error(error) -> Error(from_preparation_error(error))
   }
+}
+
+/// Obtain typed advanced controls for a reusable connection.
+pub fn connection_transport(connection: Connection) -> transport.Connection {
+  let Connection(handle) = connection
+  transport.client_connection(handle)
 }
 
 /// Open a request stream, leaving its request body open for chunks.
@@ -330,6 +376,12 @@ pub fn open_stream(
       }
     Error(error) -> Error(from_preparation_error(error))
   }
+}
+
+/// Obtain typed advanced controls for a request stream.
+pub fn stream_transport(stream: Stream) -> transport.Stream {
+  let Stream(handle) = stream
+  transport.client_stream(handle)
 }
 
 /// Send one byte-aligned request-body chunk.
@@ -429,6 +481,9 @@ fn from_backend_failure(
     client_backend.StreamFinished -> StreamFinished
     client_backend.StreamCancelled -> StreamCancelled
     client_backend.OriginMismatch -> OriginMismatch
+    client_backend.UnsafeEarlyDataMethod(method) ->
+      UnsafeEarlyDataMethod(method)
+    client_backend.ResumptionOriginMismatch -> ResumptionOriginMismatch
     client_backend.InvalidContentLength -> InvalidContentLength
     client_backend.BackendFailure(message) -> BackendFailure(message)
   }

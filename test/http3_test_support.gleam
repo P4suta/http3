@@ -2,6 +2,7 @@
 
 import http3/client
 import http3/server
+import http3/transport
 
 /// A monitored test-only asynchronous operation.
 pub type Task(value)
@@ -54,6 +55,10 @@ pub fn with_lossy_server(run: fn(Int, BitArray) -> result) -> result
 @external(erlang, "http3_test_ffi", "with_reordering_proxy")
 pub fn with_reordering_proxy(run: fn(Int, BitArray) -> result) -> result
 
+/// Run a fixture with a unique qlog directory and clean it afterwards.
+@external(erlang, "http3_test_ffi", "with_qlog_directory")
+pub fn with_qlog_directory(run: fn(String) -> result) -> #(result, Int)
+
 /// Race two receivers, cancel the blocked one, and return both outcomes.
 @external(erlang, "http3_test_ffi", "concurrent_next_events")
 pub fn concurrent_next_events(
@@ -65,6 +70,17 @@ pub fn concurrent_next_events(
 pub fn concurrent_cancellations(
   stream: client.Stream,
 ) -> List(Result(client.Cancellation, client.Error))
+
+/// Race two Datagram receivers, then invoke a peer-side release operation.
+@external(erlang, "http3_test_ffi", "concurrent_next_datagrams")
+pub fn concurrent_next_datagrams(
+  stream: transport.Stream,
+  release: fn() -> Nil,
+) -> List(Result(BitArray, transport.Error))
+
+/// Construct a byte-aligned test payload of the requested size.
+@external(erlang, "http3_test_ffi", "repeated_bytes")
+pub fn repeated_bytes(size: Int) -> BitArray
 
 /// Verify that a connection worker exits when its creating process exits.
 @external(erlang, "http3_test_ffi", "connection_owner_cleanup")

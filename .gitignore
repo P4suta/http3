@@ -2,4 +2,5 @@ build/
 *.beam
 erl_crash.dump
 .DS_Store
+__pycache__/
 .mise.local.toml

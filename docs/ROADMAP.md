@@ -71,6 +71,14 @@ resource limits without exposing backend handles or mailbox formats.
 
 ## 4. Advanced capabilities and escape hatch
 
+**Status:** complete as of 2026-08-23. Typed connection and stream controls
+cover HTTP Datagrams, RFC 9218 priority, active migration, replay-safe 0-RTT,
+qlog, congestion control, ping, MTU, and transport statistics. Verification
+includes real-UDP client/server coverage, independent aioquic 1.3.0 Datagram,
+migration, qlog, and actual early-request interoperability, backend
+conformance, negotiation and resource limits, concurrent receive, origin
+binding, and replay-safety failures.
+
 Add HTTP Datagrams, stream priority, connection migration, 0-RTT, qlog, and
 other transport controls behind typed capabilities. Low-level access must
 remain backend-neutral where possible and must not expose raw PIDs, atoms,

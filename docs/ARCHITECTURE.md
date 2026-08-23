@@ -8,7 +8,8 @@ a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
 and the JavaScript target are non-goals and belong in separate projects.
 
 The current surface exposes capability discovery, bounded and streaming
-clients, and a bounded and streaming server.
+clients, a bounded and streaming server, and typed advanced transport
+capabilities.
 The version in `gleam.toml` is required tool metadata, not an implementation,
 publication, or quality milestone.
 
@@ -119,6 +120,24 @@ synchronously retain backend pressure. Completed requests are removed from
 worker state, and stop or owner termination releases blocked accept and event
 calls within fixed cleanup bounds.
 
+Advanced controls reuse those same opaque handles through another internal
+adapter rather than opening a backend escape hatch:
+
+```text
+http3/transport typed connection and stream operations
+    -> http3/internal/transport_backend
+    -> existing client or server FFI worker call
+    -> quic / quic_h3
+```
+
+HTTP Datagrams have explicit negotiation, payload and queue limits, and one
+pull waiter per stream. Priority, migration, congestion control, ping, MTU,
+and statistics are normalized into public Gleam values. qlog is disabled by
+default and accepts only an explicit typed directory configuration. Session
+tickets are opaque and origin-bound; the adapter retains the verified hostname
+when a resumed connection uses the prior peer address to make genuine 0-RTT
+possible. Early requests are locally restricted to replay-safe methods.
+
 ## HTTP data model
 
 The bounded client uses the request and response concepts from `gleam/http`.
@@ -145,7 +164,8 @@ Protocol work proceeds in dependency order:
 3. an HTTP/3 server built on the exercised connection and stream model, whose
    independent interoperability, lifecycle, and limit gate is complete; and
 4. advanced capabilities exposed through typed, backend-neutral APIs where
-   possible.
+   possible, whose independent Datagram, migration, qlog, and actual 0-RTT
+   interoperability gate is complete.
 
 Each behavior starts with a failing test and follows the gates in
 [Testing](TESTING.md). No stage is gated on publishing the repository or
@@ -162,6 +182,11 @@ Protocol data is untrusted. The current adapter validates request shape,
 headers, body limits, response limits, status ordering, and backend event
 shapes before constructing public values. Cancellation and shutdown must be
 idempotent and must not leave unowned backend processes or streams.
+
+HTTP Datagram buffers are bounded even when a Datagram arrives before its
+request head. qlog output is an explicit security-sensitive choice. Resumption
+tickets have no public field or serialization access, are rejected for another
+host or port, and cannot enable a replay-unsafe early request.
 
 ## Backend replacement
 

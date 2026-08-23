@@ -53,6 +53,8 @@ fn raw_start(
   request_body_limit: Int,
   response_body_limit: Int,
   stream_buffer_limit: Int,
+  http_datagrams: Bool,
+  qlog_directory: String,
 ) -> Result(ListenerHandle, RawError)
 
 @external(erlang, "http3_internal_server_ffi", "port")
@@ -101,6 +103,8 @@ pub fn start(
   request_body_limit request_body_limit: Int,
   response_body_limit response_body_limit: Int,
   stream_buffer_limit stream_buffer_limit: Int,
+  http_datagrams http_datagrams: Bool,
+  qlog_directory qlog_directory: String,
 ) -> Result(ListenerHandle, Failure) {
   raw_start(
     certificate,
@@ -110,6 +114,8 @@ pub fn start(
     request_body_limit,
     response_body_limit,
     stream_buffer_limit,
+    http_datagrams,
+    qlog_directory,
   )
   |> normalize_result
 }

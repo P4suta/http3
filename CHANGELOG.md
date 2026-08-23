@@ -31,6 +31,11 @@ imply a tag, a hosted release, or publication to Hex.
   values, pull-based request bodies, synchronous response chunks, independent
   request and response limits, and idempotent shutdown.
 - Recorded streaming-client and server interoperability with aioquic 1.3.0.
+- Typed advanced transport controls for HTTP Datagrams, RFC 9218 priority,
+  migration, replay-safe 0-RTT and origin-bound tickets, qlog, congestion
+  control, ping, MTU, and connection and path statistics.
+- Recorded independent aioquic 1.3.0 interoperability for Datagrams, migration,
+  qlog, and an actual request sent before handshake completion.
 
 ### Changed
 

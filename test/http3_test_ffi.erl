@@ -3,6 +3,7 @@
 -export([
     concurrent_cancellations/1,
     concurrent_accepts/1,
+    concurrent_next_datagrams/2,
     concurrent_next_events/1,
     connection_owner_cleanup/3,
     checkpoint/1,
@@ -10,10 +11,12 @@
     handle_request/5,
     new_signal/0,
     release_signal/1,
+    repeated_bytes/1,
     server_credentials/0,
     server_owner_cleanup/1,
     start_task/1,
     with_lossy_server/1,
+    with_qlog_directory/1,
     with_reordering_proxy/1,
     with_server/1
 ]).
@@ -22,6 +25,18 @@
 -define(FIXTURE_TIMEOUT, 2000).
 -define(MAX_ECHO_BODY, 1048576).
 -define(CONCURRENCY_TIMEOUT, 5000).
+
+-spec with_qlog_directory(fun((binary()) -> term())) -> term().
+with_qlog_directory(Fun) when is_function(Fun, 1) ->
+    Suffix = integer_to_list(erlang:unique_integer([positive, monotonic])),
+    Directory = filename:join("/tmp", "http3-qlog-test-" ++ Suffix),
+    try
+        Result = Fun(list_to_binary(Directory)),
+        Files = filelib:wildcard(filename:join(Directory, "*.qlog")),
+        {Result, length(Files)}
+    after
+        _ = file:del_dir_r(Directory)
+    end.
 
 -spec start_task(fun(() -> term())) -> tuple().
 start_task(Fun) when is_function(Fun, 0) ->
@@ -195,6 +210,42 @@ concurrent_cancellations(Stream) ->
     Results = collect_test_results(StartRef, 2, []),
     await_test_workers(Workers),
     Results.
+
+-spec concurrent_next_datagrams(term(), fun(() -> nil)) -> [term()].
+concurrent_next_datagrams(Stream, Release) when is_function(Release, 0) ->
+    Parent = self(),
+    StartRef = make_ref(),
+    Workers = [
+        spawn_monitor(fun() ->
+            receive
+                {start, StartRef} ->
+                    Parent ! {
+                        StartRef,
+                        self(),
+                        http3@transport:next_datagram(Stream)
+                    }
+            end
+        end)
+     || _ <- lists:seq(1, 2)
+    ],
+    [Pid ! {start, StartRef} || {Pid, _Monitor} <- Workers],
+    First = receive
+        {StartRef, _FirstPid, FirstResult} -> FirstResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(concurrent_datagram_receive_timeout)
+    end,
+    nil = Release(),
+    Second = receive
+        {StartRef, _SecondPid, SecondResult} -> SecondResult
+    after ?CONCURRENCY_TIMEOUT ->
+        erlang:error(blocked_datagram_receive_timeout)
+    end,
+    await_test_workers(Workers),
+    [First, Second].
+
+-spec repeated_bytes(non_neg_integer()) -> binary().
+repeated_bytes(Size) when is_integer(Size), Size >= 0 ->
+    binary:copy(<<"x">>, Size).
 
 -spec connection_owner_cleanup(term(), binary(), inet:port_number()) -> boolean().
 connection_owner_cleanup(Configuration, Host, Port) ->

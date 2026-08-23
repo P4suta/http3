@@ -28,6 +28,8 @@ pub type Failure {
   StreamFinished
   StreamCancelled
   OriginMismatch
+  UnsafeEarlyDataMethod(String)
+  ResumptionOriginMismatch
   InvalidContentLength
   BackendFailure(String)
 }
@@ -89,6 +91,8 @@ pub fn normalize_error(error: RawError) -> Failure {
     #(18, _, _) -> StreamFinished
     #(19, _, _) -> StreamCancelled
     #(20, _, _) -> OriginMismatch
+    #(21, _, method) -> UnsafeEarlyDataMethod(method)
+    #(22, _, _) -> ResumptionOriginMismatch
     #(_, _, message) -> BackendFailure(message)
   }
 }

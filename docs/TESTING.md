@@ -129,6 +129,36 @@ not independent interoperability evidence.
 - The completion command is `mise run check`. The recorded repository test
   count before that command is 74 tests with no failures.
 
+### Advanced transport capabilities — 2026-08-23
+
+- The repository suite exercises HTTP Datagram negotiation, bidirectional
+  payloads, maximum size, invalid alignment, bounded orphan data, and a
+  deterministic concurrent-receive race over real UDP. It also covers client
+  and server priority, qlog creation, congestion control, ping, MTU and
+  statistics, migration followed by another request, ticket origin binding,
+  unsafe-method rejection, and accepted 0-RTT on both peers.
+- Independent interoperability used aioquic 1.3.0 as the server. The public
+  API verified its certificate and hostname, exchanged an HTTP Datagram,
+  changed priority and congestion control, generated qlog, migrated the client
+  path and completed another request, acquired an origin-bound ticket, and
+  sent an actual early request before the delayed handshake completed. The
+  peer observed all three wire events rather than inferring them from local
+  state. Reproduction files and exact commands are in
+  [`test/interop`](../test/interop/README.md).
+- Fault coverage rejects disabled Datagram negotiation, oversized and
+  unaligned payloads, concurrent pulls, buffer exhaustion, cross-origin ticket
+  use, and replay-unsafe POST before network request work. Existing
+  deterministic loss and reordering fixtures continue to cover the shared
+  transport path; the pinned compliance suite covers malformed HTTP/3 and
+  QPACK wire input and wrapper tests cover typed normalization.
+- Applicable wire conformance was rerun from the resolved quic 1.8.1 source at
+  commit `149301743b3607b5f6075dd5d58871ebadc57a2a`. The upstream source
+  checkout command `rebar3 eunit --module=quic_h3_compliance_tests` completed
+  185 RFC 9114 and RFC 9204 tests with no failures. The Hex dependency omits
+  upstream test sources, so conformance must run from that exact checkout.
+- The repository suite completed 81 tests with no failures before the final
+  completion check.
+
 ### During performance work
 
 - Use load tests to measure behavior under controlled concurrency and

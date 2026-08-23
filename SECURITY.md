@@ -3,8 +3,8 @@
 ## Project status
 
 `http3` is pre-alpha, unpublished, and not recommended for production use.
-The current surface provides bounded and streaming HTTP/3 clients and a
-bounded and streaming HTTP/3 server.
+The current surface provides bounded and streaming HTTP/3 clients and server,
+plus typed advanced transport capabilities.
 
 The version in `gleam.toml` is tool metadata and does not indicate that a
 release exists. Security support follows the current capability surface:
@@ -44,3 +44,9 @@ channel.
   connection and listener cleanup.
 - Server certificate and private-key material is validated before listener
   startup, and listener names come from a fixed atom pool rather than input.
+- Session tickets expose no fields or serialization operation, are bound to the
+  verified host and port, and restrict 0-RTT requests to GET, HEAD, and OPTIONS.
+- HTTP Datagram negotiation is explicit, payload and queue sizes are bounded,
+  and concurrent receivers are rejected.
+- qlog is disabled by default and requires an explicit directory because trace
+  files can contain connection metadata and application protocol details.
