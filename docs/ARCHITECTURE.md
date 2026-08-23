@@ -7,8 +7,8 @@ Erlang target. Applications should depend on stable HTTP concepts rather than
 a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
 and the JavaScript target are non-goals and belong in separate projects.
 
-The bootstrap establishes the backend boundary and exposes only capability
-discovery. It does not contain connection, client, or server placeholders.
+The current surface exposes capability discovery and a bounded one-shot
+client. It does not contain connection, streaming, or server placeholders.
 The version in `gleam.toml` is required tool metadata, not an implementation,
 publication, or quality milestone.
 
@@ -17,7 +17,7 @@ publication, or quality milestone.
 ```text
 Application
     |
-Public http3 modules and opaque Connection / Stream values
+Public http3 modules and opaque configuration / future connection values
     |
 http3/internal adapters and event normalization
     |
@@ -26,9 +26,10 @@ Small Erlang FFI modules
 QUIC backend
 ```
 
-The public layer will own request, response, body, connection, stream, and
-error types. `Connection` and `Stream` will be opaque, so callers cannot depend
-on the representation selected by a backend.
+The public client uses `gleam/http` request and response types and owns its
+configuration and error types. `Client` is opaque. Future `Connection` and
+`Stream` values will also be opaque, so callers cannot depend on the
+representation selected by a backend.
 
 The internal adapter is responsible for translating backend results and
 events into those public types. Backend PIDs, references, atoms, maps, records,
@@ -63,12 +64,28 @@ Calling `http3.is_supported()` therefore verifies that the resolved Hex
 package compiled, loaded, and answered its own availability probe. It does not
 probe network reachability or peer interoperability.
 
+The bounded client call path keeps request normalization in Gleam and all
+backend processes and messages in Erlang:
+
+```text
+http3/client.send()
+    -> http3/internal/client_request.prepare()
+    -> http3/internal/client_backend.send()
+    -> http3_internal_client_ffi:send()
+    -> monitored request worker
+    -> quic_h3
+```
+
+The worker owns one connection, enforces one monotonic deadline, collects the
+response within the configured byte limit, normalizes events into primitive
+result data, and waits for connection shutdown before returning. Raw PIDs,
+atoms, maps, references, and mailbox events do not cross the FFI boundary.
+
 ## HTTP data model
 
-The first protocol API will use the same request and response concepts as
-`gleam/http`. The `gleam_http` dependency and any OTP integration packages are
-intentionally deferred until concrete client and server modules use them. This
-keeps the bootstrap runtime graph limited to `gleam_stdlib` and `quic`.
+The bounded client uses the request and response concepts from `gleam/http`.
+Its concrete implementation introduced the `gleam_http` dependency; no
+HTTP/1.1, HTTP/2, or OTP HTTP integration package is included.
 
 Sharing request and response concepts does not imply HTTP/1.1 or HTTP/2
 support and does not introduce automatic fallback. Multi-protocol selection
@@ -81,10 +98,10 @@ observable.
 
 ## Implementation sequence
 
-The next protocol work proceeds in dependency order:
+Protocol work proceeds in dependency order:
 
-1. a bounded buffered HTTP/3 client with secure defaults and deterministic
-   cleanup;
+1. the bounded buffered HTTP/3 client, whose independent interoperability,
+   conformance, and fault-injection phase gate is complete;
 2. streaming request and response bodies with backpressure and cancellation;
 3. an HTTP/3 server built on the exercised connection and stream model; and
 4. advanced capabilities exposed through typed, backend-neutral APIs where
@@ -101,10 +118,10 @@ by default. Disabling verification is never a convenience flag on the normal
 configuration. A narrowly named, test-only surface may permit it for local
 fixtures, with the unsafe choice visible at the call site.
 
-Protocol data is untrusted. Future adapters must validate sizes, identifiers,
-state transitions, and backend event shapes before constructing public values.
-Cancellation and shutdown must be idempotent and must not leave unowned backend
-processes or streams.
+Protocol data is untrusted. The current adapter validates request shape,
+headers, body limits, response limits, status ordering, and backend event
+shapes before constructing public values. Cancellation and shutdown must be
+idempotent and must not leave unowned backend processes or streams.
 
 ## Backend replacement
 

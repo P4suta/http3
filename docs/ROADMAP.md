@@ -14,8 +14,15 @@ tooling version are optional operations and never phase gates.
 
 ## 1. Bounded buffered client
 
-Implement a real HTTP/3 client request-response flow using `gleam/http`-
-compatible request and response concepts. Buffer request and response bodies
+**Status:** complete as of 2026-08-23. Verification includes pure tests, event
+and error normalization, real-UDP loopback, a TLS-verified public-client
+round trip with the independent aioquic 1.3.0 peer, the quic 1.8.1 HTTP/3
+compliance module, and deterministic packet-loss, reordering, peer-termination,
+timeout, and resource-limit scenarios. Exact evidence is recorded in
+[Testing](TESTING.md).
+
+Implement a real HTTP/3 client request-response flow using `gleam/http`
+request and response concepts. Buffer request and response bodies
 only within explicit limits, reject limit violations with typed errors, and
 make connection ownership and deterministic shutdown clear.
 

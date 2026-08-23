@@ -9,6 +9,19 @@ imply a tag, a hosted release, or publication to Hex.
 
 ### Added
 
+- A bounded one-shot HTTP/3 client using `gleam/http` request and response
+  types, secure TLS defaults, explicit request and response limits, and a total
+  timeout.
+- Typed client configuration and normalized request, connection, stream,
+  protocol, timeout, and body-limit errors without exposing backend values.
+- Pure request validation for schemes, hosts, ports, methods, targets, HTTP/3
+  header rules, content length, and byte-aligned bounded bodies before network
+  work begins.
+- Real-UDP loopback coverage for POST bodies, headers, multiple response DATA
+  frames, headers-only responses, timeouts, TLS rejection, limits, peer
+  termination, deterministic packet loss and reordering, and cleanup.
+- Recorded public-client interoperability with aioquic 1.3.0 and the resolved
+  backend's RFC 9114 and RFC 9204 compliance suite.
 - A testing guide covering Red-Green-Refactor, regression tests, verification
   layers, fixed timeouts, resource cleanup, and reproducible performance work.
 

@@ -61,6 +61,27 @@ and must not enter normal client configuration.
 Using the same backend on both sides is valuable loopback coverage, but it is
 not independent interoperability evidence.
 
+## Phase verification records
+
+### Bounded buffered client — 2026-08-23
+
+- The repository suite exercises the public API over real loopback UDP,
+  including POST request bodies, response frames, untrusted-chain and hostname
+  TLS rejection, fixed timeouts, request and response limits, peer termination,
+  and deterministic loss and reordering of client datagrams through a
+  userspace UDP proxy.
+- Independent interoperability used aioquic 1.3.0 as the server. A request
+  through the public `http3/client` API used the local CA without disabling
+  hostname verification, sent `POST /interop` with a buffered body, and
+  verified the returned status, peer header, and body.
+- Applicable backend conformance used the resolved quic 1.8.1 source at
+  commit `149301743b3607b5f6075dd5d58871ebadc57a2a`. Running
+  `rebar3 eunit --module=quic_h3_compliance_tests` completed 185 RFC 9114 and
+  RFC 9204 tests with no failures. This records the wire backend's suite; it
+  does not claim that wrapper-level tests replace protocol conformance.
+- The completion command is `mise run check`. The recorded run completed all
+  project checks and 37 repository tests with no failures.
+
 ### During performance work
 
 - Use load tests to measure behavior under controlled concurrency and

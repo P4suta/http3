@@ -10,12 +10,13 @@ project that needs those capabilities should compose them outside `http3`.
 > [!WARNING]
 > This package is pre-alpha, is not published to Hex, and is not recommended
 > for production use. The version in `gleam.toml` is tool metadata, not a
-> publication or feature milestone. The package does not yet provide an
-> HTTP/3 client or server.
+> publication or feature milestone. A bounded one-shot client is implemented;
+> connection reuse, streaming, and a server are not.
 
 ## Current API
 
-The only public operation is a runtime capability probe:
+The package exposes a runtime capability probe and a bounded client. The probe
+does not make a network connection:
 
 ```gleam
 import http3
@@ -33,17 +34,38 @@ and HTTP/3 client and server machinery. It is constrained to versions from
 1.8.1 up to, but not including, 2.0.0. This package's value is a typed,
 idiomatic Gleam API that keeps those backend details private.
 
+The client accepts `gleam/http` requests and returns `gleam/http` responses
+with `BitArray` bodies:
+
+```gleam
+import gleam/http/request
+import http3/client
+
+pub fn fetch() {
+  let assert Ok(request) = request.to("https://example.com/")
+  let request = request.set_body(request, <<>>)
+
+  client.send(client.new(), request)
+}
+```
+
+Each `send` call owns and closes one HTTP/3 connection. The default total
+timeout is 30 seconds, and buffered request and response bodies are each
+limited to 8 MiB. TLS certificate-chain and hostname verification are always
+enabled. Typed configuration functions can change the limits, timeout, or
+explicit CA trust set without exposing backend values.
+
 ## Status
 
 | Capability | Status |
 | --- | --- |
 | Backend availability probe | Implemented |
-| Bounded buffered HTTP/3 client | Planned next |
-| Streaming, backpressure, and cancellation | Planned |
+| Bounded buffered HTTP/3 client | Implemented; phase 1 verification complete |
+| Streaming, backpressure, and cancellation | Planned next |
 | HTTP/3 server | Planned |
 | Advanced typed capabilities | Planned |
 
-No placeholder client or server functions are exported. APIs are added only
+No placeholder server or streaming functions are exported. APIs are added only
 when they perform real protocol work and have tests.
 
 Implementation is client-first: bounded buffered requests and responses,
@@ -73,10 +95,9 @@ workflow, and [Roadmap](docs/ROADMAP.md) for the implementation order.
 
 ## Security
 
-TLS certificate and hostname verification will be enabled by default for all
-client APIs. Any option that disables verification will be isolated to an
-explicitly named, test-only surface. See [SECURITY.md](SECURITY.md) for
-reporting guidance.
+TLS certificate-chain and hostname verification are enabled for the client.
+There is no public option that disables either check. See
+[SECURITY.md](SECURITY.md) for reporting guidance.
 
 ## Licence
 

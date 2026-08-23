@@ -7,6 +7,7 @@ licences = ["MIT", "Apache-2.0"]
 internal_modules = ["http3/internal/**"]
 
 [dependencies]
+gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 quic = ">= 1.8.1 and < 2.0.0"
 
