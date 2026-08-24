@@ -16,7 +16,7 @@ mise install
 mise run check
 ```
 
-The package supports Erlang/OTP 26 through 29. Local development uses OTP 29;
+The package supports Erlang/OTP 28 and 29. Local development uses OTP 29;
 the CI definition covers the complete supported range.
 
 ## Making a change

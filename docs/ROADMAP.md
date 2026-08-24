@@ -1,199 +1,193 @@
 # Roadmap
 
-The phases below are ordered. Phases 1 through 4 are bootstrap API phases over
-the temporary external backend; they do not constitute public v1. Later phases
-replace that backend with the repository-owned QUIC stack and satisfy the
-complete [public v1 gate](V1.md). Later phases may be designed early, but they do
-not displace the compatibility and safety work required by earlier phases.
-The roadmap is exclusively for HTTP/3 on the Erlang target. HTTP/1.1, HTTP/2,
-automatic protocol fallback, and the JavaScript target belong in other
-projects.
+The v1 roadmap is complete as of 2026-08-24. The phases remain here as a
+record of dependency order and acceptance criteria. Completion refers to the
+source implementation and locally executable qualification gates; publishing,
+tagging, releasing, changing the metadata version, and uploading to Hex were
+not performed.
 
-Every phase uses Red-Green-Refactor and the verification layers in
-[Testing](TESTING.md). A new behavior begins with a failing test. Completion
-is based on observable behavior, cleanup, interoperability, and conformance;
-publishing to GitHub or Hex, tagging, creating a release, and changing the
-tooling version are optional operations and never phase gates.
+This roadmap is exclusively for HTTP/3 on the Erlang target. HTTP/1.1,
+HTTP/2, automatic protocol fallback, and the JavaScript target belong in other
+projects. Every future change continues to use Red-Green-Refactor and the
+verification layers in [Testing](TESTING.md).
+
+## Completion summary
+
+| Phase | Outcome | Status |
+| --- | --- | --- |
+| 1. Bounded buffered client | Secure one-shot requests with typed limits and cleanup | Complete |
+| 2. Streaming and cancellation | Reusable multiplexed connections with bounded pull events and backpressure | Complete |
+| 3. Server | Bounded and streaming listener with deterministic ownership | Complete |
+| 4. Advanced capabilities | Datagram, priority, migration, resumption, qlog, statistics, and lifecycle extensions | Complete |
+| 5. Native wire core | QUIC v1/v2 wire formats, invariants, frames, and parameters | Complete |
+| 6. Native TLS and packet protection | Authenticated TLS 1.3, Retry, resumption, 0-RTT, and key lifecycle | Complete |
+| 7. Transport, recovery, and paths | Live UDP, recovery, congestion, ECN, PMTU, CID, and migration | Complete |
+| 8. HTTP/3 and QPACK | Full request/control semantics, push, drain, extensions, and QPACK | Complete |
+| 9. Adapter cutover | Repository-owned core is the sole production backend | Complete |
+| 10. v1 qualification | Two-peer interop, faults, fuzz/property, performance, and security review | Complete locally |
 
 ## 1. Bounded buffered client
 
-**Status:** complete as of 2026-08-23. Verification includes pure tests, event
-and error normalization, real-UDP loopback, a TLS-verified public-client
-round trip with the independent aioquic 1.3.0 peer, the quic 1.8.1 HTTP/3
-compliance module, and deterministic packet-loss, reordering, peer-termination,
-timeout, and resource-limit scenarios. Exact evidence is recorded in
-[Testing](TESTING.md).
+**Completed:** 2026-08-23; requalified on the native core on 2026-08-24.
 
-Implement a real HTTP/3 client request-response flow using `gleam/http`
-request and response concepts. Buffer request and response bodies
-only within explicit limits, reject limit violations with typed errors, and
-make connection ownership and deterministic shutdown clear.
+The client accepts `gleam/http` requests, performs real HTTP/3 work, and
+returns bounded `BitArray` response bodies. Request validation rejects
+non-HTTPS origins, invalid authority or request targets, forbidden headers,
+invalid content lengths, non-byte-aligned data, and configured size violations
+before network work.
 
-Establish certificate-chain and hostname verification by default, bounded
-operation timeouts, backend event and error normalization, and real UDP
-loopback coverage. Do not export an operation until it performs the documented
-protocol work.
+One monotonic deadline includes connection setup, TLS, the response, and
+shutdown. Certificate-chain and service-identity verification are mandatory.
+The connection has one owner and converges after success, timeout, limit
+failure, or peer termination.
 
 ## 2. Streaming, backpressure, and cancellation
 
-**Status:** complete as of 2026-08-23. The reusable client exposes opaque
-connection and stream values, synchronous producer backpressure, bounded
-pull-based response events, total stream deadlines, race-safe idempotent
-cancellation, and deterministic owner/connection cleanup. Verification covers
-independent aioquic 1.3.0 streaming interoperation, backend conformance, real
-UDP multiplexing, flow-control pressure, cancellation races, slow consumers,
-packet loss, early responses, peer failure, and resource limits.
+**Completed:** 2026-08-23; requalified on the native core on 2026-08-24.
 
-Add streaming request and response bodies without changing the bounded helper
-into an unbounded collector. Preserve flow-control backpressure, expose
-end-of-stream and transport failures, and make cancellation observable,
-idempotent, and race-safe.
+Reusable connections multiplex request streams. Writes synchronously preserve
+transport flow control, reads pull one event at a time, and unconsumed data is
+bounded per stream. Informational responses, final headers, DATA, trailers,
+and end-of-stream remain separately observable.
 
-Cover slow producers and consumers, early response termination, cancellation
-at each connection and stream state, and cleanup after both local and peer
-failure.
+Concurrent receive is rejected. Cancellation, a cancellation race, early
+response, peer failure, owner death, close, and repeated close all have typed,
+bounded outcomes. A buffered helper never weakens these streaming guarantees.
 
 ## 3. Server
 
-**Status:** complete as of 2026-08-23. The server exposes opaque configuration,
-listener, and request values; bounded and pull-based streaming request bodies;
-synchronous streaming responses; typed limits and failures; and deterministic
-ownership and shutdown. Verification covers an independent aioquic 1.3.0
-client, backend conformance, real-UDP bounded and streaming round trips,
-same-connection multiplexing, concurrent accepts, peer failure, malformed
-event normalization, declared content lengths, and resource limits.
+**Completed:** 2026-08-23; requalified on the native core on 2026-08-24.
 
-Implement the HTTP/3 server after the client has exercised the shared
-connection, stream, body, error, cancellation, and shutdown model. Add bounded
-buffered handling first, then streaming handlers with backpressure and
-deterministic ownership.
+The server owns its UDP listener, accepted connections, request handlers, and
+stream queues. It supports bounded and streaming requests and responses,
+informational responses, trailers, concurrent streams, and concurrent clients.
+Request and response limits are independent.
 
-Keep listener, connection, and request-process lifetimes explicit. Test clean
-shutdown, abrupt peer termination, malformed input, concurrent streams, and
-resource limits without exposing backend handles or mailbox formats.
+Credential material is validated before startup, and additional credentials
+are selected by SNI. Immediate and graceful stop are idempotent; blocked
+accept/read operations and owner termination release resources within fixed
+deadlines.
 
-## 4. Advanced capabilities and escape hatch
+## 4. Advanced capabilities
 
-**Status:** complete as of 2026-08-23. Typed connection and stream controls
-cover HTTP Datagrams, RFC 9218 priority, active migration, replay-safe 0-RTT,
-qlog, congestion control, ping, MTU, and transport statistics. Verification
-includes real-UDP client/server coverage, independent aioquic 1.3.0 Datagram,
-migration, qlog, and actual early-request interoperability, backend
-conformance, negotiation and resource limits, concurrent receive, origin
-binding, and replay-safety failures.
+**Completed:** 2026-08-23; requalified and extended on 2026-08-24.
 
-Add HTTP Datagrams, stream priority, connection migration, 0-RTT, qlog, and
-other transport controls behind typed capabilities. Low-level access must
-remain backend-neutral where possible and must not expose raw PIDs, atoms,
-maps, or mailbox messages.
+Opaque connection and stream facades expose:
 
-Any certificate-verification bypass remains confined to an explicitly named,
-test-only surface.
+- negotiated HTTP Datagrams on Extended CONNECT and bounded Capsules;
+- RFC 9218 priority and scheduler updates;
+- active migration, path, MTU, and connection statistics;
+- NewReno/CUBIC selection, keepalive, and ping;
+- opt-in, connection-isolated qlog traces;
+- origin-bound session tickets and replay-constrained 0-RTT;
+- server push, GOAWAY, and graceful draining; and
+- QUIC v1/v2 selection and authenticated compatible version negotiation.
 
-## Continuous verification
-
-**Status:** active and implemented. The repository retains fixed benchmark,
-32-connection load, and 160,000-stream soak tasks with warm-up, repeated trials
-where applicable, bounded cleanup, process and mailbox convergence checks,
-environment metadata, and raw CSV results. These localhost measurements are
-verification evidence rather than production throughput claims.
-
-Verification is not deferred to a late implementation phase. Every change
-uses the applicable pure, adapter, and real-UDP loopback tests and passes
-`mise run check`. Each phase completes with an independent HTTP/3 peer,
-conformance coverage, and relevant fault injection.
-
-When performance becomes the focus, add controlled load and soak tests and a
-reproducible benchmark methodology. Cover flow-control pressure, packet loss
-and reordering, cancellation races, peer protocol violations, resource limits,
-and graceful and abrupt shutdown. Retain raw results rather than publishing
-isolated benchmark claims.
+No control returns a raw process, socket, map, atom, or protocol message.
 
 ## 5. Native wire core
 
-**Status:** in progress as of 2026-08-24. The separate `gleam_quic` package,
-RFC 9000 variable-length integer codec, packet-number reconstruction, QUIC v1
-and v2 long-header mappings, bounded invariant packet parsing, the complete
-RFC 9000/RFC 9221 frame codec, and bounded transport parameters from RFC 9000,
-RFC 9221, RFC 9287, and RFC 9368 are present. The package currently has 108
-focused tests and its own format, warnings-as-errors build, docs, and lint
-gate.
+**Completed:** 2026-08-24.
 
-Implement QUIC invariants, v1 and v2 packet formats, frames, transport
-parameters, version negotiation, strict bounds, and incremental parsers. Every
-wire behavior starts with RFC vectors and negative/truncation tests.
+The `gleam_quic` package implements bounded codecs for QUIC invariant,
+version negotiation, long/short packet, packet number, every standard
+transport frame including DATAGRAM, transport parameters, and coalesced
+packets. It supports v1 and v2 mappings, unknown and reserved versions, Retry
+separation, compatible version information, non-minimal permitted integers,
+and strict semantic and allocation limits.
+
+Published examples and negative tests cover truncation, ambiguity, invalid
+roles, duplicate parameters, overflow, alignment, UTF-8, connection-ID and
+reset-token sizes, ACK arithmetic, unknown types, and resource exhaustion.
 
 ## 6. Native TLS 1.3 and packet protection
 
-**Status:** in progress as of 2026-08-24. RFC 5869 HKDF-SHA256/SHA384,
-QUIC v1/v2 Initial key derivation, AES-128-GCM, AES-256-GCM and
-ChaCha20-Poly1305 payload/header protection, packet-number encoding, and v1/v2
-Retry integrity match published vectors. The TLS layer now has bounded
-handshake, extension and authentication-message codecs, X25519, the TLS 1.3
-transcript and key schedule, RFC 5280 path and RFC 9525 service-identity
-validation, CertificateVerify, constant-time Finished verification, and a
-client/server state-model handshake through 1-RTT key installation. Arbitrary
-CRYPTO fragmentation, one bounded HelloRetryRequest, QUIC key-phase updates,
-three-PTO old-key retention, Initial/Handshake key-discard actions, and AEAD
-usage limits are also implemented. Strict PSK identity/mode/binder codecs,
-exact ClientHelloTruncated binder hashing, AES-256-GCM protected origin-bound
-session tickets, modulo-2^32 ticket-age checks, and a bounded time-windowed
-anti-replay cache are complete. The state machine now issues, incrementally
-stores, and reuses post-handshake tickets; selects authenticated PSKs; omits
-certificate messages on resumption; installs matching 0-RTT keys; conservatively
-rejects early data when remembered transport parameters change or replay state
-rejects it; and coordinates Initial, Handshake, and 0-RTT key discard.
-Certificate selection and integration with the live transport remain open.
+**Completed:** 2026-08-24.
 
-Implement the TLS 1.3 handshake coordination required by QUIC, transcript and
-key schedule, transport-parameter extension, Retry integrity, header and
-payload protection, key discard and update, session tickets, replay-safe
-0-RTT, certificate paths, service identity, SNI, and secure server certificate
-selection. Keep cryptographic and X.509 runtime primitives in a narrow FFI.
+The Gleam TLS coordinator implements bounded handshake and extension codecs,
+X25519, transcript rewriting for one HelloRetryRequest, TLS 1.3 key schedule,
+certificate authentication, CertificateVerify and Finished, QUIC transport
+parameters, and packet-space key installation/discard.
+
+AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, AES and ChaCha header
+protection, QUIC v1/v2 Initial derivation, and Retry integrity are verified
+against published vectors. The live path supports post-handshake tickets,
+authenticated PSK binders, resumption, real 0-RTT, anti-replay, remembered
+transport-parameter checks, rejection fallback, AEAD usage limits, and key
+updates with bounded old-key retention.
 
 ## 7. Native transport, recovery, and paths
 
-**Status:** in progress as of 2026-08-24. Pure bounded models now cover RFC
-9002 RTT estimation, packet/time-threshold loss detection, PTO calculation,
-NewReno, RFC 9438 CUBIC, pacing, ECN validation, connection and stream flow
-control, stream ID permissions, anti-amplification, authenticated address
-tokens, stateless reset, connection-ID rotation, path challenge validation,
-PMTU probing, and out-of-order CRYPTO/STREAM reassembly with overlap and
-final-size enforcement. These models are not yet assembled into a live
-connection and UDP runtime; full recovery/ACK scheduling, path migration,
-socket ECN, IPv4/IPv6 operation, and deterministic shutdown remain open.
+**Completed:** 2026-08-24.
 
-Implement connection and stream state machines, flow control, loss recovery,
-PTO, ECN, NewReno and CUBIC, pacing, anti-amplification, Retry and address
-tokens, stateless reset, connection-ID rotation, PMTU discovery, IPv4/IPv6,
-NAT rebinding, active migration, QUIC DATAGRAM, and deterministic shutdown.
+The connection driver assembles stream and connection flow control,
+out-of-order CRYPTO/STREAM reassembly, ACK scheduling, RTT, packet/time loss,
+PTO, retransmission, NewReno, CUBIC, pacing, and ECN validation over real UDP.
+
+It enforces server anti-amplification, authenticated Retry and reusable address
+tokens, stateless reset, connection-ID rotation and retirement, path
+challenge/response, NAT rebinding, active migration, IPv4/IPv6 operation,
+QUIC DATAGRAM, DPLPMTUD, keepalive, and deterministic close. Real-UDP faults
+cover duplication, corruption, delay, loss, reordering, and constrained MTU.
 
 ## 8. Native HTTP/3 and QPACK
 
-**Status:** not complete.
+**Completed:** 2026-08-24.
 
-Implement RFC 9114 and RFC 9204 end to end: control and request streams,
-settings, push, GOAWAY, graceful drain, all response stages and trailers,
-static and dynamic QPACK with Huffman coding and blocked-stream limits,
-priority, Extended CONNECT, Capsules, and correctly associated HTTP Datagrams.
+The native session implements RFC 9114 control, request, response, push,
+QPACK encoder, and QPACK decoder streams. SETTINGS, critical-stream rules,
+message ordering, informational responses, DATA, trailers, content lengths,
+push limits and cancellation, GOAWAY, and graceful draining are typed and
+bounded.
+
+QPACK includes the static and dynamic tables, encoder/decoder instructions,
+feedback, reference retention, eviction safety, blocked-stream limits,
+wrapped required-insert counts, and HPACK Huffman coding with expansion and
+padding checks. Priority, Extended CONNECT, Capsules, and request-associated
+HTTP Datagrams are integrated into the same session.
 
 ## 9. Adapter cutover
 
-**Status:** not complete.
+**Completed:** 2026-08-24.
 
-Run the existing public API behavior suite against `gleam_quic`, close any
-semantic gaps, make it the sole production backend, and remove the external
-`quic` dependency and all runtime calls to `quic` or `quic_h3`. Preserve public
-opaque types and typed errors unless a standards or safety correction requires
-an intentional pre-v1 break.
+The root behavior suite runs entirely on `gleam_quic`. The manifest contains
+no external QUIC package, production source contains no external QUIC runtime
+call, and the compiler API audit prevents a native handle or internal adapter
+from leaking. The remaining root Erlang FFI contains only four opaque-wrapper
+functions; all protocol work follows the native Gleam path described in
+[Architecture](ARCHITECTURE.md).
 
 ## 10. Public v1 qualification
 
-**Status:** not complete.
+**Completed locally:** 2026-08-24.
 
-Complete two-peer client/server interop, QUIC v1/v2 conformance, TLS and QPACK
-vectors, fuzzing, deterministic faults, real-UDP negative tests, security
-review, supported OTP/OS matrices, load, soak, and benchmark gates. Resolve all
-required rows in [Public v1 gate](V1.md), remove temporary nonconforming test
-surfaces, run `mise run check`, and finish with signed local commits and a clean
-tree.
+The completion evidence includes:
+
+- 278 native-core and 108 public-package tests;
+- 10,000 reproducible property cases and 10,016 fuzz cases;
+- deterministic real-UDP faults and lifecycle/resource convergence;
+- bidirectional aioquic 1.3.0 and quic-go 0.61.0 interoperability, explicit
+  QUIC v1/v2, RFC 9368, Datagram, migration, qlog, tickets, and observed 0-RTT;
+- retained benchmark, 32-connection load, and 160,000-stream soak rows;
+- a compiler public-interface and production dependency audit;
+- a documented security review; and
+- the full format, warnings-as-errors, test, docs, lint, workflow, spelling,
+  shell, and REUSE gate.
+
+OTP 28–29 and Linux/macOS/Windows build/test jobs are defined in the pinned CI
+workflow. OTP 28 and 29 both pass the root and native suites locally; the OTP
+28 run used an isolated official container. A hosted macOS/Windows result is a
+publication preflight because this Linux workspace cannot produce those
+runners; it is not an unfinished protocol implementation.
+
+## Maintenance after v1
+
+The roadmap now changes from feature construction to maintenance:
+
+- add a failing regression for every defect;
+- consume relevant published errata and security advisories;
+- rerun every affected qualification layer;
+- update pinned independent peers deliberately; and
+- keep draft protocols in separate, revision-pinned experimental packages.
+
+Publication remains a separate user-authorized operation.

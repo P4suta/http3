@@ -20,6 +20,7 @@ pages = [
   { title = "Public v1 gate", path = "v1.html", source = "docs/V1.md" },
   { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
   { title = "Testing", path = "testing.html", source = "docs/TESTING.md" },
+  { title = "Security review", path = "security-review.html", source = "docs/SECURITY_REVIEW.md" },
   { title = "Performance", path = "performance.html", source = "benchmarks/README.md" },
   { title = "Roadmap", path = "roadmap.html", source = "docs/ROADMAP.md" },
 ]

@@ -48,27 +48,31 @@ The arguments are mode, measured trials, concurrency, requests per worker, and
 payload bytes. The harness bounds all inputs before allocating or starting
 network work.
 
-## Recorded local result
+## Recorded native-core result
 
-The 2026-08-23 run used the environment in
-[`environment.txt`](results/2026-08-23-environment.txt) and retains every row
-in [`local.csv`](results/2026-08-23-local.csv). Warm-up rows are excluded from
-the summaries:
+The 2026-08-24 run used the repository-owned `gleam_quic` backend and the
+environment in
+[`2026-08-24-environment.txt`](results/2026-08-24-environment.txt). Every row
+is retained in
+[`2026-08-24-local.csv`](results/2026-08-24-local.csv). Warm-up rows are
+excluded from the summaries:
 
-- The five baseline trials had a median 1,173 requests/second and a range from
-  1,133 to 1,181 requests/second.
-- The three 32-connection load trials had a median 1,291 requests/second and a
-  range from 1,239 to 1,311 requests/second.
-- The sustained measured trial completed 80,000 streams in 76.018408 seconds,
-  or 1,052 requests/second. Its separate 80,000-stream warm-up took 69.870773
+- The five baseline trials had a median 258 requests/second and a range from
+  244 to 288 requests/second.
+- The three 32-connection load trials had a median 172 requests/second and a
+  range from 171 to 173 requests/second.
+- The sustained measured trial completed 80,000 streams in 196.909174 seconds,
+  or 406 requests/second. Its separate 80,000-stream warm-up took 206.950577
   seconds, so the soak task exercised 160,000 streams continuously.
-- Every measured trial returned below its starting process count and recorded
-  zero total mailbox messages both before and after. In the measured soak row,
-  total BEAM memory changed from 40,342,576 to 40,481,088 bytes after cleanup.
+- Every row returned from 48 processes to 47 and recorded zero total mailbox
+  messages before and after. In the measured soak row, total BEAM memory
+  changed from 40,497,800 to 40,687,280 bytes after cleanup, an increase of
+  189,480 bytes (approximately 185 KiB).
 
-These numbers describe one localhost run. CPU frequency scaling, background
-system load, allocator high-water marks, scheduler placement, and a single
-machine's network stack introduce uncertainty. The harness does not pin CPU
-cores or governors, and the one-trial soak result has no statistical interval.
-Use the raw repeated trials for comparisons; do not treat the fastest row as a
-general throughput guarantee or compare it directly with a remote peer run.
+These numbers describe one localhost run on an Intel Core i7-7700K with the
+`powersave` governor and without CPU affinity. CPU frequency scaling,
+background load, allocator high-water marks, scheduler placement, and one
+machine's network stack introduce uncertainty. The one-trial soak result has
+no statistical interval. Use the raw repeated trials for comparisons; do not
+treat the fastest row as a general throughput guarantee or compare it directly
+with a remote peer or the former external-backend baseline.

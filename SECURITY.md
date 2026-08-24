@@ -2,64 +2,70 @@
 
 ## Project status
 
-`http3` is pre-alpha, unpublished, and not recommended for production use.
-The current bootstrap surface provides bounded and streaming HTTP/3 clients
-and server, plus typed advanced transport capabilities through a temporary
-external backend. The native QUIC/TLS core and the public v1 security gate are
-not complete.
+`http3` is unpublished. The repository-defined v1 implementation and local
+qualification gates are complete, including the repository-owned QUIC/TLS
+core, but the code has not had an independent third-party security audit and
+is not yet a supported production release.
 
-The version in `gleam.toml` is tool metadata and does not indicate that a
-release exists. Security support follows the current capability surface:
+The version in `gleam.toml` is tool metadata and does not indicate that a tag
+or release exists.
 
-| Surface | Supported |
+| Surface | Support status |
 | --- | --- |
-| Current client and server | Security fixes |
-| Earlier local states | Not supported |
+| Current source-tree state | Security fixes are accepted |
+| Earlier local states or snapshots | Not supported |
+| Published releases | None |
 
 ## Reporting a vulnerability
 
 Do not disclose a suspected vulnerability in a public issue, discussion, or
-pull request. While this repository is local and unpublished, contact the
+pull request. While the repository is local and unpublished, contact the
 maintainers privately through the same channel from which you received the
-source. Once a public repository exists, use its private vulnerability
+source. If a public repository is later created, use its private vulnerability
 reporting feature.
 
-Include the affected version, Erlang/OTP version, impact, reproduction steps,
-and any proposed mitigation. Avoid including secrets or data belonging to
-other people. The maintainers will acknowledge the report, assess scope, and
-coordinate a fix and disclosure timeline through the private reporting
-channel.
+Include the affected source revision, Erlang/OTP version, impact, reproduction
+steps, and any proposed mitigation. Do not include credentials, session
+tickets, traffic secrets, qlogs containing private data, or data belonging to
+other people. Maintainers will acknowledge the report, assess its scope, and
+coordinate remediation and disclosure through the private channel.
 
 ## Security invariants
 
-- Client certificate-chain and hostname verification is secure by default.
-- A custom CA set changes trust anchors without disabling hostname or chain
+- Client certificate-path and hostname or IP service-identity verification are
+  enabled by default and cannot be disabled through the public API.
+- A custom CA set replaces trust anchors without weakening path or identity
   verification.
-- The normal client surface has no certificate or hostname verification
-  bypass. Any future bypass must be explicitly named and test-only.
-- Backend process identifiers, atoms, maps, references, and messages do not
-  cross the public API boundary.
-- Untrusted protocol inputs are bounded and validated before allocation or
+- Server certificate and private-key material is validated before startup;
+  multiple credentials are selected only through strict SNI matching.
+- Raw processes, atoms, maps, references, sockets, trust-store terms, keys,
+  traffic secrets, protocol messages, and mailbox formats do not cross the
+  public API.
+- Untrusted packet, frame, extension, header, table, stream, queue, certificate,
+  ticket, Capsule, and Datagram inputs are bounded before allocation or
   dispatch.
-- Client streams and server operations have fixed timeouts, explicit request
-  and response body limits, bounded unconsumed stream data, and deterministic
-  connection and listener cleanup.
-- Server certificate and private-key material is validated before listener
-  startup, and listener names come from a fixed atom pool rather than input.
-- Session tickets expose no fields or serialization operation, are bound to the
-  verified host and port, and restrict 0-RTT requests to GET, HEAD, and OPTIONS.
-- HTTP Datagram negotiation is explicit, payload and queue sizes are bounded,
-  and concurrent receivers are rejected.
-- qlog is disabled by default and requires an explicit directory because trace
-  files can contain connection metadata and application protocol details.
-- Public v1 cannot depend on an external production QUIC implementation;
-  protocol code in `gleam_quic` must pass the cryptographic, amplification,
-  parser, replay, interoperability, and resource-exhaustion gates in
-  [Public v1 gate](docs/V1.md).
-- Native Initial, Handshake, and application traffic secrets stay inside
-  internal Gleam modules. Erlang FFI is restricted to runtime SHA/HMAC/HKDF,
-  AES-GCM, ChaCha20-Poly1305, header-protection, secure-random, X25519, X.509,
-  and signature primitives; it validates binary sizes, catches runtime
-  failures, and returns closed typed errors. Retry, packet, and Finished
-  authenticators use runtime constant-time verification rather than
-  application comparisons.
+- Operations have fixed deadlines, explicit body and stream-buffer limits,
+  bounded retained terminal state, and deterministic owner-driven cleanup.
+- TLS authenticators, Retry integrity, PSK binders, Finished values, and
+  stateless-reset tokens use authenticated or runtime constant-time checks.
+- Compatible version negotiation is authenticated in the TLS transcript and
+  rejects downgrade or inconsistent version information.
+- Address validation and server anti-amplification apply before a path is
+  trusted. Retry, address tokens, path challenges, connection IDs, migration,
+  and stateless reset are authenticated and bounded.
+- Session tickets are encrypted and opaque, bound to the verified origin,
+  ALPN, cipher, QUIC version, and relevant transport parameters. 0-RTT is
+  replay checked and limited to GET, HEAD, and OPTIONS until accepted.
+- HTTP Datagrams require explicit negotiation and an Extended CONNECT request
+  association. Payload, orphan, and receive queues are bounded.
+- qlog is disabled by default, creates a unique trace per connection, and must
+  be treated as sensitive application metadata.
+- Erlang FFI is restricted to runtime UDP, time, crypto, X.509, and trace-file
+  operations. QUIC, TLS, HTTP/3, and QPACK wire parsing and state machines are
+  Gleam code.
+- The production dependency graph contains no external QUIC implementation,
+  NIF, or C library.
+
+The evidence, reviewed boundaries, residual operational risks, and source
+audit are documented in the
+[pre-publication security review](docs/SECURITY_REVIEW.md).

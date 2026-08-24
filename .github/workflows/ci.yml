@@ -62,8 +62,6 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - "26"
-          - "27"
           - "28"
           - "29"
     steps:

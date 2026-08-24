@@ -1,33 +1,44 @@
 # gleam_quic
 
-`gleam_quic` is the repository's native QUIC transport core for the Erlang
-target. It is an unpublished work in progress and is not yet suitable for
-applications. Its current internal TLS layer completes an authenticated
-client/server TLS 1.3 state-model handshake through QUIC Handshake and 1-RTT
-traffic-key installation, including one bounded HelloRetryRequest. Strict PSK
-binder codecs, authenticated origin-bound session tickets, ticket-age checks,
-and a bounded anti-replay cache are connected to the handshake engine's PSK
-resumption and 0-RTT path. Post-handshake ticket issue/store/reuse, remembered
-transport-parameter checks, early-data rejection, and key discard are covered
-by state-model tests. The core is not yet connected to a network transport.
-The transport foundation also includes bounded recovery, NewReno and CUBIC,
-pacing, ECN validation, flow control, authenticated address tokens, stateless
-reset, connection-ID rotation, path validation, anti-amplification, PMTU, key
-update, and ordered-byte reassembly models.
+`gleam_quic` is the repository-owned QUIC transport, TLS 1.3, HTTP/3, and
+QPACK core used by the parent Erlang-target `http3` package. It is a local path
+package and the only production backend. It is not published or supported as a
+standalone low-level API.
 
-Protocol parsing, state machines, recovery, congestion control, TLS 1.3
-coordination, and packet protection are implemented or will be implemented in
-Gleam. Small Erlang FFI modules may expose only runtime primitives such as UDP,
-monotonic time, secure randomness, cryptographic operations, and X.509 path
-validation.
+The live UDP runtime implements:
 
-The public completion requirements are defined in
-[the repository v1 gate](../../docs/V1.md). The external `quic` package remains
-only as the temporary HTTP/3 bootstrap backend while this core is built and
-verified; it is not part of the intended v1 runtime.
+- QUIC v1 and v2 packets, frames, transport parameters, compatible version
+  negotiation, Retry, address tokens, stateless reset, and connection IDs;
+- TLS 1.3 authentication, AES-GCM and ChaCha20-Poly1305 protection,
+  resumption, replay-constrained 0-RTT, and key lifecycle;
+- stream and connection flow control, reassembly, ACK/loss/PTO recovery,
+  NewReno, CUBIC, pacing, ECN, anti-amplification, PMTU, IPv4/IPv6, rebinding,
+  and migration;
+- RFC 9114 HTTP/3 client/server sessions, push, GOAWAY, graceful drain, RFC
+  9204 QPACK, priority, Extended CONNECT, Capsules, and HTTP Datagrams; and
+- bounded workers, statistics, keepalive, and opt-in per-connection qlog.
 
-Run this package's checks from the repository root:
+Protocol parsing, transcript coordination, state machines, recovery,
+congestion control, scheduling, and HTTP/3/QPACK behavior are Gleam code.
+Small Erlang FFI modules expose only runtime UDP, monotonic time, secure
+randomness, cryptographic operations, X.509 validation/signatures, and trace
+file I/O.
+
+The parent package owns the stable typed HTTP API and error normalization.
+The implementation boundary and completed qualification contract are in
+[Architecture](../../docs/ARCHITECTURE.md) and
+[Public v1 gate](../../docs/V1.md).
+
+Run this package's complete local check from the repository root:
 
 ```sh
 mise run core-check
+```
+
+The root `mise run check` includes this gate. Generated property and parser
+fuzz tasks are separate:
+
+```sh
+mise run property
+mise run fuzz
 ```

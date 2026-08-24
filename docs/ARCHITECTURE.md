@@ -1,218 +1,195 @@
 # Architecture
 
-## Goals
+## Scope and status
 
-`http3` will provide an idiomatic, HTTP/3-only Gleam client and server on the
-Erlang target. Applications should depend on stable HTTP concepts rather than
-a specific QUIC implementation. HTTP/1.1, HTTP/2, automatic protocol fallback,
-and the JavaScript target are non-goals and belong in separate projects.
+`http3` is an HTTP/3-only client and server for the Erlang target. HTTP/1.1,
+HTTP/2, automatic fallback, and the JavaScript target are non-goals. The
+repository-defined v1 implementation uses the in-tree `gleam_quic` package as
+its only production transport; aioquic and quic-go are test peers, not runtime
+dependencies.
 
-The current bootstrap surface exposes capability discovery, bounded and
-streaming clients, a bounded and streaming server, and typed advanced
-transport capabilities. Public v1 additionally requires the native transport
-and every gate in [Public v1 gate](V1.md); wrapper completion alone is not v1
-completion.
-The version in `gleam.toml` is required tool metadata, not an implementation,
-publication, or quality milestone.
+The package version is required tool metadata. Architecture and quality gates
+do not depend on a tag, hosted release, or package publication.
 
-## Layers
+## Production data flow
 
 ```text
 Application
     |
-Public http3 modules and opaque configuration / connection / stream values
+http3, http3/client, http3/server, http3/transport, http3/capsule
+    |  opaque Client / Connection / Stream / Listener / Request values
+http3/internal request, response, event, and error adapters
     |
-http3/internal adapters and event normalization
+gleam_quic/http3 client and server adapters
     |
-Small Erlang FFI modules
+Gleam-owned workers, HTTP/3 session, QPACK, QUIC driver, TLS, and recovery
     |
-QUIC backend
+narrow Erlang runtime FFI: UDP, crypto, X.509, qlog file I/O
+    |
+operating-system UDP socket
 ```
 
-The public client uses `gleam/http` request and response concepts and owns its
-configuration, event, and error types. `Client`, `Connection`, and `Stream`
-are opaque, so callers cannot depend on the representation selected by a
-backend.
+Protocol state moves down this diagram and typed observations move up. A raw
+PID, atom, reference, socket, map, record, mailbox message, traffic secret, or
+native trust-store term cannot cross the public boundary.
 
-The internal adapter is responsible for translating backend results and
-events into those public types. Backend PIDs, references, atoms, maps, records,
-and mailbox message formats must remain below this boundary. Small Erlang FFI
-modules perform only operations that cannot be expressed directly or safely
-in Gleam; they must not become an alternative public API or a second adapter
-layer.
+## Public HTTP boundary
 
-## Bootstrap backend
+The public client and server use `gleam/http` methods, requests, responses,
+headers, and status codes. This shares an HTTP data model; it does not add an
+HTTP/1.1 or HTTP/2 implementation.
 
-The temporary bootstrap backend is pure Erlang
-[`quic`](https://github.com/benoitc/erlang_quic), starting at version 1.8.1.
-It already supplies QUIC transport and HTTP/3 client and server machinery
-without a native library dependency and supports the project's OTP 26–29
-range. The upstream project has also discussed
-[Gleam bindings](https://github.com/benoitc/erlang_quic/issues/21).
+`Client`, `Connection`, `Stream`, `Listener`, `Request`, `Push`,
+`ResumptionTicket`, and the transport control values are opaque. Public
+operations return typed configuration, HTTP, transport, lifecycle, and limit
+errors. The compiler-interface audit rejects internal module names, native
+handle types, and constructor bridges in the exported package interface.
 
-Because no maintained Gleam binding is provided, `http3` adds value by
-normalizing backend behavior behind typed HTTP/3 concepts and by making
-lifecycle, limits, backpressure, cancellation, and failures explicit.
+The bounded helpers are intentionally collectors with explicit request and
+response limits. The streaming API is the unbounded-duration alternative, not
+an unbounded-memory alternative:
 
-This backend is development scaffolding, not the v1 runtime. It remains useful
-as a behavior oracle and independent regression peer during native-core
-development, but the final production dependency graph must not contain it.
+- request writes synchronously retain QUIC flow-control pressure;
+- response and request events are pulled by the consumer;
+- every unconsumed per-stream queue has a configured byte bound;
+- concurrent receives are rejected rather than creating ambiguous waiters;
+- deadlines cover the whole operation, including handshake and cleanup; and
+- cancellation, close, immediate stop, and graceful stop are observable and
+  idempotent.
 
-The current call path is deliberately small:
+## Native HTTP/3 runtime
 
-```text
-http3.is_supported()
-    -> http3/internal/backend.is_supported()
-    -> http3_internal_backend_ffi:is_supported()
-    -> quic:is_available()
-```
+The root adapters call `gleam_quic/http3/client` and
+`gleam_quic/http3/server`. Their Gleam workers own reusable connections,
+listeners, stream registries, pull waiters, bounded queues, and operation
+deadlines. The HTTP/3 session owns:
 
-Calling `http3.is_supported()` therefore verifies that the resolved Hex
-package compiled, loaded, and answered its own availability probe. It does not
-probe network reachability or peer interoperability.
+- the local and peer control streams and SETTINGS state;
+- request, response, informational, DATA, trailer, push, and GOAWAY ordering;
+- graceful drain and rejection of streams beyond the advertised boundary;
+- Extended CONNECT, Capsules, and HTTP Datagrams associated with a request;
+- RFC 9218 priority updates and scheduling; and
+- QPACK encoder and decoder streams, dynamic-table references, blocked-stream
+  limits, feedback, Huffman coding, and decompression bounds.
 
-The bounded client call path keeps request normalization in Gleam and all
-backend processes and messages in Erlang:
+Terminal stream state is retained in a bounded FIFO registry so late messages
+can be classified without accumulating state for every historical stream.
+Datagrams that arrive before their request association are bounded as strictly
+as associated queues.
 
-```text
-http3/client.send()
-    -> http3/internal/client_request.prepare()
-    -> http3/internal/client_backend.send()
-    -> http3_internal_client_ffi:send()
-    -> monitored request worker
-    -> quic_h3
-```
+The public server accepts one request head at a time per `accept` call while
+the underlying listener continues to multiplex connections and request
+streams. Multiple certificates can be configured; the TLS server selects a
+matching credential from the strict ClientHello SNI name. Graceful stop sends
+the HTTP/3 drain signal, rejects later accepts, permits active requests to
+finish,
+then closes the listener within its deadline.
 
-The worker owns one connection, enforces one monotonic deadline, collects the
-response within the configured byte limit, normalizes events into primitive
-result data, and waits for connection shutdown before returning. Raw PIDs,
-atoms, maps, references, and mailbox events do not cross the FFI boundary.
+## Native QUIC runtime
 
-The streaming call path retains one monitored worker for a reusable
-connection:
+`packages/gleam_quic` contains the protocol implementation. Its driver joins
+the following Gleam-owned components:
 
-```text
-http3/client.connect() / open_stream() / send_chunk() / next_event()
-    -> http3/internal/client_stream_backend
-    -> http3_internal_stream_ffi
-    -> owner-monitored connection worker
-    -> quic_h3
-```
+- invariant, long-header, short-header, frame, transport-parameter, and packet
+  codecs for QUIC v1 and v2;
+- authenticated compatible version negotiation and Retry handling;
+- Initial, Handshake, 0-RTT, and 1-RTT packet spaces and key lifecycle;
+- connection-ID issuance, retirement, routing, and stateless-reset tokens;
+- connection and stream state, out-of-order reassembly, final-size checks,
+  connection and stream flow control, and round-robin stream scheduling;
+- ACK generation, RTT estimation, loss detection, PTO, retransmission,
+  NewReno, CUBIC, pacing, and ECN validation;
+- anti-amplification, authenticated address tokens, path challenge/response,
+  NAT rebinding, active migration, and connection-ID rotation;
+- IPv4 and IPv6 UDP operation, QUIC DATAGRAM, path statistics, and opt-in qlog;
+  and
+- DPLPMTUD probes that keep packets below the validated path MTU without
+  relying on IP fragmentation.
 
-The worker multiplexes stream identifiers internally, retries only backend
-send results that report flow-control or queue pressure, and applies one
-monotonic deadline per stream. A pull waiter receives the next event directly;
-otherwise response data enters a per-stream bounded queue. Filling that queue
-cancels the stream with `ConsumerTooSlow`. Cancellation, connection close, and
-owner termination have fixed cleanup bounds. Backend identities and messages
-remain below the adapter boundary.
+The driver uses monotonic deadlines and bounded command polling. It drains
+bursty handshake datagrams, retransmits after loss or corruption, validates a
+new path before moving application traffic, and discards obsolete packet
+protection keys according to the relevant packet-space and key-update rules.
 
-The server mirrors the same boundary and keeps listener names, connections,
-stream identifiers, handlers, monitors, and backend events private:
+## TLS and resumption
 
-```text
-http3/server.start() / accept() / next_event() / send_chunk()
-    -> http3/internal/server_backend
-    -> http3_internal_server_ffi
-    -> owner-monitored listener worker and request handlers
-    -> quic_h3
-```
+TLS 1.3 handshake messages, extensions, transcript coordination, key schedule,
+PSK binders, QUIC transport parameters, and session-ticket contents are Gleam
+code. The supported packet-protection families are AES-128-GCM,
+AES-256-GCM, and ChaCha20-Poly1305 with the corresponding QUIC header
+protection.
 
-The listener uses a fixed atom pool rather than constructing atoms from user
-input. A monitored worker owns the backend listener and all accepted
-connections. Request data is delivered through a bounded per-stream queue;
-pull waiters receive an event directly when possible. Response chunk calls
-synchronously retain backend pressure. Completed requests are removed from
-worker state, and stop or owner termination releases blocked accept and event
-calls within fixed cleanup bounds.
+Client authentication always validates the certificate path and the DNS or IP
+service identity. A custom CA changes trust anchors but does not disable either
+check. The normal public surface has no insecure verification switch.
 
-Advanced controls reuse those same opaque handles through another internal
-adapter rather than opening a backend escape hatch:
+Session tickets are opaque and encrypted. They bind the verified server name,
+port, ALPN, cipher, QUIC version, and the transport parameters that affect
+0-RTT. Ticket ages are bounded, the server applies a time-windowed anti-replay
+cache, Retry rejects early data, and changed remembered parameters reject
+early data without preventing a safe 1-RTT resumption. Until acceptance is
+known, the public client permits only GET, HEAD, and OPTIONS in early data.
+Rejected early requests are retransmitted after 1-RTT keys become available.
 
-```text
-http3/transport typed connection and stream operations
-    -> http3/internal/transport_backend
-    -> existing client or server FFI worker call
-    -> quic / quic_h3
-```
+## Erlang FFI boundary
 
-HTTP Datagrams have explicit negotiation, payload and queue limits, and one
-pull waiter per stream. Priority, migration, congestion control, ping, MTU,
-and statistics are normalized into public Gleam values. qlog is disabled by
-default and accepts only an explicit typed directory configuration. Session
-tickets are opaque and origin-bound; the adapter retains the verified hostname
-when a resumed connection uses the prior peer address to make genuine 0-RTT
-possible. Early requests are locally restricted to replay-safe methods.
-Client and server accessors create the public opaque transport values through
-a private Gleam external backed by one small internal Erlang FFI module. No
-constructor bridge or backend handle type appears in the compiler-exported
-package interface.
+Only five production Erlang modules exist:
 
-## HTTP data model
+| Module | Responsibility |
+| --- | --- |
+| `http3_internal_transport_ffi` | Wrap already opaque Gleam handles for the public transport facade |
+| `gleam_quic_crypto_ffi` | Runtime hashes, HMAC, secure randomness, X25519, AEAD, and header-protection primitives |
+| `gleam_quic_tls_ffi` | PEM/X.509/key decoding, path and identity validation, signing, verification, and constant-time comparison |
+| `gleam_quic_udp_ffi` | UDP socket ownership, address conversion, ECN ancillary data, and monotonic time |
+| `gleam_quic_qlog_ffi` | Unique trace-file creation and bounded JSON event output |
 
-The bounded client uses the request and response concepts from `gleam/http`.
-Its concrete implementation introduced the `gleam_http` dependency; no
-HTTP/1.1, HTTP/2, or OTP HTTP integration package is included.
+These modules validate Erlang term and binary shapes, catch runtime failures,
+and return closed numeric or typed errors. They do not parse or construct
+QUIC, TLS, HTTP/3, or QPACK wire messages and do not own a protocol state
+machine. qlog serialization formats diagnostic events that have already been
+selected and bounded by Gleam; it does not inspect network packets.
 
-Sharing request and response concepts does not imply HTTP/1.1 or HTTP/2
-support and does not introduce automatic fallback. Multi-protocol selection
-belongs in a separate integration project above this library.
+## Dependency and replacement boundary
 
-Both buffered and streaming bodies are first-class requirements. Buffered
-helpers may collect a stream within explicit limits; streaming APIs retain
-backpressure and make end-of-stream, cancellation, and transport failure
-observable.
+The root package depends on the path package `gleam_quic`, `gleam_http`, and
+`gleam_stdlib`. The native package depends only on `gleam_erlang` and
+`gleam_stdlib`. No external QUIC library, NIF, C library, or alternative
+production backend is selected at runtime.
 
-## Implementation sequence
+Keeping the root adapter remains useful even with one backend: it normalizes
+the lower-level native errors, prevents representation leakage, and lets the
+public API describe HTTP behavior rather than driver machinery. A future
+transport experiment must connect below this boundary and pass the same
+observable behavior suite; it cannot introduce a public raw-handle escape
+hatch.
 
-Bootstrap API work proceeded in dependency order:
+## Resource ownership and shutdown
 
-1. the bounded buffered HTTP/3 client, whose independent interoperability,
-   conformance, and fault-injection phase gate is complete;
-2. streaming request and response bodies with backpressure and cancellation,
-   whose independent interoperability and fault-injection gate is complete;
-3. an HTTP/3 server built on the exercised connection and stream model, whose
-   independent interoperability, lifecycle, and limit gate is complete; and
-4. advanced capabilities exposed through typed, backend-neutral APIs where
-   possible, whose independent Datagram, migration, qlog, and actual 0-RTT
-   interoperability gate is complete.
+Every live resource has one owner:
 
-Native protocol work then proceeds in the dependency order recorded in
-[Roadmap](ROADMAP.md): wire codecs and invariants; TLS and packet protection;
-transport, recovery and paths; HTTP/3 and QPACK; adapter cutover; and complete
-interop, security and performance qualification.
+- a one-shot client owns and closes its connection;
+- a reusable client worker owns its UDP socket and all request streams;
+- a listener worker owns the socket, accepted connections, and request
+  handlers;
+- each blocked call is monitored and has a fixed deadline; and
+- owner termination initiates bounded cancellation and socket cleanup.
 
-Each behavior starts with a failing test and follows the gates in
-[Testing](TESTING.md). No stage is gated on publishing the repository or
-package, creating a tag or release, or changing the package version.
+Peer-controlled lengths, counts, tables, stream windows, queues, capsules,
+datagrams, packet histories, retained keys, terminal entries, timeouts, and
+amplification credit all have explicit bounds. Cleanup tests require process
+and mailbox convergence rather than treating a returned response as sufficient.
 
-## Security boundary
+## Stable and experimental scope
 
-Normal client configuration will always verify certificate chains and hostnames
-by default. Disabling verification is never a convenience flag on the normal
-configuration. A narrowly named, test-only surface may permit it for local
-fixtures, with the unsafe choice visible at the call site.
+Stable v1 implements published QUIC, HTTP/3, QPACK, priority, Extended CONNECT,
+Capsules, and Datagram standards. WebSocket framing, MASQUE, and WebTransport
+are application protocols that can be built above those primitives.
 
-Protocol data is untrusted. The current adapter validates request shape,
-headers, body limits, response limits, status ordering, and backend event
-shapes before constructing public values. Cancellation and shutdown must be
-idempotent and must not leave unowned backend processes or streams.
+Internet-Drafts such as WebTransport over HTTP/3, QUIC multipath, ACK
+Frequency, reliable stream reset, extended key update, receive timestamps, and
+the evolving qlog schemas are not silently negotiated by this package. Draft
+work belongs in an explicitly named, revision-pinned experimental package.
 
-HTTP Datagram buffers are bounded even when a Datagram arrives before its
-request head. qlog output is an explicit security-sensitive choice. Resumption
-tickets have no public field or serialization access, are rejected for another
-host or port, and cannot enable a replay-unsafe early request.
-
-## Native backend target
-
-The repository-owned `gleam_quic` implementation lives in
-`packages/gleam_quic`. `http3` will integrate it through the same internal
-adapter and small-FFI boundary and preserve the public HTTP/3 API. Protocol
-state machines and wire formats belong in Gleam; Erlang FFI is restricted to
-UDP, time, randomness, cryptographic operations, and X.509 runtime primitives.
-
-Backend selection is an implementation concern. Compatibility tests are
-written against observable public behavior so the backend can be exchanged
-without asking applications to migrate types or message handling. After
-cutover the external backend can remain an out-of-process test peer, but it
-cannot remain a runtime dependency.
+The complete implementation and evidence contract is recorded in
+[Public v1 gate](V1.md), [Testing](TESTING.md), and the
+[security review](SECURITY_REVIEW.md).

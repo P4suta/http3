@@ -9,54 +9,62 @@ imply a tag, a hosted release, or publication to Hex.
 
 ### Added
 
-- The separate in-repository `gleam_quic` package, beginning with RFC 9000
-  variable-length integer and packet-number reconstruction primitives, QUIC
-  v1/v2 packet headers, all standard transport frames plus DATAGRAM, bounded
-  transport parameters and their published vectors and negative tests.
-- Native HKDF-SHA256, QUIC v1/v2 Initial key derivation, AES-128-GCM payload
-  protection, AES header protection, packet-number encoding, and Retry
-  integrity with RFC 5869, RFC 9001, and RFC 9369 vectors.
-- A public v1 completion contract covering the native QUIC/TLS/HTTP/3 scope,
-  standards baseline, draft policy, FFI boundary, and verification gates.
-- A bounded one-shot HTTP/3 client using `gleam/http` request and response
-  types, secure TLS defaults, explicit request and response limits, and a total
-  timeout.
-- Typed client configuration and normalized request, connection, stream,
-  protocol, timeout, and body-limit errors without exposing backend values.
-- Pure request validation for schemes, hosts, ports, methods, targets, HTTP/3
-  header rules, content length, and byte-aligned bounded bodies before network
-  work begins.
-- Real-UDP loopback coverage for POST bodies, headers, multiple response DATA
-  frames, headers-only responses, timeouts, TLS rejection, limits, peer
-  termination, deterministic packet loss and reordering, and cleanup.
-- Recorded public-client interoperability with aioquic 1.3.0 and the resolved
-  backend's RFC 9114 and RFC 9204 compliance suite.
-- A testing guide covering Red-Green-Refactor, regression tests, verification
-  layers, fixed timeouts, resource cleanup, and reproducible performance work.
-- Reusable streaming client connections with multiplexed request streams,
-  pull-based bounded response events, synchronous producer pressure,
-  cancellation, fixed deadlines, and deterministic cleanup.
-- A bounded and streaming HTTP/3 server with opaque listener and request
-  values, pull-based request bodies, synchronous response chunks, independent
-  request and response limits, and idempotent shutdown.
-- Recorded streaming-client and server interoperability with aioquic 1.3.0.
-- Typed advanced transport controls for HTTP Datagrams, RFC 9218 priority,
-  migration, replay-safe 0-RTT and origin-bound tickets, qlog, congestion
-  control, ping, MTU, and connection and path statistics.
-- Recorded independent aioquic 1.3.0 interoperability for Datagrams, migration,
-  qlog, and an actual request sent before handshake completion.
-- Reproducible public-API benchmark, controlled load, and sustained soak tasks
-  with bounded cleanup, process and mailbox convergence, environment metadata,
-  and retained raw results.
+- A repository-owned live UDP QUIC v1/v2 core with authenticated compatible
+  version negotiation, frames, transport parameters, flow control, recovery,
+  NewReno, CUBIC, pacing, ECN, anti-amplification, tokens, connection IDs,
+  stateless reset, IPv4/IPv6, PMTU discovery, rebinding, and active migration.
+- A native TLS 1.3 coordinator with certificate/path/identity authentication,
+  AES-GCM and ChaCha20-Poly1305 packet protection, Retry, key updates,
+  encrypted origin-bound tickets, resumption, replay-constrained 0-RTT, and
+  rejection fallback.
+- Native RFC 9114 HTTP/3 and RFC 9204 QPACK client/server sessions, including
+  informational responses, trailers, server push, GOAWAY, graceful drain,
+  dynamic-table feedback, blocked-stream limits, and Huffman coding.
+- Typed RFC 9218 priority, Extended CONNECT, bounded Capsules, associated HTTP
+  Datagrams, qlog, keepalive, congestion selection, and connection/path
+  statistics.
+- Bounded one-shot and reusable streaming public clients and servers with
+  opaque handles, synchronous backpressure, pull events, cancellation,
+  independent body/queue limits, total deadlines, SNI certificate selection,
+  and deterministic cleanup.
+- Reproducible 10,000-case property and parser-fuzz runners, retained fuzz
+  seeds, deterministic real-UDP fault injection, and RFC/vector/negative
+  conformance tests.
+- A hermetic bidirectional interoperability runner for hash-locked aioquic
+  1.3.0 and module-pinned quic-go 0.61.0, including explicit QUIC v1/v2,
+  RFC 9368, Datagram, migration, qlog, resumption, and observed 0-RTT.
+- Fixed benchmark, 32-connection load, and 160,000-stream soak workloads with
+  body verification, bounded cleanup, process/mailbox convergence,
+  environment metadata, and retained native-core raw results.
+- A completed public v1 contract, architecture, testing record, and
+  pre-publication security review.
 
 ### Changed
 
-- Reclassified the four completed external-backend phases as the bootstrap API
-  rather than public v1, and made native-backend cutover a publication gate.
-- Clarified the HTTP/3-only scope, client-first implementation order, backend
-  boundary, and capability-based rather than publication-based milestones.
-- Confined advanced-value construction to a private internal FFI bridge and
-  added a compiler-interface audit that rejects leaked backend handle types.
+- Replaced the external Erlang QUIC backend with the local `gleam_quic` path
+  package and removed all external QUIC production dependencies and runtime
+  calls.
+- Restricted production Erlang FFI to opaque wrapping, UDP/time, runtime
+  cryptography/X.509, and qlog file I/O; all wire protocols and state machines
+  are Gleam code.
+- Completed and requalified every roadmap phase on the native backend while
+  keeping publication, tags, releases, and the metadata version separate.
+- Aligned the runtime matrix with Gleam 1.18's supported OTP 28/29 range and
+  verified both root and native suites at the lower bound.
+- Expanded `mise run check` with native-core checks, compiler-interface
+  auditing, pinned workflow validation, shell formatting/linting, spelling,
+  and REUSE compliance.
+
+### Fixed
+
+- Authenticated QUIC Version Negotiation and rejected downgrade or inconsistent
+  compatible-version information.
+- Drained bursty handshake UDP input without command-path polling latency.
+- Bounded terminal stream state and isolated qlog files per connection.
+- Preserved resumption across Retry while correctly rejecting early data and
+  waiting for 1-RTT before a request when no viable early key exists.
+- Accepted peer zero-length source connection IDs and order-independent reset
+  tokens required by independent QUIC implementations.
 
 ## 0.1.0 - 2026-08-23
 
