@@ -9,6 +9,7 @@
     checkpoint/1,
     await_task/1,
     new_signal/0,
+    qlog_event_count/2,
     release_signal/1,
     repeated_bytes/1,
     server_credentials/0,
@@ -34,6 +35,19 @@ with_qlog_directory(Fun) when is_function(Fun, 1) ->
     after
         _ = file:del_dir_r(Directory)
     end.
+
+-spec qlog_event_count(binary(), binary()) -> non_neg_integer().
+qlog_event_count(Directory, EventName)
+    when is_binary(Directory), is_binary(EventName) ->
+    Pattern = <<"\"name\":\"", EventName/binary, "\"">>,
+    Files = filelib:wildcard(filename:join(binary_to_list(Directory), "*.qlog")),
+    lists:sum([
+        case file:read_file(File) of
+            {ok, Contents} -> length(binary:matches(Contents, Pattern));
+            {error, _Reason} -> 0
+        end
+     || File <- Files
+    ]).
 
 -spec start_task(fun(() -> term())) -> tuple().
 start_task(Fun) when is_function(Fun, 0) ->

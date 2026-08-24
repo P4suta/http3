@@ -106,6 +106,10 @@ fn with_reordering_proxy_ffi(
 @external(erlang, "http3_test_ffi", "with_qlog_directory")
 pub fn with_qlog_directory(run: fn(String) -> result) -> #(result, Int)
 
+/// Count exact qlog event names across all trace files in a fixture directory.
+@external(erlang, "http3_test_ffi", "qlog_event_count")
+pub fn qlog_event_count(directory: String, event_name: String) -> Int
+
 /// Race two receivers, cancel the blocked one, and return both outcomes.
 @external(erlang, "http3_test_ffi", "concurrent_next_events")
 pub fn concurrent_next_events(

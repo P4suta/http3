@@ -680,9 +680,16 @@ fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
     _, _ ->
       case client_connection.pmtu_discovery_complete(worker.connection) {
         True -> Ok(Worker(..worker, next_pmtu_probe_milliseconds: 0))
-        False ->
+        False -> {
+          let before = client_connection.stats(worker.connection)
           client_connection.probe_path_mtu(worker.connection, now)
           |> result.map(fn(connection) {
+            record_qlog_io(
+              worker.qlog_writer,
+              before,
+              client_connection.stats(connection),
+              now,
+            )
             Worker(
               ..worker,
               connection: connection,
@@ -691,6 +698,7 @@ fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
             )
           })
           |> result.map_error(map_connection_error)
+        }
       }
   }
 }
@@ -715,12 +723,47 @@ fn maybe_queue_keepalive(worker: Worker, now: Int) -> Worker {
 }
 
 fn loop_after_network(worker: Worker) -> Nil {
+  let before = client_connection.stats(worker.connection)
   case client_connection.pump(worker.connection, network_poll_milliseconds) {
-    Ok(connection) ->
+    Ok(connection) -> {
+      record_qlog_io(
+        worker.qlog_writer,
+        before,
+        client_connection.stats(connection),
+        udp.monotonic_millisecond(),
+      )
       Worker(..worker, connection: connection)
       |> retry_pending_sends
       |> loop
+    }
     Error(error) -> terminate_with_error(worker, map_connection_error(error))
+  }
+}
+
+fn record_qlog_io(
+  writer: Option(qlog.Writer),
+  before: client_connection.Stats,
+  after: client_connection.Stats,
+  now: Int,
+) -> Nil {
+  case writer {
+    None -> Nil
+    Some(writer) -> {
+      let client_connection.Stats(
+        before_received,
+        before_sent,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+      ) = before
+      let client_connection.Stats(after_received, after_sent, _, _, _, _, _, _) =
+        after
+      qlog.datagrams_received(writer, now, after_received - before_received)
+      qlog.datagrams_sent(writer, now, after_sent - before_sent)
+    }
   }
 }
 

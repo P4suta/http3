@@ -321,6 +321,7 @@ type CandidatePath {
 type PeerState {
   PeerState(
     connection: server_connection.State,
+    qlog_writer: Option(qlog.Writer),
     next_keepalive_milliseconds: Int,
     next_pmtu_probe_milliseconds: Int,
     candidate_path: Option(CandidatePath),
@@ -355,7 +356,7 @@ type Worker {
     response_body_limit: Int,
     stream_buffer_limit: Int,
     keepalive_milliseconds: Int,
-    qlog_writer: Option(qlog.Writer),
+    qlog_directory: String,
   )
 }
 
@@ -724,33 +725,15 @@ fn initialise(
       anti_replay.new(replay_window_milliseconds, replay_cache_capacity)
       |> result.replace_error(StartFailed),
     )
-    use qlog_writer <- result.try(
-      open_qlog(qlog_directory) |> result.replace_error(StartFailed),
+    use Nil <- result.try(
+      validate_qlog_directory(qlog_directory)
+      |> result.replace_error(StartFailed),
     )
-    Ok(#(
-      socket,
-      bound_port,
-      ticket_key,
-      address_token_key,
-      replay_cache,
-      qlog_writer,
-    ))
+    Ok(#(socket, bound_port, ticket_key, address_token_key, replay_cache))
   }
   case startup {
     Error(error) -> process.send(bootstrap, Error(error))
-    Ok(#(
-      socket,
-      bound_port,
-      ticket_key,
-      address_token_key,
-      replay_cache,
-      qlog_writer,
-    )) -> {
-      case qlog_writer {
-        Some(writer) ->
-          qlog.server_listening(writer, udp.monotonic_millisecond(), bound_port)
-        None -> Nil
-      }
+    Ok(#(socket, bound_port, ticket_key, address_token_key, replay_cache)) -> {
       let commands = process.new_subject()
       let owner_monitor = process.monitor(owner)
       let selector =
@@ -794,7 +777,7 @@ fn initialise(
         response_body_limit,
         stream_buffer_limit,
         keepalive_milliseconds,
-        qlog_writer,
+        qlog_directory,
       ))
     }
   }
@@ -887,7 +870,7 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
             server_connection.datagrams_available(peer.connection),
             True,
             status != server_connection.NotAttempted,
-            option.is_some(worker.qlog_writer),
+            option.is_some(peer.qlog_writer),
           ))
         })
       process.send(reply, outcome)
@@ -2077,7 +2060,7 @@ fn route_existing(
         }
         Ok(connection) -> {
           let previous_peer = server_connection.peer(peer_state.connection)
-          case worker.qlog_writer {
+          case peer_state.qlog_writer {
             Some(writer) ->
               qlog.datagram_received(writer, now, bit_array.byte_size(datagram))
             None -> Nil
@@ -2207,50 +2190,55 @@ fn accept_connection(
             )
           {
             Error(_) -> worker
-            Ok(connection) -> {
-              case worker.qlog_writer {
-                Some(writer) -> {
-                  qlog.connection_started(writer, now)
-                  qlog.datagram_received(
-                    writer,
-                    now,
-                    bit_array.byte_size(datagram),
-                  )
-                }
-                None -> Nil
-              }
-              let worker =
-                Worker(
-                  ..worker,
-                  connections: dict.insert(
-                    worker.connections,
-                    local_connection_id,
-                    PeerState(
-                      connection,
-                      case worker.keepalive_milliseconds {
-                        0 -> 0
-                        interval -> now + interval
-                      },
-                      now + pmtu_probe_interval_milliseconds,
-                      None,
-                      dict.new(),
-                      dict.new(),
-                      dict.new(),
-                      0,
-                    ),
-                  ),
-                  aliases: case retry_source_connection_id {
-                    Some(_) -> worker.aliases
-                    None ->
-                      dict.insert(
-                        worker.aliases,
-                        original_destination,
-                        local_connection_id,
+            Ok(connection) ->
+              case open_qlog(worker.qlog_directory) {
+                Error(_) -> worker
+                Ok(qlog_writer) -> {
+                  case qlog_writer {
+                    Some(writer) -> {
+                      qlog.connection_started(writer, now)
+                      qlog.datagram_received(
+                        writer,
+                        now,
+                        bit_array.byte_size(datagram),
                       )
-                  },
-                )
-              update_replay_cache(worker, connection)
-            }
+                    }
+                    None -> Nil
+                  }
+                  let worker =
+                    Worker(
+                      ..worker,
+                      connections: dict.insert(
+                        worker.connections,
+                        local_connection_id,
+                        PeerState(
+                          connection,
+                          qlog_writer,
+                          case worker.keepalive_milliseconds {
+                            0 -> 0
+                            interval -> now + interval
+                          },
+                          now + pmtu_probe_interval_milliseconds,
+                          None,
+                          dict.new(),
+                          dict.new(),
+                          dict.new(),
+                          0,
+                        ),
+                      ),
+                      aliases: case retry_source_connection_id {
+                        Some(_) -> worker.aliases
+                        None ->
+                          dict.insert(
+                            worker.aliases,
+                            original_destination,
+                            local_connection_id,
+                          )
+                      },
+                    )
+                  update_replay_cache(worker, connection)
+                }
+              }
           }
         }
       }
@@ -2491,7 +2479,7 @@ fn send_pmtu_probe(
       {
         Error(_) -> fail_connection(worker, connection_id, ConnectionClosed)
         Ok(Nil) -> {
-          case worker.qlog_writer {
+          case peer.qlog_writer {
             Some(writer) ->
               qlog.datagram_sent(writer, now, bit_array.byte_size(bytes))
             None -> Nil
@@ -2579,7 +2567,7 @@ fn flush_connection(
                 Ok(Nil) -> {
                   let peer =
                     record_candidate_send(peer, bit_array.byte_size(bytes))
-                  case worker.qlog_writer {
+                  case peer.qlog_writer {
                     Some(writer) ->
                       qlog.datagram_sent(
                         writer,
@@ -2742,7 +2730,7 @@ fn commit_candidate_path(worker: Worker, connection_id: BitArray) -> Worker {
     Ok(PeerState(candidate_path: None, ..)) -> worker
     Ok(peer) -> {
       let assert Some(CandidatePath(endpoint, _, _)) = peer.candidate_path
-      case worker.qlog_writer {
+      case peer.qlog_writer {
         Some(writer) -> qlog.path_updated(writer, udp.monotonic_millisecond())
         None -> Nil
       }
@@ -3549,6 +3537,7 @@ fn fail_connection(
     Ok(peer) -> {
       let worker = fail_request_ids(worker, dict.values(peer.requests), error)
       let worker = fail_push_ids(worker, dict.values(peer.pushes), error)
+      close_qlog(peer.qlog_writer, udp.monotonic_millisecond())
       Worker(
         ..worker,
         connections: dict.delete(worker.connections, connection_id),
@@ -3661,16 +3650,15 @@ fn shutdown(worker: Worker, reason: String) -> Nil {
     udp.monotonic_millisecond(),
     reason,
   )
-  case worker.qlog_writer {
-    Some(writer) -> {
-      qlog.connection_closed(writer, udp.monotonic_millisecond())
-      let _ = qlog.close(writer)
-      Nil
-    }
-    None -> Nil
-  }
   let _ = udp.close(worker.socket)
   Nil
+}
+
+fn validate_qlog_directory(directory: String) -> Result(Nil, qlog.Error) {
+  case directory {
+    "" -> Ok(Nil)
+    _ -> qlog.validate_directory(directory)
+  }
 }
 
 fn open_qlog(directory: String) -> Result(Option(qlog.Writer), qlog.Error) {
@@ -3712,8 +3700,20 @@ fn close_connections(
         }
         _ -> Nil
       }
+      close_qlog(peer.qlog_writer, now)
       close_connections(socket, rest, now, reason)
     }
+  }
+}
+
+fn close_qlog(writer: Option(qlog.Writer), now: Int) -> Nil {
+  case writer {
+    Some(writer) -> {
+      qlog.connection_closed(writer, now)
+      let _ = qlog.close(writer)
+      Nil
+    }
+    None -> Nil
   }
 }
 

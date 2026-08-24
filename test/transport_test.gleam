@@ -292,9 +292,73 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
 
       http3_test_support.await_task(client_task)
       assert server.stop(listener) == Ok(server.Stopped)
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:connection_started",
+        )
+        == 2
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:udp_datagrams_sent",
+        )
+        > 0
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:udp_datagrams_received",
+        )
+        > 0
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:connection_closed",
+        )
+        == 2
     })
 
   assert qlog_files > 0
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_qlog_uses_one_trace_per_connection_test() -> Nil {
+  let #(_, qlog_files) =
+    http3_test_support.with_qlog_directory(fn(qlog_directory) {
+      let #(certificate, private_key, ca_certificate) =
+        http3_test_support.server_credentials()
+      let qlog = transport.qlog(qlog_directory) |> should.be_ok
+      let listener =
+        server.new(certificate, private_key)
+        |> should.be_ok
+        |> server.with_qlog(qlog)
+        |> server.start
+        |> should.be_ok
+      let port = server.port(listener) |> should.be_ok
+
+      exercise_qlog_connection(
+        listener: listener,
+        port: port,
+        ca_certificate: ca_certificate,
+        path: "/qlog-one",
+      )
+      exercise_qlog_connection(
+        listener: listener,
+        port: port,
+        ca_certificate: ca_certificate,
+        path: "/qlog-two",
+      )
+
+      assert server.stop(listener) == Ok(server.Stopped)
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:connection_started",
+        )
+        == 2
+      assert http3_test_support.qlog_event_count(
+          qlog_directory,
+          "quic:connection_closed",
+        )
+        == 2
+    })
+
+  assert qlog_files == 2
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -469,6 +533,27 @@ fn acquire_ticket(
     |> should.be_ok
   assert client.close(connection) == Ok(client.Closed)
   ticket
+}
+
+fn exercise_qlog_connection(
+  listener listener: server.Listener,
+  port port: Int,
+  ca_certificate ca_certificate: BitArray,
+  path path: String,
+) -> Nil {
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, path))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == path
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  server.respond(incoming, 204, [], <<>>) |> should.be_ok
+  assert receive_response(stream) == <<>>
+  assert client.close(connection) == Ok(client.Closed)
 }
 
 fn advanced_client(

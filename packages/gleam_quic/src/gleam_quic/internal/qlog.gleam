@@ -29,10 +29,28 @@ fn raw_event(
   event: Int,
   relative_milliseconds: Int,
   value: Int,
+  auxiliary: Int,
 ) -> Result(Nil, Int)
 
 @external(erlang, "gleam_quic_qlog_ffi", "close")
 fn raw_close(handle: Pid) -> Result(Nil, Int)
+
+@external(erlang, "gleam_quic_qlog_ffi", "validate_directory")
+fn raw_validate_directory(directory: String) -> Result(Nil, Int)
+
+/// Verify that a qlog directory can be created and written without keeping a
+/// trace file open.
+pub fn validate_directory(directory: String) -> Result(Nil, Error) {
+  case directory == "" {
+    True -> Error(InvalidDirectory)
+    False ->
+      case raw_validate_directory(directory) {
+        Ok(Nil) -> Ok(Nil)
+        Error(1) -> Error(InvalidDirectory)
+        Error(error) -> Error(OpenFailed(error))
+      }
+  }
+}
 
 /// Open a qlog JSON Text Sequence in an explicitly selected directory.
 pub fn open(
@@ -57,7 +75,7 @@ pub fn open(
 
 /// Record that a client attempted or a server accepted a connection.
 pub fn connection_started(writer: Writer, now_milliseconds: Int) -> Nil {
-  write(writer, 1, now_milliseconds, 0)
+  write(writer, 1, now_milliseconds, 0, 0)
 }
 
 /// Record one received UDP datagram without retaining payload data.
@@ -66,31 +84,46 @@ pub fn datagram_received(
   now_milliseconds: Int,
   bytes: Int,
 ) -> Nil {
-  write(writer, 2, now_milliseconds, bytes)
+  write(writer, 2, now_milliseconds, 1, bytes)
 }
 
 /// Record one sent UDP datagram without retaining payload data.
 pub fn datagram_sent(writer: Writer, now_milliseconds: Int, bytes: Int) -> Nil {
-  write(writer, 3, now_milliseconds, bytes)
+  write(writer, 3, now_milliseconds, 1, bytes)
+}
+
+/// Record a received UDP batch when only the datagram count is available.
+pub fn datagrams_received(
+  writer: Writer,
+  now_milliseconds: Int,
+  count: Int,
+) -> Nil {
+  case count > 0 {
+    True -> write(writer, 2, now_milliseconds, count, 0)
+    False -> Nil
+  }
+}
+
+/// Record a sent UDP batch when only the datagram count is available.
+pub fn datagrams_sent(
+  writer: Writer,
+  now_milliseconds: Int,
+  count: Int,
+) -> Nil {
+  case count > 0 {
+    True -> write(writer, 3, now_milliseconds, count, 0)
+    False -> Nil
+  }
 }
 
 /// Record an authenticated path migration or NAT rebinding.
 pub fn path_updated(writer: Writer, now_milliseconds: Int) -> Nil {
-  write(writer, 4, now_milliseconds, 0)
+  write(writer, 4, now_milliseconds, 0, 0)
 }
 
 /// Record local connection shutdown.
 pub fn connection_closed(writer: Writer, now_milliseconds: Int) -> Nil {
-  write(writer, 5, now_milliseconds, 0)
-}
-
-/// Record that a server UDP listener is ready.
-pub fn server_listening(
-  writer: Writer,
-  now_milliseconds: Int,
-  port: Int,
-) -> Nil {
-  write(writer, 6, now_milliseconds, port)
+  write(writer, 5, now_milliseconds, 0, 0)
 }
 
 /// Flush and close the trace idempotently.
@@ -101,11 +134,18 @@ pub fn close(writer: Writer) -> Result(Nil, Error) {
   }
 }
 
-fn write(writer: Writer, event: Int, now_milliseconds: Int, value: Int) -> Nil {
+fn write(
+  writer: Writer,
+  event: Int,
+  now_milliseconds: Int,
+  value: Int,
+  auxiliary: Int,
+) -> Nil {
   let relative = case now_milliseconds >= writer.epoch_milliseconds {
     True -> now_milliseconds - writer.epoch_milliseconds
     False -> 0
   }
-  let _diagnostic_result = raw_event(writer.handle, event, relative, value)
+  let _diagnostic_result =
+    raw_event(writer.handle, event, relative, value, auxiliary)
   Nil
 }
