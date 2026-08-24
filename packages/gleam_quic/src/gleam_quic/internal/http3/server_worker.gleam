@@ -36,6 +36,8 @@ const network_poll_milliseconds = 10
 
 const worker_reply_grace_milliseconds = 100
 
+const pmtu_probe_interval_milliseconds = 50
+
 const maximum_connections = 1024
 
 const maximum_pending_requests = 1024
@@ -320,6 +322,7 @@ type PeerState {
   PeerState(
     connection: server_connection.State,
     next_keepalive_milliseconds: Int,
+    next_pmtu_probe_milliseconds: Int,
     candidate_path: Option(CandidatePath),
     requests: Dict(Int, Int),
     pushes: Dict(Int, Int),
@@ -2228,6 +2231,7 @@ fn accept_connection(
                         0 -> 0
                         interval -> now + interval
                       },
+                      now + pmtu_probe_interval_milliseconds,
                       None,
                       dict.new(),
                       dict.new(),
@@ -2409,19 +2413,110 @@ fn tick_and_flush_entries(
       let worker = case server_connection.tick(peer.connection, now) {
         Error(error) ->
           fail_connection(worker, connection_id, map_connection_error(error))
-        Ok(connection) ->
-          flush_connection(
+        Ok(connection) -> {
+          let worker =
             put_peer(
               worker,
               connection_id,
               PeerState(..peer, connection: connection),
-            ),
+            )
+            |> maybe_probe_connection(connection_id, now)
+          flush_connection(
+            worker,
             connection_id,
             maximum_packets_per_connection_flush,
             now,
           )
+        }
       }
       tick_and_flush_entries(worker, rest, now)
+    }
+  }
+}
+
+fn maybe_probe_connection(
+  worker: Worker,
+  connection_id: BitArray,
+  now: Int,
+) -> Worker {
+  case dict.get(worker.connections, connection_id) {
+    Error(_) -> worker
+    Ok(PeerState(candidate_path: Some(_), ..)) -> worker
+    Ok(peer) if peer.next_pmtu_probe_milliseconds == 0 -> worker
+    Ok(peer) if now < peer.next_pmtu_probe_milliseconds -> worker
+    Ok(peer) ->
+      case server_connection.pmtu_discovery_complete(peer.connection) {
+        True ->
+          put_peer(
+            worker,
+            connection_id,
+            PeerState(..peer, next_pmtu_probe_milliseconds: 0),
+          )
+        False -> send_pmtu_probe(worker, connection_id, peer, now)
+      }
+  }
+}
+
+fn send_pmtu_probe(
+  worker: Worker,
+  connection_id: BitArray,
+  peer: PeerState,
+  now: Int,
+) -> Worker {
+  case server_connection.prepare_pmtu_probe(peer.connection, now) {
+    Error(error) ->
+      case is_send_pressure(error) {
+        True -> worker
+        False ->
+          fail_connection(worker, connection_id, map_connection_error(error))
+      }
+    Ok(None) ->
+      put_peer(
+        worker,
+        connection_id,
+        PeerState(
+          ..peer,
+          next_pmtu_probe_milliseconds: now + pmtu_probe_interval_milliseconds,
+        ),
+      )
+    Ok(Some(prepared)) -> {
+      let bytes = server_connection.prepared_bytes(prepared)
+      case
+        udp.send(
+          worker.socket,
+          server_connection.peer(peer.connection),
+          bytes,
+          ecn.NotEct,
+        )
+      {
+        Error(_) -> fail_connection(worker, connection_id, ConnectionClosed)
+        Ok(Nil) -> {
+          case worker.qlog_writer {
+            Some(writer) ->
+              qlog.datagram_sent(writer, now, bit_array.byte_size(bytes))
+            None -> Nil
+          }
+          case server_connection.commit_datagram(prepared, ecn.NotEct, now) {
+            Error(error) ->
+              fail_connection(
+                worker,
+                connection_id,
+                map_connection_error(error),
+              )
+            Ok(connection) ->
+              put_peer(
+                worker,
+                connection_id,
+                PeerState(
+                  ..peer,
+                  connection: connection,
+                  next_pmtu_probe_milliseconds: now
+                    + pmtu_probe_interval_milliseconds,
+                ),
+              )
+          }
+        }
+      }
     }
   }
 }
@@ -2657,6 +2752,8 @@ fn commit_candidate_path(worker: Worker, connection_id: BitArray) -> Worker {
         PeerState(
           ..peer,
           connection: server_connection.with_peer(peer.connection, endpoint),
+          next_pmtu_probe_milliseconds: udp.monotonic_millisecond()
+            + pmtu_probe_interval_milliseconds,
           candidate_path: None,
         ),
       )

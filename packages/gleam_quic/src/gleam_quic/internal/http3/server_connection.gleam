@@ -21,7 +21,9 @@ import gleam_quic/internal/udp
 import gleam_quic/transport_parameter
 import gleam_quic/version.{type Version}
 
-const maximum_datagram_frame_bytes = 65_527
+// A 1452-byte UDP payload fits a 1500-byte IPv6 path without IP
+// fragmentation. DPLPMTUD starts at 1200 and confirms every larger size.
+const maximum_datagram_frame_bytes = 1452
 
 const session_ticket_lifetime_seconds = 86_400
 
@@ -591,6 +593,35 @@ pub fn path_mtu(state: State) -> Option(Int) {
     Handshaking(_) -> None
     Established(http3) -> Some(session.path_mtu(http3))
   }
+}
+
+/// Return whether live DPLPMTUD is complete for an established path.
+pub fn pmtu_discovery_complete(state: State) -> Bool {
+  case state.protocol {
+    Handshaking(_) -> False
+    Established(http3) -> session.pmtu_discovery_complete(http3)
+  }
+}
+
+/// Return whether candidate-path authentication is still in progress.
+pub fn path_validation_in_progress(state: State) -> Bool {
+  case state.protocol {
+    Handshaking(_) -> False
+    Established(http3) -> session.path_validation_in_progress(http3)
+  }
+}
+
+/// Prepare one exact-size DPLPMTUD probe on an established path.
+pub fn prepare_pmtu_probe(
+  state: State,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  use http3 <- result.try(require_session(state))
+  session.prepare_pmtu_probe(http3, now_ms)
+  |> result.map(fn(prepared) {
+    option.map(prepared, fn(value) { SessionDatagram(state, value) })
+  })
+  |> result.map_error(SessionFailure)
 }
 
 /// Snapshot listener-owned packet and byte counters.

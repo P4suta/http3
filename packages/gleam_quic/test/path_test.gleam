@@ -49,3 +49,17 @@ pub fn raises_pmtu_on_ack_and_recovers_from_black_hole_test() -> Nil {
   assert next < 1425
   assert pmtu.current(pmtu.black_hole_detected(state)) == 1200
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn resets_discovery_for_a_new_validated_path_test() -> Nil {
+  let assert Ok(state) = pmtu.new(1500)
+  assert !pmtu.discovery_complete(state)
+  let assert Ok(#(state, 1350)) = pmtu.start_probe(state)
+  let assert Ok(state) = pmtu.probe_acked(state, 1350)
+  let state = pmtu.reset_path(state)
+  assert pmtu.current(state) == 1200
+  let assert Ok(#(state, 1350)) = pmtu.start_probe(state)
+  let assert Ok(state) = pmtu.probe_acked(state, 1350)
+  let assert Ok(state) = pmtu.set_peer_maximum(state, 1350)
+  assert pmtu.discovery_complete(state)
+}

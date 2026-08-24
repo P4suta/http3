@@ -100,6 +100,37 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn prepares_and_commits_exact_size_live_pmtu_probe_test() -> Nil {
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(Peers(client, _, now)) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+  assert !connection_state.pmtu_discovery_complete(driver.connection(client))
+  let assert Ok(Some(prepared)) = driver.prepare_pmtu_probe(client, now)
+  assert bit_array.byte_size(driver.prepared_bytes(prepared)) == 1300
+  let assert Ok(client) = driver.commit_datagram(prepared, now)
+  assert driver.prepare_pmtu_probe(client, now + 1) == Ok(None)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_handshake_for_an_ip_literal_without_sni_test() -> Nil {
   let #(client_config, server_config) = tls_configs()
   let client_config = engine.ClientConfig(..client_config, hostname: "::1")
@@ -910,8 +941,8 @@ fn tls_configs_for_version(
     transport_parameter.InitialMaxStreamDataUni(262_144),
     transport_parameter.InitialMaxStreamsBidi(100),
     transport_parameter.InitialMaxStreamsUni(100),
-    transport_parameter.MaxUdpPayloadSize(1200),
-    transport_parameter.MaxDatagramFrameSize(1200),
+    transport_parameter.MaxUdpPayloadSize(1400),
+    transport_parameter.MaxDatagramFrameSize(1400),
   ]
   #(
     engine.ClientConfig(

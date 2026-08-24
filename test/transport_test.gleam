@@ -246,9 +246,7 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
         == Ok(transport.Capabilities(True, True, False, True))
       assert transport.maximum_datagram_size(stream_transport) |> should.be_ok
         > 0
-      assert transport.stream_maximum_transmission_unit(stream_transport)
-        |> should.be_ok
-        >= 1200
+      assert await_stream_mtu(stream_transport, 100) > 1200
       let transport.PathStats(_, _, _, _, window, in_flight, _, _) =
         transport.stream_path_stats(stream_transport) |> should.be_ok
       assert window > 0
@@ -514,9 +512,7 @@ fn advanced_client(
   transport.set_congestion_control(connection_transport, transport.Cubic)
   |> should.be_ok
   transport.ping(connection_transport) |> should.be_ok
-  assert transport.maximum_transmission_unit(connection_transport)
-    |> should.be_ok
-    >= 1200
+  assert await_connection_mtu(connection_transport, 100) > 1200
   let transport.PathStats(_, _, _, _, window, in_flight, _, _) =
     transport.path_stats(connection_transport) |> should.be_ok
   assert window > 0
@@ -639,6 +635,32 @@ fn await_received_packets(
     False -> {
       assert attempts > 0
       await_received_packets(connection, baseline, attempts - 1)
+    }
+  }
+}
+
+fn await_connection_mtu(
+  connection: transport.Connection,
+  attempts: Int,
+) -> Int {
+  let current = transport.maximum_transmission_unit(connection) |> should.be_ok
+  case current > 1200 {
+    True -> current
+    False -> {
+      assert attempts > 0
+      await_connection_mtu(connection, attempts - 1)
+    }
+  }
+}
+
+fn await_stream_mtu(stream: transport.Stream, attempts: Int) -> Int {
+  let current =
+    transport.stream_maximum_transmission_unit(stream) |> should.be_ok
+  case current > 1200 {
+    True -> current
+    False -> {
+      assert attempts > 0
+      await_stream_mtu(stream, attempts - 1)
     }
   }
 }

@@ -33,6 +33,8 @@ import gleam_quic/transport_parameter
 import gleam_quic/varint
 import gleam_quic/version.{type Version}
 
+const maximum_short_packet_overhead = 32
+
 const timer_granularity_milliseconds = 1
 
 const maximum_crypto_buffer_bytes = 1_048_576
@@ -904,6 +906,21 @@ pub fn path_mtu(state: State) -> Int {
   pmtu.current(state.pmtu)
 }
 
+/// Return whether DPLPMTUD has reached the authenticated path ceiling.
+pub fn pmtu_discovery_complete(state: State) -> Bool {
+  pmtu.discovery_complete(state.pmtu)
+}
+
+/// Return the next application packet number for exact-size runtime probes.
+pub fn next_application_packet_number(state: State) -> Int {
+  next_packet_number_for_level(state, engine.OneRtt)
+}
+
+/// Return whether candidate-path validation is still in progress.
+pub fn path_validation_in_progress(state: State) -> Bool {
+  path_validation.phase(state.path_validator) == path_validation.Validating
+}
+
 /// Return whether the peer permits client-selected address migration.
 pub fn active_migration_available(state: State) -> Bool {
   state.phase == Established && !state.peer_disabled_active_migration
@@ -1139,12 +1156,17 @@ pub fn stream_buffered_send_bytes(
   }
 }
 
-/// Return the largest raw QUIC DATAGRAM payload fitting the peer's frame
-/// limit. HTTP/3 callers must additionally subtract their quarter-stream ID.
+/// Return the largest raw QUIC DATAGRAM payload fitting both the peer's frame
+/// limit and the currently confirmed path MTU. HTTP/3 callers must additionally
+/// subtract their quarter-stream ID.
 pub fn maximum_datagram_data_size(state: State) -> Result(Int, Error) {
   case state.peer_maximum_datagram_frame_size {
     0 -> Error(DatagramNotNegotiated)
-    limit -> datagram_payload_for_frame_limit(limit, limit - 2)
+    limit -> {
+      let path_frame_limit = path_mtu(state) - maximum_short_packet_overhead
+      let frame_limit = minimum(limit, path_frame_limit)
+      datagram_payload_for_frame_limit(frame_limit, frame_limit - 2)
+    }
   }
 }
 
@@ -1155,9 +1177,14 @@ pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
     frame.encode(frame.Datagram(data)) |> map_frame_result,
   )
   let frame_size = bit_array.byte_size(encoded)
+  let frame_limit =
+    minimum(
+      state.peer_maximum_datagram_frame_size,
+      path_mtu(state) - maximum_short_packet_overhead,
+    )
   case state.peer_maximum_datagram_frame_size, state.phase {
     0, _ -> Error(DatagramNotNegotiated)
-    limit, _ if frame_size > limit -> Error(DatagramTooLarge(limit))
+    _, _ if frame_size > frame_limit -> Error(DatagramTooLarge(frame_limit))
     _, Established -> Ok(queue_application_frame(state, frame.Datagram(data)))
     _, Handshaking -> queue_early_datagram(state, data)
     _, _ -> Error(ConnectionUnavailable)
@@ -3403,7 +3430,11 @@ fn receive_path_response(
       {
         Ok(validator) ->
           Ok(
-            State(..state, path_validator: validator)
+            State(
+              ..state,
+              path_validator: validator,
+              pmtu: pmtu.reset_path(state.pmtu),
+            )
             |> add_event(PathValidated),
           )
         Error(path_validation.ChallengeMismatch) -> Ok(state)

@@ -9,6 +9,7 @@ import gleam_quic/frame
 import gleam_quic/internal/connection_state
 import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
+import gleam_quic/internal/pmtu
 import gleam_quic/internal/retry_integrity
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/wire_packet
@@ -179,6 +180,35 @@ pub fn prepare_datagram(
         maximum_frame_data_bytes,
         now_ms,
       )
+  }
+}
+
+/// Prepare one exact-size DPLPMTUD probe on an established path.
+///
+/// `None` means a probe is already outstanding or discovery has reached its
+/// current ceiling. The caller commits the returned datagram only after UDP
+/// reports a successful send, exactly like `prepare_datagram`.
+pub fn prepare_pmtu_probe(
+  state: State,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  case connection_state.start_pmtu_probe(state.connection) {
+    Error(connection_state.PmtuFailure(pmtu.ProbeAlreadyOutstanding))
+    | Error(connection_state.PmtuFailure(pmtu.NoLargerProbe)) -> Ok(None)
+    Error(error) -> Error(ConnectionFailure(error))
+    Ok(#(connection, target_size)) -> {
+      let state = State(..state, connection: connection)
+      let packet_number =
+        connection_state.next_application_packet_number(connection)
+      protect_pmtu_probe(
+        state,
+        packet_number,
+        target_size,
+        int.max(target_size - 64, 1),
+        maximum_padding_adjustments,
+        now_ms,
+      )
+    }
   }
 }
 
@@ -421,6 +451,56 @@ fn protect_padded_initial(
             state,
             packet_number,
             frames,
+            adjusted,
+            attempts - 1,
+            now_ms,
+          )
+      }
+    }
+  }
+}
+
+fn protect_pmtu_probe(
+  state: State,
+  packet_number: Int,
+  target_size: Int,
+  padding: Int,
+  attempts: Int,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  let frames = [frame.Ping, frame.Padding(padding)]
+  use #(connection, bytes) <- result.try(
+    connection_state.protect_short_packet(
+      state.connection,
+      state.peer_connection_id,
+      packet_number,
+      False,
+      frames,
+      now_ms,
+    )
+    |> map_connection_result,
+  )
+  let size = bit_array.byte_size(bytes)
+  case size, attempts {
+    value, _ if value == target_size ->
+      make_prepared(
+        State(..state, connection: connection),
+        engine.OneRtt,
+        packet_number,
+        frames,
+        bytes,
+        now_ms,
+      )
+    _, 0 -> Error(InvalidInput)
+    value, _ -> {
+      let adjusted = padding + target_size - value
+      case adjusted < 1 {
+        True -> Error(InvalidInput)
+        False ->
+          protect_pmtu_probe(
+            state,
+            packet_number,
+            target_size,
             adjusted,
             attempts - 1,
             now_ms,

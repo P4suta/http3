@@ -9,6 +9,7 @@ pub opaque type State {
   State(
     current: Int,
     configured_ceiling: Int,
+    peer_ceiling: Int,
     upper_bound: Int,
     probe: Option(Int),
   )
@@ -31,6 +32,7 @@ pub fn new(maximum_datagram_size: Int) -> Result(State, Error) {
     True ->
       Ok(State(
         minimum_quic_datagram_size,
+        maximum_datagram_size,
         maximum_datagram_size,
         maximum_datagram_size,
         None,
@@ -81,6 +83,17 @@ pub fn black_hole_detected(state: State) -> State {
   State(..state, current: minimum_quic_datagram_size, probe: None)
 }
 
+/// Reset discovery after a validated path change while retaining both peers'
+/// authenticated ceilings.
+pub fn reset_path(state: State) -> State {
+  State(
+    ..state,
+    current: minimum_quic_datagram_size,
+    upper_bound: minimum(state.configured_ceiling, state.peer_ceiling),
+    probe: None,
+  )
+}
+
 /// Return the largest size confirmed without fragmentation.
 pub fn current(state: State) -> Int {
   state.current
@@ -89,6 +102,11 @@ pub fn current(state: State) -> Int {
 /// Return the exact padded datagram size currently under test.
 pub fn outstanding_probe(state: State) -> Option(Int) {
   state.probe
+}
+
+/// Return whether binary-search discovery has reached its current ceiling.
+pub fn discovery_complete(state: State) -> Bool {
+  state.probe == None && state.upper_bound <= state.current
 }
 
 /// Cap discovery by the peer's authenticated maximum UDP payload size.
@@ -101,7 +119,14 @@ pub fn set_peer_maximum(state: State, maximum: Int) -> Result(State, Error) {
         Some(size) if size > upper_bound -> None
         existing -> existing
       }
-      Ok(State(..state, upper_bound: upper_bound, probe: probe))
+      Ok(
+        State(
+          ..state,
+          peer_ceiling: maximum,
+          upper_bound: upper_bound,
+          probe: probe,
+        ),
+      )
     }
   }
 }

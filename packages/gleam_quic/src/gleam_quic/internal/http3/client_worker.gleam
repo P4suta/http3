@@ -26,6 +26,8 @@ const network_poll_milliseconds = 10
 
 const worker_reply_grace_milliseconds = 100
 
+const pmtu_probe_interval_milliseconds = 50
+
 const request_cancelled_code = 0x10c
 
 // Keep each HTTP DATA frame comfortably below the per-stream retained-send
@@ -278,6 +280,7 @@ type Worker {
     priorities: Dict(Int, #(Int, Bool)),
     keepalive_milliseconds: Int,
     next_keepalive_milliseconds: Int,
+    next_pmtu_probe_milliseconds: Int,
   )
 }
 
@@ -612,36 +615,35 @@ fn initialise(
               port,
             )),
           )
-          loop(
-            Worker(
-              connection,
-              dict.new(),
-              dict.new(),
-              [],
-              None,
-              commands,
-              selector,
-              timeout_milliseconds,
-              stream_buffer_limit,
-              hostname,
-              port,
-              http_datagrams,
-              qlog_writer,
-              option.is_some(resumption_ticket),
-              case resumption_ticket {
-                Some(_) -> Pending
-                None -> NotAttempted
-              },
-              None,
-              None,
-              dict.new(),
-              keepalive_milliseconds,
-              case keepalive_milliseconds {
-                0 -> 0
-                interval -> udp.monotonic_millisecond() + interval
-              },
-            ),
-          )
+          loop(Worker(
+            connection,
+            dict.new(),
+            dict.new(),
+            [],
+            None,
+            commands,
+            selector,
+            timeout_milliseconds,
+            stream_buffer_limit,
+            hostname,
+            port,
+            http_datagrams,
+            qlog_writer,
+            option.is_some(resumption_ticket),
+            case resumption_ticket {
+              Some(_) -> Pending
+              None -> NotAttempted
+            },
+            None,
+            None,
+            dict.new(),
+            keepalive_milliseconds,
+            case keepalive_milliseconds {
+              0 -> 0
+              interval -> udp.monotonic_millisecond() + interval
+            },
+            udp.monotonic_millisecond() + pmtu_probe_interval_milliseconds,
+          ))
         }
       }
   }
@@ -653,14 +655,43 @@ fn loop(worker: Worker) -> Nil {
   let now = udp.monotonic_millisecond()
   let worker = expire_waiters(worker, now)
   let worker = maybe_queue_keepalive(worker, now)
-  case process.selector_receive(worker.selector, within: 0) {
-    Ok(OwnerExited) -> shutdown(worker, "owner exited")
-    Ok(ReceivedCommand(command)) ->
-      case handle_command(worker, command) {
-        Error(Nil) -> Nil
-        Ok(worker) -> loop_after_network(worker)
+  case maybe_probe_path_mtu(worker, now) {
+    Error(error) -> terminate_with_error(worker, error)
+    Ok(worker) ->
+      case process.selector_receive(worker.selector, within: 0) {
+        Ok(OwnerExited) -> shutdown(worker, "owner exited")
+        Ok(ReceivedCommand(command)) ->
+          case handle_command(worker, command) {
+            Error(Nil) -> Nil
+            Ok(worker) -> loop_after_network(worker)
+          }
+        Error(Nil) -> loop_after_network(worker)
       }
-    Error(Nil) -> loop_after_network(worker)
+  }
+}
+
+fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
+  case
+    worker.next_pmtu_probe_milliseconds,
+    client_connection.path_validation_in_progress(worker.connection)
+  {
+    0, _ | _, True -> Ok(worker)
+    deadline, _ if now < deadline -> Ok(worker)
+    _, _ ->
+      case client_connection.pmtu_discovery_complete(worker.connection) {
+        True -> Ok(Worker(..worker, next_pmtu_probe_milliseconds: 0))
+        False ->
+          client_connection.probe_path_mtu(worker.connection, now)
+          |> result.map(fn(connection) {
+            Worker(
+              ..worker,
+              connection: connection,
+              next_pmtu_probe_milliseconds: now
+                + pmtu_probe_interval_milliseconds,
+            )
+          })
+          |> result.map_error(map_connection_error)
+      }
   }
 }
 
@@ -849,11 +880,6 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
           Ok(worker)
         }
         Ok(connection) -> {
-          case worker.qlog_writer {
-            Some(writer) ->
-              qlog.path_updated(writer, udp.monotonic_millisecond())
-            None -> Nil
-          }
           process.send(reply, Ok(Nil))
           Ok(Worker(..worker, connection: connection))
         }
@@ -1583,6 +1609,17 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
         worker,
         ResumptionTicket(worker.hostname, worker.port, ticket),
       )
+    session.TransportEvent(transport.PathValidated) -> {
+      case worker.qlog_writer {
+        Some(writer) -> qlog.path_updated(writer, udp.monotonic_millisecond())
+        None -> Nil
+      }
+      Worker(
+        ..worker,
+        next_pmtu_probe_milliseconds: udp.monotonic_millisecond()
+          + pmtu_probe_interval_milliseconds,
+      )
+    }
     session.TransportEvent(transport.PeerClosed(_, _))
     | session.TransportEvent(transport.StatelessResetReceived) ->
       fail_all_work(worker, ConnectionClosed)

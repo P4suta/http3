@@ -559,6 +559,16 @@ pub fn path_mtu(state: State) -> Int {
   transport.path_mtu(driver.connection(state.quic))
 }
 
+/// Return whether live DPLPMTUD has reached the current path ceiling.
+pub fn pmtu_discovery_complete(state: State) -> Bool {
+  transport.pmtu_discovery_complete(driver.connection(state.quic))
+}
+
+/// Return whether a candidate path is still being authenticated.
+pub fn path_validation_in_progress(state: State) -> Bool {
+  transport.path_validation_in_progress(driver.connection(state.quic))
+}
+
 /// Snapshot the current path.
 pub fn path_snapshot(state: State) -> transport.PathSnapshot {
   transport.path_snapshot(driver.connection(state.quic))
@@ -576,6 +586,18 @@ pub fn prepare_datagram(
   now_ms: Int,
 ) -> Result(Option(PreparedDatagram), Error) {
   case driver.prepare_datagram(state.quic, maximum_frame_data_bytes, now_ms) {
+    Error(error) -> Error(DriverFailure(error))
+    Ok(None) -> Ok(None)
+    Ok(Some(prepared)) -> Ok(Some(PreparedDatagram(state, prepared)))
+  }
+}
+
+/// Prepare one exact-size DPLPMTUD probe without committing recovery state.
+pub fn prepare_pmtu_probe(
+  state: State,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  case driver.prepare_pmtu_probe(state.quic, now_ms) {
     Error(error) -> Error(DriverFailure(error))
     Ok(None) -> Ok(None)
     Ok(Some(prepared)) -> Ok(Some(PreparedDatagram(state, prepared)))

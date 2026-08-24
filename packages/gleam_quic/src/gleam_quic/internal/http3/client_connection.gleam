@@ -27,7 +27,9 @@ const receive_poll_milliseconds = 10
 
 const connection_id_bytes = 8
 
-const maximum_datagram_frame_bytes = 1200
+// A 1452-byte UDP payload fits a 1500-byte IPv6 path without IP
+// fragmentation. DPLPMTUD starts at 1200 and confirms every larger size.
+const maximum_datagram_frame_bytes = 1452
 
 /// Connection policy after public input validation.
 pub type Config {
@@ -254,6 +256,45 @@ pub fn set_congestion_algorithm(
 /// Return the current non-fragmenting QUIC UDP payload size.
 pub fn path_mtu(state: State) -> Int {
   session.path_mtu(state.session)
+}
+
+/// Return whether DPLPMTUD has reached this path's current ceiling.
+pub fn pmtu_discovery_complete(state: State) -> Bool {
+  session.pmtu_discovery_complete(state.session)
+}
+
+/// Return whether an active migration candidate is still being validated.
+pub fn path_validation_in_progress(state: State) -> Bool {
+  session.path_validation_in_progress(state.session)
+}
+
+/// Send and commit at most one exact-size DPLPMTUD probe.
+pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
+  case session.prepare_pmtu_probe(state.session, now) {
+    Error(error) -> Error(Http3OperationFailed("prepare PMTU probe", error))
+    Ok(None) -> Ok(state)
+    Ok(Some(prepared)) -> {
+      let bytes = session.prepared_bytes(prepared)
+      use Nil <- result.try(
+        udp.send(state.socket, state.peer, bytes, ecn.NotEct) |> map_udp_send,
+      )
+      use next <- result.try(
+        session.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) {
+          Http3OperationFailed("commit PMTU probe", error)
+        }),
+      )
+      Ok(
+        State(
+          ..state,
+          session: next,
+          packets_sent: state.packets_sent + 1,
+          data_sent: state.data_sent + bit_array.byte_size(bytes),
+          flushes: state.flushes + 1,
+        ),
+      )
+    }
+  }
 }
 
 /// Snapshot current path diagnostics.
