@@ -12,6 +12,7 @@ import gleam_quic/internal/crypto
 import gleam_quic/internal/driver
 import gleam_quic/internal/ecn
 import gleam_quic/internal/http3/connection_state as http3_state
+import gleam_quic/internal/http3/datagram
 import gleam_quic/internal/http3/header_semantics
 import gleam_quic/internal/http3/message_stream
 import gleam_quic/internal/http3/priority
@@ -26,7 +27,6 @@ import gleam_quic/internal/tls/extension_value
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/udp
 import gleam_quic/packet
-import gleam_quic/varint
 import gleam_quic/version
 
 const network_poll_milliseconds = 10
@@ -47,6 +47,8 @@ const maximum_response_data_chunk_bytes = 65_536
 
 const request_cancelled_code = 0x10c
 
+const request_rejected_code = 0x10b
+
 const excessive_load_code = 0x107
 
 const replay_window_milliseconds = 600_000
@@ -65,12 +67,18 @@ pub opaque type Request {
   Request(listener: Listener, identifier: Int)
 }
 
+/// One listener-owned server push response.
+pub opaque type Push {
+  Push(listener: Listener, identifier: Int)
+}
+
 /// Primitive accepted request data.
 pub type Incoming {
   Incoming(
     request: Request,
     method: String,
     path: String,
+    protocol: Option(String),
     headers: List(#(String, String)),
   )
 }
@@ -88,6 +96,13 @@ pub type StopResult {
   AlreadyStopped
 }
 
+/// Outcome of a GOAWAY-based listener drain.
+pub type DrainResult {
+  Drained
+  Forced
+  AlreadyDrained
+}
+
 /// Listener, connection, request, or bounded-resource failure.
 pub type Error {
   InvalidInput
@@ -101,6 +116,7 @@ pub type Error {
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
   ConcurrentAccept
+  ConcurrentDrain
   ConcurrentReceive
   ResponseAlreadyStarted
   ResponseNotStarted
@@ -108,10 +124,12 @@ pub type Error {
   InvalidContentLength
   InvalidHeaderEncoding
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(Int)
   DatagramBufferExceeded(Int)
   ConcurrentDatagramReceive
   StreamFinished
+  PushCancelled
   CongestionLimited
   BackendFailure(String)
 }
@@ -145,7 +163,37 @@ type Command {
     headers: List(#(String, String)),
     reply: Subject(Result(Nil, Error)),
   )
+  PromisePush(
+    request_id: Int,
+    path: String,
+    headers: List(#(String, String)),
+    reply: Subject(Result(Int, Error)),
+  )
+  SendPushResponse(
+    push_handle_id: Int,
+    status: Int,
+    headers: List(#(String, String)),
+    declared_content_length: Option(Int),
+    reply: Subject(Result(Nil, Error)),
+  )
+  SendPushChunk(
+    push_handle_id: Int,
+    bytes: BitArray,
+    reply: Subject(Result(Nil, Error)),
+    deadline: Int,
+  )
+  FinishPush(push_handle_id: Int, reply: Subject(Result(Nil, Error)))
+  FinishPushWithTrailers(
+    push_handle_id: Int,
+    headers: List(#(String, String)),
+    reply: Subject(Result(Nil, Error)),
+  )
   Stop(reply: Subject(Result(StopResult, Error)))
+  GracefulStop(
+    reply: Subject(Result(DrainResult, Error)),
+    deadline: Int,
+    refine_at: Int,
+  )
   Capabilities(
     request_id: Int,
     reply: Subject(Result(#(Bool, Bool, Bool, Bool), Error)),
@@ -191,6 +239,15 @@ type DatagramWaiter {
   DatagramWaiter(reply: Subject(Result(BitArray, Error)), deadline: Int)
 }
 
+type DrainWaiter {
+  DrainWaiter(
+    reply: Subject(Result(DrainResult, Error)),
+    deadline: Int,
+    refine_at: Int,
+    refined: Bool,
+  )
+}
+
 type PendingSend {
   PendingSend(
     remaining: BitArray,
@@ -205,6 +262,9 @@ type RequestState {
     stream_id: Int,
     method: String,
     path: String,
+    protocol: Option(String),
+    scheme: String,
+    authority: String,
     headers: List(#(String, String)),
     events: List(Event),
     buffered_body_bytes: Int,
@@ -214,6 +274,7 @@ type RequestState {
     buffered_datagram_bytes: Int,
     datagram_waiter: Option(DatagramWaiter),
     pending_send: Option(PendingSend),
+    request_finished: Bool,
     response_started: Bool,
     response_finished: Bool,
     response_body_bytes: Int,
@@ -223,8 +284,28 @@ type RequestState {
   )
 }
 
+type PushState {
+  PushState(
+    connection_id: BitArray,
+    push_id: Int,
+    stream_id: Int,
+    pending_send: Option(PendingSend),
+    response_started: Bool,
+    response_finished: Bool,
+    response_body_bytes: Int,
+    declared_content_length: Option(Int),
+    failure: Option(Error),
+  )
+}
+
 type PeerState {
-  PeerState(connection: server_connection.State, requests: Dict(Int, Int))
+  PeerState(
+    connection: server_connection.State,
+    requests: Dict(Int, Int),
+    pushes: Dict(Int, Int),
+    priorities: Dict(Int, #(Int, Bool)),
+    next_request_stream_id: Int,
+  )
 }
 
 type Worker {
@@ -240,8 +321,11 @@ type Worker {
     aliases: Dict(BitArray, BitArray),
     requests: Dict(Int, RequestState),
     next_request_id: Int,
+    pushes: Dict(Int, PushState),
+    next_push_handle_id: Int,
     pending_requests: List(Int),
     accept_waiter: Option(AcceptWaiter),
+    drain_waiter: Option(DrainWaiter),
     timeout_milliseconds: Int,
     request_body_limit: Int,
     response_body_limit: Int,
@@ -388,6 +472,64 @@ pub fn send_trailers(
   })
 }
 
+/// Promise one same-origin GET and open its server push response stream.
+pub fn promise_push(
+  request: Request,
+  path: String,
+  headers: List(#(String, String)),
+) -> Result(Push, Error) {
+  use identifier <- result.try(
+    call(request.listener, fn(reply) {
+      PromisePush(request.identifier, path, headers, reply)
+    }),
+  )
+  Ok(Push(request.listener, identifier))
+}
+
+/// Queue one final pushed response head.
+pub fn send_push_response(
+  push: Push,
+  status: Int,
+  headers: List(#(String, String)),
+  declared_content_length: Option(Int),
+) -> Result(Nil, Error) {
+  call(push.listener, fn(reply) {
+    SendPushResponse(
+      push.identifier,
+      status,
+      headers,
+      declared_content_length,
+      reply,
+    )
+  })
+}
+
+/// Queue one pushed response chunk with producer backpressure.
+pub fn send_push_chunk(push: Push, bytes: BitArray) -> Result(Nil, Error) {
+  let deadline =
+    udp.monotonic_millisecond() + push.listener.timeout_milliseconds
+  call_with_timeout(
+    push.listener,
+    push.listener.timeout_milliseconds + worker_reply_grace_milliseconds,
+    fn(reply) { SendPushChunk(push.identifier, bytes, reply, deadline) },
+  )
+}
+
+/// Validate pushed response framing and queue FIN.
+pub fn finish_push(push: Push) -> Result(Nil, Error) {
+  call(push.listener, fn(reply) { FinishPush(push.identifier, reply) })
+}
+
+/// Queue pushed response trailers and the terminal FIN atomically.
+pub fn send_push_trailers(
+  push: Push,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  call(push.listener, fn(reply) {
+    FinishPushWithTrailers(push.identifier, headers, reply)
+  })
+}
+
 /// Stop all connections and release the listener socket idempotently.
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   case process.is_alive(listener.worker) {
@@ -397,6 +539,29 @@ pub fn stop(listener: Listener) -> Result(StopResult, Error) {
         Error(ListenerClosed) -> Ok(AlreadyStopped)
         outcome -> outcome
       }
+  }
+}
+
+/// Stop accepting new work, send two-stage GOAWAY, and drain active requests.
+pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
+  case process.is_alive(listener.worker) {
+    False -> Ok(AlreadyDrained)
+    True -> {
+      let now = udp.monotonic_millisecond()
+      let deadline = now + listener.timeout_milliseconds
+      let refine_delay =
+        int.max(1, int.min(100, listener.timeout_milliseconds / 4))
+      case
+        call_with_timeout(
+          listener,
+          listener.timeout_milliseconds + worker_reply_grace_milliseconds,
+          fn(reply) { GracefulStop(reply, deadline, now + refine_delay) },
+        )
+      {
+        Error(ListenerClosed) -> Ok(AlreadyDrained)
+        outcome -> outcome
+      }
+    }
   }
 }
 
@@ -537,7 +702,10 @@ fn initialise(
         dict.new(),
         dict.new(),
         0,
+        dict.new(),
+        0,
         [],
+        None,
         None,
         timeout_milliseconds,
         request_body_limit,
@@ -551,29 +719,34 @@ fn initialise(
 
 fn loop(worker: Worker) -> Nil {
   let worker = dispatch_all_events(worker)
-  let worker = expire_waiters(worker, udp.monotonic_millisecond())
-  case process.selector_receive(worker.selector, within: 0) {
-    Ok(OwnerExited) -> shutdown(worker, "owner exited")
-    Ok(ReceivedCommand(command)) ->
-      case handle_command(worker, command) {
-        Error(Nil) -> Nil
-        Ok(worker) -> network_step(worker)
+  let now = udp.monotonic_millisecond()
+  let worker = expire_waiters(worker, now)
+  case advance_graceful_drain(worker, now) {
+    Error(Nil) -> Nil
+    Ok(worker) ->
+      case process.selector_receive(worker.selector, within: 0) {
+        Ok(OwnerExited) -> shutdown(worker, "owner exited")
+        Ok(ReceivedCommand(command)) ->
+          case handle_command(worker, command) {
+            Error(Nil) -> Nil
+            Ok(worker) -> network_step(worker)
+          }
+        Error(Nil) -> network_step(worker)
       }
-    Error(Nil) -> network_step(worker)
   }
 }
 
 fn network_step(worker: Worker) -> Nil {
-  let worker = case udp.receive(worker.socket, network_poll_milliseconds) {
+  case udp.receive(worker.socket, network_poll_milliseconds) {
     Ok(udp.Datagram(peer, datagram, marking)) ->
-      route_datagram(worker, peer, datagram, marking)
-    Error(udp.Timeout) -> worker
-    Error(udp.Closed) -> {
-      shutdown(worker, "socket closed")
-      worker
-    }
-    Error(_) -> worker
+      continue_network_step(route_datagram(worker, peer, datagram, marking))
+    Error(udp.Timeout) -> continue_network_step(worker)
+    Error(udp.Closed) -> shutdown(worker, "socket closed")
+    Error(_) -> continue_network_step(worker)
   }
+}
+
+fn continue_network_step(worker: Worker) -> Nil {
   worker
   |> tick_and_flush_all
   |> retry_pending_sends
@@ -599,11 +772,30 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       handle_finish_response(worker, identifier, reply)
     FinishWithTrailers(identifier, headers, reply) ->
       handle_send_trailers(worker, identifier, headers, reply)
+    PromisePush(identifier, path, headers, reply) ->
+      handle_promise_push(worker, identifier, path, headers, reply)
+    SendPushResponse(identifier, status, headers, declared, reply) ->
+      handle_send_push_response(
+        worker,
+        identifier,
+        status,
+        headers,
+        declared,
+        reply,
+      )
+    SendPushChunk(identifier, bytes, reply, deadline) ->
+      handle_send_push_chunk(worker, identifier, bytes, reply, deadline)
+    FinishPush(identifier, reply) ->
+      handle_finish_push(worker, identifier, reply)
+    FinishPushWithTrailers(identifier, headers, reply) ->
+      handle_send_push_trailers(worker, identifier, headers, reply)
     Stop(reply) -> {
       process.send(reply, Ok(Stopped))
       shutdown(worker, "application stop")
       Error(Nil)
     }
+    GracefulStop(reply, deadline, refine_at) ->
+      handle_graceful_stop(worker, reply, deadline, refine_at)
     Capabilities(identifier, reply) -> {
       let outcome =
         with_request_connection(worker, identifier, fn(_, peer, _) {
@@ -660,18 +852,229 @@ fn handle_accept(
   reply: Subject(Result(Incoming, Error)),
   deadline: Int,
 ) -> Result(Worker, Nil) {
-  case worker.pending_requests, worker.accept_waiter {
-    [identifier, ..rest], _ -> {
+  case worker.drain_waiter, worker.pending_requests, worker.accept_waiter {
+    Some(_), _, _ -> {
+      process.send(reply, Error(ListenerClosed))
+      Ok(worker)
+    }
+    None, [identifier, ..rest], _ -> {
       process.send(reply, incoming(worker, identifier))
       Ok(Worker(..worker, pending_requests: rest))
     }
-    [], Some(_) -> {
+    None, [], Some(_) -> {
       process.send(reply, Error(ConcurrentAccept))
       Ok(worker)
     }
-    [], None ->
+    None, [], None ->
       Ok(Worker(..worker, accept_waiter: Some(AcceptWaiter(reply, deadline))))
   }
+}
+
+fn handle_graceful_stop(
+  worker: Worker,
+  reply: Subject(Result(DrainResult, Error)),
+  deadline: Int,
+  refine_at: Int,
+) -> Result(Worker, Nil) {
+  case worker.drain_waiter {
+    Some(_) -> {
+      process.send(reply, Error(ConcurrentDrain))
+      Ok(worker)
+    }
+    None -> {
+      case worker.accept_waiter {
+        Some(AcceptWaiter(waiting, _)) ->
+          process.send(waiting, Error(ListenerClosed))
+        None -> Nil
+      }
+      let worker =
+        reject_pending_requests(worker, worker.pending_requests)
+        |> start_drain_connections(udp.monotonic_millisecond())
+      Ok(
+        Worker(
+          ..worker,
+          pending_requests: [],
+          accept_waiter: None,
+          drain_waiter: Some(DrainWaiter(reply, deadline, refine_at, False)),
+        ),
+      )
+    }
+  }
+}
+
+fn advance_graceful_drain(worker: Worker, now: Int) -> Result(Worker, Nil) {
+  case worker.drain_waiter {
+    None -> Ok(worker)
+    Some(DrainWaiter(reply, deadline, _, _)) if now >= deadline -> {
+      process.send(reply, Ok(Forced))
+      shutdown(Worker(..worker, drain_waiter: None), "drain timeout")
+      Error(Nil)
+    }
+    Some(DrainWaiter(reply, deadline, refine_at, False)) if now >= refine_at -> {
+      let worker = refine_drain_connections(worker)
+      advance_graceful_drain(
+        Worker(
+          ..worker,
+          drain_waiter: Some(DrainWaiter(reply, deadline, refine_at, True)),
+        ),
+        now,
+      )
+    }
+    Some(DrainWaiter(reply, _, _, True)) ->
+      case all_requests_complete(worker) {
+        False -> Ok(worker)
+        True -> {
+          process.send(reply, Ok(Drained))
+          let worker = close_drained_connections(worker)
+          shutdown(Worker(..worker, drain_waiter: None), "graceful drain")
+          Error(Nil)
+        }
+      }
+    Some(_) -> Ok(worker)
+  }
+}
+
+fn close_drained_connections(worker: Worker) -> Worker {
+  close_drained_entries(worker, dict.to_list(worker.connections))
+}
+
+fn close_drained_entries(
+  worker: Worker,
+  entries: List(#(BitArray, PeerState)),
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(connection_id, peer), ..rest] -> {
+      let worker = case server_connection.close_drained(peer.connection) {
+        Error(_) -> worker
+        Ok(connection) ->
+          put_peer(
+            worker,
+            connection_id,
+            PeerState(..peer, connection: connection),
+          )
+      }
+      close_drained_entries(worker, rest)
+    }
+  }
+}
+
+fn start_drain_connections(worker: Worker, now: Int) -> Worker {
+  start_drain_entries(worker, dict.to_list(worker.connections), now)
+}
+
+fn start_drain_entries(
+  worker: Worker,
+  entries: List(#(BitArray, PeerState)),
+  now: Int,
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(connection_id, peer), ..rest] -> {
+      let worker = case server_connection.start_drain(peer.connection, now) {
+        Error(_) -> worker
+        Ok(connection) ->
+          put_peer(
+            worker,
+            connection_id,
+            PeerState(..peer, connection: connection),
+          )
+      }
+      start_drain_entries(worker, rest, now)
+    }
+  }
+}
+
+fn refine_drain_connections(worker: Worker) -> Worker {
+  refine_drain_entries(worker, dict.to_list(worker.connections))
+}
+
+fn refine_drain_entries(
+  worker: Worker,
+  entries: List(#(BitArray, PeerState)),
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(connection_id, peer), ..rest] -> {
+      let worker = case
+        server_connection.refine_drain(
+          peer.connection,
+          peer.next_request_stream_id,
+        )
+      {
+        Error(_) -> worker
+        Ok(#(connection, rejected)) -> {
+          let worker =
+            put_peer(
+              worker,
+              connection_id,
+              PeerState(..peer, connection: connection),
+            )
+          reject_streams(worker, connection_id, rejected)
+        }
+      }
+      refine_drain_entries(worker, rest)
+    }
+  }
+}
+
+fn reject_streams(
+  worker: Worker,
+  connection_id: BitArray,
+  stream_ids: List(Int),
+) -> Worker {
+  case stream_ids {
+    [] -> worker
+    [stream_id, ..rest] -> {
+      let worker =
+        fail_stream(worker, connection_id, stream_id, ListenerClosed)
+        |> abort_stream_id(connection_id, stream_id, request_rejected_code)
+      reject_streams(worker, connection_id, rest)
+    }
+  }
+}
+
+fn abort_stream_id(
+  worker: Worker,
+  connection_id: BitArray,
+  stream_id: Int,
+  code: Int,
+) -> Worker {
+  case
+    update_peer_connection(worker, connection_id, fn(connection) {
+      server_connection.abort_stream(connection, stream_id, code)
+    })
+  {
+    Ok(worker) -> worker
+    Error(_) -> worker
+  }
+}
+
+fn reject_pending_requests(worker: Worker, identifiers: List(Int)) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] -> {
+      let worker =
+        fail_request(worker, identifier, ListenerClosed)
+        |> abort_request(identifier, request_rejected_code)
+      reject_pending_requests(worker, rest)
+    }
+  }
+}
+
+fn all_requests_complete(worker: Worker) -> Bool {
+  let requests_complete =
+    dict.values(worker.requests)
+    |> list.all(fn(request) {
+      option.is_some(request.failure)
+      || request.request_finished
+      && request.response_finished
+    })
+  requests_complete
+  && dict.values(worker.pushes)
+  |> list.all(fn(push) {
+    option.is_some(push.failure) || push.response_finished
+  })
 }
 
 fn handle_next(
@@ -1025,6 +1428,288 @@ fn handle_send_trailers(
   }
 }
 
+fn handle_promise_push(
+  worker: Worker,
+  request_identifier: Int,
+  path: String,
+  headers: List(#(String, String)),
+  reply: Subject(Result(Int, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.requests, request_identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(request) ->
+      case request.failure, request.scheme, request.authority, path {
+        Some(error), _, _, _ -> reply_error(worker, reply, error)
+        None, "", _, _ | None, _, "", _ | None, _, _, "" ->
+          reply_error(worker, reply, InvalidInput)
+        None, scheme, authority, path ->
+          case encode_headers(headers) {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(regular) -> {
+              let fields = [
+                Header(<<":method">>, <<"GET">>, False),
+                Header(<<":scheme">>, <<scheme:utf8>>, False),
+                Header(<<":authority">>, <<authority:utf8>>, False),
+                Header(<<":path">>, <<path:utf8>>, False),
+                ..regular
+              ]
+              case dict.get(worker.connections, request.connection_id) {
+                Error(_) -> reply_error(worker, reply, ConnectionClosed)
+                Ok(peer) ->
+                  case
+                    server_connection.promise_push(
+                      peer.connection,
+                      request.stream_id,
+                      fields,
+                      udp.monotonic_millisecond(),
+                    )
+                  {
+                    Error(error) ->
+                      reply_error(worker, reply, map_connection_error(error))
+                    Ok(#(connection, push_id, stream_id)) -> {
+                      let identifier = worker.next_push_handle_id
+                      let peer =
+                        PeerState(
+                          ..peer,
+                          connection: connection,
+                          pushes: dict.insert(peer.pushes, push_id, identifier),
+                        )
+                      let push =
+                        PushState(
+                          request.connection_id,
+                          push_id,
+                          stream_id,
+                          None,
+                          False,
+                          False,
+                          0,
+                          None,
+                          None,
+                        )
+                      process.send(reply, Ok(identifier))
+                      Ok(
+                        put_peer(worker, request.connection_id, peer)
+                        |> put_push(identifier, push)
+                        |> fn(next) {
+                          Worker(..next, next_push_handle_id: identifier + 1)
+                        },
+                      )
+                    }
+                  }
+              }
+            }
+          }
+      }
+  }
+}
+
+fn handle_send_push_response(
+  worker: Worker,
+  identifier: Int,
+  status: Int,
+  headers: List(#(String, String)),
+  declared_content_length: Option(Int),
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(_) if status < 200 || status > 599 ->
+      reply_error(worker, reply, InvalidInput)
+    Ok(push) ->
+      case
+        push.response_started,
+        push.response_finished,
+        push.failure,
+        exceeds_response_body_limit(
+          declared_content_length,
+          worker.response_body_limit,
+        )
+      {
+        _, _, Some(error), _ -> reply_error(worker, reply, error)
+        True, _, _, _ -> reply_error(worker, reply, ResponseAlreadyStarted)
+        _, True, _, _ -> reply_error(worker, reply, ResponseAlreadyFinished)
+        False, False, None, True ->
+          reply_error(
+            worker,
+            reply,
+            ResponseBodyTooLarge(worker.response_body_limit),
+          )
+        False, False, None, False ->
+          case response_headers(status, headers) {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(encoded) ->
+              case
+                update_push_connection(worker, push, fn(connection) {
+                  server_connection.send_push_response_headers(
+                    connection,
+                    push.stream_id,
+                    encoded,
+                  )
+                })
+              {
+                Error(error) -> reply_error(worker, reply, error)
+                Ok(worker) -> {
+                  process.send(reply, Ok(Nil))
+                  Ok(put_push(
+                    worker,
+                    identifier,
+                    PushState(
+                      ..push,
+                      response_started: True,
+                      declared_content_length: declared_content_length,
+                    ),
+                  ))
+                }
+              }
+          }
+      }
+  }
+}
+
+fn handle_send_push_chunk(
+  worker: Worker,
+  identifier: Int,
+  bytes: BitArray,
+  reply: Subject(Result(Nil, Error)),
+  deadline: Int,
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(push) -> {
+      let total = push.response_body_bytes + bit_array.byte_size(bytes)
+      case
+        push.response_started,
+        push.response_finished,
+        push.pending_send,
+        push.failure,
+        total > worker.response_body_limit,
+        exceeds_declared_length(push.declared_content_length, total)
+      {
+        False, _, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
+        _, True, _, _, _, _ ->
+          reply_error(worker, reply, ResponseAlreadyFinished)
+        _, _, Some(_), _, _, _ ->
+          reply_error(worker, reply, BackendFailure("concurrent push send"))
+        _, _, _, Some(error), _, _ -> reply_error(worker, reply, error)
+        _, _, _, _, True, _ ->
+          reply_error(
+            worker,
+            reply,
+            ResponseBodyTooLarge(worker.response_body_limit),
+          )
+        _, _, _, _, _, True -> reply_error(worker, reply, InvalidContentLength)
+        True, False, None, None, False, False ->
+          advance_push_send(
+            worker,
+            identifier,
+            PushState(..push, response_body_bytes: total),
+            PendingSend(bytes, reply, deadline),
+          )
+      }
+    }
+  }
+}
+
+fn handle_finish_push(
+  worker: Worker,
+  identifier: Int,
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(push) ->
+      case
+        push.response_started,
+        push.response_finished,
+        push.pending_send,
+        push.failure,
+        declared_length_matches(
+          push.declared_content_length,
+          push.response_body_bytes,
+        )
+      {
+        False, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
+        _, True, _, _, _ -> reply_error(worker, reply, ResponseAlreadyFinished)
+        _, _, Some(_), _, _ ->
+          reply_error(worker, reply, BackendFailure("push send in progress"))
+        _, _, _, Some(error), _ -> reply_error(worker, reply, error)
+        _, _, _, _, False -> reply_error(worker, reply, InvalidContentLength)
+        True, False, None, None, True ->
+          case
+            update_push_connection(worker, push, fn(connection) {
+              server_connection.finish_push(connection, push.stream_id)
+            })
+          {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(worker) -> {
+              process.send(reply, Ok(Nil))
+              Ok(put_push(
+                worker,
+                identifier,
+                PushState(..push, response_finished: True),
+              ))
+            }
+          }
+      }
+  }
+}
+
+fn handle_send_push_trailers(
+  worker: Worker,
+  identifier: Int,
+  headers: List(#(String, String)),
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Ok(push) ->
+      case
+        push.response_started,
+        push.response_finished,
+        push.pending_send,
+        push.failure,
+        declared_length_matches(
+          push.declared_content_length,
+          push.response_body_bytes,
+        )
+      {
+        False, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
+        _, True, _, _, _ -> reply_error(worker, reply, ResponseAlreadyFinished)
+        _, _, Some(_), _, _ ->
+          reply_error(worker, reply, BackendFailure("push send in progress"))
+        _, _, _, Some(error), _ -> reply_error(worker, reply, error)
+        _, _, _, _, False -> reply_error(worker, reply, InvalidContentLength)
+        True, False, None, None, True ->
+          case encode_headers(headers) {
+            Error(error) -> reply_error(worker, reply, error)
+            Ok(encoded) ->
+              case
+                update_push_connection(worker, push, fn(connection) {
+                  use connection <- result.try(
+                    server_connection.send_push_trailers(
+                      connection,
+                      push.stream_id,
+                      encoded,
+                    ),
+                  )
+                  server_connection.finish_push(connection, push.stream_id)
+                })
+              {
+                Error(error) -> reply_error(worker, reply, error)
+                Ok(worker) -> {
+                  process.send(reply, Ok(Nil))
+                  Ok(put_push(
+                    worker,
+                    identifier,
+                    PushState(..push, response_finished: True),
+                  ))
+                }
+              }
+          }
+      }
+  }
+}
+
 fn handle_send_datagram(
   worker: Worker,
   identifier: Int,
@@ -1152,9 +1837,10 @@ fn route_long_datagram(
         Some(connection_id) ->
           route_existing(worker, connection_id, peer, datagram, marking)
         None ->
-          case parsed, protocol_version {
-            packet.Initial(_, _, _), version.Version1
-            | packet.Initial(_, _, _), version.Version2
+          case worker.drain_waiter, parsed, protocol_version {
+            Some(_), _, _ -> worker
+            None, packet.Initial(_, _, _), version.Version1
+            | None, packet.Initial(_, _, _), version.Version2
             ->
               accept_connection(
                 worker,
@@ -1165,9 +1851,9 @@ fn route_long_datagram(
                 datagram,
                 marking,
               )
-            packet.UnknownVersion(_, _), _ ->
+            None, packet.UnknownVersion(_, _), _ ->
               send_version_negotiation(worker, peer, destination, source)
-            _, _ -> worker
+            _, _, _ -> worker
           }
       }
     }
@@ -1291,7 +1977,7 @@ fn accept_connection(
                   connections: dict.insert(
                     worker.connections,
                     local_connection_id,
-                    PeerState(connection, dict.new()),
+                    PeerState(connection, dict.new(), dict.new(), dict.new(), 0),
                   ),
                   aliases: dict.insert(
                     worker.aliases,
@@ -1492,6 +2178,7 @@ fn dispatch_event(
   case event {
     session.Http3Event(http3_state.RequestHeaders(stream_id, validated)) ->
       accept_request_head(worker, connection_id, stream_id, validated)
+    session.Http3Event(http3_state.Data(_, <<>>)) -> worker
     session.Http3Event(http3_state.Data(stream_id, bytes)) ->
       enqueue_body_data(worker, connection_id, stream_id, bytes)
     session.Http3Event(http3_state.Trailers(stream_id, validated)) ->
@@ -1506,25 +2193,25 @@ fn dispatch_event(
         Error(error) -> fail_stream(worker, connection_id, stream_id, error)
       }
     session.Http3Event(http3_state.StreamFinished(stream_id)) ->
-      enqueue_stream_event(worker, connection_id, stream_id, End)
+      mark_request_finished(worker, connection_id, stream_id)
+      |> enqueue_stream_event(connection_id, stream_id, End)
     session.TransportEvent(transport.StreamWasReset(stream_id, code)) ->
       fail_stream(worker, connection_id, stream_id, StreamReset(code))
-    session.TransportEvent(transport.DatagramReceived(encoded)) ->
-      case varint.decode(encoded) {
-        Ok(#(quarter_stream_id, payload)) ->
-          enqueue_datagram(
-            worker,
-            connection_id,
-            quarter_stream_id * 4,
-            payload,
-          )
-        Error(_) -> worker
-      }
+    session.Http3Event(http3_state.HttpDatagram(stream_id, payload)) ->
+      enqueue_datagram(worker, connection_id, stream_id, payload)
     session.TransportEvent(transport.PeerClosed(_, _))
     | session.TransportEvent(transport.StatelessResetReceived) ->
       fail_connection(worker, connection_id, ConnectionClosed)
     session.Http3Event(http3_state.PriorityChanged(update)) ->
       apply_peer_priority(worker, connection_id, update)
+    session.Http3Event(http3_state.PushCancelled(push_id)) ->
+      fail_server_push(worker, connection_id, push_id, PushCancelled)
+    session.Http3Event(http3_state.PushStreamCancellationRequested(
+      push_id,
+      stream_id,
+    )) ->
+      fail_server_push(worker, connection_id, push_id, PushCancelled)
+      |> abort_stream_id(connection_id, stream_id, request_cancelled_code)
     _ -> worker
   }
 }
@@ -1537,14 +2224,20 @@ fn accept_request_head(
 ) -> Worker {
   case decode_request(validated), dict.get(worker.connections, connection_id) {
     Error(_), _ | _, Error(_) -> worker
-    Ok(#(method, path, headers)), Ok(peer) -> {
+    Ok(#(method, path, protocol, scheme, authority, headers)), Ok(peer) -> {
       let identifier = worker.next_request_id
+      let effective_priority =
+        dict.get(peer.priorities, stream_id)
+        |> result.unwrap(#(3, False))
       let request =
         RequestState(
           connection_id,
           stream_id,
           method,
           path,
+          protocol,
+          scheme,
+          authority,
           headers,
           [],
           0,
@@ -1556,9 +2249,10 @@ fn accept_request_head(
           None,
           False,
           False,
+          False,
           0,
           None,
-          #(3, False),
+          effective_priority,
           None,
         )
       let worker =
@@ -1570,6 +2264,10 @@ fn accept_request_head(
             PeerState(
               ..peer,
               requests: dict.insert(peer.requests, stream_id, identifier),
+              next_request_stream_id: int.max(
+                peer.next_request_stream_id,
+                stream_id + 4,
+              ),
             ),
           ),
           requests: dict.insert(worker.requests, identifier, request),
@@ -1581,12 +2279,15 @@ fn accept_request_head(
 }
 
 fn deliver_request(worker: Worker, identifier: Int) -> Worker {
-  case worker.accept_waiter {
-    Some(AcceptWaiter(reply, _)) -> {
+  case worker.drain_waiter, worker.accept_waiter {
+    Some(_), _ ->
+      fail_request(worker, identifier, ListenerClosed)
+      |> abort_request(identifier, request_rejected_code)
+    None, Some(AcceptWaiter(reply, _)) -> {
       process.send(reply, incoming(worker, identifier))
       Worker(..worker, accept_waiter: None)
     }
-    None ->
+    None, None ->
       case list.length(worker.pending_requests) >= maximum_pending_requests {
         True -> abort_request(worker, identifier, excessive_load_code)
         False ->
@@ -1638,6 +2339,22 @@ fn enqueue_stream_event(
     Error(_) -> worker
     Ok(#(identifier, request)) ->
       enqueue_request_event(worker, identifier, request, event)
+  }
+}
+
+fn mark_request_finished(
+  worker: Worker,
+  connection_id: BitArray,
+  stream_id: Int,
+) -> Worker {
+  case request_for_stream(worker, connection_id, stream_id) {
+    Error(_) -> worker
+    Ok(#(identifier, request)) ->
+      put_request(
+        worker,
+        identifier,
+        RequestState(..request, request_finished: True),
+      )
   }
 }
 
@@ -1799,8 +2516,87 @@ fn advance_response_send(
   }
 }
 
+fn advance_push_send(
+  worker: Worker,
+  identifier: Int,
+  push: PushState,
+  pending: PendingSend,
+) -> Result(Worker, Nil) {
+  let PendingSend(remaining, reply, deadline) = pending
+  case udp.monotonic_millisecond() >= deadline {
+    True ->
+      reply_error(
+        put_push(worker, identifier, PushState(..push, pending_send: None)),
+        reply,
+        Timeout,
+      )
+    False -> {
+      let #(chunk, rest) = take_response_chunk(remaining)
+      case
+        update_push_connection(worker, push, fn(connection) {
+          server_connection.send_push_data(connection, push.stream_id, chunk)
+        })
+      {
+        Ok(worker) ->
+          case bit_array.byte_size(rest) {
+            0 -> {
+              process.send(reply, Ok(Nil))
+              Ok(put_push(
+                worker,
+                identifier,
+                PushState(..push, pending_send: None),
+              ))
+            }
+            _ ->
+              Ok(put_push(
+                worker,
+                identifier,
+                PushState(
+                  ..push,
+                  pending_send: Some(PendingSend(rest, reply, deadline)),
+                ),
+              ))
+          }
+        Error(CongestionLimited) ->
+          Ok(put_push(
+            worker,
+            identifier,
+            PushState(..push, pending_send: Some(pending)),
+          ))
+        Error(error) ->
+          reply_error(
+            put_push(worker, identifier, PushState(..push, pending_send: None)),
+            reply,
+            error,
+          )
+      }
+    }
+  }
+}
+
 fn retry_pending_sends(worker: Worker) -> Worker {
-  retry_pending_send_entries(worker, dict.to_list(worker.requests))
+  let worker = retry_pending_send_entries(worker, dict.to_list(worker.requests))
+  retry_pending_push_entries(worker, dict.to_list(worker.pushes))
+}
+
+fn retry_pending_push_entries(
+  worker: Worker,
+  entries: List(#(Int, PushState)),
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(identifier, push), ..rest] -> {
+      let worker = case push.pending_send {
+        None -> worker
+        Some(pending) ->
+          case advance_push_send(worker, identifier, push, pending) {
+            Ok(worker) -> worker
+            Error(Nil) -> worker
+          }
+      }
+      retry_pending_push_entries(worker, rest)
+    }
+  }
 }
 
 fn retry_pending_send_entries(
@@ -1862,6 +2658,15 @@ fn update_peer_connection(
   }
 }
 
+fn update_push_connection(
+  worker: Worker,
+  push: PushState,
+  update: fn(server_connection.State) ->
+    Result(server_connection.State, server_connection.Error),
+) -> Result(Worker, Error) {
+  update_peer_connection(worker, push.connection_id, update)
+}
+
 fn with_request_connection(
   worker: Worker,
   identifier: Int,
@@ -1901,6 +2706,7 @@ fn incoming(worker: Worker, identifier: Int) -> Result(Incoming, Error) {
     ),
     request.method,
     request.path,
+    request.protocol,
     request.headers,
   ))
 }
@@ -1927,13 +2733,17 @@ fn encode_headers(
 
 fn decode_request(
   validated: header_semantics.Validated,
-) -> Result(#(String, String, List(#(String, String))), Error) {
+) -> Result(
+  #(String, String, Option(String), String, String, List(#(String, String))),
+  Error,
+) {
   let header_semantics.Validated(control, fields, _) = validated
   use request <- result.try(case control {
     header_semantics.RequestControlData(request) -> Ok(request)
     _ -> Error(ProtocolError(0x105, "invalid request control"))
   })
-  let header_semantics.RequestControl(method, _, _, path, _) = request
+  let header_semantics.RequestControl(method, scheme, authority, path, protocol) =
+    request
   use method <- result.try(
     bit_array.to_string(method) |> result.replace_error(InvalidHeaderEncoding),
   )
@@ -1941,8 +2751,23 @@ fn decode_request(
     Some(value) -> bit_array.to_string(value) |> result.unwrap("")
     None -> ""
   }
+  let scheme = case scheme {
+    Some(value) -> bit_array.to_string(value) |> result.unwrap("")
+    None -> ""
+  }
+  let authority = case authority {
+    Some(value) -> bit_array.to_string(value) |> result.unwrap("")
+    None -> ""
+  }
+  use protocol <- result.try(case protocol {
+    None -> Ok(None)
+    Some(value) ->
+      bit_array.to_string(value)
+      |> result.map(Some)
+      |> result.replace_error(InvalidHeaderEncoding)
+  })
   use fields <- result.try(decode_headers(fields))
-  Ok(#(method, path, fields))
+  Ok(#(method, path, protocol, scheme, authority, fields))
 }
 
 fn decode_trailers(
@@ -2038,11 +2863,36 @@ fn apply_peer_priority(
   connection_id: BitArray,
   update: priority.Update,
 ) -> Worker {
-  // The strongly typed priority value is retained in the HTTP/3 scheduler.
-  // Public request handles expose the locally selected effective value.
-  let _ = connection_id
-  let _ = update
-  worker
+  case dict.get(worker.connections, connection_id), update {
+    Error(_), _ -> worker
+    Ok(_peer), priority.PushUpdate(_, _) -> worker
+    Ok(peer),
+      priority.RequestUpdate(stream_id, priority.Priority(urgency, incremental))
+    -> {
+      let peer =
+        PeerState(
+          ..peer,
+          priorities: dict.insert(peer.priorities, stream_id, #(
+            urgency,
+            incremental,
+          )),
+        )
+      let worker = put_peer(worker, connection_id, peer)
+      case dict.get(peer.requests, stream_id) {
+        Error(_) -> worker
+        Ok(identifier) ->
+          case dict.get(worker.requests, identifier) {
+            Error(_) -> worker
+            Ok(request) ->
+              put_request(
+                worker,
+                identifier,
+                RequestState(..request, priority: #(urgency, incremental)),
+              )
+          }
+      }
+    }
+  }
 }
 
 fn abort_request(worker: Worker, identifier: Int, code: Int) -> Worker {
@@ -2094,6 +2944,48 @@ fn fail_request(worker: Worker, identifier: Int, error: Error) -> Worker {
   }
 }
 
+fn fail_server_push(
+  worker: Worker,
+  connection_id: BitArray,
+  push_id: Int,
+  error: Error,
+) -> Worker {
+  case dict.get(worker.connections, connection_id) {
+    Error(_) -> worker
+    Ok(peer) ->
+      case dict.get(peer.pushes, push_id) {
+        Error(_) -> worker
+        Ok(identifier) -> fail_push(worker, identifier, error)
+      }
+  }
+}
+
+fn fail_push(worker: Worker, identifier: Int, error: Error) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(push) -> {
+      notify_pending_send(push.pending_send, Error(error))
+      put_push(
+        worker,
+        identifier,
+        PushState(..push, pending_send: None, failure: Some(error)),
+      )
+    }
+  }
+}
+
+fn fail_push_ids(
+  worker: Worker,
+  identifiers: List(Int),
+  error: Error,
+) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] ->
+      fail_push_ids(fail_push(worker, identifier, error), rest, error)
+  }
+}
+
 fn fail_connection(
   worker: Worker,
   connection_id: BitArray,
@@ -2103,6 +2995,7 @@ fn fail_connection(
     Error(_) -> worker
     Ok(peer) -> {
       let worker = fail_request_ids(worker, dict.values(peer.requests), error)
+      let worker = fail_push_ids(worker, dict.values(peer.pushes), error)
       Worker(
         ..worker,
         connections: dict.delete(worker.connections, connection_id),
@@ -2134,7 +3027,29 @@ fn expire_waiters(worker: Worker, now: Int) -> Worker {
     }
     _ -> worker
   }
-  expire_request_waiters(worker, dict.to_list(worker.requests), now)
+  let worker =
+    expire_request_waiters(worker, dict.to_list(worker.requests), now)
+  expire_push_waiters(worker, dict.to_list(worker.pushes), now)
+}
+
+fn expire_push_waiters(
+  worker: Worker,
+  entries: List(#(Int, PushState)),
+  now: Int,
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(identifier, push), ..rest] -> {
+      let push = case push.pending_send {
+        Some(PendingSend(_, reply, deadline)) if now >= deadline -> {
+          process.send(reply, Error(Timeout))
+          PushState(..push, pending_send: None)
+        }
+        _ -> push
+      }
+      expire_push_waiters(put_push(worker, identifier, push), rest, now)
+    }
+  }
 }
 
 fn expire_request_waiters(
@@ -2180,8 +3095,13 @@ fn shutdown(worker: Worker, reason: String) -> Nil {
     Some(AcceptWaiter(reply, _)) -> process.send(reply, Error(ListenerClosed))
     None -> Nil
   }
+  case worker.drain_waiter {
+    Some(DrainWaiter(reply, _, _, _)) -> process.send(reply, Ok(Forced))
+    None -> Nil
+  }
   let worker =
     fail_request_ids(worker, dict.keys(worker.requests), ListenerClosed)
+    |> fail_push_ids(dict.keys(worker.pushes), ListenerClosed)
   close_connections(
     worker.socket,
     dict.values(worker.connections),
@@ -2257,6 +3177,10 @@ fn put_request(
   request: RequestState,
 ) -> Worker {
   Worker(..worker, requests: dict.insert(worker.requests, identifier, request))
+}
+
+fn put_push(worker: Worker, identifier: Int, push: PushState) -> Worker {
+  Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
 }
 
 fn reply_error(
@@ -2350,6 +3274,12 @@ fn map_connection_error(error: server_connection.Error) -> Error {
     server_connection.SessionFailure(session.TransportFailure(
       transport.DatagramNotNegotiated,
     )) -> DatagramsNotNegotiated
+    server_connection.SessionFailure(session.Http3Failure(http3_state.DatagramFailure(datagram.UnknownAssociation(
+      _,
+    )))) -> DatagramNotAssociated
+    server_connection.SessionFailure(session.Http3Failure(http3_state.DatagramFailure(
+      datagram.UnreliableDatagramNotNegotiated,
+    ))) -> DatagramsNotNegotiated
     server_connection.SessionFailure(session.TransportFailure(transport.DatagramTooLarge(
       limit,
     ))) -> DatagramTooLarge(limit)

@@ -86,6 +86,41 @@ pub fn streaming_server_round_trip_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn graceful_stop_drains_active_request_and_rejects_accept_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let connection =
+        client.connect(client_configuration(ca_certificate), "localhost", port)
+        |> should.be_ok
+      let stream =
+        streaming_request(port, "/drain")
+        |> client.open_stream(connection, _)
+        |> should.be_ok
+      client.finish(stream) |> should.be_ok
+      let events = collect_response_events(stream, [])
+      let _closed = client.close(connection)
+      events
+    })
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.next_event(incoming) == Ok(server.End)
+  let drain_task =
+    http3_test_support.start_task(fn() { server.graceful_stop(listener) })
+  assert server.accept(listener) == Error(server.ListenerClosed)
+  server.respond(incoming, 200, [], <<"drained":utf8>>) |> should.be_ok
+
+  assert http3_test_support.await_task(client_task)
+    == [
+      client.Response(200, []),
+      client.Data(<<"drained":utf8>>),
+      client.End,
+    ]
+  assert http3_test_support.await_task(drain_task) == Ok(server.Drained)
+  assert server.graceful_stop(listener) == Ok(server.AlreadyDrained)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =

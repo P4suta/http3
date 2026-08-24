@@ -84,6 +84,7 @@ fn from_native_configuration_error(
     native_client.InvalidStreamBufferLimit -> "invalid native stream buffer"
     native_client.InvalidCaCertificate -> "invalid CA certificate"
     native_client.InvalidQlogDirectory -> "invalid qlog directory"
+    native_client.InvalidPushLimit -> "invalid server push limit"
   }
   ConnectFailed(message)
 }
@@ -117,6 +118,7 @@ fn from_native_error(error: native_client.Error) -> Failure {
     native_client.UnsafeEarlyDataMethod(method) -> UnsafeEarlyDataMethod(method)
     native_client.ResumptionOriginMismatch -> ResumptionOriginMismatch
     native_client.DatagramsNotNegotiated
+    | native_client.DatagramNotAssociated
     | native_client.DatagramTooLarge(_)
     | native_client.DatagramBufferExceeded(_)
     | native_client.ConcurrentDatagramReceive

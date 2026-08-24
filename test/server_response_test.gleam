@@ -41,3 +41,13 @@ pub fn bounded_server_response_checks_content_length_test() -> Nil {
   assert server_response.prepare_bounded(200, [#("content-length", "2")], 1)
     == Error(server_response.InvalidContentLength)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_push_promise_fields_are_strict_test() -> Nil {
+  assert server_response.prepare_push_request([#("accept", "text/css")])
+    == Ok([#("accept", "text/css")])
+  assert server_response.prepare_push_request([#("content-length", "0")])
+    == Error(server_response.InvalidContentLength)
+  assert server_response.prepare_push_request([#("connection", "close")])
+    == Error(server_response.InvalidHeader("connection"))
+}

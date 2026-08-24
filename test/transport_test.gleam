@@ -2,7 +2,9 @@ import gleam/bit_array
 import gleam/http
 import gleam/http/request
 import gleam/list
+import gleam/option.{None, Some}
 import gleeunit/should
+import http3/capsule
 import http3/client
 import http3/internal/transport_backend
 import http3/server
@@ -57,10 +59,16 @@ pub fn http_datagrams_require_explicit_negotiation_test() -> Nil {
     client.connect(client_configuration(ca_certificate), "localhost", port)
     |> should.be_ok
   let stream =
-    client.open_stream(connection, streaming_request(port, "/no-datagrams"))
+    client.open_extended_connect(
+      connection,
+      streaming_request(port, "/no-datagrams"),
+      "test-datagram",
+    )
     |> should.be_ok
-  client.finish(stream) |> should.be_ok
   let incoming = server.accept(listener) |> should.be_ok
+  assert server.protocol(incoming) == Some("test-datagram")
+  server.send_response(incoming, 200, []) |> should.be_ok
+  assert client.next_event(stream) == Ok(client.Response(200, []))
   let client_transport = client.stream_transport(stream)
   let server_transport = server.request_transport(incoming)
 
@@ -73,9 +81,26 @@ pub fn http_datagrams_require_explicit_negotiation_test() -> Nil {
   assert transport.send_datagram(server_transport, <<"disabled":utf8>>)
     == Error(transport.DatagramsNotNegotiated)
 
+  client.finish(stream) |> should.be_ok
   assert server.read_body(incoming) |> should.be_ok == <<>>
-  server.respond(incoming, 200, [], <<"done":utf8>>) |> should.be_ok
-  assert receive_response(stream) == <<"done":utf8>>
+  server.finish_response(incoming) |> should.be_ok
+  assert receive_response(stream) == <<>>
+
+  let ordinary =
+    client.open_stream(connection, streaming_request(port, "/ordinary"))
+    |> should.be_ok
+  client.finish(ordinary) |> should.be_ok
+  let ordinary_request = server.accept(listener) |> should.be_ok
+  assert server.protocol(ordinary_request) == None
+  assert transport.maximum_datagram_size(client.stream_transport(ordinary))
+    == Error(transport.DatagramNotAssociated)
+  assert transport.send_datagram(server.request_transport(ordinary_request), <<
+      "forbidden":utf8,
+    >>)
+    == Error(transport.DatagramNotAssociated)
+  assert server.read_body(ordinary_request) |> should.be_ok == <<>>
+  server.respond(ordinary_request, 200, [], <<>>) |> should.be_ok
+  assert receive_response(ordinary) == <<>>
   assert client.close(connection) == Ok(client.Closed)
   assert server.stop(listener) == Ok(server.Stopped)
 }
@@ -96,14 +121,33 @@ pub fn http_datagram_limits_and_concurrent_receive_are_typed_test() -> Nil {
   let connection =
     client.connect(configuration, "localhost", port) |> should.be_ok
   let stream =
-    client.open_stream(connection, streaming_request(port, "/datagram-race"))
+    client.open_extended_connect(
+      connection,
+      streaming_request(port, "/datagram-race"),
+      "test-datagram",
+    )
     |> should.be_ok
-  client.finish(stream) |> should.be_ok
   let incoming = server.accept(listener) |> should.be_ok
+  assert server.protocol(incoming) == Some("test-datagram")
+  server.send_response(incoming, 200, []) |> should.be_ok
+  assert client.next_event(stream) == Ok(client.Response(200, []))
   let client_transport = client.stream_transport(stream)
   let server_transport = server.request_transport(incoming)
   let maximum =
     transport.maximum_datagram_size(client_transport) |> should.be_ok
+
+  client.send_capsule(stream, capsule.Datagram(<<"reliable-request":utf8>>))
+  |> should.be_ok
+  // nolint: assert_ok_pattern -- capsule DATA is the integration assertion.
+  let assert Ok(server.Data(request_capsule)) = server.next_event(incoming)
+  assert decode_capsule(request_capsule)
+    == capsule.Datagram(<<"reliable-request":utf8>>)
+  server.send_capsule(incoming, capsule.Datagram(<<"reliable-response":utf8>>))
+  |> should.be_ok
+  // nolint: assert_ok_pattern -- capsule DATA is the integration assertion.
+  let assert Ok(client.Data(response_capsule)) = client.next_event(stream)
+  assert decode_capsule(response_capsule)
+    == capsule.Datagram(<<"reliable-response":utf8>>)
 
   assert transport.send_datagram(
       client_transport,
@@ -118,9 +162,10 @@ pub fn http_datagram_limits_and_concurrent_receive_are_typed_test() -> Nil {
   assert list.contains(results, Error(transport.ConcurrentDatagramReceive))
   assert list.contains(results, Ok(<<"released":utf8>>))
 
+  client.finish(stream) |> should.be_ok
   assert server.read_body(incoming) |> should.be_ok == <<>>
-  server.respond(incoming, 200, [], <<"done":utf8>>) |> should.be_ok
-  assert receive_response(stream) == <<"done":utf8>>
+  server.finish_response(incoming) |> should.be_ok
+  assert receive_response(stream) == <<>>
   assert client.close(connection) == Ok(client.Closed)
   assert server.stop(listener) == Ok(server.Stopped)
 }
@@ -149,11 +194,18 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
         })
 
       let incoming = server.accept(listener) |> should.be_ok
+      assert server.protocol(incoming) == Some("test-datagram")
+      server.send_response(incoming, 200, []) |> should.be_ok
       let stream_transport = server.request_transport(incoming)
       assert transport.stream_capabilities(stream_transport)
         == Ok(transport.Capabilities(True, True, False, True))
       assert transport.maximum_datagram_size(stream_transport) |> should.be_ok
         > 0
+
+      let client_priority =
+        await_stream_priority(stream_transport, 1, True, 100)
+      assert transport.urgency(client_priority) == 1
+      assert transport.is_incremental(client_priority)
 
       let server_priority = transport.priority(2, True) |> should.be_ok
       transport.set_priority(stream_transport, server_priority) |> should.be_ok
@@ -167,7 +219,8 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
       transport.send_datagram(stream_transport, <<"pong":utf8>>)
       |> should.be_ok
       assert server.read_body(incoming) |> should.be_ok == <<>>
-      server.respond(incoming, 200, [], <<"first":utf8>>) |> should.be_ok
+      server.send_chunk(incoming, <<"first":utf8>>) |> should.be_ok
+      server.finish_response(incoming) |> should.be_ok
 
       let migrated = server.accept(listener) |> should.be_ok
       assert server.path(migrated) == "/after-migration"
@@ -179,6 +232,57 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
     })
 
   assert qlog_files > 0
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_push_round_trips_with_bounded_pull_api_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let configuration =
+    client_configuration(ca_certificate)
+    |> client.with_push_limit(2)
+    |> should.be_ok
+  let connection =
+    client.connect(configuration, "localhost", port) |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/document"))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  let push =
+    server.promise_push(incoming, "/style.css?version=1", [
+      #("accept", "text/css"),
+    ])
+    |> should.be_ok
+  server.send_push_response(push, 200, [#("content-type", "text/css")])
+  |> should.be_ok
+  server.send_push_chunk(push, <<"body{}":utf8>>) |> should.be_ok
+  server.send_push_trailers(push, [#("x-push-complete", "yes")])
+  |> should.be_ok
+  server.respond(incoming, 200, [], <<"document":utf8>>) |> should.be_ok
+
+  let promised = client.next_push(connection) |> should.be_ok
+  assert client.push_method(promised) == "GET"
+  assert client.push_path(promised) == "/style.css?version=1"
+  assert client.push_headers(promised) == [#("accept", "text/css")]
+  assert client.next_push_event(promised)
+    == Ok(client.Response(200, [#("content-type", "text/css")]))
+  assert client.next_push_event(promised) == Ok(client.Data(<<"body{}":utf8>>))
+  assert client.next_push_event(promised)
+    == Ok(client.Trailers([#("x-push-complete", "yes")]))
+  assert client.next_push_event(promised) == Ok(client.End)
+  assert client.cancel_push(promised) == Ok(client.AlreadyCompleted)
+  assert receive_response(stream) == <<"document":utf8>>
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -321,8 +425,13 @@ fn advanced_client(
     == Ok(transport.Capabilities(True, True, False, True))
 
   let stream =
-    client.open_stream(connection, streaming_request(port, "/advanced"))
+    client.open_extended_connect(
+      connection,
+      streaming_request(port, "/advanced"),
+      "test-datagram",
+    )
     |> should.be_ok
+  assert client.next_event(stream) == Ok(client.Response(200, []))
   let stream_transport = client.stream_transport(stream)
   let priority = transport.priority(1, True) |> should.be_ok
   transport.set_priority(stream_transport, priority) |> should.be_ok
@@ -359,6 +468,35 @@ fn advanced_client(
   assert received > 0
   assert sent > 0
   assert client.close(connection) == Ok(client.Closed)
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn await_stream_priority(
+  stream: transport.Stream,
+  urgency: Int,
+  incremental: Bool,
+  attempts: Int,
+) -> transport.Priority {
+  let observed = transport.get_priority(stream) |> should.be_ok
+  case
+    transport.urgency(observed) == urgency
+    && transport.is_incremental(observed) == incremental
+  {
+    True -> observed
+    False -> {
+      assert attempts > 0
+      await_stream_priority(stream, urgency, incremental, attempts - 1)
+    }
+  }
+}
+
+fn decode_capsule(bytes: BitArray) -> capsule.Capsule {
+  let decoder = capsule.decoder(1024, 2048) |> should.be_ok
+  let decoder = capsule.push(decoder, bytes) |> should.be_ok
+  // nolint: assert_ok_pattern -- one complete encoded capsule is required.
+  let assert Ok(capsule.Ready(decoder, decoded)) = capsule.next(decoder)
+  assert capsule.finish(decoder) == Ok(Nil)
+  decoded
 }
 
 fn client_configuration(ca_certificate: BitArray) -> client.Client {

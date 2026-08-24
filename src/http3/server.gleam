@@ -4,7 +4,10 @@ import gleam/bit_array
 import gleam/bool
 import gleam/http
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+import http3/capsule
 import http3/internal/server_backend
 import http3/internal/server_response
 import http3/transport
@@ -48,8 +51,14 @@ pub opaque type Request {
     handle: server_backend.RequestHandle,
     method: http.Method,
     path: String,
+    protocol: Option(String),
     headers: List(#(String, String)),
   )
+}
+
+/// One promised server push response.
+pub opaque type Push {
+  Push(handle: server_backend.PushHandle)
 }
 
 /// One streaming request-body event.
@@ -63,6 +72,13 @@ pub type RequestEvent {
 pub type StopResult {
   Stopped
   AlreadyStopped
+}
+
+/// Outcome of GOAWAY-based graceful listener shutdown.
+pub type DrainResult {
+  Drained
+  Forced
+  AlreadyDrained
 }
 
 /// An invalid listener configuration.
@@ -88,15 +104,21 @@ pub type Error {
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
   ConcurrentAccept
+  ConcurrentDrain
   ConcurrentReceive
   ResponseAlreadyStarted
   ResponseNotStarted
   ResponseAlreadyFinished
   InvalidStatus(Int)
   InvalidHeader(String)
+  InvalidPath(String)
   InvalidContentLength
   InvalidBody
   BackendFailure(String)
+  CapsuleError(capsule.Error)
+
+  /// The client cancelled a promised push.
+  PushCancelled
 }
 
 /// Construct secure server configuration from PEM certificate and key bytes.
@@ -242,7 +264,7 @@ pub fn port(listener: Listener) -> Result(Int, Error) {
 pub fn accept(listener: Listener) -> Result(Request, Error) {
   let Listener(handle) = listener
   case server_backend.accept(handle) {
-    Ok(#(request_handle, method, path, headers)) -> {
+    Ok(#(request_handle, method, path, protocol, headers)) -> {
       let method = case http.parse_method(method) {
         Ok(method) -> method
         Error(parse_error) -> {
@@ -250,7 +272,7 @@ pub fn accept(listener: Listener) -> Result(Request, Error) {
           http.Other(method)
         }
       }
-      Ok(Request(request_handle, method, path, headers))
+      Ok(Request(request_handle, method, path, protocol, headers))
     }
     Error(error) -> Error(from_backend_failure(error))
   }
@@ -264,6 +286,11 @@ pub fn method(request: Request) -> http.Method {
 /// Return an accepted request's path and query string.
 pub fn path(request: Request) -> String {
   request.path
+}
+
+/// Return the negotiated Extended CONNECT protocol, if present.
+pub fn protocol(request: Request) -> Option(String) {
+  request.protocol
 }
 
 /// Return an accepted request's non-pseudo headers.
@@ -374,6 +401,17 @@ pub fn send_chunk(
   map_backend(server_backend.send_chunk(request.handle, chunk))
 }
 
+/// Encode and send one RFC 9297 Capsule on an Extended CONNECT response.
+pub fn send_capsule(
+  request request: Request,
+  capsule capsule_value: capsule.Capsule,
+) -> Result(Nil, Error) {
+  use encoded <- result.try(
+    capsule.encode(capsule_value) |> result.map_error(CapsuleError),
+  )
+  send_chunk(request: request, chunk: encoded)
+}
+
 /// Finish a streaming response body.
 pub fn finish_response(request: Request) -> Result(Nil, Error) {
   map_backend(server_backend.finish_response(request.handle))
@@ -391,6 +429,118 @@ pub fn send_trailers(
   }
 }
 
+/// Promise one same-origin GET request.
+///
+/// The path must be absolute and cannot contain a fragment. Push capacity is
+/// explicitly bounded by the client's `with_push_limit` configuration.
+pub fn promise_push(
+  request request: Request,
+  path path: String,
+  headers headers: List(#(String, String)),
+) -> Result(Push, Error) {
+  use <- bool.guard(
+    when: !string.starts_with(path, "/") || string.contains(path, "#"),
+    return: Error(InvalidPath(path)),
+  )
+  use headers <- result.try(
+    server_response.prepare_push_request(headers)
+    |> result.map_error(from_response_error),
+  )
+  server_backend.promise_push(
+    request: request.handle,
+    path: path,
+    headers: headers,
+  )
+  |> result.map(Push)
+  |> result.map_error(from_backend_failure)
+}
+
+// nolint: unused_exports -- stable public API exercised by downstream users.
+/// Send a complete bounded server push response.
+pub fn respond_push(
+  push push: Push,
+  status status: Int,
+  headers headers: List(#(String, String)),
+  body body: BitArray,
+) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: bit_array.bit_size(body) % 8 != 0,
+    return: Error(InvalidBody),
+  )
+  use headers <- result.try(
+    server_response.prepare_bounded(status, headers, bit_array.byte_size(body))
+    |> result.map_error(from_response_error),
+  )
+  use Nil <- result.try(
+    map_backend(server_backend.send_push_response(
+      push: push.handle,
+      status: status,
+      headers: headers,
+      declared_content_length: bit_array.byte_size(body),
+    )),
+  )
+  use Nil <- result.try(
+    map_backend(server_backend.send_push_chunk(push: push.handle, chunk: body)),
+  )
+  map_backend(server_backend.finish_push(push.handle))
+}
+
+/// Send one streaming server push response head.
+pub fn send_push_response(
+  push push: Push,
+  status status: Int,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  use #(headers, declared) <- result.try(
+    server_response.prepare_streaming(status, headers)
+    |> result.map_error(from_response_error),
+  )
+  map_backend(
+    server_backend.send_push_response(
+      push: push.handle,
+      status: status,
+      headers: headers,
+      declared_content_length: case declared {
+        Some(value) -> value
+        None -> -1
+      },
+    ),
+  )
+}
+
+/// Send one pushed response body chunk with flow-control backpressure.
+pub fn send_push_chunk(
+  push push: Push,
+  chunk chunk: BitArray,
+) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: bit_array.bit_size(chunk) % 8 != 0,
+    return: Error(InvalidBody),
+  )
+  map_backend(server_backend.send_push_chunk(push: push.handle, chunk: chunk))
+}
+
+// nolint: unused_exports -- stable public API exercised by downstream users.
+/// Finish one streaming server push response.
+pub fn finish_push(push: Push) -> Result(Nil, Error) {
+  map_backend(server_backend.finish_push(push.handle))
+}
+
+/// Send pushed response trailers and finish atomically.
+pub fn send_push_trailers(
+  push push: Push,
+  trailers trailers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  use trailers <- result.try(
+    server_response.prepare_trailers(trailers)
+    |> result.map_error(from_response_error),
+  )
+  map_backend(server_backend.send_push_trailers(
+    push: push.handle,
+    headers: trailers,
+  ))
+}
+
 /// Stop a listener and all owned connections idempotently.
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   let Listener(handle) = listener
@@ -398,6 +548,21 @@ pub fn stop(listener: Listener) -> Result(StopResult, Error) {
     Ok(1) -> Ok(Stopped)
     Ok(2) -> Ok(AlreadyStopped)
     Ok(_) -> Error(BackendFailure("invalid stop status"))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
+/// Stop accepting new work, send GOAWAY, and drain active requests.
+///
+/// `Forced` means the configured listener timeout expired; all remaining
+/// streams are then closed deterministically before this function returns.
+pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
+  let Listener(handle) = listener
+  case server_backend.graceful_stop(handle) {
+    Ok(1) -> Ok(Drained)
+    Ok(2) -> Ok(Forced)
+    Ok(3) -> Ok(AlreadyDrained)
+    Ok(_) -> Error(BackendFailure("invalid drain status"))
     Error(error) -> Error(from_backend_failure(error))
   }
 }
@@ -431,10 +596,12 @@ fn from_backend_failure(failure: server_backend.Failure) -> Error {
     server_backend.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     server_backend.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
     server_backend.ConcurrentAccept -> ConcurrentAccept
+    server_backend.ConcurrentDrain -> ConcurrentDrain
     server_backend.ConcurrentReceive -> ConcurrentReceive
     server_backend.ResponseAlreadyStarted -> ResponseAlreadyStarted
     server_backend.ResponseNotStarted -> ResponseNotStarted
     server_backend.ResponseAlreadyFinished -> ResponseAlreadyFinished
+    server_backend.PushCancelled -> PushCancelled
     server_backend.InvalidContentLength -> InvalidContentLength
     server_backend.BackendFailure(message) -> BackendFailure(message)
   }

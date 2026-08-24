@@ -15,6 +15,10 @@ pub type ConnectionHandle =
 pub type StreamHandle =
   native_client.Stream
 
+/// Opaque native server-push identity.
+pub type PushHandle =
+  native_client.Push
+
 /// Opaque backend-owned TLS resumption material.
 pub type ResumptionTicketHandle =
   native_client.ResumptionTicket
@@ -31,6 +35,7 @@ pub fn connect(
   timeout_milliseconds timeout_milliseconds: Int,
   stream_buffer_limit stream_buffer_limit: Int,
   http_datagrams http_datagrams: Bool,
+  maximum_pushes maximum_pushes: Int,
   qlog_directory qlog_directory: String,
   resumption_tickets resumption_tickets: List(ResumptionTicketHandle),
 ) -> Result(ConnectionHandle, client_backend.Failure) {
@@ -51,6 +56,10 @@ pub fn connect(
         native_client.with_stream_buffer_limit(configured, stream_buffer_limit)
         |> map_configuration_result,
       )
+      use configured <- result.try(
+        native_client.with_push_limit(configured, maximum_pushes)
+        |> map_configuration_result,
+      )
       use configured <- result.try(configure_trust(configured, ca_certificates))
       let configured = case http_datagrams {
         True -> native_client.with_http_datagrams(configured)
@@ -69,6 +78,25 @@ pub fn connect(
       native_client.connect(configured) |> map_native_result
     }
   }
+}
+
+/// Pull the next validated server push promise.
+pub fn next_push(
+  connection: ConnectionHandle,
+) -> Result(
+  #(PushHandle, String, String, List(#(String, String))),
+  client_backend.Failure,
+) {
+  native_client.next_push(connection)
+  |> result.map(fn(push) {
+    #(
+      push,
+      native_client.push_method(push),
+      native_client.push_path(push),
+      native_client.push_headers(push),
+    )
+  })
+  |> map_native_result
 }
 
 /// Open a request stream without ending its request body.
@@ -118,9 +146,35 @@ pub fn next_event(
   }
 }
 
+/// Pull the next response event for one server push.
+pub fn next_push_event(
+  push: PushHandle,
+) -> Result(RawEvent, client_backend.Failure) {
+  case native_client.next_push_event(push) {
+    Ok(native_client.InformationalResponse(status, headers)) ->
+      Ok(#(1, status, headers, <<>>))
+    Ok(native_client.ResponseHeaders(status, headers)) ->
+      Ok(#(2, status, headers, <<>>))
+    Ok(native_client.Data(bytes)) -> Ok(#(3, 0, [], bytes))
+    Ok(native_client.Trailers(headers)) -> Ok(#(4, 0, headers, <<>>))
+    Ok(native_client.End) -> Ok(#(5, 0, [], <<>>))
+    Error(error) -> Error(map_native_error(error))
+  }
+}
+
 /// Cancel a request stream and return a primitive idempotence status.
 pub fn cancel(stream: StreamHandle) -> Result(Int, client_backend.Failure) {
   case native_client.cancel(stream) {
+    Ok(native_client.Cancelled) -> Ok(1)
+    Ok(native_client.AlreadyCancelled) -> Ok(2)
+    Ok(native_client.AlreadyCompleted) -> Ok(3)
+    Error(error) -> Error(map_native_error(error))
+  }
+}
+
+/// Cancel a server push and return a primitive idempotence status.
+pub fn cancel_push(push: PushHandle) -> Result(Int, client_backend.Failure) {
+  case native_client.cancel_push(push) {
     Ok(native_client.Cancelled) -> Ok(1)
     Ok(native_client.AlreadyCancelled) -> Ok(2)
     Ok(native_client.AlreadyCompleted) -> Ok(3)
@@ -161,6 +215,7 @@ fn map_configuration_result(
       native_client.InvalidTimeout -> "timeout"
       native_client.InvalidResponseBodyLimit -> "response body limit"
       native_client.InvalidStreamBufferLimit -> "stream buffer limit"
+      native_client.InvalidPushLimit -> "server push limit"
       native_client.InvalidCaCertificate -> "CA certificate"
       native_client.InvalidQlogDirectory -> "qlog directory"
     }
@@ -213,6 +268,8 @@ fn map_native_error(error: native_client.Error) -> client_backend.Failure {
       client_backend.ResumptionOriginMismatch
     native_client.DatagramsNotNegotiated ->
       client_backend.BackendFailure("HTTP Datagrams were not negotiated")
+    native_client.DatagramNotAssociated ->
+      client_backend.BackendFailure("HTTP Datagram stream is not associated")
     native_client.DatagramTooLarge(_) ->
       client_backend.BackendFailure("HTTP Datagram is too large")
     native_client.DatagramBufferExceeded(_) ->

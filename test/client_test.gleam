@@ -166,6 +166,16 @@ pub fn client_enforces_request_body_limit_before_connecting_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_push_limit_is_bounded_and_can_be_disabled_test() -> Nil {
+  assert client.with_push_limit(client.new(), -1)
+    == Error(client.InvalidPushLimit)
+  assert client.with_push_limit(client.new(), 1025)
+    == Error(client.InvalidPushLimit)
+  let _disabled = client.with_push_limit(client.new(), 0) |> should.be_ok
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bounded_client_round_trip_over_real_udp_test() -> Nil {
   http3_test_support.with_server(fn(port, ca_certificate) {
     let configuration = client.with_timeout(client.new(), 3000) |> should.be_ok

@@ -27,6 +27,7 @@ pub type Failure {
   ConnectionClosed
   Timeout
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(Int)
   CongestionLimited
   UnknownStream
@@ -243,6 +244,7 @@ fn map_native_error(error: native_client.Error) -> Failure {
     native_client.ConnectionClosed -> ConnectionClosed
     native_client.Timeout | native_client.TicketUnavailable -> Timeout
     native_client.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    native_client.DatagramNotAssociated -> DatagramNotAssociated
     native_client.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
     native_client.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
     native_client.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
@@ -267,6 +269,7 @@ fn map_native_server_error(error: native_server.Error) -> Failure {
       ConnectionClosed
     native_server.Timeout -> Timeout
     native_server.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    native_server.DatagramNotAssociated -> DatagramNotAssociated
     native_server.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
     native_server.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
     native_server.ConcurrentDatagramReceive -> ConcurrentDatagramReceive

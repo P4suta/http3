@@ -51,3 +51,31 @@ pub fn request_trailers_reject_message_control_fields_test() -> Nil {
   assert client_request.prepare_trailers([#(":method", "GET")])
     == Error(client_request.InvalidHeader(":method"))
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn extended_connect_builds_protocol_pseudo_field_and_rejects_invalid_token_test() -> Nil {
+  let request =
+    request.new()
+    |> request.set_host("example.com")
+    |> request.set_path("/tunnel")
+    |> request.set_body(Nil)
+  // nolint: assert_ok_pattern -- normalized pseudo-fields are the assertion.
+  let assert Ok(client_request.PreparedStreamingRequest(_, _, headers, _)) =
+    client_request.prepare_extended_connect(
+      request: request,
+      protocol: "connect-udp",
+    )
+  assert headers
+    == [
+      #(":method", "CONNECT"),
+      #(":protocol", "connect-udp"),
+      #(":scheme", "https"),
+      #(":path", "/tunnel"),
+      #(":authority", "example.com"),
+    ]
+  assert client_request.prepare_extended_connect(
+      request: request,
+      protocol: "bad protocol",
+    )
+    == Error(client_request.InvalidProtocol("bad protocol"))
+}

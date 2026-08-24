@@ -3,6 +3,7 @@
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -10,6 +11,7 @@ import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/driver
 import gleam_quic/internal/http3/client_connection
 import gleam_quic/internal/http3/connection_state as http3_state
+import gleam_quic/internal/http3/datagram
 import gleam_quic/internal/http3/header_semantics
 import gleam_quic/internal/http3/message_stream
 import gleam_quic/internal/http3/session
@@ -18,7 +20,6 @@ import gleam_quic/internal/qpack/header.{type Header, Header}
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/internal/udp
-import gleam_quic/varint
 
 const network_poll_milliseconds = 10
 
@@ -44,6 +45,21 @@ pub opaque type Connection {
 /// One request stream routed through its connection owner.
 pub opaque type Stream {
   Stream(connection: Connection, identifier: Int)
+}
+
+/// One server-pushed response routed through its connection owner.
+pub opaque type Push {
+  Push(connection: Connection, identifier: Int)
+}
+
+/// A validated server push promise and its response handle.
+pub type IncomingPush {
+  IncomingPush(
+    push: Push,
+    method: String,
+    path: String,
+    headers: List(#(String, String)),
+  )
 }
 
 /// Origin-bound TLS session resumption material.
@@ -108,6 +124,7 @@ pub type Error {
   UnsafeEarlyDataMethod(String)
   ResumptionOriginMismatch
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(Int)
   DatagramBufferExceeded(Int)
   ConcurrentDatagramReceive
@@ -139,6 +156,13 @@ type Command {
   Finish(stream_id: Int, reply: Subject(Result(Nil, Error)))
   Next(stream_id: Int, reply: Subject(Result(Event, Error)), deadline: Int)
   Cancel(stream_id: Int, reply: Subject(Result(Cancellation, Error)))
+  NextPush(reply: Subject(Result(IncomingPush, Error)), deadline: Int)
+  NextPushEvent(
+    push_id: Int,
+    reply: Subject(Result(Event, Error)),
+    deadline: Int,
+  )
+  CancelPush(push_id: Int, reply: Subject(Result(Cancellation, Error)))
   Close(reply: Subject(Result(CloseResult, Error)))
   Capabilities(reply: Subject(Result(#(Bool, Bool, Bool, Bool), Error)))
   MaximumDatagram(stream_id: Int, reply: Subject(Result(Int, Error)))
@@ -186,6 +210,10 @@ type TicketWaiter {
   TicketWaiter(reply: Subject(Result(ResumptionTicket, Error)), deadline: Int)
 }
 
+type PushWaiter {
+  PushWaiter(reply: Subject(Result(IncomingPush, Error)), deadline: Int)
+}
+
 type PendingSend {
   PendingSend(
     remaining: BitArray,
@@ -211,12 +239,31 @@ type StreamState {
   )
 }
 
+type PushState {
+  PushState(
+    method: String,
+    path: String,
+    headers: List(#(String, String)),
+    events: List(Event),
+    buffered_data_bytes: Int,
+    waiter: Option(Waiter),
+    response_finished: Bool,
+    delivered: Bool,
+    cancelled: Bool,
+    failure: Option(Error),
+  )
+}
+
 type Worker {
   Worker(
     connection: client_connection.State,
     streams: Dict(Int, StreamState),
+    pushes: Dict(Int, PushState),
+    pending_pushes: List(Int),
+    push_waiter: Option(PushWaiter),
     commands: Subject(Command),
     selector: process.Selector(LoopMessage),
+    timeout_milliseconds: Int,
     stream_buffer_limit: Int,
     hostname: String,
     port: Int,
@@ -243,6 +290,7 @@ pub fn connect(
   stream_buffer_limit: Int,
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
+  maximum_pushes: Int,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
 ) -> Result(Connection, Error) {
@@ -252,6 +300,8 @@ pub fn connect(
     && port <= 65_535
     && timeout_milliseconds > 0
     && stream_buffer_limit > 0
+    && maximum_pushes >= 0
+    && maximum_pushes <= 1024
   {
     False -> Error(InvalidInput)
     True ->
@@ -271,6 +321,7 @@ pub fn connect(
                 stream_buffer_limit,
                 trust_store,
                 http_datagrams,
+                maximum_pushes,
                 qlog_directory,
                 resumption_ticket,
               )
@@ -338,6 +389,32 @@ pub fn next_event(stream: Stream) -> Result(Event, Error) {
 /// Cancel both stream directions idempotently.
 pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
   call(stream.connection, fn(reply) { Cancel(stream.identifier, reply) })
+}
+
+/// Pull the next validated server push promise.
+pub fn next_push(connection: Connection) -> Result(IncomingPush, Error) {
+  let deadline = udp.monotonic_millisecond() + connection.timeout_milliseconds
+  call_with_timeout(
+    connection,
+    connection.timeout_milliseconds + worker_reply_grace_milliseconds,
+    fn(reply) { NextPush(reply, deadline) },
+  )
+}
+
+/// Pull one response event for a server push.
+pub fn next_push_event(push: Push) -> Result(Event, Error) {
+  let deadline =
+    udp.monotonic_millisecond() + push.connection.timeout_milliseconds
+  call_with_timeout(
+    push.connection,
+    push.connection.timeout_milliseconds + worker_reply_grace_milliseconds,
+    fn(reply) { NextPushEvent(push.identifier, reply, deadline) },
+  )
+}
+
+/// Cancel one server push idempotently.
+pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
+  call(push.connection, fn(reply) { CancelPush(push.identifier, reply) })
 }
 
 /// Close one connection idempotently.
@@ -470,6 +547,7 @@ fn initialise(
   stream_buffer_limit: Int,
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
+  maximum_pushes: Int,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
 ) -> Nil {
@@ -485,6 +563,7 @@ fn initialise(
       trust_store,
       http_datagrams,
       native_ticket,
+      maximum_pushes,
     )
   case client_connection.connect(config) {
     Error(error) -> process.send(bootstrap, Error(map_connection_error(error)))
@@ -521,8 +600,12 @@ fn initialise(
           loop(Worker(
             connection,
             dict.new(),
+            dict.new(),
+            [],
+            None,
             commands,
             selector,
+            timeout_milliseconds,
             stream_buffer_limit,
             hostname,
             port,
@@ -659,6 +742,11 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
         Ok(stream) -> handle_next(worker, identifier, stream, reply, deadline)
       }
     Cancel(identifier, reply) -> handle_cancel(worker, identifier, reply)
+    NextPush(reply, deadline) -> handle_next_push(worker, reply, deadline)
+    NextPushEvent(identifier, reply, deadline) ->
+      handle_next_push_event(worker, identifier, reply, deadline)
+    CancelPush(identifier, reply) ->
+      handle_cancel_push(worker, identifier, reply)
     Close(reply) -> {
       process.send(reply, Ok(Closed))
       shutdown(worker, "application close")
@@ -807,6 +895,148 @@ fn handle_next(
             identifier,
             StreamState(..stream, waiter: Some(Waiter(reply, deadline))),
           ))
+      }
+  }
+}
+
+fn handle_next_push(
+  worker: Worker,
+  reply: Subject(Result(IncomingPush, Error)),
+  deadline: Int,
+) -> Result(Worker, Nil) {
+  case worker.pending_pushes, worker.push_waiter {
+    [identifier, ..rest], _ -> {
+      process.send(reply, incoming_push(worker, identifier))
+      Ok(mark_push_delivered(Worker(..worker, pending_pushes: rest), identifier))
+    }
+    [], Some(_) -> {
+      process.send(reply, Error(ConcurrentReceive))
+      Ok(worker)
+    }
+    [], None ->
+      Ok(Worker(..worker, push_waiter: Some(PushWaiter(reply, deadline))))
+  }
+}
+
+fn handle_next_push_event(
+  worker: Worker,
+  identifier: Int,
+  reply: Subject(Result(Event, Error)),
+  deadline: Int,
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> {
+      process.send(reply, Error(StreamFinished))
+      Ok(worker)
+    }
+    Ok(push) ->
+      case push.delivered {
+        False -> {
+          process.send(reply, Error(ProtocolError))
+          Ok(worker)
+        }
+        True ->
+          case
+            push.events,
+            push.failure,
+            push.cancelled,
+            push.response_finished
+          {
+            [event, ..rest], _, _, _ -> {
+              process.send(reply, Ok(event))
+              let buffered = case event {
+                Data(bytes) ->
+                  push.buffered_data_bytes - bit_array.byte_size(bytes)
+                _ -> push.buffered_data_bytes
+              }
+              Ok(put_push(
+                worker,
+                identifier,
+                PushState(
+                  ..push,
+                  events: rest,
+                  buffered_data_bytes: int.max(buffered, 0),
+                ),
+              ))
+            }
+            [], Some(error), _, _ -> {
+              process.send(reply, Error(error))
+              Ok(worker)
+            }
+            [], None, True, _ -> {
+              process.send(reply, Error(StreamCancelled))
+              Ok(worker)
+            }
+            [], None, False, True -> {
+              process.send(reply, Error(StreamFinished))
+              Ok(worker)
+            }
+            [], None, False, False ->
+              case push.waiter {
+                Some(_) -> {
+                  process.send(reply, Error(ConcurrentReceive))
+                  Ok(worker)
+                }
+                None ->
+                  Ok(put_push(
+                    worker,
+                    identifier,
+                    PushState(..push, waiter: Some(Waiter(reply, deadline))),
+                  ))
+              }
+          }
+      }
+  }
+}
+
+fn handle_cancel_push(
+  worker: Worker,
+  identifier: Int,
+  reply: Subject(Result(Cancellation, Error)),
+) -> Result(Worker, Nil) {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> {
+      process.send(reply, Ok(AlreadyCompleted))
+      Ok(worker)
+    }
+    Ok(push) ->
+      case push.cancelled, push.response_finished {
+        True, _ -> {
+          process.send(reply, Ok(AlreadyCancelled))
+          Ok(worker)
+        }
+        False, True -> {
+          process.send(reply, Ok(AlreadyCompleted))
+          Ok(worker)
+        }
+        False, False ->
+          case client_connection.cancel_push(worker.connection, identifier) {
+            Error(error) -> {
+              process.send(reply, Error(map_connection_error(error)))
+              Ok(worker)
+            }
+            Ok(connection) -> {
+              notify_waiter(push.waiter, Error(StreamCancelled))
+              process.send(reply, Ok(Cancelled))
+              Ok(put_push(
+                Worker(
+                  ..worker,
+                  connection: connection,
+                  pending_pushes: list.filter(worker.pending_pushes, fn(value) {
+                    value != identifier
+                  }),
+                ),
+                identifier,
+                PushState(
+                  ..push,
+                  events: [],
+                  buffered_data_bytes: 0,
+                  waiter: None,
+                  cancelled: True,
+                ),
+              ))
+            }
+          }
       }
   }
 }
@@ -1279,12 +1509,28 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
       finish_response(worker, identifier)
     session.TransportEvent(transport.StreamWasReset(identifier, code)) ->
       fail_stream(worker, identifier, StreamReset(code))
-    session.TransportEvent(transport.DatagramReceived(encoded)) ->
-      case varint.decode(encoded) {
-        Ok(#(quarter_stream_id, payload)) ->
-          enqueue_datagram(worker, quarter_stream_id * 4, payload)
-        Error(_) -> worker
+    session.Http3Event(http3_state.HttpDatagram(identifier, payload)) ->
+      enqueue_datagram(worker, identifier, payload)
+    session.Http3Event(http3_state.PushPromised(identifier, validated)) ->
+      register_push(worker, identifier, validated)
+    session.Http3Event(http3_state.PushInformationalResponse(
+      identifier,
+      _,
+      validated,
+    )) -> enqueue_push_validated(worker, identifier, validated, True)
+    session.Http3Event(http3_state.PushResponseHeaders(identifier, _, validated)) ->
+      enqueue_push_validated(worker, identifier, validated, False)
+    session.Http3Event(http3_state.PushData(identifier, _, bytes)) ->
+      enqueue_push_data(worker, identifier, bytes)
+    session.Http3Event(http3_state.PushTrailers(identifier, _, validated)) ->
+      case decode_regular_headers(validated) {
+        Error(error) -> fail_push(worker, identifier, error)
+        Ok(headers) -> enqueue_push(worker, identifier, Trailers(headers))
       }
+    session.Http3Event(http3_state.PushFinished(identifier, _)) ->
+      finish_push_response(worker, identifier)
+    session.Http3Event(http3_state.PushCancelled(identifier)) ->
+      fail_push(worker, identifier, StreamCancelled)
     session.TransportEvent(transport.EarlyDataWasAccepted) ->
       Worker(..worker, early_data_status: Accepted)
     session.TransportEvent(transport.EarlyDataWasRejected) ->
@@ -1296,8 +1542,179 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
       )
     session.TransportEvent(transport.PeerClosed(_, _))
     | session.TransportEvent(transport.StatelessResetReceived) ->
-      fail_all_streams(worker, ConnectionClosed)
+      fail_all_work(worker, ConnectionClosed)
     _ -> worker
+  }
+}
+
+fn register_push(
+  worker: Worker,
+  identifier: Int,
+  validated: header_semantics.Validated,
+) -> Worker {
+  case
+    decode_pushed_request(validated),
+    dict.has_key(worker.pushes, identifier)
+  {
+    Error(_), _ -> worker
+    _, True -> worker
+    Ok(#(method, path, headers)), False -> {
+      let push =
+        PushState(method, path, headers, [], 0, None, False, False, False, None)
+      let worker = put_push(worker, identifier, push)
+      case worker.push_waiter {
+        Some(PushWaiter(reply, _)) -> {
+          process.send(reply, incoming_push(worker, identifier))
+          mark_push_delivered(Worker(..worker, push_waiter: None), identifier)
+        }
+        None ->
+          Worker(
+            ..worker,
+            pending_pushes: list.append(worker.pending_pushes, [identifier]),
+          )
+      }
+    }
+  }
+}
+
+fn enqueue_push_validated(
+  worker: Worker,
+  identifier: Int,
+  validated: header_semantics.Validated,
+  informational: Bool,
+) -> Worker {
+  case decode_validated_headers(validated) {
+    Error(error) -> fail_push(worker, identifier, error)
+    Ok(#(status, headers)) ->
+      enqueue_push(worker, identifier, case informational {
+        True -> Informational(status, headers)
+        False -> Response(status, headers)
+      })
+  }
+}
+
+fn enqueue_push_data(
+  worker: Worker,
+  identifier: Int,
+  bytes: BitArray,
+) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(PushState(failure: Some(_), ..)) -> worker
+    Ok(PushState(cancelled: True, ..)) -> worker
+    Ok(push) -> {
+      let buffered = push.buffered_data_bytes + bit_array.byte_size(bytes)
+      case buffered > worker.stream_buffer_limit {
+        True ->
+          case client_connection.cancel_push(worker.connection, identifier) {
+            Error(_) ->
+              fail_push(
+                worker,
+                identifier,
+                ConsumerTooSlow(worker.stream_buffer_limit),
+              )
+            Ok(connection) ->
+              fail_push(
+                Worker(..worker, connection: connection),
+                identifier,
+                ConsumerTooSlow(worker.stream_buffer_limit),
+              )
+          }
+        False ->
+          enqueue_push_with_buffer(
+            worker,
+            identifier,
+            push,
+            Data(bytes),
+            buffered,
+          )
+      }
+    }
+  }
+}
+
+fn enqueue_push(worker: Worker, identifier: Int, event: Event) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(PushState(failure: Some(_), ..)) -> worker
+    Ok(PushState(cancelled: True, ..)) -> worker
+    Ok(push) ->
+      enqueue_push_with_buffer(
+        worker,
+        identifier,
+        push,
+        event,
+        push.buffered_data_bytes,
+      )
+  }
+}
+
+fn enqueue_push_with_buffer(
+  worker: Worker,
+  identifier: Int,
+  push: PushState,
+  event: Event,
+  buffered: Int,
+) -> Worker {
+  case push.waiter, push.events, push.delivered {
+    Some(Waiter(reply, _)), [], True -> {
+      process.send(reply, Ok(event))
+      put_push(worker, identifier, PushState(..push, waiter: None))
+    }
+    _, _, _ ->
+      put_push(
+        worker,
+        identifier,
+        PushState(
+          ..push,
+          events: list.append(push.events, [event]),
+          buffered_data_bytes: buffered,
+        ),
+      )
+  }
+}
+
+fn finish_push_response(worker: Worker, identifier: Int) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(PushState(failure: Some(_), ..)) -> worker
+    Ok(PushState(cancelled: True, ..)) -> worker
+    Ok(_) -> {
+      let worker = enqueue_push(worker, identifier, End)
+      case dict.get(worker.pushes, identifier) {
+        Error(_) -> worker
+        Ok(push) ->
+          put_push(
+            worker,
+            identifier,
+            PushState(..push, response_finished: True),
+          )
+      }
+    }
+  }
+}
+
+fn fail_push(worker: Worker, identifier: Int, error: Error) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(push) -> {
+      notify_waiter(push.waiter, Error(error))
+      put_push(
+        Worker(
+          ..worker,
+          pending_pushes: list.filter(worker.pending_pushes, fn(value) {
+            value != identifier
+          }),
+        ),
+        identifier,
+        PushState(
+          ..push,
+          waiter: None,
+          cancelled: push.cancelled || error == StreamCancelled,
+          failure: Some(error),
+        ),
+      )
+    }
   }
 }
 
@@ -1503,6 +1920,33 @@ fn fail_all_streams(worker: Worker, error: Error) -> Worker {
   fail_stream_entries(worker, dict.to_list(worker.streams), error)
 }
 
+fn fail_all_pushes(worker: Worker, error: Error) -> Worker {
+  fail_push_entries(worker, dict.keys(worker.pushes), error)
+}
+
+fn fail_push_entries(
+  worker: Worker,
+  identifiers: List(Int),
+  error: Error,
+) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] ->
+      fail_push_entries(fail_push(worker, identifier, error), rest, error)
+  }
+}
+
+fn fail_all_work(worker: Worker, error: Error) -> Worker {
+  let worker = fail_all_streams(worker, error) |> fail_all_pushes(error)
+  case worker.push_waiter {
+    Some(PushWaiter(reply, _)) -> {
+      process.send(reply, Error(error))
+      Worker(..worker, push_waiter: None)
+    }
+    None -> worker
+  }
+}
+
 fn fail_stream_entries(
   worker: Worker,
   entries: List(#(Int, StreamState)),
@@ -1517,7 +1961,35 @@ fn fail_stream_entries(
 
 fn expire_waiters(worker: Worker, now: Int) -> Worker {
   let worker = expire_waiter_entries(worker, dict.to_list(worker.streams), now)
+  let worker = expire_push_waiters(worker, dict.to_list(worker.pushes), now)
+  let worker = case worker.push_waiter {
+    Some(PushWaiter(reply, deadline)) if now >= deadline -> {
+      process.send(reply, Error(Timeout))
+      Worker(..worker, push_waiter: None)
+    }
+    _ -> worker
+  }
   expire_ticket_waiter(worker, now)
+}
+
+fn expire_push_waiters(
+  worker: Worker,
+  entries: List(#(Int, PushState)),
+  now: Int,
+) -> Worker {
+  case entries {
+    [] -> worker
+    [#(identifier, push), ..rest] -> {
+      let worker = case push.waiter {
+        Some(Waiter(reply, deadline)) if now >= deadline -> {
+          process.send(reply, Error(Timeout))
+          put_push(worker, identifier, PushState(..push, waiter: None))
+        }
+        _ -> worker
+      }
+      expire_push_waiters(worker, rest, now)
+    }
+  }
 }
 
 fn expire_waiter_entries(
@@ -1543,7 +2015,7 @@ fn expire_waiter_entries(
 }
 
 fn terminate_with_error(worker: Worker, error: Error) -> Nil {
-  let worker = fail_all_streams(worker, error)
+  let worker = fail_all_work(worker, error)
   shutdown(worker, "connection failed")
 }
 
@@ -1574,6 +2046,41 @@ fn new_stream_state() -> StreamState {
 
 fn put_stream(worker: Worker, identifier: Int, stream: StreamState) -> Worker {
   Worker(..worker, streams: dict.insert(worker.streams, identifier, stream))
+}
+
+fn put_push(worker: Worker, identifier: Int, push: PushState) -> Worker {
+  Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
+}
+
+fn mark_push_delivered(worker: Worker, identifier: Int) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(push) -> put_push(worker, identifier, PushState(..push, delivered: True))
+  }
+}
+
+fn incoming_push(
+  worker: Worker,
+  identifier: Int,
+) -> Result(IncomingPush, Error) {
+  use push <- result.try(
+    dict.get(worker.pushes, identifier) |> result.replace_error(StreamFinished),
+  )
+  Ok(IncomingPush(
+    Push(
+      Connection(
+        worker.commands,
+        process.self(),
+        worker.timeout_milliseconds,
+        worker.hostname,
+        worker.port,
+      ),
+      identifier,
+    ),
+    push.method,
+    push.path,
+    push.headers,
+  ))
 }
 
 fn notify_waiter(waiter: Option(Waiter), outcome: Result(Event, Error)) -> Nil {
@@ -1659,6 +2166,33 @@ fn decode_validated_headers(
   })
   use headers <- result.try(decode_headers(fields))
   Ok(#(status, headers))
+}
+
+fn decode_pushed_request(
+  validated: header_semantics.Validated,
+) -> Result(#(String, String, List(#(String, String))), Error) {
+  let header_semantics.Validated(control, fields, _) = validated
+  use request <- result.try(case control {
+    header_semantics.RequestControlData(request) -> Ok(request)
+    _ -> Error(ProtocolError)
+  })
+  let header_semantics.RequestControl(method, _, _, path, protocol) = request
+  use _ <- result.try(case protocol {
+    None -> Ok(Nil)
+    Some(_) -> Error(ProtocolError)
+  })
+  use method <- result.try(
+    bit_array.to_string(method)
+    |> result.replace_error(InvalidHeaderEncoding),
+  )
+  use path <- result.try(case path {
+    Some(value) ->
+      bit_array.to_string(value)
+      |> result.replace_error(InvalidHeaderEncoding)
+    None -> Error(ProtocolError)
+  })
+  use headers <- result.try(decode_headers(fields))
+  Ok(#(method, path, headers))
 }
 
 fn decode_regular_headers(
@@ -1777,6 +2311,18 @@ fn map_connection_error(error: client_connection.Error) -> Error {
     client_connection.Http3OperationFailed(
       _,
       session.TransportFailure(transport.DatagramNotNegotiated),
+    ) -> DatagramsNotNegotiated
+    client_connection.Http3OperationFailed(
+      _,
+      session.Http3Failure(http3_state.DatagramFailure(datagram.UnknownAssociation(
+        _,
+      ))),
+    ) -> DatagramNotAssociated
+    client_connection.Http3OperationFailed(
+      _,
+      session.Http3Failure(http3_state.DatagramFailure(
+        datagram.UnreliableDatagramNotNegotiated,
+      )),
     ) -> DatagramsNotNegotiated
     client_connection.Http3OperationFailed(
       _,

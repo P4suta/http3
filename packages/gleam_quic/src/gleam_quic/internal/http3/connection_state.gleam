@@ -71,6 +71,7 @@ pub type Event {
   ResponseHeaders(stream_id: Int, headers: header_semantics.Validated)
   Trailers(stream_id: Int, headers: header_semantics.Validated)
   Data(stream_id: Int, bytes: BitArray)
+  HttpDatagram(stream_id: Int, payload: BitArray)
   StreamFinished(stream_id: Int)
   HeadersBlocked(stream_id: Int, required_insert_count: Int)
   PushPromised(push_id: Int, headers: header_semantics.Validated)
@@ -632,6 +633,12 @@ pub fn send_response_headers(
     transaction.request_control,
     status,
   ))
+  use datagrams <- result.try(associate_response_datagrams(
+    state.datagrams,
+    stream_id,
+    transaction.request_control,
+    status,
+  ))
   use #(qpack_encoder, encoded) <- result.try(
     encoder.encode(
       state.qpack_encoder,
@@ -655,7 +662,7 @@ pub fn send_response_headers(
     )
   Ok(#(
     put_transaction(
-      State(..state, qpack_encoder: qpack_encoder),
+      State(..state, qpack_encoder: qpack_encoder, datagrams: datagrams),
       stream_id,
       transaction,
     ),
@@ -807,6 +814,14 @@ pub fn take_qpack_decoder_bytes(
     _ -> Some(StreamBytes(critical.qpack_decoder, bytes))
   }
   Ok(#(State(..state, qpack_decoder: qpack_decoder), output))
+}
+
+/// Return the installed local control-stream identifier.
+pub fn control_stream_id(state: State) -> Result(Int, Error) {
+  use CriticalStreams(identifier, _, _) <- result.try(require_critical_streams(
+    state,
+  ))
+  Ok(identifier)
 }
 
 /// Insert one local field into QPACK after peer SETTINGS established capacity.
@@ -1188,28 +1203,38 @@ pub fn request_priority_update(
 pub fn start_drain(
   state: State,
   now_ms: Int,
-) -> Result(#(State, BitArray), Error) {
+) -> Result(#(State, StreamBytes), Error) {
+  use CriticalStreams(control_stream, _, _) <- result.try(
+    require_critical_streams(state),
+  )
   use #(drain_state, identifier) <- result.try(
     drain.start(state.drain, now_ms) |> map_drain_result,
   )
   use encoded <- result.try(
     frame.encode(frame.GoAway(identifier)) |> map_frame_result,
   )
-  Ok(#(State(..state, drain: drain_state), encoded))
+  Ok(#(State(..state, drain: drain_state), StreamBytes(control_stream, encoded)))
 }
 
 /// Refine graceful drain to the first identifier this endpoint will reject.
 pub fn refine_drain(
   state: State,
   identifier: Int,
-) -> Result(#(State, BitArray, List(Int)), Error) {
+) -> Result(#(State, StreamBytes, List(Int)), Error) {
+  use CriticalStreams(control_stream, _, _) <- result.try(
+    require_critical_streams(state),
+  )
   use drain.GoAwayOutcome(drain_state, rejected) <- result.try(
     drain.refine(state.drain, identifier) |> map_drain_result,
   )
   use encoded <- result.try(
     frame.encode(frame.GoAway(identifier)) |> map_frame_result,
   )
-  Ok(#(State(..state, drain: drain_state), encoded, rejected))
+  Ok(#(
+    State(..state, drain: drain_state),
+    StreamBytes(control_stream, encoded),
+    rejected,
+  ))
 }
 
 /// Current graceful-shutdown phase.
@@ -1630,6 +1655,12 @@ fn process_response_headers(
     transaction.request_control,
     status,
   ))
+  use datagrams <- result.try(associate_response_datagrams(
+    state.datagrams,
+    stream_id,
+    transaction.request_control,
+    status,
+  ))
   let transaction =
     Transaction(
       ..transaction,
@@ -1643,7 +1674,11 @@ fn process_response_headers(
     False -> ResponseHeaders(stream_id, validated)
   }
   finish_after_unblock(
-    put_transaction(state, stream_id, transaction),
+    put_transaction(
+      State(..state, datagrams: datagrams),
+      stream_id,
+      transaction,
+    ),
     stream_id,
     transaction,
     [event],
@@ -2237,6 +2272,42 @@ fn request_method(
   case request {
     Some(header_semantics.RequestControl(method, _, _, _, _)) -> Some(method)
     None -> None
+  }
+}
+
+fn associate_response_datagrams(
+  datagrams: datagram.State,
+  stream_id: Int,
+  request: Option(header_semantics.RequestControl),
+  status: Int,
+) -> Result(datagram.State, Error) {
+  let protocol = case request {
+    Some(header_semantics.RequestControl(<<"CONNECT">>, _, _, _, protocol))
+      if status >= 200 && status < 300
+    -> protocol
+    _ -> None
+  }
+  case protocol {
+    None -> Ok(datagrams)
+    Some(protocol) -> {
+      use extension <- result.try(
+        datagram.extension(protocol) |> map_datagram_result,
+      )
+      case
+        datagram.associate(
+          datagrams,
+          stream_id,
+          extension,
+          datagram.UnreliableAndCapsules,
+        )
+      {
+        Ok(datagrams) -> Ok(datagrams)
+        Error(datagram.UnreliableDatagramNotNegotiated) ->
+          datagram.associate(datagrams, stream_id, extension, datagram.Capsules)
+          |> map_datagram_result
+        Error(error) -> Error(DatagramFailure(error))
+      }
+    }
   }
 }
 

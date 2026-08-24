@@ -36,12 +36,18 @@ pub opaque type Request {
   Request(handle: server_worker.Request)
 }
 
+/// One promised server push response.
+pub opaque type Push {
+  Push(handle: server_worker.Push)
+}
+
 /// Primitive accepted request data for the parent HTTP adapter.
 pub type Incoming {
   Incoming(
     request: Request,
     method: String,
     path: String,
+    protocol: Option(String),
     headers: List(#(String, String)),
   )
 }
@@ -57,6 +63,13 @@ pub type RequestEvent {
 pub type StopResult {
   Stopped
   AlreadyStopped
+}
+
+/// Outcome of GOAWAY-based graceful listener shutdown.
+pub type DrainResult {
+  Drained
+  Forced
+  AlreadyDrained
 }
 
 /// State of a request's connection-level early-data attempt.
@@ -93,6 +106,7 @@ pub type Error {
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
   ConcurrentAccept
+  ConcurrentDrain
   ConcurrentReceive
   ResponseAlreadyStarted
   ResponseNotStarted
@@ -100,10 +114,12 @@ pub type Error {
   InvalidContentLength
   InvalidHeaderEncoding
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(Int)
   DatagramBufferExceeded(Int)
   ConcurrentDatagramReceive
   StreamFinished
+  PushCancelled
   CongestionLimited
   BackendFailure(String)
 }
@@ -251,8 +267,8 @@ pub fn port(listener: Listener) -> Result(Int, Error) {
 pub fn accept(listener: Listener) -> Result(Incoming, Error) {
   let Listener(handle) = listener
   case server_worker.accept(handle) {
-    Ok(server_worker.Incoming(request, method, path, headers)) ->
-      Ok(Incoming(Request(request), method, path, headers))
+    Ok(server_worker.Incoming(request, method, path, protocol, headers)) ->
+      Ok(Incoming(Request(request), method, path, protocol, headers))
     Error(error) -> Error(map_error(error))
   }
 }
@@ -329,12 +345,74 @@ pub fn send_trailers(
   server_worker.send_trailers(handle, headers) |> result.map_error(map_error)
 }
 
+/// Promise one same-origin GET on an accepted request.
+pub fn promise_push(
+  request: Request,
+  path: String,
+  headers: List(#(String, String)),
+) -> Result(Push, Error) {
+  let Request(handle) = request
+  server_worker.promise_push(handle, path, headers)
+  |> result.map(Push)
+  |> result.map_error(map_error)
+}
+
+/// Send one final pushed response head.
+pub fn send_push_response(
+  push: Push,
+  status: Int,
+  headers: List(#(String, String)),
+  declared_content_length: Option(Int),
+) -> Result(Nil, Error) {
+  let Push(handle) = push
+  server_worker.send_push_response(
+    handle,
+    status,
+    headers,
+    declared_content_length,
+  )
+  |> result.map_error(map_error)
+}
+
+/// Send one pushed response-body chunk with backpressure.
+pub fn send_push_chunk(push: Push, bytes: BitArray) -> Result(Nil, Error) {
+  let Push(handle) = push
+  server_worker.send_push_chunk(handle, bytes) |> result.map_error(map_error)
+}
+
+/// Finish one pushed response.
+pub fn finish_push(push: Push) -> Result(Nil, Error) {
+  let Push(handle) = push
+  server_worker.finish_push(handle) |> result.map_error(map_error)
+}
+
+/// Send pushed response trailers and finish atomically.
+pub fn send_push_trailers(
+  push: Push,
+  headers: List(#(String, String)),
+) -> Result(Nil, Error) {
+  let Push(handle) = push
+  server_worker.send_push_trailers(handle, headers)
+  |> result.map_error(map_error)
+}
+
 /// Stop the listener and every owned connection idempotently.
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   let Listener(handle) = listener
   case server_worker.stop(handle) {
     Ok(server_worker.Stopped) -> Ok(Stopped)
     Ok(server_worker.AlreadyStopped) -> Ok(AlreadyStopped)
+    Error(error) -> Error(map_error(error))
+  }
+}
+
+/// Send two-stage GOAWAY, drain active requests, and release the listener.
+pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
+  let Listener(handle) = listener
+  case server_worker.graceful_stop(handle) {
+    Ok(server_worker.Drained) -> Ok(Drained)
+    Ok(server_worker.Forced) -> Ok(Forced)
+    Ok(server_worker.AlreadyDrained) -> Ok(AlreadyDrained)
     Error(error) -> Error(map_error(error))
   }
 }
@@ -410,6 +488,7 @@ fn map_error(error: server_worker.Error) -> Error {
     server_worker.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     server_worker.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
     server_worker.ConcurrentAccept -> ConcurrentAccept
+    server_worker.ConcurrentDrain -> ConcurrentDrain
     server_worker.ConcurrentReceive -> ConcurrentReceive
     server_worker.ResponseAlreadyStarted -> ResponseAlreadyStarted
     server_worker.ResponseNotStarted -> ResponseNotStarted
@@ -417,10 +496,12 @@ fn map_error(error: server_worker.Error) -> Error {
     server_worker.InvalidContentLength -> InvalidContentLength
     server_worker.InvalidHeaderEncoding -> InvalidHeaderEncoding
     server_worker.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    server_worker.DatagramNotAssociated -> DatagramNotAssociated
     server_worker.DatagramTooLarge(limit) -> DatagramTooLarge(limit)
     server_worker.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
     server_worker.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
     server_worker.StreamFinished -> StreamFinished
+    server_worker.PushCancelled -> PushCancelled
     server_worker.CongestionLimited -> CongestionLimited
     server_worker.BackendFailure(message) -> BackendFailure(message)
   }

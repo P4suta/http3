@@ -37,6 +37,7 @@ pub type Config {
     trust_store: authentication.TrustStore,
     http_datagrams: Bool,
     resumption_ticket: Option(session_ticket.ClientTicket),
+    maximum_pushes: Int,
   )
 }
 
@@ -177,6 +178,13 @@ pub fn abort_stream(
   session.abort_stream(state.session, stream_id, application_error_code)
   |> result.map(fn(next) { State(..state, session: next) })
   |> map_session_result("abort")
+}
+
+/// Cancel one accepted server push.
+pub fn cancel_push(state: State, push_id: Int) -> Result(State, Error) {
+  session.cancel_push(state.session, push_id)
+  |> result.map(fn(next) { State(..state, session: next) })
+  |> map_session_result("cancel_push")
 }
 
 /// Return negotiated advanced capabilities.
@@ -420,7 +428,17 @@ fn establish(
     )
     |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
   )
-  await_peer_settings(State(socket, peer, http3, 0, 0, 0, 0, 0), deadline)
+  use state <- result.try(await_peer_settings(
+    State(socket, peer, http3, 0, 0, 0, 0, 0),
+    deadline,
+  ))
+  case config.maximum_pushes {
+    0 -> Ok(state)
+    maximum ->
+      session.permit_pushes(state.session, maximum - 1)
+      |> result.map(fn(next) { State(..state, session: next) })
+      |> map_session_result("permit_pushes")
+  }
 }
 
 fn await_peer_settings(state: State, deadline: Int) -> Result(State, Error) {
@@ -757,6 +775,8 @@ fn validate(config: Config) -> Result(Nil, Error) {
     && config.port > 0
     && config.port <= 65_535
     && config.timeout_milliseconds > 0
+    && config.maximum_pushes >= 0
+    && config.maximum_pushes <= 1024
   {
     True -> Ok(Nil)
     False -> Error(InvalidInput)

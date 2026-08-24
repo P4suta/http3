@@ -50,6 +50,7 @@ pub type Error {
   ConnectionClosed
   Timeout
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(maximum: Int)
   CongestionLimited
   UnknownStream
@@ -405,6 +406,7 @@ fn from_backend_failure(failure: transport_backend.Failure) -> Error {
     transport_backend.ConnectionClosed -> ConnectionClosed
     transport_backend.Timeout -> Timeout
     transport_backend.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    transport_backend.DatagramNotAssociated -> DatagramNotAssociated
     transport_backend.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
     transport_backend.CongestionLimited -> CongestionLimited
     transport_backend.UnknownStream -> UnknownStream

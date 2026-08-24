@@ -8,6 +8,7 @@ import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/driver
 import gleam_quic/internal/ecn
 import gleam_quic/internal/http3/connection_state as http3_state
+import gleam_quic/internal/http3/drain
 import gleam_quic/internal/http3/session
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/qpack/header.{type Header}
@@ -367,6 +368,66 @@ pub fn finish_stream(state: State, stream_id: Int) -> Result(State, Error) {
   |> result.map_error(SessionFailure)
 }
 
+/// Promise one server push and open its unidirectional response stream.
+pub fn promise_push(
+  state: State,
+  request_stream_id: Int,
+  headers: List(Header),
+  now_ms: Int,
+) -> Result(#(State, Int, Int), Error) {
+  use http3 <- result.try(require_session(state))
+  session.promise_push(http3, request_stream_id, headers, now_ms)
+  |> result.map(fn(output) {
+    let #(http3, push_id, push_stream_id) = output
+    #(State(..state, protocol: Established(http3)), push_id, push_stream_id)
+  })
+  |> result.map_error(SessionFailure)
+}
+
+/// Queue pushed response HEADERS.
+pub fn send_push_response_headers(
+  state: State,
+  stream_id: Int,
+  headers: List(Header),
+) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.send_push_response_headers(http3, stream_id, headers)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
+/// Queue pushed response DATA.
+pub fn send_push_data(
+  state: State,
+  stream_id: Int,
+  bytes: BitArray,
+) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.send_push_data(http3, stream_id, bytes)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
+/// Queue pushed response trailers.
+pub fn send_push_trailers(
+  state: State,
+  stream_id: Int,
+  headers: List(Header),
+) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.send_push_trailers(http3, stream_id, headers)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
+/// Finish one pushed response stream.
+pub fn finish_push(state: State, stream_id: Int) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.finish_push(http3, stream_id)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
 /// Abort both directions of one request stream.
 pub fn abort_stream(
   state: State,
@@ -375,6 +436,58 @@ pub fn abort_stream(
 ) -> Result(State, Error) {
   use http3 <- result.try(require_session(state))
   session.abort_stream(http3, stream_id, application_error_code)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
+/// Queue the initial maximum-cutoff GOAWAY for graceful drain.
+pub fn start_drain(state: State, now_ms: Int) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.start_drain(http3, now_ms)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
+/// Queue the final GOAWAY cutoff and return newly rejected stream IDs.
+pub fn refine_drain(
+  state: State,
+  identifier: Int,
+) -> Result(#(State, List(Int)), Error) {
+  use http3 <- result.try(require_session(state))
+  session.refine_drain(http3, identifier)
+  |> result.map(fn(output) {
+    let #(http3, rejected) = output
+    #(State(..state, protocol: Established(http3)), rejected)
+  })
+  |> result.map_error(SessionFailure)
+}
+
+/// Advance the fixed drain deadline and return streams that must be aborted.
+pub fn on_drain_timer(
+  state: State,
+  now_ms: Int,
+) -> Result(#(State, List(Int)), Error) {
+  use http3 <- result.try(require_session(state))
+  session.on_drain_timer(http3, now_ms)
+  |> result.map(fn(output) {
+    let #(http3, cancelled) = output
+    #(State(..state, protocol: Established(http3)), cancelled)
+  })
+  |> result.map_error(SessionFailure)
+}
+
+/// Return the current graceful-drain phase.
+pub fn drain_phase(state: State) -> drain.Phase {
+  case state.protocol {
+    Handshaking(_) -> drain.Open
+    Established(http3) -> session.drain_phase(http3)
+  }
+}
+
+/// Mark a completed HTTP/3 graceful drain closed before QUIC shutdown.
+pub fn close_drained(state: State) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.close_drained(http3)
   |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
   |> result.map_error(SessionFailure)
 }

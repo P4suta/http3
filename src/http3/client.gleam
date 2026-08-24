@@ -22,6 +22,7 @@ import gleam/bool
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/result
+import http3/capsule
 import http3/internal/client_backend
 import http3/internal/client_request
 import http3/internal/client_stream_backend
@@ -36,6 +37,8 @@ const default_response_body_limit = 8_388_608
 const default_request_body_limit = 8_388_608
 
 const default_stream_buffer_limit = 262_144
+
+const default_maximum_pushes = 16
 
 @external(erlang, "http3_internal_transport_ffi", "client_connection")
 fn make_transport_connection(
@@ -61,6 +64,7 @@ pub opaque type Client {
     stream_buffer_limit: Int,
     ca_certificates: List(BitArray),
     http_datagrams: Bool,
+    maximum_pushes: Int,
     qlog_directory: String,
     resumption_tickets: List(client_stream_backend.ResumptionTicketHandle),
   )
@@ -74,6 +78,16 @@ pub opaque type Connection {
 /// One request and response stream on an HTTP/3 connection.
 pub opaque type Stream {
   Stream(handle: client_stream_backend.StreamHandle)
+}
+
+/// One server push promise and its pull-based response stream.
+pub opaque type Push {
+  Push(
+    handle: client_stream_backend.PushHandle,
+    method: String,
+    path: String,
+    headers: List(#(String, String)),
+  )
 }
 
 /// One event from a streaming response.
@@ -121,6 +135,9 @@ pub type ConfigurationError {
   /// A streaming response buffer limit must be greater than zero bytes.
   InvalidStreamBufferLimit
 
+  /// A push limit must be between zero and 1024.
+  InvalidPushLimit
+
   /// A CA certificate must be a non-empty, byte-aligned DER certificate.
   InvalidCaCertificate
 }
@@ -150,6 +167,9 @@ pub type Error {
 
   /// The declared content length does not match the buffered request body.
   InvalidContentLength
+
+  /// The Extended CONNECT protocol is not a valid HTTP token.
+  InvalidProtocol(String)
 
   /// The connection or TLS handshake failed.
   ConnectFailed(String)
@@ -201,6 +221,9 @@ pub type Error {
 
   /// A resumption ticket belongs to a different host or port.
   ResumptionOriginMismatch
+
+  /// A Capsule Protocol value could not be encoded safely.
+  CapsuleError(capsule.Error)
 }
 
 /// Construct a client with secure TLS verification and bounded defaults.
@@ -216,6 +239,7 @@ pub fn new() -> Client {
     stream_buffer_limit: default_stream_buffer_limit,
     ca_certificates: [],
     http_datagrams: False,
+    maximum_pushes: default_maximum_pushes,
     qlog_directory: "",
     resumption_tickets: [],
   )
@@ -224,6 +248,20 @@ pub fn new() -> Client {
 /// Enable RFC 9297 HTTP Datagrams for reusable connections.
 pub fn with_http_datagrams(client: Client) -> Client {
   Client(..client, http_datagrams: True)
+}
+
+/// Set the maximum server push promises retained per connection.
+///
+/// Zero disables server push. The default is 16.
+pub fn with_push_limit(
+  client client: Client,
+  pushes pushes: Int,
+) -> Result(Client, ConfigurationError) {
+  use <- bool.guard(
+    when: pushes < 0 || pushes > 1024,
+    return: Error(InvalidPushLimit),
+  )
+  Ok(Client(..client, maximum_pushes: pushes))
 }
 
 /// Enable qlog tracing for reusable connections.
@@ -360,6 +398,7 @@ pub fn connect(
           client.timeout_milliseconds,
           client.stream_buffer_limit,
           client.http_datagrams,
+          client.maximum_pushes,
           client.qlog_directory,
           client.resumption_tickets,
         )
@@ -394,6 +433,55 @@ pub fn open_stream(
   }
 }
 
+/// Open an RFC 9220 Extended CONNECT stream.
+///
+/// The supplied request contributes the HTTPS origin, path, query, and regular
+/// headers. This function emits the CONNECT and `:protocol` pseudo-fields and
+/// is the only stable client surface that authorizes HTTP Datagrams.
+pub fn open_extended_connect(
+  connection connection: Connection,
+  request request: Request(Nil),
+  protocol protocol: String,
+) -> Result(Stream, Error) {
+  let Connection(handle) = connection
+  case
+    client_request.prepare_extended_connect(
+      request: request,
+      protocol: protocol,
+    )
+  {
+    Ok(prepared) ->
+      client_stream_backend.open_stream(handle, prepared)
+      |> result.map(Stream)
+      |> result.map_error(fn(error) { from_backend_failure(error, 0) })
+    Error(error) -> Error(from_preparation_error(error))
+  }
+}
+
+/// Pull the next validated server push promise.
+pub fn next_push(connection: Connection) -> Result(Push, Error) {
+  let Connection(handle) = connection
+  case client_stream_backend.next_push(handle) {
+    Ok(#(push, method, path, headers)) -> Ok(Push(push, method, path, headers))
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Return the promised request method.
+pub fn push_method(push: Push) -> String {
+  push.method
+}
+
+/// Return the promised request path and query.
+pub fn push_path(push: Push) -> String {
+  push.path
+}
+
+/// Return the promised request's regular header fields.
+pub fn push_headers(push: Push) -> List(#(String, String)) {
+  push.headers
+}
+
 /// Obtain typed advanced controls for a request stream.
 pub fn stream_transport(stream: Stream) -> transport.Stream {
   let Stream(handle) = stream
@@ -417,6 +505,17 @@ pub fn send_chunk(
     Ok(value) -> Ok(value)
     Error(error) -> Error(from_backend_failure(error, 0))
   }
+}
+
+/// Encode and send one RFC 9297 Capsule on an Extended CONNECT stream.
+pub fn send_capsule(
+  stream stream: Stream,
+  capsule capsule_value: capsule.Capsule,
+) -> Result(Nil, Error) {
+  use encoded <- result.try(
+    capsule.encode(capsule_value) |> result.map_error(CapsuleError),
+  )
+  send_chunk(stream: stream, chunk: encoded)
 }
 
 /// Send request trailers and finish the request stream atomically.
@@ -459,6 +558,19 @@ pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
   }
 }
 
+/// Pull the next response event for a server push.
+pub fn next_push_event(push: Push) -> Result(ResponseEvent, Error) {
+  case client_stream_backend.next_push_event(push.handle) {
+    Ok(#(1, status, headers, _)) -> Ok(InformationalResponse(status, headers))
+    Ok(#(2, status, headers, _)) -> Ok(Response(status, headers))
+    Ok(#(3, _, _, chunk)) -> Ok(Data(chunk))
+    Ok(#(4, _, trailers, _)) -> Ok(Trailers(trailers))
+    Ok(#(5, _, _, _)) -> Ok(End)
+    Ok(_) -> Error(BackendFailure("invalid server push event"))
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
 /// Cancel a request stream idempotently.
 pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
   let Stream(handle) = stream
@@ -467,6 +579,17 @@ pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
     Ok(2) -> Ok(AlreadyCancelled)
     Ok(3) -> Ok(AlreadyCompleted)
     Ok(_) -> Error(BackendFailure("invalid cancellation status"))
+    Error(error) -> Error(from_backend_failure(error, 0))
+  }
+}
+
+/// Cancel a server push idempotently.
+pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
+  case client_stream_backend.cancel_push(push.handle) {
+    Ok(1) -> Ok(Cancelled)
+    Ok(2) -> Ok(AlreadyCancelled)
+    Ok(3) -> Ok(AlreadyCompleted)
+    Ok(_) -> Error(BackendFailure("invalid push cancellation status"))
     Error(error) -> Error(from_backend_failure(error, 0))
   }
 }
@@ -492,6 +615,7 @@ fn from_preparation_error(error: client_request.Error) -> Error {
     client_request.InvalidPath(path) -> InvalidPath(path)
     client_request.InvalidHeader(name) -> InvalidHeader(name)
     client_request.InvalidContentLength -> InvalidContentLength
+    client_request.InvalidProtocol(protocol) -> InvalidProtocol(protocol)
   }
 }
 

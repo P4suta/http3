@@ -1,6 +1,6 @@
 //// Typed normalization around the repository-owned HTTP/3 server.
 
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/http3/server as native_server
 
@@ -10,11 +10,14 @@ pub type ListenerHandle =
 pub type RequestHandle =
   native_server.Request
 
+pub type PushHandle =
+  native_server.Push
+
 pub type RawError =
   #(Int, Int, String)
 
 pub type Incoming =
-  #(RequestHandle, String, String, List(#(String, String)))
+  #(RequestHandle, String, String, Option(String), List(#(String, String)))
 
 pub type RawEvent =
   #(Int, List(#(String, String)), BitArray)
@@ -30,10 +33,12 @@ pub type Failure {
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
   ConcurrentAccept
+  ConcurrentDrain
   ConcurrentReceive
   ResponseAlreadyStarted
   ResponseNotStarted
   ResponseAlreadyFinished
+  PushCancelled
   InvalidContentLength
   BackendFailure(String)
 }
@@ -116,8 +121,8 @@ pub fn port(listener: ListenerHandle) -> Result(Int, Failure) {
 
 pub fn accept(listener: ListenerHandle) -> Result(Incoming, Failure) {
   case native_server.accept(listener) {
-    Ok(native_server.Incoming(request, method, path, headers)) ->
-      Ok(#(request, method, path, headers))
+    Ok(native_server.Incoming(request, method, path, protocol, headers)) ->
+      Ok(#(request, method, path, protocol, headers))
     Error(error) -> Error(map_native_error(error))
   }
 }
@@ -183,10 +188,62 @@ pub fn send_trailers(
   |> result.map_error(map_native_error)
 }
 
+pub fn promise_push(
+  request request: RequestHandle,
+  path path: String,
+  headers headers: List(#(String, String)),
+) -> Result(PushHandle, Failure) {
+  native_server.promise_push(request, path, headers)
+  |> result.map_error(map_native_error)
+}
+
+pub fn send_push_response(
+  push push: PushHandle,
+  status status: Int,
+  headers headers: List(#(String, String)),
+  declared_content_length declared_content_length: Int,
+) -> Result(Nil, Failure) {
+  let declared = case declared_content_length {
+    -1 -> None
+    value -> Some(value)
+  }
+  native_server.send_push_response(push, status, headers, declared)
+  |> result.map_error(map_native_error)
+}
+
+pub fn send_push_chunk(
+  push push: PushHandle,
+  chunk chunk: BitArray,
+) -> Result(Nil, Failure) {
+  native_server.send_push_chunk(push, chunk)
+  |> result.map_error(map_native_error)
+}
+
+pub fn finish_push(push: PushHandle) -> Result(Nil, Failure) {
+  native_server.finish_push(push) |> result.map_error(map_native_error)
+}
+
+pub fn send_push_trailers(
+  push push: PushHandle,
+  headers headers: List(#(String, String)),
+) -> Result(Nil, Failure) {
+  native_server.send_push_trailers(push, headers)
+  |> result.map_error(map_native_error)
+}
+
 pub fn stop(listener: ListenerHandle) -> Result(Int, Failure) {
   case native_server.stop(listener) {
     Ok(native_server.Stopped) -> Ok(1)
     Ok(native_server.AlreadyStopped) -> Ok(2)
+    Error(error) -> Error(map_native_error(error))
+  }
+}
+
+pub fn graceful_stop(listener: ListenerHandle) -> Result(Int, Failure) {
+  case native_server.graceful_stop(listener) {
+    Ok(native_server.Drained) -> Ok(1)
+    Ok(native_server.Forced) -> Ok(2)
+    Ok(native_server.AlreadyDrained) -> Ok(3)
     Error(error) -> Error(map_native_error(error))
   }
 }
@@ -224,14 +281,17 @@ fn map_native_error(error: native_server.Error) -> Failure {
     native_server.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     native_server.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
     native_server.ConcurrentAccept -> ConcurrentAccept
+    native_server.ConcurrentDrain -> ConcurrentDrain
     native_server.ConcurrentReceive -> ConcurrentReceive
     native_server.ResponseAlreadyStarted -> ResponseAlreadyStarted
     native_server.ResponseNotStarted -> ResponseNotStarted
     native_server.ResponseAlreadyFinished -> ResponseAlreadyFinished
+    native_server.PushCancelled -> PushCancelled
     native_server.InvalidContentLength -> InvalidContentLength
     native_server.InvalidInput
     | native_server.InvalidHeaderEncoding
     | native_server.DatagramsNotNegotiated
+    | native_server.DatagramNotAssociated
     | native_server.DatagramTooLarge(_)
     | native_server.DatagramBufferExceeded(_)
     | native_server.ConcurrentDatagramReceive

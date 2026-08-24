@@ -40,6 +40,7 @@ pub type Error {
   InvalidPath(String)
   InvalidHeader(String)
   InvalidContentLength
+  InvalidProtocol(String)
 }
 
 /// Validate and normalize a `gleam/http` request for HTTP/3.
@@ -58,6 +59,45 @@ pub fn prepare_streaming(
     http.Https -> prepare_https_streaming_request(request)
     _ -> Error(InvalidScheme)
   }
+}
+
+/// Validate an RFC 9220 Extended CONNECT request head.
+pub fn prepare_extended_connect(
+  request request: Request(Nil),
+  protocol protocol: String,
+) -> Result(PreparedStreamingRequest, Error) {
+  use _ <- result.try(case request.scheme {
+    http.Https -> Ok(Nil)
+    _ -> Error(InvalidScheme)
+  })
+  use _ <- result.try(validate_host(request.host))
+  use _ <- result.try(validate_protocol(protocol))
+  let port = case request.port {
+    Some(port) -> port
+    None -> 443
+  }
+  use _ <- result.try(validate_port(port))
+  use target <- result.try(request_target(request.path, request.query))
+  use #(headers, declared_content_length) <- result.try(
+    validate_streaming_headers(request.headers),
+  )
+  use <- bool.guard(
+    when: declared_content_length != None,
+    return: Error(InvalidContentLength),
+  )
+  Ok(PreparedStreamingRequest(
+    request.host,
+    port,
+    [
+      #(":method", "CONNECT"),
+      #(":protocol", protocol),
+      #(":scheme", "https"),
+      #(":path", target),
+      #(":authority", authority(request.host, port)),
+      ..headers
+    ],
+    None,
+  ))
 }
 
 /// Validate a secure connection origin.
@@ -184,6 +224,30 @@ fn validate_method(method: String) -> Result(Nil, Error) {
         Error(_) -> Error(UnsupportedMethod(method))
       }
   }
+}
+
+fn validate_protocol(protocol: String) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: string.is_empty(protocol)
+      || !list.all(string.to_utf_codepoints(protocol), fn(character) {
+      token_character(string.utf_codepoint_to_int(character))
+    }),
+    return: Error(InvalidProtocol(protocol)),
+  )
+  Ok(Nil)
+}
+
+fn token_character(character: Int) -> Bool {
+  character >= 48
+  && character <= 57
+  || character >= 65
+  && character <= 90
+  || character >= 97
+  && character <= 122
+  || list.contains(
+    [33, 35, 36, 37, 38, 39, 42, 43, 45, 46, 94, 95, 96, 124, 126],
+    character,
+  )
 }
 
 fn request_target(

@@ -9,6 +9,8 @@ import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/driver
 import gleam_quic/internal/ecn
 import gleam_quic/internal/http3/connection_state as http3_state
+import gleam_quic/internal/http3/datagram
+import gleam_quic/internal/http3/drain
 import gleam_quic/internal/http3/frame
 import gleam_quic/internal/http3/frame_parser
 import gleam_quic/internal/http3/stream_registry
@@ -212,6 +214,153 @@ pub fn finish_stream(state: State, stream_id: Int) -> Result(State, Error) {
   queue_bytes(State(..state, http3: http3), stream_id, <<>>, True)
 }
 
+/// Grant the peer a bounded inclusive server Push ID.
+pub fn permit_pushes(
+  state: State,
+  maximum_push_id: Int,
+) -> Result(State, Error) {
+  use #(http3, bytes) <- result.try(
+    http3_state.permit_pushes(state.http3, maximum_push_id)
+    |> map_http3_result,
+  )
+  use control_stream <- result.try(
+    http3_state.control_stream_id(http3) |> map_http3_result,
+  )
+  queue_bytes(State(..state, http3: http3), control_stream, bytes, False)
+}
+
+/// Promise a push and open its server-initiated unidirectional stream.
+pub fn promise_push(
+  state: State,
+  request_stream_id: Int,
+  fields: List(Header),
+  now_ms: Int,
+) -> Result(#(State, Int, Int), Error) {
+  use #(http3, push_id, promise_bytes) <- result.try(
+    http3_state.promise_push(state.http3, request_stream_id, fields, False)
+    |> map_http3_result,
+  )
+  use state <- result.try(queue_bytes(
+    State(..state, http3: http3),
+    request_stream_id,
+    promise_bytes,
+    False,
+  ))
+  use #(connection, push_stream_id) <- result.try(
+    transport.open_stream(
+      driver.connection(state.quic),
+      stream_id.Unidirectional,
+    )
+    |> map_transport_result,
+  )
+  use #(http3, preface) <- result.try(
+    http3_state.open_push_stream(state.http3, push_stream_id, push_id, now_ms)
+    |> map_http3_result,
+  )
+  use connection <- result.try(
+    transport.queue_stream(connection, push_stream_id, preface, False)
+    |> map_transport_result,
+  )
+  flush_qpack(
+    State(
+      ..state,
+      quic: driver.put_connection(state.quic, connection),
+      http3: http3,
+    ),
+  )
+  |> result.map(fn(state) { #(state, push_id, push_stream_id) })
+}
+
+/// Queue pushed response HEADERS.
+pub fn send_push_response_headers(
+  state: State,
+  stream_id: Int,
+  fields: List(Header),
+) -> Result(State, Error) {
+  use #(http3, bytes) <- result.try(
+    http3_state.send_push_response_headers(
+      state.http3,
+      stream_id,
+      fields,
+      False,
+    )
+    |> map_http3_result,
+  )
+  use state <- result.try(queue_bytes(
+    State(..state, http3: http3),
+    stream_id,
+    bytes,
+    False,
+  ))
+  flush_qpack(state)
+}
+
+/// Queue pushed response DATA.
+pub fn send_push_data(
+  state: State,
+  stream_id: Int,
+  bytes: BitArray,
+) -> Result(State, Error) {
+  use #(http3, encoded) <- result.try(
+    http3_state.send_push_data(state.http3, stream_id, bytes)
+    |> map_http3_result,
+  )
+  queue_bytes(State(..state, http3: http3), stream_id, encoded, False)
+}
+
+/// Queue pushed response trailers.
+pub fn send_push_trailers(
+  state: State,
+  stream_id: Int,
+  fields: List(Header),
+) -> Result(State, Error) {
+  use #(http3, encoded) <- result.try(
+    http3_state.send_push_trailers(state.http3, stream_id, fields, False)
+    |> map_http3_result,
+  )
+  use state <- result.try(queue_bytes(
+    State(..state, http3: http3),
+    stream_id,
+    encoded,
+    False,
+  ))
+  flush_qpack(state)
+}
+
+/// Finish one pushed response stream.
+pub fn finish_push(state: State, stream_id: Int) -> Result(State, Error) {
+  use http3 <- result.try(
+    http3_state.finish_push_send(state.http3, stream_id) |> map_http3_result,
+  )
+  queue_bytes(State(..state, http3: http3), stream_id, <<>>, True)
+}
+
+/// Cancel one promised push and abort its stream when already opened.
+pub fn cancel_push(state: State, push_id: Int) -> Result(State, Error) {
+  use #(http3, bytes, push_stream_id) <- result.try(
+    http3_state.cancel_push(state.http3, push_id) |> map_http3_result,
+  )
+  use control_stream <- result.try(
+    http3_state.control_stream_id(http3) |> map_http3_result,
+  )
+  use state <- result.try(queue_bytes(
+    State(..state, http3: http3),
+    control_stream,
+    bytes,
+    False,
+  ))
+  case push_stream_id {
+    None -> Ok(state)
+    Some(identifier) -> {
+      use connection <- result.try(
+        transport.abort_stream(driver.connection(state.quic), identifier, 0x10c)
+        |> map_transport_result,
+      )
+      Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+    }
+  }
+}
+
 /// Abort both directions of one HTTP request stream with an application code.
 pub fn abort_stream(
   state state: State,
@@ -250,6 +399,10 @@ pub fn maximum_http_datagram_size(
   state: State,
   stream_id: Int,
 ) -> Result(Int, Error) {
+  use _ <- result.try(
+    http3_state.send_datagram(state.http3, stream_id, <<>>)
+    |> map_http3_result,
+  )
   use _ <- result.try(case http3_state.datagrams_available(state.http3) {
     True -> Ok(Nil)
     False -> Error(TransportFailure(transport.DatagramNotNegotiated))
@@ -278,17 +431,12 @@ pub fn send_http_datagram(
   payload: BitArray,
 ) -> Result(State, Error) {
   use _ <- result.try(maximum_http_datagram_size(state, stream_id))
-  use quarter_stream_id <- result.try(
-    varint.encode(stream_id / 4)
-    |> result.map_error(fn(_) {
-      Http3Failure(http3_state.InvalidStreamId(stream_id))
-    }),
+  use encoded <- result.try(
+    http3_state.send_datagram(state.http3, stream_id, payload)
+    |> map_http3_result,
   )
   use connection <- result.try(
-    transport.queue_datagram(driver.connection(state.quic), <<
-      quarter_stream_id:bits,
-      payload:bits,
-    >>)
+    transport.queue_datagram(driver.connection(state.quic), encoded)
     |> map_transport_result,
   )
   Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
@@ -311,6 +459,55 @@ pub fn set_request_priority(
     |> map_http3_result,
   )
   queue_bytes(state, identifier, bytes, False)
+}
+
+/// Begin two-stage graceful drain and queue the initial GOAWAY.
+pub fn start_drain(state: State, now_ms: Int) -> Result(State, Error) {
+  use #(http3, http3_state.StreamBytes(identifier, bytes)) <- result.try(
+    http3_state.start_drain(state.http3, now_ms) |> map_http3_result,
+  )
+  queue_bytes(State(..state, http3: http3), identifier, bytes, False)
+}
+
+/// Queue the final GOAWAY cutoff and return request identifiers it rejects.
+pub fn refine_drain(
+  state: State,
+  identifier: Int,
+) -> Result(#(State, List(Int)), Error) {
+  use #(http3, http3_state.StreamBytes(control_stream, bytes), rejected) <- result.try(
+    http3_state.refine_drain(state.http3, identifier) |> map_http3_result,
+  )
+  use state <- result.try(queue_bytes(
+    State(..state, http3: http3),
+    control_stream,
+    bytes,
+    False,
+  ))
+  Ok(#(state, rejected))
+}
+
+/// Advance graceful-drain state and return transport streams to abort.
+pub fn on_drain_timer(
+  state: State,
+  now_ms: Int,
+) -> Result(#(State, List(Int)), Error) {
+  use #(http3, cancelled) <- result.try(
+    http3_state.on_drain_timer(state.http3, now_ms) |> map_http3_result,
+  )
+  Ok(#(State(..state, http3: http3), cancelled))
+}
+
+/// Return the HTTP/3 graceful-drain phase.
+pub fn drain_phase(state: State) -> drain.Phase {
+  http3_state.drain_phase(state.http3)
+}
+
+/// Mark graceful drain closed after QUIC close is queued.
+pub fn close_drained(state: State) -> Result(State, Error) {
+  use http3 <- result.try(
+    http3_state.close_drained(state.http3) |> map_http3_result,
+  )
+  Ok(State(..state, http3: http3))
 }
 
 /// Queue one QUIC PING.
@@ -576,6 +773,18 @@ fn process_transport_event_list(
           process_transport_event_list(state, rest, now_ms)
         }
       }
+    }
+    [transport.DatagramReceived(encoded), ..rest] -> {
+      use datagram.Received(identifier, _, payload) <- result.try(
+        http3_state.receive_datagram(state.http3, encoded) |> map_http3_result,
+      )
+      process_transport_event_list(
+        add_events(state, [
+          Http3Event(http3_state.HttpDatagram(identifier, payload)),
+        ]),
+        rest,
+        now_ms,
+      )
     }
     [event, ..rest] ->
       process_transport_event_list(

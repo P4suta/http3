@@ -19,6 +19,8 @@ const default_response_body_limit = 8_388_608
 
 const default_stream_buffer_limit = 262_144
 
+const default_maximum_pushes = 16
+
 type Trust {
   SystemTrust
   ExplicitTrust(List(BitArray))
@@ -34,6 +36,7 @@ pub opaque type Client {
     stream_buffer_limit: Int,
     trust: Trust,
     http_datagrams: Bool,
+    maximum_pushes: Int,
     qlog_directory: String,
     resumption_ticket: Option(ResumptionTicket),
   )
@@ -47,6 +50,16 @@ pub opaque type Connection {
 /// One request and pull-based streaming response.
 pub opaque type Stream {
   Stream(handle: client_worker.Stream)
+}
+
+/// One validated server push promise and its pull-based response.
+pub opaque type Push {
+  Push(
+    handle: client_worker.Push,
+    method: String,
+    path: String,
+    headers: List(#(String, String)),
+  )
 }
 
 /// Opaque origin-bound TLS resumption state.
@@ -120,6 +133,7 @@ pub type ConfigurationError {
   InvalidTimeout
   InvalidResponseBodyLimit
   InvalidStreamBufferLimit
+  InvalidPushLimit
   InvalidCaCertificate
   InvalidQlogDirectory
 }
@@ -154,6 +168,7 @@ pub type Error {
   UnsafeEarlyDataMethod(String)
   ResumptionOriginMismatch
   DatagramsNotNegotiated
+  DatagramNotAssociated
   DatagramTooLarge(Int)
   DatagramBufferExceeded(Int)
   ConcurrentDatagramReceive
@@ -182,6 +197,7 @@ pub fn new(
         default_stream_buffer_limit,
         SystemTrust,
         False,
+        default_maximum_pushes,
         "",
         None,
       ))
@@ -204,6 +220,19 @@ pub fn with_stream_buffer_limit(
 /// Negotiate RFC 9221 QUIC DATAGRAM and RFC 9297 HTTP Datagrams.
 pub fn with_http_datagrams(client: Client) -> Client {
   Client(..client, http_datagrams: True)
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Set the maximum number of server push promises retained per connection.
+/// Zero disables server push.
+pub fn with_push_limit(
+  client client: Client,
+  pushes pushes: Int,
+) -> Result(Client, ConfigurationError) {
+  case pushes >= 0 && pushes <= 1024 {
+    True -> Ok(Client(..client, maximum_pushes: pushes))
+    False -> Error(InvalidPushLimit)
+  }
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
@@ -312,6 +341,7 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     client.stream_buffer_limit,
     trust_store,
     client.http_datagrams,
+    client.maximum_pushes,
     client.qlog_directory,
     ticket,
   )
@@ -332,6 +362,35 @@ pub fn open_stream(
   client_worker.open_stream(handle, hostname, port, encoded)
   |> result.map(Stream)
   |> result.map_error(map_worker_error)
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Pull the next server push promise within the connection timeout.
+pub fn next_push(connection: Connection) -> Result(Push, Error) {
+  let Connection(handle) = connection
+  case client_worker.next_push(handle) {
+    Ok(client_worker.IncomingPush(push, method, path, headers)) ->
+      Ok(Push(push, method, path, headers))
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Return the promised request method.
+pub fn push_method(push: Push) -> String {
+  push.method
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Return the promised request path and query.
+pub fn push_path(push: Push) -> String {
+  push.path
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Return the promised request's regular fields.
+pub fn push_headers(push: Push) -> List(#(String, String)) {
+  push.headers
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
@@ -382,10 +441,36 @@ pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
+/// Pull the next response event for a server push.
+pub fn next_push_event(push: Push) -> Result(ResponseEvent, Error) {
+  case client_worker.next_push_event(push.handle) {
+    Ok(client_worker.Informational(status, headers)) ->
+      Ok(InformationalResponse(status, headers))
+    Ok(client_worker.Response(status, headers)) ->
+      Ok(ResponseHeaders(status, headers))
+    Ok(client_worker.Data(bytes)) -> Ok(Data(bytes))
+    Ok(client_worker.Trailers(headers)) -> Ok(Trailers(headers))
+    Ok(client_worker.End) -> Ok(End)
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
 /// Cancel one request stream idempotently.
 pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
   let Stream(handle) = stream
   case client_worker.cancel(handle) {
+    Ok(client_worker.Cancelled) -> Ok(Cancelled)
+    Ok(client_worker.AlreadyCancelled) -> Ok(AlreadyCancelled)
+    Ok(client_worker.AlreadyCompleted) -> Ok(AlreadyCompleted)
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Cancel a server push idempotently.
+pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
+  case client_worker.cancel_push(push.handle) {
     Ok(client_worker.Cancelled) -> Ok(Cancelled)
     Ok(client_worker.AlreadyCancelled) -> Ok(AlreadyCancelled)
     Ok(client_worker.AlreadyCompleted) -> Ok(AlreadyCompleted)
@@ -655,6 +740,7 @@ fn map_worker_error(error: client_worker.Error) -> Error {
     client_worker.UnsafeEarlyDataMethod(method) -> UnsafeEarlyDataMethod(method)
     client_worker.ResumptionOriginMismatch -> ResumptionOriginMismatch
     client_worker.DatagramsNotNegotiated -> DatagramsNotNegotiated
+    client_worker.DatagramNotAssociated -> DatagramNotAssociated
     client_worker.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
     client_worker.DatagramBufferExceeded(limit) -> DatagramBufferExceeded(limit)
     client_worker.ConcurrentDatagramReceive -> ConcurrentDatagramReceive

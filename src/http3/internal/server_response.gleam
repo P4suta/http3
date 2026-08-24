@@ -57,6 +57,18 @@ pub fn prepare_trailers(
   validate_trailers(headers, [])
 }
 
+/// Validate regular fields for a same-origin server push promise.
+pub fn prepare_push_request(
+  headers: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  use headers <- result.try(validate_headers(headers, None))
+  use length <- result.try(find_content_length(headers))
+  case length {
+    Some(_) -> Error(InvalidContentLength)
+    None -> Ok(headers)
+  }
+}
+
 fn find_content_length(
   headers: List(#(String, String)),
 ) -> Result(Option(Int), Error) {
