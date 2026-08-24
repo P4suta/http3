@@ -102,6 +102,17 @@ pub fn phase(state: State) -> transport.Phase {
   driver.phase(state.quic)
 }
 
+/// Return whether a request can open now using authenticated 1-RTT keys or
+/// the still-viable write keys of a resumed 0-RTT handshake.
+pub fn request_streams_available(state: State) -> Bool {
+  case phase(state) {
+    transport.Established -> True
+    transport.Handshaking ->
+      transport.can_send_early_data(driver.connection(state.quic))
+    _ -> False
+  }
+}
+
 /// Pull and clear ordered HTTP/3 and transport events.
 pub fn take_events(state: State) -> #(State, List(Event)) {
   #(State(..state, events: []), state.events)

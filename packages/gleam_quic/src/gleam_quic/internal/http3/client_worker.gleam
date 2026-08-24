@@ -829,12 +829,24 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       {
         False, _ -> Error(OriginMismatch)
         True, Some(method) -> Error(UnsafeEarlyDataMethod(method))
-        True, None ->
+        True, None -> {
+          let before = client_connection.stats(worker.connection)
           case
-            client_connection.open_request(worker.connection, headers, False)
+            client_connection.open_request(
+              worker.connection,
+              headers,
+              False,
+              worker.timeout_milliseconds,
+            )
           {
             Error(error) -> Error(map_connection_error(error))
-            Ok(#(connection, identifier)) ->
+            Ok(#(connection, identifier)) -> {
+              record_qlog_io(
+                worker.qlog_writer,
+                before,
+                client_connection.stats(connection),
+                udp.monotonic_millisecond(),
+              )
               Ok(#(
                 Worker(
                   ..worker,
@@ -847,7 +859,9 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
                 ),
                 identifier,
               ))
+            }
           }
+        }
       }
       case outcome {
         Error(error) -> {

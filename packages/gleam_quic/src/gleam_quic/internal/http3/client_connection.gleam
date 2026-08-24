@@ -110,13 +110,38 @@ pub fn open_request(
   state: State,
   headers: List(Header),
   allow_qpack_blocking: Bool,
+  timeout_milliseconds: Int,
 ) -> Result(#(State, Int), Error) {
+  use state <- result.try(await_request_streams(
+    state,
+    udp.monotonic_millisecond() + timeout_milliseconds,
+  ))
   session.open_request(state.session, headers, allow_qpack_blocking)
   |> result.map(fn(output) {
     let #(next, identifier) = output
     #(State(..state, session: next), identifier)
   })
   |> map_session_result("open_request")
+}
+
+fn await_request_streams(state: State, deadline: Int) -> Result(State, Error) {
+  case
+    session.request_streams_available(state.session),
+    session.phase(state.session),
+    remaining_milliseconds(deadline)
+  {
+    True, _, _ -> Ok(state)
+    False, transport.Closed, _ -> Error(PeerClosed)
+    False, _, remaining if remaining <= 0 -> Error(Timeout)
+    False, transport.Handshaking, remaining -> {
+      use state <- result.try(pump(
+        state,
+        int.min(receive_poll_milliseconds, remaining),
+      ))
+      await_request_streams(state, deadline)
+    }
+    False, _, _ -> Error(PeerClosed)
+  }
 }
 
 /// Queue one request-body DATA frame.
