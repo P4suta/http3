@@ -35,6 +35,8 @@ import gleam_quic/version
 
 const network_poll_milliseconds = 10
 
+const maximum_receive_batch = 64
+
 const worker_reply_grace_milliseconds = 100
 
 const pmtu_probe_interval_milliseconds = 50
@@ -819,11 +821,38 @@ fn loop(worker: Worker) -> Nil {
 
 fn network_step(worker: Worker) -> Nil {
   case udp.receive(worker.socket, network_poll_milliseconds) {
-    Ok(udp.Datagram(peer, datagram, marking)) ->
-      continue_network_step(route_datagram(worker, peer, datagram, marking))
+    Ok(datagram) -> {
+      let datagrams =
+        receive_batch(worker.socket, maximum_receive_batch - 1, [datagram])
+      continue_network_step(route_batch(worker, datagrams))
+    }
     Error(udp.Timeout) -> continue_network_step(worker)
     Error(udp.Closed) -> shutdown(worker, "socket closed")
     Error(_) -> continue_network_step(worker)
+  }
+}
+
+fn receive_batch(
+  socket: udp.Socket,
+  remaining: Int,
+  reversed: List(udp.Datagram),
+) -> List(udp.Datagram) {
+  case remaining {
+    0 -> list.reverse(reversed)
+    _ ->
+      case udp.receive(socket, 0) {
+        Ok(datagram) ->
+          receive_batch(socket, remaining - 1, [datagram, ..reversed])
+        Error(_) -> list.reverse(reversed)
+      }
+  }
+}
+
+fn route_batch(worker: Worker, datagrams: List(udp.Datagram)) -> Worker {
+  case datagrams {
+    [] -> worker
+    [udp.Datagram(peer, datagram, marking), ..rest] ->
+      route_batch(route_datagram(worker, peer, datagram, marking), rest)
   }
 }
 
