@@ -65,6 +65,7 @@ pub opaque type Client {
     ca_certificates: List(BitArray),
     http_datagrams: Bool,
     maximum_pushes: Int,
+    quic_version: transport.QuicVersion,
     qlog_directory: String,
     resumption_tickets: List(client_stream_backend.ResumptionTicketHandle),
   )
@@ -240,6 +241,7 @@ pub fn new() -> Client {
     ca_certificates: [],
     http_datagrams: False,
     maximum_pushes: default_maximum_pushes,
+    quic_version: transport.QuicV1,
     qlog_directory: "",
     resumption_tickets: [],
   )
@@ -262,6 +264,16 @@ pub fn with_push_limit(
     return: Error(InvalidPushLimit),
   )
   Ok(Client(..client, maximum_pushes: pushes))
+}
+
+/// Select the initially attempted QUIC wire version.
+///
+/// Compatible version negotiation remains enabled for v1 and v2.
+pub fn with_quic_version(
+  client: Client,
+  quic_version: transport.QuicVersion,
+) -> Client {
+  Client(..client, quic_version: quic_version)
 }
 
 /// Enable qlog tracing for reusable connections.
@@ -370,6 +382,7 @@ fn send_prepared(
       client.ca_certificates,
       client.timeout_milliseconds,
       client.response_body_limit,
+      client.quic_version == transport.QuicV2,
     )
   {
     Ok(#(status, headers, body)) -> Ok(response.Response(status, headers, body))
@@ -399,6 +412,7 @@ pub fn connect(
           client.stream_buffer_limit,
           client.http_datagrams,
           client.maximum_pushes,
+          client.quic_version == transport.QuicV2,
           client.qlog_directory,
           client.resumption_tickets,
         )

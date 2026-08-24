@@ -420,6 +420,15 @@ pub fn server_phase(server: Server) -> Phase {
   }
 }
 
+/// Report whether a connected server has a DNS name suitable for binding a
+/// resumable session ticket. TLS clients deliberately omit SNI for IP literals.
+pub fn server_can_issue_session_ticket(server: Server) -> Bool {
+  case server {
+    ServerConnected(context) -> context.server_name != ""
+    _ -> False
+  }
+}
+
 /// Issue one encrypted post-handshake ticket from a connected server.
 pub fn issue_new_session_ticket(
   server server: Server,
@@ -523,10 +532,12 @@ fn validate_client_config(config: ClientConfig) -> Result(Nil, Error) {
     False, _ -> Error(UnsupportedVersion(config.version))
     _, [] -> Error(InvalidConfiguration)
     _, _ -> {
-      use _ <- result.try(
-        extension_value.encode_server_name(config.hostname)
-        |> map_extension_value_result,
-      )
+      use _ <- result.try(case authentication.is_ip_address(config.hostname) {
+        True -> Ok(<<>>)
+        False ->
+          extension_value.encode_server_name(config.hostname)
+          |> map_extension_value_result
+      })
       use _ <- result.try(
         extension_value.encode_alpn(config.application_protocols)
         |> map_extension_value_result,
@@ -602,8 +613,13 @@ fn client_extensions(
   resumption_offer: Option(resumption.ClientOffer),
 ) -> Result(List(extension.Extension), Error) {
   use server_name <- result.try(
-    extension_value.encode_server_name(config.hostname)
-    |> map_extension_value_result,
+    case authentication.is_ip_address(config.hostname) {
+      True -> Ok(None)
+      False ->
+        extension_value.encode_server_name(config.hostname)
+        |> map_extension_value_result
+        |> result.map(Some)
+    },
   )
   use groups <- result.try(
     extension_value.encode_supported_groups([extension_value.X25519])
@@ -632,7 +648,6 @@ fn client_extensions(
     |> map_transport_parameter_result,
   )
   let base = [
-    extension.Extension(extension.ServerName, server_name),
     extension.Extension(extension.SupportedGroups, groups),
     extension.Extension(extension.SignatureAlgorithms, signatures),
     extension.Extension(extension.ApplicationLayerProtocolNegotiation, alpn),
@@ -640,6 +655,13 @@ fn client_extensions(
     extension.Extension(extension.KeyShare, key_share),
     extension.Extension(extension.QuicTransportParameters, parameters),
   ]
+  let base = case server_name {
+    Some(encoded) -> [
+      extension.Extension(extension.ServerName, encoded),
+      ..base
+    ]
+    None -> base
+  }
   case resumption_offer {
     None -> Ok(base)
     Some(offer) -> Ok(list.append(base, resumption.client_extensions(offer)))
@@ -2604,8 +2626,11 @@ fn require_server_tls13(
 fn client_server_name(
   extensions: List(extension.Extension),
 ) -> Result(String, Error) {
-  use encoded <- result.try(require_extension(extensions, extension.ServerName))
-  extension_value.decode_server_name(encoded) |> map_extension_value_result
+  case optional_extension(extensions, extension.ServerName) {
+    None -> Ok("")
+    Some(encoded) ->
+      extension_value.decode_server_name(encoded) |> map_extension_value_result
+  }
 }
 
 fn select_client_alpn(

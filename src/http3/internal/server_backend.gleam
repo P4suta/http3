@@ -60,6 +60,7 @@ pub fn start(
   response_body_limit response_body_limit: Int,
   stream_buffer_limit stream_buffer_limit: Int,
   http_datagrams http_datagrams: Bool,
+  ipv6 ipv6: Bool,
   qlog_directory qlog_directory: String,
 ) -> Result(ListenerHandle, Failure) {
   use configuration <- result.try(
@@ -88,6 +89,10 @@ pub fn start(
   )
   let configuration = case http_datagrams {
     True -> native_server.with_http_datagrams(configuration)
+    False -> configuration
+  }
+  let configuration = case ipv6 {
+    True -> native_server.with_ipv6(configuration)
     False -> configuration
   }
   let configuration = case qlog_directory {

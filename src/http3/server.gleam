@@ -36,8 +36,15 @@ pub opaque type Configuration {
     response_body_limit: Int,
     stream_buffer_limit: Int,
     http_datagrams: Bool,
+    address_family: AddressFamily,
     qlog_directory: String,
   )
+}
+
+/// IP family used by the UDP listener.
+pub type AddressFamily {
+  Ipv4
+  Ipv6
 }
 
 /// A running HTTP/3 listener.
@@ -147,6 +154,7 @@ pub fn new(
     response_body_limit: default_body_limit,
     stream_buffer_limit: default_stream_buffer_limit,
     http_datagrams: False,
+    address_family: Ipv4,
     qlog_directory: "",
   ))
 }
@@ -154,6 +162,19 @@ pub fn new(
 /// Enable RFC 9297 HTTP Datagrams for accepted connections.
 pub fn with_http_datagrams(configuration: Configuration) -> Configuration {
   Configuration(..configuration, http_datagrams: True)
+}
+
+/// Select the IP family used by the UDP listener.
+pub fn with_address_family(
+  configuration: Configuration,
+  address_family: AddressFamily,
+) -> Configuration {
+  Configuration(..configuration, address_family: address_family)
+}
+
+/// Bind the listener to the IPv6 wildcard address.
+pub fn with_ipv6(configuration: Configuration) -> Configuration {
+  with_address_family(configuration, Ipv6)
 }
 
 /// Enable qlog tracing for accepted connections.
@@ -229,6 +250,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     response_limit,
     buffer_limit,
     http_datagrams,
+    address_family,
     qlog_directory,
   ) = configuration
   case
@@ -241,6 +263,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
       response_limit,
       buffer_limit,
       http_datagrams,
+      address_family == Ipv6,
       qlog_directory,
     )
   {

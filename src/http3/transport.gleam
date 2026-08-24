@@ -87,6 +87,12 @@ pub type CongestionControl {
   Bbr
 }
 
+/// QUIC wire version initially attempted by a client.
+pub type QuicVersion {
+  QuicV1
+  QuicV2
+}
+
 /// A snapshot of path RTT and congestion metrics.
 pub type PathStats {
   PathStats(

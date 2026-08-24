@@ -22,6 +22,7 @@ pub opaque type Server {
     response_body_limit: Int,
     stream_buffer_limit: Int,
     http_datagrams: Bool,
+    ipv6: Bool,
     qlog_directory: String,
   )
 }
@@ -151,6 +152,7 @@ pub fn new(
     8_388_608,
     262_144,
     False,
+    False,
     "",
   ))
 }
@@ -228,6 +230,11 @@ pub fn with_http_datagrams(server: Server) -> Server {
   Server(..server, http_datagrams: True)
 }
 
+/// Bind the listener to the IPv6 wildcard address instead of IPv4.
+pub fn with_ipv6(server: Server) -> Server {
+  Server(..server, ipv6: True)
+}
+
 /// Write a streaming qlog trace in an explicitly selected directory.
 pub fn with_qlog(
   server: Server,
@@ -251,6 +258,7 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     server.signing_key,
     server.signature_scheme,
     server.http_datagrams,
+    server.ipv6,
     server.qlog_directory,
   )
   |> result.map(Listener)

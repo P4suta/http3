@@ -7,6 +7,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam_quic/internal/address_token
 import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/crypto
 import gleam_quic/internal/driver
@@ -21,6 +22,7 @@ import gleam_quic/internal/http3/session
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/qlog
 import gleam_quic/internal/qpack/header.{type Header, Header}
+import gleam_quic/internal/retry_integrity
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/extension_value
@@ -56,6 +58,8 @@ const replay_window_milliseconds = 600_000
 const replay_cache_capacity = 65_536
 
 const ticket_age_tolerance_milliseconds = 10_000
+
+const retry_token_lifetime_milliseconds = 10_000
 
 /// A live listener command subject and its owner-monitoring actor.
 pub opaque type Listener {
@@ -298,9 +302,14 @@ type PushState {
   )
 }
 
+type CandidatePath {
+  CandidatePath(endpoint: udp.Endpoint, received_bytes: Int, sent_bytes: Int)
+}
+
 type PeerState {
   PeerState(
     connection: server_connection.State,
+    candidate_path: Option(CandidatePath),
     requests: Dict(Int, Int),
     pushes: Dict(Int, Int),
     priorities: Dict(Int, #(Int, Bool)),
@@ -316,6 +325,7 @@ type Worker {
     selector: process.Selector(LoopMessage),
     server_config: server_connection.Config,
     ticket_key: BitArray,
+    address_token_key: BitArray,
     replay_cache: anti_replay.Cache,
     connections: Dict(BitArray, PeerState),
     aliases: Dict(BitArray, BitArray),
@@ -350,6 +360,7 @@ pub fn start(
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
   http_datagrams: Bool,
+  ipv6: Bool,
   qlog_directory: String,
 ) -> Result(Listener, Error) {
   case
@@ -379,6 +390,7 @@ pub fn start(
             signing_key,
             signature_scheme,
             http_datagrams,
+            ipv6,
             qlog_directory,
           )
         })
@@ -635,11 +647,16 @@ fn initialise(
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
   http_datagrams: Bool,
+  ipv6: Bool,
   qlog_directory: String,
 ) -> Nil {
   let startup = {
     use wildcard <- result.try(
-      udp.ipv4(0, 0, 0, 0) |> result.replace_error(StartFailed),
+      case ipv6 {
+        False -> udp.ipv4(0, 0, 0, 0)
+        True -> udp.ipv6(0, 0, 0, 0, 0, 0, 0, 0)
+      }
+      |> result.replace_error(StartFailed),
     )
     use endpoint <- result.try(
       udp.endpoint(wildcard, port) |> result.replace_error(StartFailed),
@@ -654,6 +671,9 @@ fn initialise(
     use ticket_key <- result.try(
       crypto.secure_random(32) |> result.replace_error(StartFailed),
     )
+    use address_token_key <- result.try(
+      crypto.secure_random(32) |> result.replace_error(StartFailed),
+    )
     use replay_cache <- result.try(
       anti_replay.new(replay_window_milliseconds, replay_cache_capacity)
       |> result.replace_error(StartFailed),
@@ -661,11 +681,25 @@ fn initialise(
     use qlog_writer <- result.try(
       open_qlog(qlog_directory) |> result.replace_error(StartFailed),
     )
-    Ok(#(socket, bound_port, ticket_key, replay_cache, qlog_writer))
+    Ok(#(
+      socket,
+      bound_port,
+      ticket_key,
+      address_token_key,
+      replay_cache,
+      qlog_writer,
+    ))
   }
   case startup {
     Error(error) -> process.send(bootstrap, Error(error))
-    Ok(#(socket, bound_port, ticket_key, replay_cache, qlog_writer)) -> {
+    Ok(#(
+      socket,
+      bound_port,
+      ticket_key,
+      address_token_key,
+      replay_cache,
+      qlog_writer,
+    )) -> {
       case qlog_writer {
         Some(writer) ->
           qlog.server_listening(writer, udp.monotonic_millisecond(), bound_port)
@@ -697,6 +731,7 @@ fn initialise(
         selector,
         config,
         ticket_key,
+        address_token_key,
         replay_cache,
         dict.new(),
         dict.new(),
@@ -1839,15 +1874,16 @@ fn route_long_datagram(
         None ->
           case worker.drain_waiter, parsed, protocol_version {
             Some(_), _, _ -> worker
-            None, packet.Initial(_, _, _), version.Version1
-            | None, packet.Initial(_, _, _), version.Version2
+            None, packet.Initial(_, token, _), version.Version1
+            | None, packet.Initial(_, token, _), version.Version2
             ->
-              accept_connection(
+              route_initial(
                 worker,
                 peer,
                 protocol_version,
                 destination,
                 source,
+                token,
                 datagram,
                 marking,
               )
@@ -1855,6 +1891,75 @@ fn route_long_datagram(
               send_version_negotiation(worker, peer, destination, source)
             _, _, _ -> worker
           }
+      }
+    }
+  }
+}
+
+fn route_initial(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: version.Version,
+  destination: BitArray,
+  peer_connection_id: BitArray,
+  token: BitArray,
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+) -> Worker {
+  case token {
+    <<>> ->
+      send_retry(
+        worker,
+        peer,
+        protocol_version,
+        destination,
+        peer_connection_id,
+      )
+    _ -> {
+      let #(address, port) = udp.endpoint_parts(peer)
+      let now = udp.monotonic_millisecond()
+      case
+        address_token.open(
+          worker.address_token_key,
+          token,
+          address,
+          port,
+          now,
+          retry_token_lifetime_milliseconds,
+        )
+      {
+        Ok(address_token.Token(
+          address_token.Retry,
+          original_destination,
+          retry_source,
+          _,
+        ))
+          if retry_source == destination
+        ->
+          accept_connection(
+            worker,
+            peer,
+            protocol_version,
+            original_destination,
+            Some(retry_source),
+            peer_connection_id,
+            Some(retry_source),
+            datagram,
+            marking,
+          )
+        Ok(address_token.Token(address_token.NewToken, <<>>, <<>>, _)) ->
+          accept_connection(
+            worker,
+            peer,
+            protocol_version,
+            destination,
+            None,
+            peer_connection_id,
+            None,
+            datagram,
+            marking,
+          )
+        _ -> worker
       }
     }
   }
@@ -1881,7 +1986,7 @@ fn route_existing(
           policy,
         )
       {
-        Error(error) ->
+        Error(error) -> {
           case discard_connection_error(error) {
             True -> worker
             False ->
@@ -1891,33 +1996,90 @@ fn route_existing(
                 map_connection_error(error),
               )
           }
+        }
         Ok(connection) -> {
           let previous_peer = server_connection.peer(peer_state.connection)
-          let migrated =
-            udp.endpoint_parts(previous_peer) != udp.endpoint_parts(peer)
           case worker.qlog_writer {
-            Some(writer) -> {
+            Some(writer) ->
               qlog.datagram_received(writer, now, bit_array.byte_size(datagram))
-              case migrated {
-                True -> qlog.path_updated(writer, now)
-                False -> Nil
-              }
-            }
             None -> Nil
           }
-          // Header protection and AEAD authentication completed before the
-          // listener adopts a new source address, so spoofed UDP packets
-          // cannot redirect response traffic.
-          let connection = server_connection.with_peer(connection, peer)
-          let worker =
-            put_peer(
-              worker,
-              connection_id,
-              PeerState(..peer_state, connection: connection),
-            )
-          update_replay_cache(worker, connection)
+          case same_endpoint(previous_peer, peer) {
+            True -> {
+              let next = PeerState(..peer_state, connection: connection)
+              put_peer(worker, connection_id, next)
+              |> update_replay_cache(connection)
+            }
+            False ->
+              case server_connection.is_established(connection) {
+                False -> {
+                  let connection = server_connection.with_peer(connection, peer)
+                  let next = PeerState(..peer_state, connection: connection)
+                  put_peer(worker, connection_id, next)
+                  |> update_replay_cache(connection)
+                }
+                True ->
+                  case
+                    receive_candidate_path(
+                      peer_state,
+                      connection,
+                      peer,
+                      bit_array.byte_size(datagram),
+                      now,
+                    )
+                  {
+                    Error(_) -> worker
+                    Ok(next) ->
+                      put_peer(worker, connection_id, next)
+                      |> update_replay_cache(next.connection)
+                  }
+              }
+          }
         }
       }
+    }
+  }
+}
+
+fn receive_candidate_path(
+  peer_state: PeerState,
+  connection: server_connection.State,
+  endpoint: udp.Endpoint,
+  received_bytes: Int,
+  now: Int,
+) -> Result(PeerState, Nil) {
+  case peer_state.candidate_path {
+    Some(CandidatePath(candidate, received, sent)) ->
+      case same_endpoint(candidate, endpoint) {
+        False -> Error(Nil)
+        True ->
+          Ok(
+            PeerState(
+              ..peer_state,
+              connection: connection,
+              candidate_path: Some(CandidatePath(
+                candidate,
+                received + received_bytes,
+                sent,
+              )),
+            ),
+          )
+      }
+    None -> {
+      use challenge <- result.try(
+        crypto.secure_random(8) |> result.replace_error(Nil),
+      )
+      use connection <- result.try(
+        server_connection.begin_path_validation(connection, challenge, now)
+        |> result.replace_error(Nil),
+      )
+      Ok(
+        PeerState(
+          ..peer_state,
+          connection: connection,
+          candidate_path: Some(CandidatePath(endpoint, received_bytes, 0)),
+        ),
+      )
     }
   }
 }
@@ -1927,7 +2089,9 @@ fn accept_connection(
   peer: udp.Endpoint,
   protocol_version: version.Version,
   original_destination: BitArray,
+  selected_local_connection_id: Option(BitArray),
   peer_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
   datagram: BitArray,
   marking: packet_space.ReceivedCodepoint,
 ) -> Worker {
@@ -1939,7 +2103,12 @@ fn accept_connection(
   {
     True, _, _, _ | _, False, _, _ | _, _, False, _ | _, _, _, False -> worker
     False, True, True, True ->
-      case unique_connection_id(worker, 8) {
+      case
+        case selected_local_connection_id {
+          Some(value) -> Ok(value)
+          None -> unique_connection_id(worker, 8)
+        }
+      {
         Error(_) -> worker
         Ok(local_connection_id) -> {
           let now = udp.monotonic_millisecond()
@@ -1951,6 +2120,7 @@ fn accept_connection(
               original_destination,
               local_connection_id,
               peer_connection_id,
+              retry_source_connection_id,
               peer,
               datagram,
               marking,
@@ -1977,19 +2147,141 @@ fn accept_connection(
                   connections: dict.insert(
                     worker.connections,
                     local_connection_id,
-                    PeerState(connection, dict.new(), dict.new(), dict.new(), 0),
+                    PeerState(
+                      connection,
+                      None,
+                      dict.new(),
+                      dict.new(),
+                      dict.new(),
+                      0,
+                    ),
                   ),
-                  aliases: dict.insert(
-                    worker.aliases,
-                    original_destination,
-                    local_connection_id,
-                  ),
+                  aliases: case retry_source_connection_id {
+                    Some(_) -> worker.aliases
+                    None ->
+                      dict.insert(
+                        worker.aliases,
+                        original_destination,
+                        local_connection_id,
+                      )
+                  },
                 )
               update_replay_cache(worker, connection)
             }
           }
         }
       }
+  }
+}
+
+fn send_retry(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: version.Version,
+  original_destination: BitArray,
+  peer_connection_id: BitArray,
+) -> Worker {
+  case
+    bit_array.byte_size(original_destination) >= 8,
+    bit_array.byte_size(peer_connection_id) >= 8,
+    unique_connection_id(worker, 8)
+  {
+    False, _, _ | _, False, _ | _, _, Error(_) -> worker
+    True, True, Ok(retry_source) -> {
+      let #(address, port) = udp.endpoint_parts(peer)
+      let now = udp.monotonic_millisecond()
+      case
+        address_token.seal(
+          worker.address_token_key,
+          address_token.Retry,
+          address,
+          port,
+          original_destination,
+          retry_source,
+          now,
+        ),
+        retry_first_byte(protocol_version)
+      {
+        Ok(token), Ok(first_byte) ->
+          send_retry_packet(
+            worker,
+            peer,
+            protocol_version,
+            original_destination,
+            peer_connection_id,
+            retry_source,
+            first_byte,
+            token,
+          )
+        _, _ -> worker
+      }
+    }
+  }
+}
+
+fn send_retry_packet(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: version.Version,
+  original_destination: BitArray,
+  peer_connection_id: BitArray,
+  retry_source: BitArray,
+  first_byte: Int,
+  token: BitArray,
+) -> Worker {
+  let placeholder =
+    packet.Retry(
+      packet.LongHeader(
+        first_byte,
+        protocol_version,
+        peer_connection_id,
+        retry_source,
+      ),
+      token,
+      <<0:128>>,
+    )
+  case packet.encode_long(placeholder) {
+    Error(_) -> worker
+    Ok(encoded) ->
+      case bit_array.slice(encoded, 0, bit_array.byte_size(encoded) - 16) {
+        Error(_) -> worker
+        Ok(retry_without_tag) ->
+          case
+            retry_integrity.tag(
+              protocol_version,
+              original_destination,
+              retry_without_tag,
+            )
+          {
+            Error(_) -> worker
+            Ok(tag) -> {
+              let _ =
+                udp.send(
+                  worker.socket,
+                  peer,
+                  <<retry_without_tag:bits, tag:bits>>,
+                  ecn.NotEct,
+                )
+              worker
+            }
+          }
+      }
+  }
+}
+
+fn retry_first_byte(
+  protocol_version: version.Version,
+) -> Result(Int, crypto.Error) {
+  use random <- result.try(crypto.secure_random(1))
+  let assert <<random_low_bits>> = random
+  let base = case protocol_version {
+    version.Version1 -> 0xf0
+    version.Version2 -> 0xc0
+    _ -> 0
+  }
+  case base {
+    0 -> Error(crypto.InvalidInput)
+    _ -> Ok(int.bitwise_or(base, int.bitwise_and(random_low_bits, 0x0f)))
   }
 }
 
@@ -2081,52 +2373,81 @@ fn flush_connection(
               )
           }
         Ok(None) -> worker
-        Ok(Some(prepared)) ->
-          case
-            udp.send(
-              worker.socket,
-              server_connection.peer(peer.connection),
-              server_connection.prepared_bytes(prepared),
-              ecn.NotEct,
-            )
-          {
-            Error(_) -> fail_connection(worker, connection_id, ConnectionClosed)
-            Ok(Nil) -> {
-              case worker.qlog_writer {
-                Some(writer) ->
-                  qlog.datagram_sent(
-                    writer,
-                    now,
-                    bit_array.byte_size(server_connection.prepared_bytes(
-                      prepared,
-                    )),
-                  )
-                None -> Nil
+        Ok(Some(prepared)) -> {
+          let bytes = server_connection.prepared_bytes(prepared)
+          case candidate_send_endpoint(peer, bit_array.byte_size(bytes)) {
+            Error(_) -> worker
+            Ok(endpoint) ->
+              case udp.send(worker.socket, endpoint, bytes, ecn.NotEct) {
+                Error(_) ->
+                  fail_connection(worker, connection_id, ConnectionClosed)
+                Ok(Nil) -> {
+                  let peer =
+                    record_candidate_send(peer, bit_array.byte_size(bytes))
+                  case worker.qlog_writer {
+                    Some(writer) ->
+                      qlog.datagram_sent(
+                        writer,
+                        now,
+                        bit_array.byte_size(bytes),
+                      )
+                    None -> Nil
+                  }
+                  case
+                    server_connection.commit_datagram(prepared, ecn.NotEct, now)
+                  {
+                    Error(error) ->
+                      fail_connection(
+                        worker,
+                        connection_id,
+                        map_connection_error(error),
+                      )
+                    Ok(connection) ->
+                      flush_connection(
+                        put_peer(
+                          worker,
+                          connection_id,
+                          PeerState(..peer, connection: connection),
+                        ),
+                        connection_id,
+                        remaining - 1,
+                        now,
+                      )
+                  }
+                }
               }
-              case
-                server_connection.commit_datagram(prepared, ecn.NotEct, now)
-              {
-                Error(error) ->
-                  fail_connection(
-                    worker,
-                    connection_id,
-                    map_connection_error(error),
-                  )
-                Ok(connection) ->
-                  flush_connection(
-                    put_peer(
-                      worker,
-                      connection_id,
-                      PeerState(..peer, connection: connection),
-                    ),
-                    connection_id,
-                    remaining - 1,
-                    now,
-                  )
-              }
-            }
           }
+        }
       }
+  }
+}
+
+fn candidate_send_endpoint(
+  peer: PeerState,
+  datagram_bytes: Int,
+) -> Result(udp.Endpoint, Nil) {
+  case peer.candidate_path {
+    None -> Ok(server_connection.peer(peer.connection))
+    Some(CandidatePath(endpoint, received, sent)) ->
+      case sent + datagram_bytes <= received * 3 {
+        True -> Ok(endpoint)
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn record_candidate_send(peer: PeerState, datagram_bytes: Int) -> PeerState {
+  case peer.candidate_path {
+    None -> peer
+    Some(CandidatePath(endpoint, received, sent)) ->
+      PeerState(
+        ..peer,
+        candidate_path: Some(CandidatePath(
+          endpoint,
+          received,
+          sent + datagram_bytes,
+        )),
+      )
   }
 }
 
@@ -2202,6 +2523,10 @@ fn dispatch_event(
     session.TransportEvent(transport.PeerClosed(_, _))
     | session.TransportEvent(transport.StatelessResetReceived) ->
       fail_connection(worker, connection_id, ConnectionClosed)
+    session.TransportEvent(transport.PathValidated) ->
+      commit_candidate_path(worker, connection_id)
+    session.TransportEvent(transport.PathValidationFailed) ->
+      discard_candidate_path(worker, connection_id)
     session.Http3Event(http3_state.PriorityChanged(update)) ->
       apply_peer_priority(worker, connection_id, update)
     session.Http3Event(http3_state.PushCancelled(push_id)) ->
@@ -2213,6 +2538,37 @@ fn dispatch_event(
       fail_server_push(worker, connection_id, push_id, PushCancelled)
       |> abort_stream_id(connection_id, stream_id, request_cancelled_code)
     _ -> worker
+  }
+}
+
+fn commit_candidate_path(worker: Worker, connection_id: BitArray) -> Worker {
+  case dict.get(worker.connections, connection_id) {
+    Error(_) -> worker
+    Ok(PeerState(candidate_path: None, ..)) -> worker
+    Ok(peer) -> {
+      let assert Some(CandidatePath(endpoint, _, _)) = peer.candidate_path
+      case worker.qlog_writer {
+        Some(writer) -> qlog.path_updated(writer, udp.monotonic_millisecond())
+        None -> Nil
+      }
+      put_peer(
+        worker,
+        connection_id,
+        PeerState(
+          ..peer,
+          connection: server_connection.with_peer(peer.connection, endpoint),
+          candidate_path: None,
+        ),
+      )
+    }
+  }
+}
+
+fn discard_candidate_path(worker: Worker, connection_id: BitArray) -> Worker {
+  case dict.get(worker.connections, connection_id) {
+    Error(_) -> worker
+    Ok(peer) ->
+      put_peer(worker, connection_id, PeerState(..peer, candidate_path: None))
   }
 }
 
@@ -3169,6 +3525,10 @@ fn put_peer(worker: Worker, identifier: BitArray, peer: PeerState) -> Worker {
     ..worker,
     connections: dict.insert(worker.connections, identifier, peer),
   )
+}
+
+fn same_endpoint(left: udp.Endpoint, right: udp.Endpoint) -> Bool {
+  udp.endpoint_parts(left) == udp.endpoint_parts(right)
 }
 
 fn put_request(

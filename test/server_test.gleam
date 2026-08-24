@@ -47,6 +47,39 @@ pub fn bounded_server_round_trip_over_real_udp_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn ipv6_server_round_trip_over_real_udp_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  let configuration = server.with_timeout(configuration, 3000) |> should.be_ok
+  let listener =
+    configuration
+    |> server.with_address_family(server.Ipv6)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let server_task =
+    http3_test_support.start_task(fn() {
+      let incoming = server.accept(listener) |> should.be_ok
+      assert server.path(incoming) == "/ipv6"
+      assert server.read_body(incoming) |> should.be_ok == <<>>
+      server.respond(incoming, 200, [], <<"ipv6":utf8>>) |> should.be_ok
+    })
+  let request =
+    request.new()
+    |> request.set_host("::1")
+    |> request.set_port(port)
+    |> request.set_path("/ipv6")
+    |> request.set_body(<<>>)
+  let reply =
+    client.send(client_configuration(ca_certificate), request) |> should.be_ok
+  let _served = http3_test_support.await_task(server_task)
+  assert reply.status == 200
+  assert reply.body == <<"ipv6":utf8>>
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_server_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =

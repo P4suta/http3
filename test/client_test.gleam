@@ -4,9 +4,25 @@ import gleam/http/request
 import gleam/http/response
 import gleam/list
 import gleam/string
+import gleam_quic/internal/tls/authentication
 import gleeunit/should
 import http3/client
+import http3/transport
 import http3_test_support
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn ipv6_literal_certificate_identity_is_verified_test() -> Nil {
+  let #(certificate, _, ca_certificate) =
+    http3_test_support.server_credentials()
+  let chain =
+    authentication.certificate_chain_from_pem(certificate) |> should.be_ok
+  let trust_store =
+    authentication.trust_store_from_der([ca_certificate]) |> should.be_ok
+  let _peer =
+    authentication.validate_server_certificate(chain, trust_store, "::1")
+    |> should.be_ok
+  Nil
+}
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn client_rejects_non_https_request_test() -> Nil {
@@ -203,6 +219,30 @@ pub fn bounded_client_round_trip_over_real_udp_test() -> Nil {
     assert response.get_header(reply, "x-received-test") == Ok("loopback")
     assert response.get_header(reply, ":status") == Error(Nil)
     assert reply.body == <<"hello over h3":utf8>>
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_client_round_trip_over_quic_v2_test() -> Nil {
+  http3_test_support.with_server(fn(port, ca_certificate) {
+    let configuration =
+      client.new()
+      |> client.with_quic_version(transport.QuicV2)
+      |> client.with_timeout(3000)
+      |> should.be_ok
+    let configuration =
+      client.with_ca_certificate(configuration, ca_certificate) |> should.be_ok
+    let request =
+      request.new()
+      |> request.set_host("localhost")
+      |> request.set_port(port)
+      |> request.set_path("/echo")
+      |> request.set_body(<<"v2":utf8>>)
+
+    let reply = client.send(configuration, request) |> should.be_ok
+    assert reply.status == 200
+    assert response.get_header(reply, "x-request-path") == Ok("/echo")
+    assert reply.body == <<"v2":utf8>>
   })
 }
 

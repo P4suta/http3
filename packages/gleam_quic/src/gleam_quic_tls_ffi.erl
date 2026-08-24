@@ -3,6 +3,7 @@
 -export([
     certificate_chain_from_pem/1,
     constant_time_equal/2,
+    is_ip_address/1,
     sign/3,
     signing_key_from_pem/1,
     signing_key_scheme/1,
@@ -12,6 +13,15 @@
     validate_server_certificate/3,
     verify/4
 ]).
+
+-spec is_ip_address(binary()) -> boolean().
+is_ip_address(Hostname) when is_binary(Hostname) ->
+    case inet:parse_address(binary_to_list(Hostname)) of
+        {ok, _Address} -> true;
+        {error, _Reason} -> false
+    end;
+is_ip_address(_Hostname) ->
+    false.
 
 -define(ID_ED25519, {1, 3, 101, 112}).
 -define(ID_ED448, {1, 3, 101, 113}).

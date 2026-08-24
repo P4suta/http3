@@ -45,12 +45,18 @@ pub fn send(
   ca_certificates ca_certificates: List(BitArray),
   timeout_milliseconds timeout_milliseconds: Int,
   response_body_limit response_body_limit: Int,
+  quic_v2 quic_v2: Bool,
 ) -> Result(Response, Failure) {
   let PreparedRequest(host, port, headers, body) = request
   use client <- result.try(
     native_client.new(host, port)
     |> result.map_error(from_native_configuration_error),
   )
+  let client =
+    native_client.with_quic_version(client, case quic_v2 {
+      False -> native_client.QuicV1
+      True -> native_client.QuicV2
+    })
   use client <- result.try(
     native_client.with_timeout(client, timeout_milliseconds)
     |> result.map_error(from_native_configuration_error),
@@ -128,6 +134,8 @@ fn from_native_error(error: native_client.Error) -> Failure {
     | native_client.TicketUnavailable
     | native_client.QlogUnavailable ->
       BackendFailure("unexpected native advanced transport error")
+    native_client.VersionNegotiationFailed ->
+      ConnectFailed("no compatible QUIC version")
   }
 }
 

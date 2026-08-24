@@ -14,6 +14,7 @@ import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
 import gleam_quic/internal/udp
+import gleam_quic/packet
 import gleam_quic/transport_parameter
 import gleam_quic/version
 
@@ -78,6 +79,7 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
     drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
   assert driver.phase(client) == connection_state.Established
   assert driver.phase(server) == connection_state.Established
+  assert connection_state.can_issue_session_ticket(driver.connection(server))
   assert driver.peer_connection_id(client) == original_destination_connection_id
   assert connection_state.packet_space_discarded(
     driver.connection(client),
@@ -95,6 +97,37 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
   let assert Ok(client) = driver.tick(client, 20_000)
   assert driver.phase(client) == connection_state.Established
   assert driver.phase(server) == connection_state.Established
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn completes_handshake_for_an_ip_literal_without_sni_test() -> Nil {
+  let #(client_config, server_config) = tls_configs()
+  let client_config = engine.ClientConfig(..client_config, hostname: "::1")
+  let assert Ok(client_tls) = engine.start_client(client_config)
+  let assert Ok(server_tls) = engine.start_server(server_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+
+  let assert Ok(Peers(client, server, _)) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+  assert driver.phase(client) == connection_state.Established
+  assert driver.phase(server) == connection_state.Established
+  assert !connection_state.can_issue_session_ticket(driver.connection(server))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -181,6 +214,88 @@ pub fn completes_quic_v2_protected_handshake_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn accepts_only_an_eligible_version_negotiation_packet_test() -> Nil {
+  let #(client_tls_config, _) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(datagram) =
+    packet.VersionNegotiation(
+      packet.LongHeader(
+        0x80,
+        version.Negotiation,
+        client_connection_id,
+        original_destination_connection_id,
+      ),
+      [version.Version2],
+    )
+    |> packet.encode_long
+
+  assert driver.receive_datagram(client, datagram, 1)
+    == Error(driver.VersionNegotiationReceived([version.Version2]))
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn ignores_version_negotiation_with_a_wrong_connection_id_test() -> Nil {
+  let #(client_tls_config, _) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(datagram) =
+    packet.VersionNegotiation(
+      packet.LongHeader(
+        0x80,
+        version.Negotiation,
+        <<0, 0, 0, 0, 0, 0, 0, 0>>,
+        original_destination_connection_id,
+      ),
+      [version.Version2],
+    )
+    |> packet.encode_long
+
+  assert driver.receive_datagram(client, datagram, 1) |> result.is_ok
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn ignores_downgrade_style_version_negotiation_test() -> Nil {
+  let #(client_tls_config, _) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(datagram) =
+    packet.VersionNegotiation(
+      packet.LongHeader(
+        0x80,
+        version.Negotiation,
+        client_connection_id,
+        original_destination_connection_id,
+      ),
+      [version.Version2, version.Version1],
+    )
+    |> packet.encode_long
+
+  assert driver.receive_datagram(client, datagram, 1) |> result.is_ok
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn retransmits_client_hello_after_initial_packet_loss_test() -> Nil {
   let #(client_tls_config, server_tls_config) = tls_configs()
   let assert Ok(client_tls) = engine.start_client(client_tls_config)
@@ -215,6 +330,8 @@ pub fn retransmits_client_hello_after_initial_packet_loss_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn authenticates_retry_and_restarts_initial_keys_test() -> Nil {
   let #(client_tls_config, server_tls_config) = retry_tls_configs()
+  let client_tls_config =
+    engine.ClientConfig(..client_tls_config, hostname: "::1")
   let assert Ok(client_tls) = engine.start_client(client_tls_config)
   let assert Ok(server_tls) = engine.start_server(server_tls_config)
   let assert Ok(client) =

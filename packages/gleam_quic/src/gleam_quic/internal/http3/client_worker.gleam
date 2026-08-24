@@ -20,6 +20,7 @@ import gleam_quic/internal/qpack/header.{type Header, Header}
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/internal/udp
+import gleam_quic/version.{type Version}
 
 const network_poll_milliseconds = 10
 
@@ -133,6 +134,7 @@ pub type Error {
   UnsupportedCongestionControl
   TicketUnavailable
   QlogUnavailable
+  VersionNegotiationFailed
 }
 
 type Command {
@@ -291,6 +293,7 @@ pub fn connect(
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
   maximum_pushes: Int,
+  quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
 ) -> Result(Connection, Error) {
@@ -322,6 +325,7 @@ pub fn connect(
                 trust_store,
                 http_datagrams,
                 maximum_pushes,
+                quic_version,
                 qlog_directory,
                 resumption_ticket,
               )
@@ -548,6 +552,7 @@ fn initialise(
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
   maximum_pushes: Int,
+  quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
 ) -> Nil {
@@ -564,6 +569,7 @@ fn initialise(
       http_datagrams,
       native_ticket,
       maximum_pushes,
+      quic_version,
     )
   case client_connection.connect(config) {
     Error(error) -> process.send(bootstrap, Error(map_connection_error(error)))
@@ -2338,6 +2344,8 @@ fn map_connection_error(error: client_connection.Error) -> Error {
       Http3Failed(operation)
     client_connection.PeerClosed -> ConnectionClosed
     client_connection.MigrationUnavailable -> MigrationUnavailable
+    client_connection.VersionNegotiationReceived(_) -> VersionNegotiationFailed
+    client_connection.VersionNegotiationFailed -> VersionNegotiationFailed
   }
 }
 

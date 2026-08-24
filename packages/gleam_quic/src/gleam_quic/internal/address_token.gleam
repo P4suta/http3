@@ -4,9 +4,9 @@ import gleam/bit_array
 import gleam/result
 import gleam_quic/internal/crypto
 
-const format_version = 1
+const format_version = 2
 
-const associated_data = <<"gleam_quic address token v1">>
+const associated_data = <<"gleam_quic address token v2">>
 
 const maximum_timestamp = 9_223_372_036_854_775_807
 
@@ -21,6 +21,7 @@ pub type Token {
   Token(
     kind: Kind,
     original_destination_connection_id: BitArray,
+    retry_source_connection_id: BitArray,
     issued_at: Int,
   )
 }
@@ -42,6 +43,7 @@ pub fn seal(
   address: BitArray,
   port: Int,
   original_destination_connection_id: BitArray,
+  retry_source_connection_id: BitArray,
   issued_at: Int,
 ) -> Result(BitArray, Error) {
   use nonce <- result.try(crypto.secure_random(12) |> map_crypto_result)
@@ -51,6 +53,7 @@ pub fn seal(
     address,
     port,
     original_destination_connection_id,
+    retry_source_connection_id,
     issued_at,
     nonce,
   )
@@ -63,6 +66,7 @@ pub fn seal_with_nonce(
   address: BitArray,
   port: Int,
   original_destination_connection_id: BitArray,
+  retry_source_connection_id: BitArray,
   issued_at: Int,
   nonce: BitArray,
 ) -> Result(BitArray, Error) {
@@ -72,6 +76,7 @@ pub fn seal_with_nonce(
     address,
     port,
     original_destination_connection_id,
+    retry_source_connection_id,
     issued_at,
     nonce,
   ))
@@ -81,6 +86,7 @@ pub fn seal_with_nonce(
       address,
       port,
       original_destination_connection_id,
+      retry_source_connection_id,
       issued_at,
     )
   use protected <- result.try(
@@ -128,7 +134,7 @@ pub fn open(
 }
 
 type Decoded {
-  Decoded(Kind, BitArray, Int, BitArray, Int)
+  Decoded(Kind, BitArray, Int, BitArray, BitArray, Int)
 }
 
 fn encode_body(
@@ -136,10 +142,12 @@ fn encode_body(
   address: BitArray,
   port: Int,
   original_connection_id: BitArray,
+  retry_source_connection_id: BitArray,
   issued_at: Int,
 ) -> BitArray {
   let address_length = bit_array.byte_size(address)
   let connection_id_length = bit_array.byte_size(original_connection_id)
+  let retry_source_length = bit_array.byte_size(retry_source_connection_id)
   <<
     format_version,
     kind_to_wire(kind),
@@ -147,8 +155,10 @@ fn encode_body(
     port:size(16),
     address_length,
     connection_id_length,
+    retry_source_length,
     address:bits,
     original_connection_id:bits,
+    retry_source_connection_id:bits,
   >>
 }
 
@@ -161,6 +171,7 @@ fn decode_body(body: BitArray) -> Result(Decoded, Error) {
       port:size(16),
       address_length,
       connection_id_length,
+      retry_source_length,
       values:bits,
     >> -> {
       case wire_version == format_version {
@@ -173,6 +184,7 @@ fn decode_body(body: BitArray) -> Result(Decoded, Error) {
             port,
             address_length,
             connection_id_length,
+            retry_source_length,
           )
       }
     }
@@ -187,16 +199,19 @@ fn decode_values(
   port: Int,
   address_length: Int,
   connection_id_length: Int,
+  retry_source_length: Int,
 ) -> Result(Decoded, Error) {
   let address_bits = address_length * 8
   let connection_id_bits = connection_id_length * 8
+  let retry_source_bits = retry_source_length * 8
   case values {
     <<
       address:bits-size(address_bits),
       connection_id:bits-size(connection_id_bits),
+      retry_source:bits-size(retry_source_bits),
     >> -> {
       use kind <- result.try(kind_from_wire(wire_kind))
-      Ok(Decoded(kind, address, port, connection_id, issued_at))
+      Ok(Decoded(kind, address, port, connection_id, retry_source, issued_at))
     }
     _ -> Error(Malformed)
   }
@@ -209,13 +224,14 @@ fn validate_decoded(
   now: Int,
   maximum_age: Int,
 ) -> Result(Token, Error) {
-  let Decoded(kind, address, port, connection_id, issued_at) = decoded
-  case valid_connection_id_for_kind(kind, connection_id) {
+  let Decoded(kind, address, port, connection_id, retry_source, issued_at) =
+    decoded
+  case valid_connection_ids_for_kind(kind, connection_id, retry_source) {
     False -> Error(Malformed)
     True if address != expected_address || port != expected_port ->
       Error(AddressMismatch)
     True if issued_at > now || now - issued_at > maximum_age -> Error(Expired)
-    True -> Ok(Token(kind, connection_id, issued_at))
+    True -> Ok(Token(kind, connection_id, retry_source, issued_at))
   }
 }
 
@@ -225,6 +241,7 @@ fn validate_inputs(
   address: BitArray,
   port: Int,
   connection_id: BitArray,
+  retry_source_connection_id: BitArray,
   issued_at: Int,
   nonce: BitArray,
 ) -> Result(Nil, Error) {
@@ -232,9 +249,14 @@ fn validate_inputs(
     byte_aligned(key)
     && valid_address(address)
     && byte_aligned(connection_id)
+    && byte_aligned(retry_source_connection_id)
     && byte_aligned(nonce)
     && bit_array.byte_size(key) == 32
-    && valid_connection_id_for_kind(kind, connection_id)
+    && valid_connection_ids_for_kind(
+      kind,
+      connection_id,
+      retry_source_connection_id,
+    )
     && bit_array.byte_size(nonce) == 12
     && port > 0
     && port <= 65_535
@@ -259,7 +281,7 @@ fn validate_open_inputs(
     && byte_aligned(token)
     && byte_aligned(address)
     && bit_array.byte_size(key) == 32
-    && bit_array.byte_size(token) >= 43
+    && bit_array.byte_size(token) >= 47
     && valid_address(address)
     && port > 0
     && port <= 65_535
@@ -307,10 +329,25 @@ fn valid_address(address: BitArray) -> Bool {
   && { bit_array.byte_size(address) == 4 || bit_array.byte_size(address) == 16 }
 }
 
-fn valid_connection_id_for_kind(kind: Kind, connection_id: BitArray) -> Bool {
-  let size = bit_array.byte_size(connection_id)
+fn valid_connection_ids_for_kind(
+  kind: Kind,
+  original_connection_id: BitArray,
+  retry_source_connection_id: BitArray,
+) -> Bool {
+  let original_size = bit_array.byte_size(original_connection_id)
+  let retry_source_size = bit_array.byte_size(retry_source_connection_id)
   case kind {
-    Retry -> byte_aligned(connection_id) && size >= 8 && size <= 20
-    NewToken -> byte_aligned(connection_id) && size == 0
+    Retry ->
+      byte_aligned(original_connection_id)
+      && byte_aligned(retry_source_connection_id)
+      && original_size >= 8
+      && original_size <= 20
+      && retry_source_size >= 8
+      && retry_source_size <= 20
+    NewToken ->
+      byte_aligned(original_connection_id)
+      && byte_aligned(retry_source_connection_id)
+      && original_size == 0
+      && retry_source_size == 0
   }
 }

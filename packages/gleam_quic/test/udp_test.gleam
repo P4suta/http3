@@ -95,9 +95,42 @@ pub fn exchanges_real_ipv6_udp_datagrams_test() -> Nil {
   assert right_port > 0
 
   let assert Ok(Nil) = udp.send(left_socket, right, <<"ipv6-quic">>, ecn.NotEct)
+  let assert Ok(Nil) =
+    udp.send(left_socket, right, <<"ipv6-second">>, ecn.NotEct)
   let assert Ok(udp.Datagram(peer, <<"ipv6-quic">>, _)) =
     udp.receive(right_socket, 1000)
   assert udp.endpoint_parts(peer) == udp.endpoint_parts(left)
+  let assert Ok(udp.Datagram(second_peer, <<"ipv6-second">>, _)) =
+    udp.receive(right_socket, 1000)
+  assert udp.endpoint_parts(second_peer) == udp.endpoint_parts(left)
+  let assert Ok(Nil) = udp.close(left_socket)
+  let assert Ok(Nil) = udp.close(right_socket)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn exchanges_consecutive_ipv6_datagrams_from_wildcard_sockets_test() -> Nil {
+  let assert Ok(wildcard) = udp.ipv6(0, 0, 0, 0, 0, 0, 0, 0)
+  let assert Ok(loopback) = udp.ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(wildcard, 0)
+  let assert Ok(left_socket) = udp.open(ephemeral)
+  let assert Ok(right_socket) = udp.open(ephemeral)
+  let assert Ok(left_local) = udp.local_endpoint(left_socket)
+  let assert Ok(right_local) = udp.local_endpoint(right_socket)
+  let #(_, left_port) = udp.endpoint_parts(left_local)
+  let #(_, right_port) = udp.endpoint_parts(right_local)
+  let assert Ok(left) = udp.endpoint(loopback, left_port)
+  let assert Ok(right) = udp.endpoint(loopback, right_port)
+
+  let assert Ok(Nil) = udp.send(left_socket, right, <<0:9600>>, ecn.NotEct)
+  let assert Ok(Nil) = udp.send(left_socket, right, <<1:5384>>, ecn.NotEct)
+  let assert Ok(udp.Datagram(_, first, _)) = udp.receive(right_socket, 1000)
+  let assert Ok(udp.Datagram(_, second, _)) = udp.receive(right_socket, 1000)
+  assert bit_array.byte_size(first) == 1200
+  assert bit_array.byte_size(second) == 673
+  let assert Ok(Nil) = udp.send(right_socket, left, <<2:9600>>, ecn.NotEct)
+  let assert Ok(udp.Datagram(_, reply, _)) = udp.receive(left_socket, 1000)
+  assert bit_array.byte_size(reply) == 1200
   let assert Ok(Nil) = udp.close(left_socket)
   let assert Ok(Nil) = udp.close(right_socket)
   Nil

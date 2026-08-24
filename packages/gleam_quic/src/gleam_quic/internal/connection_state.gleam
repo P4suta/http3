@@ -628,6 +628,14 @@ pub fn issue_session_ticket(
   }
 }
 
+/// Report whether this connected server can bind a ticket to a DNS origin.
+pub fn can_issue_session_ticket(state: State) -> Bool {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_can_issue_session_ticket(server)
+    _ -> False
+  }
+}
+
 /// Replace a handshaking server's resumption policy with the listener's most
 /// recent bounded anti-replay snapshot.
 pub fn refresh_server_resumption_policy(

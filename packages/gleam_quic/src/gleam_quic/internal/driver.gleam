@@ -500,8 +500,8 @@ fn receive_long_packet(
     packet.parse_long(datagram) |> map_packet_result,
   )
   case invariant {
-    packet.VersionNegotiation(_, versions) ->
-      Error(VersionNegotiationReceived(versions))
+    packet.VersionNegotiation(header, versions) ->
+      receive_version_negotiation(state, header, versions)
     packet.Retry(header, token, integrity_tag) ->
       receive_retry(state, datagram, header, token, integrity_tag, now_ms)
     packet.UnknownVersion(_, _) -> Error(InvalidInput)
@@ -543,6 +543,24 @@ fn receive_long_packet(
         now_ms,
       )
     }
+  }
+}
+
+fn receive_version_negotiation(
+  state: State,
+  header: packet.LongHeader,
+  versions: List(Version),
+) -> Result(State, Error) {
+  let packet.LongHeader(_, _, destination, source) = header
+  case
+    state.role == Client
+    && !state.server_packet_received
+    && destination == state.local_connection_id
+    && source == state.original_destination_connection_id
+    && !list.contains(versions, state.version)
+  {
+    True -> Error(VersionNegotiationReceived(versions))
+    False -> Ok(state)
   }
 }
 

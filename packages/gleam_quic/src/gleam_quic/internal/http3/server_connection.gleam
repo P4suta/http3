@@ -101,6 +101,7 @@ pub fn accept_initial(
   original_destination_connection_id original_destination_connection_id: BitArray,
   local_connection_id local_connection_id: BitArray,
   peer_connection_id peer_connection_id: BitArray,
+  retry_source_connection_id retry_source_connection_id: Option(BitArray),
   peer peer: udp.Endpoint,
   datagram datagram: BitArray,
   marking marking: packet_space.ReceivedCodepoint,
@@ -112,6 +113,7 @@ pub fn accept_initial(
     original_destination_connection_id,
     local_connection_id,
     peer_connection_id,
+    retry_source_connection_id,
     datagram,
     now_ms,
   ))
@@ -122,6 +124,7 @@ pub fn accept_initial(
       transport_parameters: server_transport_parameters(
         original_destination_connection_id,
         local_connection_id,
+        retry_source_connection_id,
         config.http_datagrams,
       ),
       certificate_chain: config.certificate_chain,
@@ -140,7 +143,10 @@ pub fn accept_initial(
         config.maximum_body_bytes,
       ),
       tls,
-      original_destination_connection_id,
+      case retry_source_connection_id {
+        Some(_) -> local_connection_id
+        None -> original_destination_connection_id
+      },
       local_connection_id,
       peer_connection_id,
       now_ms,
@@ -176,9 +182,32 @@ pub fn peer(state: State) -> udp.Endpoint {
   state.peer
 }
 
+/// Return whether TLS has promoted this transport to an HTTP/3 session.
+pub fn is_established(state: State) -> Bool {
+  case state.protocol {
+    Handshaking(_) -> False
+    Established(_) -> True
+  }
+}
+
 /// Adopt a newly authenticated peer endpoint after NAT rebinding or migration.
 pub fn with_peer(state: State, peer: udp.Endpoint) -> State {
   State(..state, peer: peer)
+}
+
+/// Validate one authenticated candidate peer address before adopting it.
+pub fn begin_path_validation(
+  state: State,
+  challenge: BitArray,
+  now_ms: Int,
+) -> Result(State, Error) {
+  case state.protocol {
+    Handshaking(_) -> Error(InvalidInput)
+    Established(http3) ->
+      session.begin_path_validation(http3, challenge, now_ms)
+      |> result.map(fn(next) { State(..state, protocol: Established(next)) })
+      |> result.map_error(SessionFailure)
+  }
 }
 
 /// Refresh replay state, authenticate a datagram, and promote to HTTP/3 once
@@ -580,6 +609,8 @@ fn promote(state: State, now_ms: Int) -> Result(State, Error) {
     Handshaking(quic) ->
       case driver.phase(quic) {
         transport.Established -> {
+          let can_issue_ticket =
+            transport.can_issue_session_ticket(driver.connection(quic))
           let datagrams =
             state.config.http_datagrams
             && transport.maximum_datagram_data_size(driver.connection(quic))
@@ -588,17 +619,35 @@ fn promote(state: State, now_ms: Int) -> Result(State, Error) {
             session.start(quic, server_http3_config(state.config), datagrams)
             |> result.map_error(SessionFailure),
           )
-          use http3 <- result.try(
-            session.issue_session_ticket(
-              http3,
-              state.config.ticket_key,
-              now_ms,
-              session_ticket_lifetime_seconds,
-              True,
-            )
-            |> result.map_error(SessionFailure),
-          )
-          Ok(State(..state, protocol: Established(http3), ticket_issued: True))
+          case can_issue_ticket {
+            False ->
+              Ok(
+                State(
+                  ..state,
+                  protocol: Established(http3),
+                  ticket_issued: False,
+                ),
+              )
+            True -> {
+              use http3 <- result.try(
+                session.issue_session_ticket(
+                  http3,
+                  state.config.ticket_key,
+                  now_ms,
+                  session_ticket_lifetime_seconds,
+                  True,
+                )
+                |> result.map_error(SessionFailure),
+              )
+              Ok(
+                State(
+                  ..state,
+                  protocol: Established(http3),
+                  ticket_issued: True,
+                ),
+              )
+            }
+          }
         }
         _ -> Ok(state)
       }
@@ -661,6 +710,7 @@ fn server_transport_config(
 fn server_transport_parameters(
   original_destination_connection_id: BitArray,
   local_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
   http_datagrams: Bool,
 ) -> List(transport_parameter.Parameter) {
   let parameters = [
@@ -678,6 +728,13 @@ fn server_transport_parameters(
     transport_parameter.InitialMaxStreamsUni(100),
     transport_parameter.ActiveConnectionIdLimit(4),
   ]
+  let parameters = case retry_source_connection_id {
+    Some(connection_id) -> [
+      transport_parameter.RetrySourceConnectionId(connection_id),
+      ..parameters
+    ]
+    None -> parameters
+  }
   case http_datagrams {
     True -> [
       transport_parameter.MaxDatagramFrameSize(maximum_datagram_frame_bytes),
@@ -706,6 +763,7 @@ fn validate_initial_inputs(
   original_destination_connection_id: BitArray,
   local_connection_id: BitArray,
   peer_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
   datagram: BitArray,
   now_ms: Int,
 ) -> Result(Nil, Error) {
@@ -720,6 +778,10 @@ fn validate_initial_inputs(
     && valid_id(original_destination_connection_id)
     && valid_id(local_connection_id)
     && valid_id(peer_connection_id)
+    && case retry_source_connection_id {
+      Some(value) -> value == local_connection_id && valid_id(value)
+      None -> True
+    }
     && bit_array.byte_size(datagram) >= 1200
     && now_ms >= 0
   {

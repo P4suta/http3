@@ -3,6 +3,10 @@
 import gleam/bit_array
 import gleam/list
 import gleam/result
+
+@external(erlang, "gleam_quic_tls_ffi", "is_ip_address")
+fn raw_is_ip_address(hostname: String) -> Bool
+
 import gleam_quic/internal/tls/extension_value.{type SignatureScheme}
 
 /// Runtime-owned trust anchors. The contained X.509 terms never cross this API.
@@ -126,6 +130,11 @@ pub fn validate_server_certificate(
           |> map_result
       }
   }
+}
+
+/// Return whether a service identity is an IPv4 or IPv6 address literal.
+pub fn is_ip_address(hostname: String) -> Bool {
+  raw_is_ip_address(hostname)
 }
 
 /// Decode one unencrypted PEM private key for CertificateVerify.

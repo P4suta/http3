@@ -36,6 +36,7 @@ pub fn connect(
   stream_buffer_limit stream_buffer_limit: Int,
   http_datagrams http_datagrams: Bool,
   maximum_pushes maximum_pushes: Int,
+  quic_v2 quic_v2: Bool,
   qlog_directory qlog_directory: String,
   resumption_tickets resumption_tickets: List(ResumptionTicketHandle),
 ) -> Result(ConnectionHandle, client_backend.Failure) {
@@ -48,6 +49,11 @@ pub fn connect(
       use configured <- result.try(
         native_client.new(host, port) |> map_configuration_result,
       )
+      let configured =
+        native_client.with_quic_version(configured, case quic_v2 {
+          False -> native_client.QuicV1
+          True -> native_client.QuicV2
+        })
       use configured <- result.try(
         native_client.with_timeout(configured, timeout_milliseconds)
         |> map_configuration_result,
@@ -285,5 +291,7 @@ fn map_native_error(error: native_client.Error) -> client_backend.Failure {
     native_client.TicketUnavailable -> client_backend.Timeout
     native_client.QlogUnavailable ->
       client_backend.BackendFailure("qlog output unavailable")
+    native_client.VersionNegotiationFailed ->
+      client_backend.ConnectFailed("no compatible QUIC version")
   }
 }

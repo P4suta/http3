@@ -17,10 +17,11 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
       address,
       4433,
       <<>>,
+      <<>>,
       1000,
     )
   assert address_token.open(token_key, fresh, address, 4433, 1000, 100)
-    == Ok(address_token.Token(address_token.NewToken, <<>>, 1000))
+    == Ok(address_token.Token(address_token.NewToken, <<>>, <<>>, 1000))
   let nonce = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11>>
   let assert Ok(token) =
     address_token.seal_with_nonce(
@@ -29,6 +30,7 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
       address,
       4433,
       <<9, 8, 7, 6, 5, 4, 3, 2>>,
+      <<1, 2, 3, 4, 5, 6, 7, 8>>,
       1000,
       nonce,
     )
@@ -36,6 +38,7 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
     == Ok(address_token.Token(
       address_token.Retry,
       <<9, 8, 7, 6, 5, 4, 3, 2>>,
+      <<1, 2, 3, 4, 5, 6, 7, 8>>,
       1000,
     ))
   assert address_token.open(token_key, token, <<127, 0, 0, 2>>, 4433, 1050, 100)
@@ -57,6 +60,7 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
       address,
       4433,
       <<1, 2, 3, 4>>,
+      <<1, 2, 3, 4, 5, 6, 7, 8>>,
       1000,
       nonce,
     )
@@ -67,6 +71,7 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
       address,
       4433,
       <<1, 2, 3, 4, 5, 6, 7, 8>>,
+      <<>>,
       1000,
       nonce,
     )

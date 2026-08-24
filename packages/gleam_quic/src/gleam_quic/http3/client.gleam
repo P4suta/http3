@@ -10,6 +10,7 @@ import gleam_quic/internal/http3/client_connection
 import gleam_quic/internal/http3/client_worker
 import gleam_quic/internal/qpack/header.{type Header, Header}
 import gleam_quic/internal/tls/authentication
+import gleam_quic/version
 
 const default_timeout_milliseconds = 30_000
 
@@ -37,6 +38,7 @@ pub opaque type Client {
     trust: Trust,
     http_datagrams: Bool,
     maximum_pushes: Int,
+    quic_version: QuicVersion,
     qlog_directory: String,
     resumption_ticket: Option(ResumptionTicket),
   )
@@ -102,6 +104,12 @@ pub type PathStats {
 /// Runtime traffic counters for one native connection.
 pub type ConnectionStats {
   ConnectionStats(Int, Int, Int, Int, Int, Int, Int, Int)
+}
+
+/// Preferred QUIC wire version. Compatible negotiation remains enabled.
+pub type QuicVersion {
+  QuicV1
+  QuicV2
 }
 
 /// One streaming response event.
@@ -177,6 +185,7 @@ pub type Error {
   UnsupportedCongestionControl
   TicketUnavailable
   QlogUnavailable
+  VersionNegotiationFailed
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
@@ -198,6 +207,7 @@ pub fn new(
         SystemTrust,
         False,
         default_maximum_pushes,
+        QuicV1,
         "",
         None,
       ))
@@ -233,6 +243,12 @@ pub fn with_push_limit(
     True -> Ok(Client(..client, maximum_pushes: pushes))
     False -> Error(InvalidPushLimit)
   }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Select the initially attempted QUIC version.
+pub fn with_quic_version(client: Client, quic_version: QuicVersion) -> Client {
+  Client(..client, quic_version: quic_version)
 }
 
 // nolint: unused_exports -- consumed by the parent http3 package.
@@ -318,6 +334,10 @@ pub fn send(
       timeout_milliseconds: client.timeout_milliseconds,
       maximum_response_body_bytes: client.response_body_limit,
       trust_store: trust_store,
+      quic_version: case client.quic_version {
+        QuicV1 -> version.Version1
+        QuicV2 -> version.Version2
+      },
     )
   case bounded_client.send(config, headers, body) {
     Ok(bounded_client.Response(status, headers, body)) ->
@@ -342,6 +362,10 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     trust_store,
     client.http_datagrams,
     client.maximum_pushes,
+    case client.quic_version {
+      QuicV1 -> version.Version1
+      QuicV2 -> version.Version2
+    },
     client.qlog_directory,
     ticket,
   )
@@ -714,6 +738,8 @@ fn map_error(error: bounded_client.Error) -> Error {
     bounded_client.StreamReset(code) -> StreamReset(code)
     bounded_client.InvalidHeaderEncoding -> InvalidHeaderEncoding
     bounded_client.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
+    bounded_client.VersionNegotiationReceived(_) -> VersionNegotiationFailed
+    bounded_client.VersionNegotiationFailed -> VersionNegotiationFailed
   }
 }
 
@@ -749,6 +775,7 @@ fn map_worker_error(error: client_worker.Error) -> Error {
     client_worker.UnsupportedCongestionControl -> UnsupportedCongestionControl
     client_worker.TicketUnavailable -> TicketUnavailable
     client_worker.QlogUnavailable -> QlogUnavailable
+    client_worker.VersionNegotiationFailed -> VersionNegotiationFailed
   }
 }
 

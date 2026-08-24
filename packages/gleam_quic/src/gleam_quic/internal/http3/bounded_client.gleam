@@ -17,7 +17,7 @@ import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/udp
 import gleam_quic/transport_parameter
-import gleam_quic/version
+import gleam_quic/version.{type Version}
 
 /// Internal alias used to normalize diagnostics without exporting internals.
 pub type DriverError =
@@ -43,6 +43,7 @@ pub type Config {
     timeout_milliseconds: Int,
     maximum_response_body_bytes: Int,
     trust_store: authentication.TrustStore,
+    quic_version: Version,
   )
 }
 
@@ -65,6 +66,8 @@ pub type Error {
   StreamReset(Int)
   InvalidHeaderEncoding
   ResponseBodyTooLarge(Int)
+  VersionNegotiationReceived(List(Version))
+  VersionNegotiationFailed
 }
 
 type Collector {
@@ -155,15 +158,40 @@ fn request_on_socket(
   body: BitArray,
   deadline: Int,
 ) -> Result(Response, Error) {
+  request_on_socket_version(
+    config,
+    socket,
+    peer,
+    headers,
+    body,
+    deadline,
+    config.quic_version,
+    [],
+  )
+}
+
+fn request_on_socket_version(
+  config: Config,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  headers: List(Header),
+  body: BitArray,
+  deadline: Int,
+  selected_version: Version,
+  attempted_versions: List(Version),
+) -> Result(Response, Error) {
   use original_destination_connection_id <- result.try(random_connection_id())
   use local_connection_id <- result.try(random_connection_id())
-  let transport_config = client_transport_config()
+  let transport_config = client_transport_config(selected_version)
   let tls_config =
     engine.ClientConfig(
-      version: version.Version1,
+      version: selected_version,
       hostname: config.hostname,
       application_protocols: [<<"h3">>],
-      transport_parameters: client_transport_parameters(local_connection_id),
+      transport_parameters: client_transport_parameters(
+        local_connection_id,
+        selected_version,
+      ),
       trust_store: config.trust_store,
       retried: False,
     )
@@ -180,7 +208,50 @@ fn request_on_socket(
     )
     |> result.map_error(fn(error) { QuicTransportFailed("start", error) }),
   )
-  use quic <- result.try(handshake(quic, socket, peer, deadline))
+  case handshake(quic, socket, peer, deadline) {
+    Error(VersionNegotiationReceived(offered)) ->
+      case
+        select_compatible_version(selected_version, offered, [
+          selected_version,
+          ..attempted_versions
+        ])
+      {
+        Error(_) -> Error(VersionNegotiationFailed)
+        Ok(next_version) ->
+          request_on_socket_version(
+            config,
+            socket,
+            peer,
+            headers,
+            body,
+            deadline,
+            next_version,
+            [selected_version, ..attempted_versions],
+          )
+      }
+    Error(error) -> Error(error)
+    Ok(quic) ->
+      request_after_handshake(
+        config,
+        socket,
+        peer,
+        headers,
+        body,
+        deadline,
+        quic,
+      )
+  }
+}
+
+fn request_after_handshake(
+  config: Config,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  headers: List(Header),
+  body: BitArray,
+  deadline: Int,
+  quic: driver.State,
+) -> Result(Response, Error) {
   use http3 <- result.try(
     session.start(quic, http3_state.default_config(http3_state.Client), False)
     |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
@@ -304,6 +375,8 @@ fn receive_driver(
             )
           {
             Ok(state) -> Ok(state)
+            Error(driver.VersionNegotiationReceived(versions)) ->
+              Error(VersionNegotiationReceived(versions))
             Error(error) -> discard_or_fail_driver(state, error)
           }
       }
@@ -552,11 +625,11 @@ fn decode_headers(
   }
 }
 
-fn client_transport_config() -> transport.Config {
+fn client_transport_config(selected_version: Version) -> transport.Config {
   let config = transport.default_config(transport.Client)
   transport.Config(
     ..config,
-    version: version.Version1,
+    version: selected_version,
     maximum_udp_payload_size: 1200,
     maximum_datagram_frame_size: 0,
   )
@@ -564,6 +637,7 @@ fn client_transport_config() -> transport.Config {
 
 fn client_transport_parameters(
   local_connection_id: BitArray,
+  selected_version: Version,
 ) -> List(transport_parameter.Parameter) {
   [
     transport_parameter.MaxIdleTimeout(30_000),
@@ -576,7 +650,7 @@ fn client_transport_parameters(
     transport_parameter.InitialMaxStreamsUni(100),
     transport_parameter.ActiveConnectionIdLimit(4),
     transport_parameter.InitialSourceConnectionId(local_connection_id),
-    transport_parameter.VersionInformation(version.Version1, [
+    transport_parameter.VersionInformation(selected_version, [
       version.Version2,
       version.Version1,
     ]),
@@ -699,9 +773,26 @@ fn validate(config: Config, body: BitArray) -> Result(Nil, Error) {
     && config.port <= 65_535
     && config.timeout_milliseconds > 0
     && config.maximum_response_body_bytes > 0
+    && {
+      config.quic_version == version.Version1
+      || config.quic_version == version.Version2
+    }
     && bit_array.bit_size(body) % 8 == 0
   {
     True -> Ok(Nil)
     False -> Error(InvalidInput)
   }
+}
+
+fn select_compatible_version(
+  current: Version,
+  offered: List(Version),
+  attempted: List(Version),
+) -> Result(Version, Nil) {
+  [version.Version2, version.Version1]
+  |> list.find(fn(candidate) {
+    candidate != current
+    && list.contains(offered, candidate)
+    && !list.contains(attempted, candidate)
+  })
 }

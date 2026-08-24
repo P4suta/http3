@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/internal/connection_state as transport
@@ -16,7 +17,7 @@ import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/internal/udp
 import gleam_quic/transport_parameter
-import gleam_quic/version
+import gleam_quic/version.{type Version}
 
 const maximum_packets_per_flush = 64
 
@@ -38,6 +39,7 @@ pub type Config {
     http_datagrams: Bool,
     resumption_ticket: Option(session_ticket.ClientTicket),
     maximum_pushes: Int,
+    quic_version: Version,
   )
 }
 
@@ -47,6 +49,7 @@ pub opaque type State {
     socket: udp.Socket,
     peer: udp.Endpoint,
     session: session.State,
+    previous_socket: Option(udp.Socket),
     packets_received: Int,
     packets_sent: Int,
     data_received: Int,
@@ -80,6 +83,8 @@ pub type Error {
   Http3OperationFailed(operation: String, error: session.Error)
   PeerClosed
   MigrationUnavailable
+  VersionNegotiationReceived(List(Version))
+  VersionNegotiationFailed
 }
 
 /// Resolve, authenticate, and establish one reusable connection.
@@ -272,9 +277,12 @@ pub fn stats(state: State) -> Stats {
 
 /// Select a fresh local UDP path and begin QUIC path validation.
 pub fn migrate(state: State) -> Result(State, Error) {
-  case session.active_migration_available(state.session) {
-    False -> Error(MigrationUnavailable)
-    True -> {
+  case
+    state.previous_socket,
+    session.active_migration_available(state.session)
+  {
+    Some(_), _ | _, False -> Error(MigrationUnavailable)
+    None, True -> {
       use challenge <- result.try(
         crypto.secure_random(8) |> result.replace_error(MigrationUnavailable),
       )
@@ -292,10 +300,42 @@ pub fn migrate(state: State) -> Result(State, Error) {
           let _ = udp.close(socket)
           Error(MigrationUnavailable)
         }
-        Ok(next) -> {
-          let _ = udp.close(state.socket)
-          Ok(State(..state, socket: socket, session: next))
+        Ok(next) ->
+          Ok(
+            State(
+              ..state,
+              socket: socket,
+              previous_socket: Some(state.socket),
+              session: next,
+            ),
+          )
+      }
+    }
+  }
+}
+
+fn settle_migration(state: State, events: List(session.Event)) -> State {
+  case state.previous_socket {
+    None -> state
+    Some(previous_socket) -> {
+      let validated =
+        list.any(events, fn(event) {
+          event == session.TransportEvent(transport.PathValidated)
+        })
+      let failed =
+        list.any(events, fn(event) {
+          event == session.TransportEvent(transport.PathValidationFailed)
+        })
+      case validated, failed {
+        True, _ -> {
+          let _ = udp.close(previous_socket)
+          State(..state, previous_socket: None)
         }
+        False, True -> {
+          let _ = udp.close(state.socket)
+          State(..state, socket: previous_socket, previous_socket: None)
+        }
+        False, False -> state
       }
     }
   }
@@ -304,7 +344,7 @@ pub fn migrate(state: State) -> Result(State, Error) {
 /// Pull and clear ordered transport and HTTP/3 events.
 pub fn take_events(state: State) -> #(State, List(session.Event)) {
   let #(next, events) = session.take_events(state.session)
-  #(State(..state, session: next), events)
+  #(settle_migration(State(..state, session: next), events), events)
 }
 
 /// Advance timers, flush bounded output, and receive at most one datagram.
@@ -337,6 +377,13 @@ pub fn close(state: State, application_error_code: Int, reason: String) -> Nil {
     }
   }
   let _ = udp.close(state.socket)
+  case state.previous_socket {
+    Some(socket) -> {
+      let _ = udp.close(socket)
+      Nil
+    }
+    None -> Nil
+  }
   Nil
 }
 
@@ -386,16 +433,28 @@ fn establish(
   peer: udp.Endpoint,
   deadline: Int,
 ) -> Result(State, Error) {
+  establish_version(config, socket, peer, deadline, config.quic_version, [])
+}
+
+fn establish_version(
+  config: Config,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  deadline: Int,
+  selected_version: Version,
+  attempted_versions: List(Version),
+) -> Result(State, Error) {
   use original_destination_connection_id <- result.try(random_connection_id())
   use local_connection_id <- result.try(random_connection_id())
   let tls_config =
     engine.ClientConfig(
-      version: version.Version1,
+      version: selected_version,
       hostname: config.hostname,
       application_protocols: [<<"h3">>],
       transport_parameters: client_transport_parameters(
         local_connection_id,
         config.http_datagrams,
+        selected_version,
       ),
       trust_store: config.trust_store,
       retried: False,
@@ -411,7 +470,7 @@ fn establish(
   )
   use quic <- result.try(
     driver.start_client(
-      client_transport_config(config.http_datagrams),
+      client_transport_config(config.http_datagrams, selected_version),
       tls,
       original_destination_connection_id,
       local_connection_id,
@@ -419,25 +478,43 @@ fn establish(
     )
     |> result.map_error(fn(error) { QuicTransportFailed("start", error) }),
   )
-  use quic <- result.try(handshake(quic, socket, peer, deadline))
-  use http3 <- result.try(
-    session.start(
-      quic,
-      client_http3_config(config.http_datagrams),
-      config.http_datagrams,
-    )
-    |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
-  )
-  use state <- result.try(await_peer_settings(
-    State(socket, peer, http3, 0, 0, 0, 0, 0),
-    deadline,
-  ))
-  case config.maximum_pushes {
-    0 -> Ok(state)
-    maximum ->
-      session.permit_pushes(state.session, maximum - 1)
-      |> result.map(fn(next) { State(..state, session: next) })
-      |> map_session_result("permit_pushes")
+  case handshake(quic, socket, peer, deadline) {
+    Error(VersionNegotiationReceived(offered)) ->
+      case
+        select_compatible_version(selected_version, offered, [
+          selected_version,
+          ..attempted_versions
+        ])
+      {
+        Error(_) -> Error(VersionNegotiationFailed)
+        Ok(next_version) ->
+          establish_version(config, socket, peer, deadline, next_version, [
+            selected_version,
+            ..attempted_versions
+          ])
+      }
+    Error(error) -> Error(error)
+    Ok(quic) -> {
+      use http3 <- result.try(
+        session.start(
+          quic,
+          client_http3_config(config.http_datagrams),
+          config.http_datagrams,
+        )
+        |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
+      )
+      use state <- result.try(await_peer_settings(
+        State(socket, peer, http3, None, 0, 0, 0, 0, 0),
+        deadline,
+      ))
+      case config.maximum_pushes {
+        0 -> Ok(state)
+        maximum ->
+          session.permit_pushes(state.session, maximum - 1)
+          |> result.map(fn(next) { State(..state, session: next) })
+          |> map_session_result("permit_pushes")
+      }
+    }
   }
 }
 
@@ -547,6 +624,8 @@ fn receive_driver(
             )
           {
             Ok(state) -> Ok(state)
+            Error(driver.VersionNegotiationReceived(versions)) ->
+              Error(VersionNegotiationReceived(versions))
             Error(error) -> discard_or_fail_driver(state, error)
           }
       }
@@ -646,11 +725,14 @@ fn receive(state: State, timeout: Int) -> Result(State, Error) {
   }
 }
 
-fn client_transport_config(http_datagrams: Bool) -> transport.Config {
+fn client_transport_config(
+  http_datagrams: Bool,
+  selected_version: Version,
+) -> transport.Config {
   let config = transport.default_config(transport.Client)
   transport.Config(
     ..config,
-    version: version.Version1,
+    version: selected_version,
     maximum_udp_payload_size: maximum_datagram_frame_bytes,
     maximum_datagram_frame_size: case http_datagrams {
       True -> maximum_datagram_frame_bytes
@@ -662,6 +744,7 @@ fn client_transport_config(http_datagrams: Bool) -> transport.Config {
 fn client_transport_parameters(
   local_connection_id: BitArray,
   http_datagrams: Bool,
+  selected_version: Version,
 ) -> List(transport_parameter.Parameter) {
   let parameters = [
     transport_parameter.MaxIdleTimeout(30_000),
@@ -674,7 +757,7 @@ fn client_transport_parameters(
     transport_parameter.InitialMaxStreamsUni(100),
     transport_parameter.ActiveConnectionIdLimit(4),
     transport_parameter.InitialSourceConnectionId(local_connection_id),
-    transport_parameter.VersionInformation(version.Version1, [
+    transport_parameter.VersionInformation(selected_version, [
       version.Version2,
       version.Version1,
     ]),
@@ -777,8 +860,25 @@ fn validate(config: Config) -> Result(Nil, Error) {
     && config.timeout_milliseconds > 0
     && config.maximum_pushes >= 0
     && config.maximum_pushes <= 1024
+    && {
+      config.quic_version == version.Version1
+      || config.quic_version == version.Version2
+    }
   {
     True -> Ok(Nil)
     False -> Error(InvalidInput)
   }
+}
+
+fn select_compatible_version(
+  current: Version,
+  offered: List(Version),
+  attempted: List(Version),
+) -> Result(Version, Nil) {
+  [version.Version2, version.Version1]
+  |> list.find(fn(candidate) {
+    candidate != current
+    && list.contains(offered, candidate)
+    && !list.contains(attempted, candidate)
+  })
 }
