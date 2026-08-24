@@ -986,6 +986,10 @@ fn tls_configs_for_version(
   let assert Ok(signing_key) = authentication.signing_key_from_pem(key_pem)
   let shared_parameters = [
     transport_parameter.GreaseQuicBit,
+    transport_parameter.VersionInformation(protocol_version, [
+      version.Version2,
+      version.Version1,
+    ]),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1006,6 +1010,7 @@ fn tls_configs_for_version(
       ],
       trust_store: trust_store,
       retried: False,
+      version_negotiated: False,
     ),
     engine.ServerConfig(
       version: protocol_version,
@@ -1036,6 +1041,10 @@ fn retry_tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
   let assert Ok(signing_key) = authentication.signing_key_from_pem(key_pem)
   let shared_parameters = [
     transport_parameter.GreaseQuicBit,
+    transport_parameter.VersionInformation(version.Version1, [
+      version.Version2,
+      version.Version1,
+    ]),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1056,6 +1065,7 @@ fn retry_tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
       ],
       trust_store: trust_store,
       retried: False,
+      version_negotiated: False,
     ),
     engine.ServerConfig(
       version: version.Version1,

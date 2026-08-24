@@ -128,6 +128,7 @@ pub fn accept_initial(
       version: protocol_version,
       application_protocols: [<<"h3">>],
       transport_parameters: server_transport_parameters(
+        protocol_version,
         original_destination_connection_id,
         local_connection_id,
         retry_source_connection_id,
@@ -781,6 +782,7 @@ fn server_transport_config(
 }
 
 fn server_transport_parameters(
+  protocol_version: Version,
   original_destination_connection_id: BitArray,
   local_connection_id: BitArray,
   retry_source_connection_id: Option(BitArray),
@@ -788,6 +790,10 @@ fn server_transport_parameters(
 ) -> List(transport_parameter.Parameter) {
   let parameters = [
     transport_parameter.GreaseQuicBit,
+    transport_parameter.VersionInformation(protocol_version, [
+      version.Version2,
+      version.Version1,
+    ]),
     transport_parameter.OriginalDestinationConnectionId(
       original_destination_connection_id,
     ),

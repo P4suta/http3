@@ -75,6 +75,7 @@ pub type ClientConfig {
     transport_parameters: List(transport_parameter.Parameter),
     trust_store: authentication.TrustStore,
     retried: Bool,
+    version_negotiated: Bool,
   )
 }
 
@@ -229,6 +230,7 @@ pub type Error {
   HelloFailure(hello.Error)
   ExtensionValueFailure(extension_value.Error)
   TransportParameterFailure(transport_parameter.Error)
+  VersionNegotiationFailure
   CryptoFailure(crypto.Error)
   KeyExchangeFailure(key_exchange.Error)
   TranscriptFailure(transcript.Error)
@@ -841,6 +843,10 @@ fn accept_client_hello(
         config.signature_scheme,
       ))
       use peer_parameters <- result.try(client_transport_parameters(extensions))
+      use Nil <- result.try(validate_client_version_information(
+        peer_parameters,
+        config.version,
+      ))
       use default_cipher_suite <- result.try(select_cipher_suite(cipher_suites))
       use selection <- result.try(select_server_resumption(
         resumption_policy,
@@ -981,6 +987,10 @@ fn accept_second_client_hello(
         config.signature_scheme,
       ))
       use peer_parameters <- result.try(client_transport_parameters(extensions))
+      use Nil <- result.try(validate_client_version_information(
+        peer_parameters,
+        config.version,
+      ))
       use client_public_key <- result.try(client_x25519_key(extensions))
       use selection <- result.try(select_server_resumption(
         context.resumption_policy,
@@ -2258,6 +2268,10 @@ fn client_accept_encrypted_extensions(
     extensions,
     context.config.retried,
   ))
+  use Nil <- result.try(validate_server_version_information(
+    parameters,
+    context.config,
+  ))
   use encoded <- result.try(encode_message(handshake.EncryptedExtensions, body))
   use next_transcript <- result.try(
     transcript.append(context.transcript, encoded) |> map_transcript_result,
@@ -2893,6 +2907,84 @@ fn server_transport_parameters(
     |> map_transport_parameter_result,
   )
   Ok(parameters)
+}
+
+fn validate_client_version_information(
+  parameters: List(transport_parameter.Parameter),
+  negotiated_version: Version,
+) -> Result(Nil, Error) {
+  case find_version_information(parameters), negotiated_version {
+    None, version.Version2 -> Error(VersionNegotiationFailure)
+    None, _ -> Ok(Nil)
+    Some(#(chosen, _)), _ if chosen == negotiated_version -> Ok(Nil)
+    Some(_), _ -> Error(VersionNegotiationFailure)
+  }
+}
+
+fn validate_server_version_information(
+  parameters: List(transport_parameter.Parameter),
+  config: ClientConfig,
+) -> Result(Nil, Error) {
+  let required = config.version == version.Version2 || config.version_negotiated
+  case
+    find_version_information(parameters),
+    find_version_information(config.transport_parameters)
+  {
+    None, _ if required -> Error(VersionNegotiationFailure)
+    None, _ -> Ok(Nil)
+    Some(_), None -> Error(VersionNegotiationFailure)
+    Some(#(chosen, available)), Some(#(local_chosen, local_available)) -> {
+      case
+        chosen == config.version
+        && local_chosen == config.version
+        && list.contains(local_available, chosen)
+        && case config.version_negotiated {
+          False -> True
+          True ->
+            available != []
+            && negotiated_version_is_preferred(
+              local_available,
+              available,
+              chosen,
+            )
+        }
+      {
+        True -> Ok(Nil)
+        False -> Error(VersionNegotiationFailure)
+      }
+    }
+  }
+}
+
+fn find_version_information(
+  parameters: List(transport_parameter.Parameter),
+) -> Option(#(Version, List(Version))) {
+  case parameters {
+    [] -> None
+    [transport_parameter.VersionInformation(chosen, available), ..] ->
+      Some(#(chosen, available))
+    [_, ..rest] -> find_version_information(rest)
+  }
+}
+
+fn negotiated_version_is_preferred(
+  client_preference: List(Version),
+  server_available: List(Version),
+  negotiated_version: Version,
+) -> Bool {
+  case client_preference {
+    [] -> False
+    [candidate, ..rest] ->
+      case list.contains([negotiated_version, ..server_available], candidate) {
+        True -> candidate == negotiated_version
+        False ->
+          negotiated_version_is_preferred(
+            rest,
+            server_available,
+            negotiated_version,
+          )
+      }
+  }
 }
 
 fn require_extension(

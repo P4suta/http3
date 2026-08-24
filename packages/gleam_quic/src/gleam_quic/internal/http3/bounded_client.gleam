@@ -195,6 +195,7 @@ fn request_on_socket_version(
       ),
       trust_store: config.trust_store,
       retried: False,
+      version_negotiated: attempted_versions != [],
     )
   use tls <- result.try(
     engine.start_client(tls_config) |> result.replace_error(TlsHandshakeFailed),
@@ -209,7 +210,7 @@ fn request_on_socket_version(
     )
     |> result.map_error(fn(error) { QuicTransportFailed("start", error) }),
   )
-  case handshake(quic, socket, peer, deadline) {
+  case handshake(quic, socket, peer, deadline, attempted_versions != []) {
     Error(VersionNegotiationReceived(offered)) ->
       case
         select_compatible_version(selected_version, offered, [
@@ -293,6 +294,7 @@ fn handshake(
   socket: udp.Socket,
   peer: udp.Endpoint,
   deadline: Int,
+  ignore_version_negotiation: Bool,
 ) -> Result(driver.State, Error) {
   case driver.phase(state), remaining_milliseconds(deadline) {
     transport.Established, _ -> Ok(state)
@@ -316,8 +318,9 @@ fn handshake(
         socket,
         peer,
         int.min(receive_poll_milliseconds, remaining),
+        ignore_version_negotiation,
       ))
-      handshake(state, socket, peer, deadline)
+      handshake(state, socket, peer, deadline, ignore_version_negotiation)
     }
   }
 }
@@ -360,6 +363,7 @@ fn receive_driver(
   socket: udp.Socket,
   peer: udp.Endpoint,
   timeout: Int,
+  ignore_version_negotiation: Bool,
 ) -> Result(driver.State, Error) {
   case udp.receive(socket, timeout) {
     Error(udp.Timeout) -> Ok(state)
@@ -379,7 +383,10 @@ fn receive_driver(
           {
             Ok(state) -> Ok(state)
             Error(driver.VersionNegotiationReceived(versions)) ->
-              Error(VersionNegotiationReceived(versions))
+              case ignore_version_negotiation {
+                True -> Ok(state)
+                False -> Error(VersionNegotiationReceived(versions))
+              }
             Error(error) -> discard_or_fail_driver(state, error)
           }
       }

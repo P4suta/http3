@@ -1034,6 +1034,7 @@ fn tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
       ],
       trust_store: trust_store,
       retried: False,
+      version_negotiated: False,
     ),
     engine.ServerConfig(
       version: version.Version1,

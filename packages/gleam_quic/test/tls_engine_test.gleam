@@ -1,6 +1,7 @@
 import gleam/bit_array
 import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import gleam_quic/internal/crypto
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
@@ -341,6 +342,124 @@ pub fn issues_fragments_stores_and_reuses_post_handshake_ticket_test() -> Nil {
   assert list.contains(accepted_actions, engine.EarlyDataAccepted)
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn validates_v2_version_information_in_both_directions_test() -> Nil {
+  let #(client_config, server_config) = v2_configs()
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(_, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(_, _)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+
+  let bad_client =
+    engine.ClientConfig(
+      ..client_config,
+      transport_parameters: replace_version_information(
+        client_config.transport_parameters,
+        transport_parameter.VersionInformation(version.Version1, [
+          version.Version2,
+          version.Version1,
+        ]),
+      ),
+    )
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(_, client_actions)) =
+    engine.start_client(bad_client)
+  assert engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+    == Error(engine.VersionNegotiationFailure)
+
+  let bad_server =
+    engine.ServerConfig(
+      ..server_config,
+      transport_parameters: replace_version_information(
+        server_config.transport_parameters,
+        transport_parameter.VersionInformation(version.Version1, [
+          version.Version2,
+          version.Version1,
+        ]),
+      ),
+    )
+  let assert Ok(server) = engine.start_server(bad_server)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(_, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  assert engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+    == Error(engine.VersionNegotiationFailure)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn validates_version_negotiation_available_versions_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let client_config =
+    engine.ClientConfig(
+      ..client_config,
+      version_negotiated: True,
+      transport_parameters: [
+        transport_parameter.VersionInformation(version.Version1, [
+          version.Version2,
+          version.Version1,
+        ]),
+        ..client_config.transport_parameters
+      ],
+    )
+  let honest_server =
+    engine.ServerConfig(..server_config, transport_parameters: [
+      transport_parameter.VersionInformation(version.Version1, [
+        version.Version1,
+      ]),
+      ..server_config.transport_parameters
+    ])
+  let assert Ok(_) = receive_server_flight(client_config, honest_server)
+
+  let downgrade_server =
+    engine.ServerConfig(..server_config, transport_parameters: [
+      transport_parameter.VersionInformation(version.Version1, [
+        version.Version2,
+        version.Version1,
+      ]),
+      ..server_config.transport_parameters
+    ])
+  assert receive_server_flight(client_config, downgrade_server)
+    == Error(engine.VersionNegotiationFailure)
+  assert receive_server_flight(client_config, server_config)
+    == Error(engine.VersionNegotiationFailure)
+}
+
 fn configs(
   client_alpn: List(BitArray),
 ) -> #(engine.ClientConfig, engine.ServerConfig) {
@@ -361,6 +480,7 @@ fn configs(
       ],
       trust_store: trust_store,
       retried: False,
+      version_negotiated: False,
     )
   let server =
     engine.ServerConfig(
@@ -378,6 +498,67 @@ fn configs(
       alternative_credentials: [],
     )
   #(client, server)
+}
+
+fn v2_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
+  let #(client, server) = configs([<<"h3">>])
+  let version_information =
+    transport_parameter.VersionInformation(version.Version2, [
+      version.Version2,
+      version.Version1,
+    ])
+  #(
+    engine.ClientConfig(
+      ..client,
+      version: version.Version2,
+      transport_parameters: [version_information, ..client.transport_parameters],
+    ),
+    engine.ServerConfig(
+      ..server,
+      version: version.Version2,
+      transport_parameters: [version_information, ..server.transport_parameters],
+    ),
+  )
+}
+
+fn replace_version_information(
+  parameters: List(transport_parameter.Parameter),
+  replacement: transport_parameter.Parameter,
+) -> List(transport_parameter.Parameter) {
+  [
+    replacement,
+    ..list.filter(parameters, fn(parameter) {
+      case parameter {
+        transport_parameter.VersionInformation(_, _) -> False
+        _ -> True
+      }
+    })
+  ]
+}
+
+fn receive_server_flight(
+  client_config: engine.ClientConfig,
+  server_config: engine.ServerConfig,
+) -> Result(engine.Step(engine.Client), engine.Error) {
+  use server <- result.try(engine.start_server(server_config))
+  use engine.Step(client, client_actions) <- result.try(engine.start_client(
+    client_config,
+  ))
+  use engine.Step(_, server_actions) <- result.try(engine.handle_server(
+    server,
+    engine.Initial,
+    sent_at(client_actions, engine.Initial),
+  ))
+  use engine.Step(client, _) <- result.try(engine.handle_client(
+    client,
+    engine.Initial,
+    sent_at(server_actions, engine.Initial),
+  ))
+  engine.handle_client(
+    client,
+    engine.Handshake,
+    sent_at(server_actions, engine.Handshake),
+  )
 }
 
 fn sent_at(
