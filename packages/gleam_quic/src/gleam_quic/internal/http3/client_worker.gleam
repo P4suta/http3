@@ -695,11 +695,12 @@ fn loop(worker: Worker) -> Nil {
 fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
   case
     worker.next_pmtu_probe_milliseconds,
-    client_connection.path_validation_in_progress(worker.connection)
+    client_connection.path_validation_in_progress(worker.connection),
+    client_connection.handshake_established(worker.connection)
   {
-    0, _ | _, True -> Ok(worker)
-    deadline, _ if now < deadline -> Ok(worker)
-    _, _ ->
+    0, _, _ | _, True, _ | _, _, False -> Ok(worker)
+    deadline, _, _ if now < deadline -> Ok(worker)
+    _, _, True ->
       case client_connection.pmtu_discovery_complete(worker.connection) {
         True -> Ok(Worker(..worker, next_pmtu_probe_milliseconds: 0))
         False -> {

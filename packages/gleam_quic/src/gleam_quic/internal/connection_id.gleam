@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/internal/stateless_reset
 import gleam_quic/varint
@@ -10,7 +11,11 @@ const maximum_history_entries = 4096
 
 /// One active peer-issued connection ID and stateless reset token.
 pub type ConnectionId {
-  ConnectionId(sequence: Int, value: BitArray, stateless_reset_token: BitArray)
+  ConnectionId(
+    sequence: Int,
+    value: BitArray,
+    stateless_reset_token: Option(BitArray),
+  )
 }
 
 /// Bounded active and retired peer-issued identifiers.
@@ -59,8 +64,47 @@ pub fn new(
     False -> Error(InvalidConfiguration)
     True -> {
       let initial =
-        ConnectionId(0, initial_connection_id, stateless_reset_token)
+        ConnectionId(0, initial_connection_id, Some(stateless_reset_token))
       Ok(Registry(active_limit, 0, [initial], [initial]))
+    }
+  }
+}
+
+/// Start with a sequence-zero identifier that has no peer reset token. QUIC
+/// clients do not send a stateless_reset_token transport parameter, so a
+/// server's initial record legitimately has no token.
+pub fn new_without_reset_token(
+  active_limit: Int,
+  initial_connection_id: BitArray,
+) -> Result(Registry, Error) {
+  case
+    active_limit >= 2
+    && active_limit <= varint.maximum
+    && valid_initial_connection_id(initial_connection_id)
+  {
+    False -> Error(InvalidConfiguration)
+    True -> {
+      let initial = ConnectionId(0, initial_connection_id, None)
+      Ok(Registry(active_limit, 0, [initial], [initial]))
+    }
+  }
+}
+
+/// Attach the authenticated server transport-parameter token to sequence zero.
+pub fn set_initial_reset_token(
+  registry: Registry,
+  stateless_reset_token: BitArray,
+) -> Result(Registry, Error) {
+  case valid_reset_token(stateless_reset_token) {
+    False -> Error(InvalidResetToken)
+    True -> {
+      use active <- result.try(
+        set_reset_token(registry.active, stateless_reset_token, []),
+      )
+      use history <- result.try(
+        set_reset_token(registry.history, stateless_reset_token, []),
+      )
+      Ok(Registry(..registry, active: active, history: history))
     }
   }
 }
@@ -81,7 +125,7 @@ pub fn receive(
   ))
   receive_valid(
     registry,
-    ConnectionId(sequence, connection_id, stateless_reset_token),
+    ConnectionId(sequence, connection_id, Some(stateless_reset_token)),
     retire_prior_to,
   )
 }
@@ -142,11 +186,38 @@ fn match_active_tokens(
   case entries {
     [] -> Ok(False)
     [entry, ..rest] ->
-      case stateless_reset.matches(entry.stateless_reset_token, suffix) {
-        Ok(True) -> Ok(True)
-        Ok(False) -> match_active_tokens(rest, suffix)
-        Error(_) -> Error(ResetCheckFailed)
+      case entry.stateless_reset_token {
+        None -> match_active_tokens(rest, suffix)
+        Some(token) ->
+          case stateless_reset.matches(token, suffix) {
+            Ok(True) -> Ok(True)
+            Ok(False) -> match_active_tokens(rest, suffix)
+            Error(_) -> Error(ResetCheckFailed)
+          }
       }
+  }
+}
+
+fn set_reset_token(
+  entries: List(ConnectionId),
+  token: BitArray,
+  reversed: List(ConnectionId),
+) -> Result(List(ConnectionId), Error) {
+  case entries {
+    [] -> Error(NoActiveConnectionId)
+    [entry, ..rest] if entry.sequence == 0 ->
+      case entry.stateless_reset_token {
+        None ->
+          Ok(
+            list.append(list.reverse(reversed), [
+              ConnectionId(..entry, stateless_reset_token: Some(token)),
+              ..rest
+            ]),
+          )
+        Some(existing) if existing == token -> Ok(entries)
+        Some(_) -> Error(SequenceConflict(0))
+      }
+    [entry, ..rest] -> set_reset_token(rest, token, [entry, ..reversed])
   }
 }
 
@@ -239,14 +310,18 @@ fn reused_value(entries: List(ConnectionId), incoming: ConnectionId) -> Reuse {
   case entries {
     [] -> Distinct
     [existing, ..rest] ->
-      case
-        existing.value == incoming.value,
-        existing.stateless_reset_token == incoming.stateless_reset_token
-      {
+      case existing.value == incoming.value, tokens_alias(existing, incoming) {
         True, _ -> ConnectionIdAlias
         _, True -> TokenAlias
         _, _ -> reused_value(rest, incoming)
       }
+  }
+}
+
+fn tokens_alias(left: ConnectionId, right: ConnectionId) -> Bool {
+  case left.stateless_reset_token, right.stateless_reset_token {
+    Some(left), Some(right) -> left == right
+    _, _ -> False
   }
 }
 

@@ -157,7 +157,7 @@ pub fn start_server(
 ) -> Result(State, Error) {
   use _ <- result.try(validate_connection_id(original_destination_connection_id))
   use _ <- result.try(validate_connection_id(local_connection_id))
-  use _ <- result.try(validate_connection_id(peer_connection_id))
+  use _ <- result.try(validate_initial_peer_connection_id(peer_connection_id))
   use connection <- result.try(
     connection_state.new(config, now_ms) |> map_connection_result,
   )
@@ -170,6 +170,13 @@ pub fn start_server(
   )
   use connection <- result.try(
     connection_state.attach_server_tls(connection, tls)
+    |> map_connection_result,
+  )
+  use connection <- result.try(
+    connection_state.observe_peer_initial_connection_id(
+      connection,
+      peer_connection_id,
+    )
     |> map_connection_result,
   )
   Ok(State(
@@ -633,7 +640,32 @@ fn receive_long_packet(
     packet.Retry(header, token, integrity_tag) ->
       receive_retry(state, datagram, header, token, integrity_tag, now_ms)
     packet.UnknownVersion(_, _) -> Error(InvalidInput)
-    packet.Initial(_, _, _) | packet.ZeroRtt(_, _) | packet.Handshake(_, _) -> {
+    packet.Initial(header, _, _)
+    | packet.ZeroRtt(header, _)
+    | packet.Handshake(header, _) -> {
+      let packet.LongHeader(_, packet_version, _, _) = header
+      receive_supported_long_packet(
+        state,
+        datagram,
+        packet_version,
+        codepoint,
+        now_ms,
+      )
+    }
+  }
+}
+
+fn receive_supported_long_packet(
+  original_state: State,
+  datagram: BitArray,
+  packet_version: Version,
+  codepoint: packet_space.ReceivedCodepoint,
+  now_ms: Int,
+) -> Result(State, Error) {
+  case prepare_compatible_version(original_state, packet_version) {
+    Error(error) -> Error(error)
+    Ok(None) -> Ok(original_state)
+    Ok(Some(state)) -> {
       use receipt <- result.try(
         connection_state.receive_protected_long_packet(
           state.connection,
@@ -655,22 +687,58 @@ fn receive_long_packet(
         Client, value -> value
         Server, _ -> state.peer_connection_id
       }
+      let connection = case state.role, state.server_packet_received, source {
+        Client, False, value if value != <<>> ->
+          connection_state.observe_peer_initial_connection_id(connection, value)
+          |> map_connection_result
+        _, _, _ -> Ok(connection)
+      }
+      use connection <- result.try(connection)
       let server_packet_received = case state.role {
         Client -> True
         Server -> state.server_packet_received
       }
-      receive_packets(
+      let authenticated =
         State(
           ..state,
           connection: connection,
           peer_connection_id: peer_connection_id,
           server_packet_received: server_packet_received,
-        ),
-        remaining,
-        codepoint,
-        now_ms,
-      )
+        )
+      case receive_packets(authenticated, remaining, codepoint, now_ms) {
+        Ok(next) -> Ok(next)
+        Error(error) ->
+          case discardable_receive_error(error) {
+            True -> Ok(authenticated)
+            False -> Error(error)
+          }
+      }
     }
+  }
+}
+
+fn prepare_compatible_version(
+  state: State,
+  packet_version: Version,
+) -> Result(Option(State), Error) {
+  case packet_version == state.version, state.role {
+    True, _ -> Ok(Some(state))
+    False, Server -> Ok(None)
+    False, Client ->
+      case
+        connection_state.negotiate_compatible_version(
+          state.connection,
+          packet_version,
+          state.peer_connection_id,
+        )
+      {
+        Ok(connection) ->
+          Ok(Some(
+            State(..state, version: packet_version, connection: connection),
+          ))
+        // nolint: thrown_away_error -- discard unauthenticated alternate versions.
+        Error(_) -> Ok(None)
+      }
   }
 }
 
@@ -725,6 +793,13 @@ fn receive_retry(
         Ok(Nil) -> {
           use connection <- result.try(
             connection_state.process_retry(state.connection, source, now_ms)
+            |> map_connection_result,
+          )
+          use connection <- result.try(
+            connection_state.observe_peer_initial_connection_id(
+              connection,
+              source,
+            )
             |> map_connection_result,
           )
           Ok(
@@ -806,6 +881,14 @@ fn require_destination(
 fn validate_connection_id(value: BitArray) -> Result(Nil, Error) {
   let size = bit_array.byte_size(value)
   case bit_array.bit_size(value) % 8 == 0 && size >= 8 && size <= 20 {
+    True -> Ok(Nil)
+    False -> Error(InvalidInput)
+  }
+}
+
+fn validate_initial_peer_connection_id(value: BitArray) -> Result(Nil, Error) {
+  let size = bit_array.byte_size(value)
+  case bit_array.bit_size(value) % 8 == 0 && size <= 20 {
     True -> Ok(Nil)
     False -> Error(InvalidInput)
   }

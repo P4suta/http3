@@ -28,6 +28,7 @@ pub opaque type ServerPolicy {
     now_milliseconds: Int,
     ticket_age_tolerance_milliseconds: Int,
     replay_cache: anti_replay.Cache,
+    permit_early_data: Bool,
   )
 }
 
@@ -196,9 +197,16 @@ pub fn server_policy(
         now_milliseconds:,
         ticket_age_tolerance_milliseconds:,
         replay_cache:,
+        permit_early_data: True,
       ))
     False -> Error(InvalidPolicy)
   }
+}
+
+/// Preserve authenticated PSK resumption while forcing 0-RTT rejection.
+/// QUIC Retry uses this policy because receiving Retry invalidates early data.
+pub fn reject_early_data(policy: ServerPolicy) -> ServerPolicy {
+  ServerPolicy(..policy, permit_early_data: False)
 }
 
 /// Select and authenticate a PSK, independently deciding early-data use.
@@ -454,11 +462,19 @@ fn remembered_transport_parameters_are_compatible(
         )
       {
         Ok(remembered), Ok(current) ->
-          list.filter(remembered, remembered_for_zero_rtt)
-          == list.filter(current, remembered_for_zero_rtt)
+          zero_rtt_transport_parameters(remembered)
+          == zero_rtt_transport_parameters(current)
         _, _ -> False
       }
   }
+}
+
+/// Remove connection-instance parameters that RFC 9001 forbids carrying from
+/// a previous connection into 0-RTT transport state.
+pub fn zero_rtt_transport_parameters(
+  parameters: List(transport_parameter.Parameter),
+) -> List(transport_parameter.Parameter) {
+  list.filter(parameters, remembered_for_zero_rtt)
 }
 
 fn remembered_for_zero_rtt(parameter: transport_parameter.Parameter) -> Bool {
@@ -491,7 +507,13 @@ fn decide_early_data(
       policy.now_milliseconds,
       policy.ticket_age_tolerance_milliseconds,
     )
-  case offered && permitted && age_is_valid && transport_parameters_match {
+  case
+    offered
+    && permitted
+    && policy.permit_early_data
+    && age_is_valid
+    && transport_parameters_match
+  {
     False -> Ok(#(False, policy.replay_cache))
     True -> {
       use replay_fingerprint <- result.try(

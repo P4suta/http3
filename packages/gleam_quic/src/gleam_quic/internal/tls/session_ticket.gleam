@@ -316,6 +316,11 @@ pub fn remembered_parameters(ticket ticket: ClientTicket) -> BitArray {
   ticket.remembered_transport_parameters
 }
 
+/// Return the QUIC version identifier cryptographically bound to this ticket.
+pub fn quic_version(ticket ticket: ClientTicket) -> Int {
+  ticket.quic_version
+}
+
 /// Convert an early-data policy to QUIC's sole permitted maximum value.
 pub fn maximum_early_data_size_for_quic(
   permit_early_data permit_early_data: Bool,

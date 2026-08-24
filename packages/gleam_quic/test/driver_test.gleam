@@ -120,6 +120,23 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_accepts_a_zero_length_initial_peer_connection_id_test() -> Nil {
+  let #(_, server_tls_config) = tls_configs()
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      <<>>,
+      0,
+    )
+
+  assert driver.peer_connection_id(server) == <<>>
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn prepares_and_commits_exact_size_live_pmtu_probe_test() -> Nil {
   let #(client_tls_config, server_tls_config) = tls_configs()
   let assert Ok(client_tls) = engine.start_client(client_tls_config)

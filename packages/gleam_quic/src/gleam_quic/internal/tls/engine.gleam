@@ -424,6 +424,73 @@ pub fn accept_quic_retry(client: Client) -> Result(#(Client, BitArray), Error) {
   }
 }
 
+/// Tentatively adopt a compatible version offered by the original
+/// ClientHello before authenticating the server packet under that version.
+/// The ClientHello and its Chosen Version remain unchanged.
+pub fn negotiate_client_version(
+  client: Client,
+  negotiated_version: Version,
+) -> Result(Client, Error) {
+  case client {
+    ClientAwaitingServerHello(config, key_pair, encoded, offer, pending) -> {
+      use config <- result.try(negotiated_client_config(
+        config,
+        negotiated_version,
+      ))
+      Ok(ClientAwaitingServerHello(config, key_pair, encoded, offer, pending))
+    }
+    ClientAwaitingServerHelloAfterRetry(
+      config,
+      key_pair,
+      cipher_suite,
+      retry_transcript,
+      encoded,
+      offer,
+      pending,
+    ) -> {
+      use config <- result.try(negotiated_client_config(
+        config,
+        negotiated_version,
+      ))
+      Ok(ClientAwaitingServerHelloAfterRetry(
+        config,
+        key_pair,
+        cipher_suite,
+        retry_transcript,
+        encoded,
+        offer,
+        pending,
+      ))
+    }
+    _ -> Error(UnexpectedMessage)
+  }
+}
+
+fn negotiated_client_config(
+  config: ClientConfig,
+  negotiated_version: Version,
+) -> Result(ClientConfig, Error) {
+  case
+    compatible_versions(config.version, negotiated_version),
+    find_version_information(config.transport_parameters)
+  {
+    True, Some(#(chosen, available)) if chosen == config.version ->
+      case list.contains(available, negotiated_version) {
+        True -> Ok(ClientConfig(..config, version: negotiated_version))
+        False -> Error(VersionNegotiationFailure)
+      }
+    _, _ -> Error(VersionNegotiationFailure)
+  }
+}
+
+fn compatible_versions(first: Version, second: Version) -> Bool {
+  case first, second {
+    version.Version1, version.Version2 | version.Version2, version.Version1 ->
+      True
+    _, _ -> False
+  }
+}
+
 /// Return server progress without exposing transcript or secret state.
 pub fn server_phase(server: Server) -> Phase {
   case server {
@@ -654,6 +721,10 @@ fn client_extensions(
     |> map_extension_value_result,
   )
   use key_share <- result.try(encode_client_key_share(key_pair))
+  use psk_modes <- result.try(
+    pre_shared_key.encode_modes([pre_shared_key.PskDheKe])
+    |> map_pre_shared_key_result,
+  )
   use parameters <- result.try(
     transport_parameter.encode_all(
       config.transport_parameters,
@@ -677,7 +748,10 @@ fn client_extensions(
     None -> base
   }
   case resumption_offer {
-    None -> Ok(base)
+    // Advertising the PSK-DHE mode on a fresh handshake permits a compatible
+    // server to issue a NewSessionTicket for a later connection.
+    None ->
+      Ok([extension.Extension(extension.PskKeyExchangeModes, psk_modes), ..base])
     Some(offer) -> Ok(list.append(base, resumption.client_extensions(offer)))
   }
 }
@@ -762,7 +836,9 @@ fn client_early_key_actions(
             |> map_transport_parameter_result,
           )
           Ok([
-            PeerTransportParameters(remembered_parameters),
+            PeerTransportParameters(resumption.zero_rtt_transport_parameters(
+              remembered_parameters,
+            )),
             InstallWriteKeys(ZeroRtt, keys),
           ])
         }
@@ -2914,7 +2990,6 @@ fn validate_client_version_information(
   negotiated_version: Version,
 ) -> Result(Nil, Error) {
   case find_version_information(parameters), negotiated_version {
-    None, version.Version2 -> Error(VersionNegotiationFailure)
     None, _ -> Ok(Nil)
     Some(#(chosen, _)), _ if chosen == negotiated_version -> Ok(Nil)
     Some(_), _ -> Error(VersionNegotiationFailure)
@@ -2925,7 +3000,7 @@ fn validate_server_version_information(
   parameters: List(transport_parameter.Parameter),
   config: ClientConfig,
 ) -> Result(Nil, Error) {
-  let required = config.version == version.Version2 || config.version_negotiated
+  let required = config.version_negotiated
   case
     find_version_information(parameters),
     find_version_information(config.transport_parameters)
@@ -2936,7 +3011,7 @@ fn validate_server_version_information(
     Some(#(chosen, available)), Some(#(local_chosen, local_available)) -> {
       case
         chosen == config.version
-        && local_chosen == config.version
+        && list.contains(local_available, local_chosen)
         && list.contains(local_available, chosen)
         && case config.version_negotiated {
           False -> True

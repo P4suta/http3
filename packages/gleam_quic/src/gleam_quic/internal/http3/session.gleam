@@ -78,8 +78,8 @@ pub opaque type PreparedDatagram {
   PreparedDatagram(state: State, prepared: driver.PreparedDatagram)
 }
 
-/// Bootstrap the mandatory control and QPACK streams on an established QUIC
-/// connection and queue SETTINGS before returning.
+/// Bootstrap mandatory control and QPACK streams on established QUIC, or on a
+/// resumed client whose 0-RTT keys and remembered limits are installed.
 pub fn start(
   quic: driver.State,
   config: http3_state.Config,
@@ -88,6 +88,11 @@ pub fn start(
   case driver.phase(quic) {
     transport.Established ->
       start_established(quic, config, quic_datagram_negotiated)
+    transport.Handshaking ->
+      case transport.can_send_early_data(driver.connection(quic)) {
+        True -> start_established(quic, config, quic_datagram_negotiated)
+        False -> Error(ConnectionNotEstablished)
+      }
     _ -> Error(ConnectionNotEstablished)
   }
 }

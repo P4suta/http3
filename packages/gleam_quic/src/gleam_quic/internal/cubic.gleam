@@ -200,6 +200,15 @@ pub fn bytes_in_flight(state: State) -> Int {
   state.bytes_in_flight
 }
 
+/// Remove bytes belonging to rejected 0-RTT packets without reducing the
+/// congestion window.
+pub fn abandon_in_flight(state: State, bytes: Int) -> Result(State, Error) {
+  case bytes < 0 || bytes > state.bytes_in_flight {
+    True -> Error(BytesInFlightUnderflow)
+    False -> Ok(State(..state, bytes_in_flight: state.bytes_in_flight - bytes))
+  }
+}
+
 /// Return the observable congestion-control phase.
 pub fn phase(state: State) -> Phase {
   let current = congestion_window(state)

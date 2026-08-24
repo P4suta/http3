@@ -6,6 +6,7 @@ import gleam_quic/internal/tls/handshake
 import gleam_quic/internal/tls/hello
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/tls/session_ticket
+import gleam_quic/transport_parameter
 
 const ticket_key = <<0x31:256>>
 
@@ -91,6 +92,30 @@ pub fn selects_authenticated_psk_and_accepts_first_early_use_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_policy_can_reject_early_data_without_rejecting_resumption_test() -> Nil {
+  let #(_, encoded, decoded) = client_hello(True)
+  let assert Ok(cache) = anti_replay.new(10_000, 16)
+  let assert Ok(policy) =
+    resumption.server_policy(ticket_key, issued_at + 100, 100, cache)
+  let policy = resumption.reject_early_data(policy)
+  let assert Ok(resumption.Resumed(selection)) =
+    resumption.select(
+      policy:,
+      encoded_client_hello: encoded,
+      transcript_prefix: <<>>,
+      client_hello: decoded,
+      expected_server_name: "example.com",
+      expected_alpn: <<"h3">>,
+      expected_quic_version: 1,
+      expected_transport_parameters: <<1, 2>>,
+    )
+
+  assert selection.early_data_offered
+  assert !selection.early_data_accepted
+  assert anti_replay.size(selection.replay_cache) == 0
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rejects_recognized_ticket_with_invalid_binder_test() -> Nil {
   let #(_, encoded, decoded) = client_hello(True)
   let assert Ok(cache) = anti_replay.new(10_000, 16)
@@ -142,6 +167,19 @@ pub fn ignores_unusable_ticket_and_supports_hrr_transcript_prefix_test() -> Nil 
       expected_transport_parameters: <<1, 2>>,
     )
   Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn zero_rtt_excludes_connection_instance_transport_parameters_test() -> Nil {
+  let reset_token = <<1:128>>
+  assert resumption.zero_rtt_transport_parameters([
+      transport_parameter.StatelessResetToken(reset_token),
+      transport_parameter.InitialSourceConnectionId(<<1>>),
+      transport_parameter.OriginalDestinationConnectionId(<<2>>),
+      transport_parameter.RetrySourceConnectionId(<<3>>),
+      transport_parameter.InitialMaxData(1024),
+    ])
+    == [transport_parameter.InitialMaxData(1024)]
 }
 
 fn client_hello(

@@ -43,6 +43,8 @@ const maximum_crypto_offset = 4_194_304
 
 const maximum_address_token_bytes = 4096
 
+const active_connection_id_limit = 4
+
 /// Endpoint role fixes stream-ID ownership and amplification behavior.
 pub type Role {
   Client
@@ -254,6 +256,7 @@ pub opaque type State {
     pmtu: pmtu.State,
     path_validator: path_validation.Validator,
     peer_connection_ids: Option(connection_id.Registry),
+    pending_peer_stateless_reset_token: Option(BitArray),
     events: List(Event),
     acknowledgements_sent: Int,
     retransmissions: Int,
@@ -398,7 +401,8 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     peer_stream_data_bidi_remote: 0,
     peer_stream_data_uni: 0,
     peer_ack_delay_exponent: 3,
-    peer_maximum_udp_payload_size: 1200,
+    // RFC 9000 section 18.2: absence of max_udp_payload_size means 65527.
+    peer_maximum_udp_payload_size: 65_527,
     peer_maximum_datagram_frame_size: 0,
     peer_grease_quic_bit: False,
     peer_disabled_active_migration: False,
@@ -410,6 +414,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     pmtu: path_mtu,
     path_validator: path_validation.new(),
     peer_connection_ids: None,
+    pending_peer_stateless_reset_token: None,
     events: [],
     acknowledgements_sent: 0,
     retransmissions: 0,
@@ -487,6 +492,32 @@ pub fn install_initial_keys(
   }
 }
 
+/// Tentatively switch a client's Initial and TLS key schedule to an offered
+/// compatible version. Authenticated Version Information validates the choice
+/// before the handshake can complete.
+pub fn negotiate_compatible_version(
+  state: State,
+  negotiated_version: Version,
+  initial_secret_connection_id: BitArray,
+) -> Result(State, Error) {
+  case state.config.role, state.phase, state.tls_endpoint {
+    Client, Handshaking, ClientTlsEndpoint(client) -> {
+      use client <- result.try(
+        engine.negotiate_client_version(client, negotiated_version)
+        |> map_tls_result,
+      )
+      let switched =
+        State(
+          ..state,
+          config: Config(..state.config, version: negotiated_version),
+          tls_endpoint: ClientTlsEndpoint(client),
+        )
+      install_initial_keys(switched, initial_secret_connection_id)
+    }
+    _, _, _ -> Error(ConnectionUnavailable)
+  }
+}
+
 /// Restart Initial protection and recovery after an authenticated Retry while
 /// retaining the exact TLS ClientHello and every packet-number counter.
 pub fn process_retry(
@@ -520,11 +551,7 @@ fn process_valid_retry(
       use #(client, client_hello) <- result.try(
         engine.accept_quic_retry(client) |> map_tls_result,
       )
-      use state <- result.try(requeue_lost_frames(
-        state,
-        engine.ZeroRtt,
-        packet_space.outstanding_frames(state.application_space),
-      ))
+      use state <- result.try(reject_early_data(state))
       use initial_receive <- result.try(create_crypto_reassembler())
       use estimator <- result.try(create_rtt())
       use congestion <- result.try(create_congestion(state.config))
@@ -567,10 +594,56 @@ pub fn initialize_peer_connection_id(
     Some(_) -> Error(InvalidConfiguration)
     None -> {
       use registry <- result.try(
-        connection_id.new(8, initial_connection_id, stateless_reset_token)
+        connection_id.new(
+          active_connection_id_limit,
+          initial_connection_id,
+          stateless_reset_token,
+        )
         |> map_connection_id_result,
       )
-      Ok(State(..state, peer_connection_ids: Some(registry)))
+      Ok(
+        State(
+          ..state,
+          peer_connection_ids: Some(registry),
+          pending_peer_stateless_reset_token: None,
+        ),
+      )
+    }
+  }
+}
+
+/// Record the authenticated sequence-zero source connection ID. A client's
+/// reset token can arrive in TLS transport parameters before the packet driver
+/// returns the corresponding long-header source ID, so both arrival orders are
+/// supported.
+pub fn observe_peer_initial_connection_id(
+  state: State,
+  initial_connection_id: BitArray,
+) -> Result(State, Error) {
+  case state.peer_connection_ids {
+    Some(_) -> Error(InvalidConfiguration)
+    None -> {
+      let registry = case state.pending_peer_stateless_reset_token {
+        Some(token) ->
+          connection_id.new(
+            active_connection_id_limit,
+            initial_connection_id,
+            token,
+          )
+        None ->
+          connection_id.new_without_reset_token(
+            active_connection_id_limit,
+            initial_connection_id,
+          )
+      }
+      use registry <- result.try(registry |> map_connection_id_result)
+      Ok(
+        State(
+          ..state,
+          peer_connection_ids: Some(registry),
+          pending_peer_stateless_reset_token: None,
+        ),
+      )
     }
   }
 }
@@ -1108,10 +1181,22 @@ pub fn open_stream(
   state: State,
   direction: stream_id.Direction,
 ) -> Result(#(State, Int), Error) {
-  case state.phase {
-    Established -> open_established_stream(state, direction)
-    _ -> Error(ConnectionUnavailable)
+  case state.phase, early_streams_available(state) {
+    Established, _ | Handshaking, True ->
+      open_established_stream(state, direction)
+    _, _ -> Error(ConnectionUnavailable)
   }
+}
+
+/// Return whether a resumed client can emit application streams in 0-RTT.
+pub fn can_send_early_data(state: State) -> Bool {
+  early_streams_available(state)
+}
+
+fn early_streams_available(state: State) -> Bool {
+  state.config.role == Client
+  && state.phase == Handshaking
+  && keys_available(state, engine.ZeroRtt, Write)
 }
 
 /// Queue bounded application bytes on an existing local send direction.
@@ -2012,15 +2097,8 @@ fn apply_tls_action(
         |> add_event(EarlyDataWasAccepted),
       )
     engine.EarlyDataRejected ->
-      Ok(
-        State(
-          ..state,
-          early_data_accepted: False,
-          zero_rtt_queue: [],
-          zero_rtt_keys: empty_keys(),
-        )
-        |> add_event(EarlyDataWasRejected),
-      )
+      reject_early_data(state)
+      |> result.map(add_event(_, EarlyDataWasRejected))
     engine.StoreSessionTicket(ticket) ->
       Ok(add_event(state, SessionTicketStored(ticket)))
     engine.HandshakeComplete -> {
@@ -2049,6 +2127,77 @@ fn apply_tls_action(
       }
       Ok(add_event(state, HandshakeEstablished))
     }
+  }
+}
+
+fn reject_early_data(state: State) -> Result(State, Error) {
+  let packets = packet_space.outstanding_packets(state.application_space)
+  use state <- result.try(requeue_rejected_packets(state, packets))
+  use state <- result.try(requeue_lost_frames(
+    state,
+    engine.OneRtt,
+    state.zero_rtt_queue,
+  ))
+  use congestion <- result.try(abandon_early_congestion(
+    state.congestion,
+    in_flight_packet_bytes(packets, 0),
+  ))
+  Ok(
+    State(
+      ..state,
+      early_data_accepted: False,
+      zero_rtt_queue: [],
+      zero_rtt_keys: empty_keys(),
+      application_space: packet_space.reset_recovery(state.application_space),
+      congestion: congestion,
+    ),
+  )
+}
+
+fn requeue_rejected_packets(
+  state: State,
+  packets: List(packet_space.SentPacket),
+) -> Result(State, Error) {
+  case packets {
+    [] -> Ok(state)
+    [packet, ..rest] -> {
+      use state <- result.try(requeue_lost_frames(
+        state,
+        engine.OneRtt,
+        packet.frames,
+      ))
+      requeue_rejected_packets(state, rest)
+    }
+  }
+}
+
+fn in_flight_packet_bytes(
+  packets: List(packet_space.SentPacket),
+  total: Int,
+) -> Int {
+  case packets {
+    [] -> total
+    [packet, ..rest] ->
+      in_flight_packet_bytes(rest, case packet.in_flight {
+        True -> total + packet.sent_bytes
+        False -> total
+      })
+  }
+}
+
+fn abandon_early_congestion(
+  congestion: CongestionState,
+  bytes: Int,
+) -> Result(CongestionState, Error) {
+  case congestion {
+    RenoState(state) ->
+      new_reno.abandon_in_flight(state, bytes)
+      |> result.map(RenoState)
+      |> result.replace_error(InvalidInput)
+    CubicState(state) ->
+      cubic.abandon_in_flight(state, bytes)
+      |> result.map(CubicState)
+      |> result.replace_error(InvalidInput)
   }
 }
 
@@ -2284,6 +2433,24 @@ fn apply_peer_parameter(
   parameter: transport_parameter.Parameter,
 ) -> Result(State, Error) {
   case parameter {
+    transport_parameter.StatelessResetToken(token) ->
+      case state.peer_connection_ids {
+        None ->
+          Ok(State(..state, pending_peer_stateless_reset_token: Some(token)))
+        Some(registry) -> {
+          use registry <- result.try(
+            connection_id.set_initial_reset_token(registry, token)
+            |> map_connection_id_result,
+          )
+          Ok(
+            State(
+              ..state,
+              peer_connection_ids: Some(registry),
+              pending_peer_stateless_reset_token: None,
+            ),
+          )
+        }
+      }
     transport_parameter.InitialMaxData(limit) ->
       Ok(
         State(
@@ -2456,7 +2623,10 @@ fn take_outgoing_frame(
     engine.Handshake ->
       take_queue_head(state, level, state.handshake_queue, maximum_data_bytes)
     engine.ZeroRtt ->
-      take_queue_head(state, level, state.zero_rtt_queue, maximum_data_bytes)
+      case state.zero_rtt_queue {
+        [] -> poll_stream_frame(state, maximum_data_bytes)
+        queue -> take_queue_head(state, level, queue, maximum_data_bytes)
+      }
     engine.OneRtt ->
       case state.application_queue {
         [] -> poll_stream_frame(state, maximum_data_bytes)

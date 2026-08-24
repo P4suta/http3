@@ -155,6 +155,15 @@ pub fn bytes_in_flight(state: State) -> Int {
   state.bytes_in_flight
 }
 
+/// Remove bytes belonging to rejected 0-RTT packets without treating their
+/// rejection as a congestion signal.
+pub fn abandon_in_flight(state: State, bytes: Int) -> Result(State, Error) {
+  case bytes < 0 || bytes > state.bytes_in_flight {
+    True -> Error(BytesInFlightUnderflow)
+    False -> Ok(State(..state, bytes_in_flight: state.bytes_in_flight - bytes))
+  }
+}
+
 /// Return stable path diagnostics.
 pub fn snapshot(state: State) -> Snapshot {
   Snapshot(state.congestion_window, state.bytes_in_flight, phase(state))

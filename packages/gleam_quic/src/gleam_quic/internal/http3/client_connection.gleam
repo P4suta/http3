@@ -269,6 +269,11 @@ pub fn path_validation_in_progress(state: State) -> Bool {
   session.path_validation_in_progress(state.session)
 }
 
+/// Return whether the resumed handshake has installed authenticated 1-RTT.
+pub fn handshake_established(state: State) -> Bool {
+  session.phase(state.session) == transport.Established
+}
+
 /// Send and commit at most one exact-size DPLPMTUD probe.
 pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
   case session.prepare_pmtu_probe(state.session, now) {
@@ -477,7 +482,20 @@ fn establish(
   peer: udp.Endpoint,
   deadline: Int,
 ) -> Result(State, Error) {
-  establish_version(config, socket, peer, deadline, config.quic_version, [])
+  use selected_version <- result.try(initial_connection_version(config))
+  establish_version(config, socket, peer, deadline, selected_version, [])
+}
+
+fn initial_connection_version(config: Config) -> Result(Version, Error) {
+  case config.resumption_ticket {
+    None -> Ok(config.quic_version)
+    Some(ticket) ->
+      case version.from_wire(session_ticket.quic_version(ticket)) {
+        Ok(version.Version1) -> Ok(version.Version1)
+        Ok(version.Version2) -> Ok(version.Version2)
+        _ -> Error(TlsHandshakeFailed)
+      }
+  }
 }
 
 fn establish_version(
@@ -499,6 +517,7 @@ fn establish_version(
         local_connection_id,
         config.http_datagrams,
         selected_version,
+        config.resumption_ticket == None,
       ),
       trust_store: config.trust_store,
       retried: False,
@@ -524,6 +543,30 @@ fn establish_version(
     )
     |> result.map_error(fn(error) { QuicTransportFailed("start", error) }),
   )
+  case config.resumption_ticket {
+    Some(_) -> start_session(config, quic, socket, peer, deadline, False)
+    None ->
+      complete_handshake(
+        config,
+        quic,
+        socket,
+        peer,
+        deadline,
+        selected_version,
+        attempted_versions,
+      )
+  }
+}
+
+fn complete_handshake(
+  config: Config,
+  quic: driver.State,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  deadline: Int,
+  selected_version: Version,
+  attempted_versions: List(Version),
+) -> Result(State, Error) {
   case handshake(quic, socket, peer, deadline, attempted_versions != []) {
     Error(VersionNegotiationReceived(offered)) ->
       case
@@ -534,33 +577,50 @@ fn establish_version(
       {
         Error(_) -> Error(VersionNegotiationFailed)
         Ok(next_version) ->
-          establish_version(config, socket, peer, deadline, next_version, [
-            selected_version,
-            ..attempted_versions
-          ])
+          establish_version(
+            case config.resumption_ticket {
+              Some(_) -> Config(..config, resumption_ticket: None)
+              None -> config
+            },
+            socket,
+            peer,
+            deadline,
+            next_version,
+            [selected_version, ..attempted_versions],
+          )
       }
     Error(error) -> Error(error)
-    Ok(quic) -> {
-      use http3 <- result.try(
-        session.start(
-          quic,
-          client_http3_config(config.http_datagrams),
-          config.http_datagrams,
-        )
-        |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
-      )
-      use state <- result.try(await_peer_settings(
-        State(socket, peer, http3, None, 0, 0, 0, 0, 0),
-        deadline,
-      ))
-      case config.maximum_pushes {
-        0 -> Ok(state)
-        maximum ->
-          session.permit_pushes(state.session, maximum - 1)
-          |> result.map(fn(next) { State(..state, session: next) })
-          |> map_session_result("permit_pushes")
-      }
-    }
+    Ok(quic) -> start_session(config, quic, socket, peer, deadline, True)
+  }
+}
+
+fn start_session(
+  config: Config,
+  quic: driver.State,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  deadline: Int,
+  await_settings: Bool,
+) -> Result(State, Error) {
+  use http3 <- result.try(
+    session.start(
+      quic,
+      client_http3_config(config.http_datagrams),
+      config.http_datagrams,
+    )
+    |> result.map_error(fn(error) { Http3OperationFailed("start", error) }),
+  )
+  let state = State(socket, peer, http3, None, 0, 0, 0, 0, 0)
+  use state <- result.try(case await_settings {
+    True -> await_peer_settings(state, deadline)
+    False -> Ok(state)
+  })
+  case config.maximum_pushes {
+    0 -> Ok(state)
+    maximum ->
+      session.permit_pushes(state.session, maximum - 1)
+      |> result.map(fn(next) { State(..state, session: next) })
+      |> map_session_result("permit_pushes")
   }
 }
 
@@ -798,7 +858,12 @@ fn client_transport_parameters(
   local_connection_id: BitArray,
   http_datagrams: Bool,
   selected_version: Version,
+  advertise_compatible_versions: Bool,
 ) -> List(transport_parameter.Parameter) {
+  let available_versions = case advertise_compatible_versions {
+    True -> [version.Version2, version.Version1]
+    False -> [selected_version]
+  }
   let parameters = [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(30_000),
@@ -811,10 +876,7 @@ fn client_transport_parameters(
     transport_parameter.InitialMaxStreamsUni(100),
     transport_parameter.ActiveConnectionIdLimit(4),
     transport_parameter.InitialSourceConnectionId(local_connection_id),
-    transport_parameter.VersionInformation(selected_version, [
-      version.Version2,
-      version.Version1,
-    ]),
+    transport_parameter.VersionInformation(selected_version, available_versions),
   ]
   case http_datagrams {
     True -> [

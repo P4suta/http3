@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam_quic/frame
 import gleam_quic/internal/connection_state
 import gleam_quic/internal/ecn
@@ -763,6 +764,88 @@ pub fn confirms_recovery_tracked_pmtu_probes_and_handles_black_holes_test() -> N
   assert connection_state.path_mtu(connection) == 1300
   let connection = connection_state.report_pmtu_black_hole(connection)
   assert connection_state.path_mtu(connection) == 1200
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn omitted_peer_udp_payload_parameter_uses_rfc_default_test() -> Nil {
+  let config = connection_state.default_config(connection_state.Client)
+  let assert Ok(connection) = connection_state.new(config, 0)
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.HandshakeComplete,
+    ])
+  assert connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ping],
+      1300,
+      ecn.NotEct,
+      1,
+    )
+    |> result.is_ok
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test() -> Nil {
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Client),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.InstallWriteKeys(engine.ZeroRtt, keys),
+    ])
+  assert connection_state.can_send_early_data(connection)
+  let assert Ok(#(connection, 0)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(connection, 0, <<"early">>, True)
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.ZeroRtt,
+    0,
+    [early_frame],
+  )) = connection_state.prepare_packet(connection, engine.ZeroRtt, 1200, 1)
+  assert early_frame == frame.Stream(0, 0, <<"early">>, True)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.ZeroRtt,
+      0,
+      [early_frame],
+      100,
+      ecn.NotEct,
+      1,
+    )
+  assert connection_state.bytes_in_flight(connection) == 100
+  assert connection_state.next_application_packet_number(connection) == 1
+
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [engine.EarlyDataRejected])
+  assert connection_state.bytes_in_flight(connection) == 0
+  assert connection_state.next_application_packet_number(connection) == 1
+  assert !connection_state.can_send_early_data(connection)
+
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.HandshakeComplete,
+    ])
+  let assert Ok(connection_state.PacketPrepared(
+    _,
+    engine.OneRtt,
+    1,
+    [retransmitted],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 2)
+  assert retransmitted == early_frame
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

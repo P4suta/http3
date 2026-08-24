@@ -139,6 +139,10 @@ pub fn accept_initial(
       signature_scheme: config.signature_scheme,
       alternative_credentials: config.alternative_credentials,
     )
+  let resumption_policy = case retry_source_connection_id {
+    Some(_) -> resumption.reject_early_data(resumption_policy)
+    None -> resumption_policy
+  }
   use tls <- result.try(
     engine.start_server_with_resumption(tls_config, resumption_policy)
     |> result.map_error(TlsFailure),
@@ -847,19 +851,22 @@ fn validate_initial_inputs(
   datagram: BitArray,
   now_ms: Int,
 ) -> Result(Nil, Error) {
-  let valid_id = fn(value) {
+  let valid_routing_id = fn(value) {
     let size = bit_array.byte_size(value)
     bit_array.bit_size(value) % 8 == 0 && size >= 8 && size <= 20
+  }
+  let valid_initial_peer_id = fn(value) {
+    bit_array.bit_size(value) % 8 == 0 && bit_array.byte_size(value) <= 20
   }
   case
     config.certificate_chain != []
     && bit_array.byte_size(config.ticket_key) == 32
     && config.maximum_body_bytes > 0
-    && valid_id(original_destination_connection_id)
-    && valid_id(local_connection_id)
-    && valid_id(peer_connection_id)
+    && valid_routing_id(original_destination_connection_id)
+    && valid_routing_id(local_connection_id)
+    && valid_initial_peer_id(peer_connection_id)
     && case retry_source_connection_id {
-      Some(value) -> value == local_connection_id && valid_id(value)
+      Some(value) -> value == local_connection_id && valid_routing_id(value)
       None -> True
     }
     && bit_array.byte_size(datagram) >= 1200

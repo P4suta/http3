@@ -6,7 +6,9 @@ import gleam_quic/internal/crypto
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
+import gleam_quic/internal/tls/extension
 import gleam_quic/internal/tls/extension_value
+import gleam_quic/internal/tls/handshake
 import gleam_quic/internal/tls/hello
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/tls/session_ticket
@@ -64,6 +66,28 @@ pub fn completes_authenticated_client_server_handshake_test() -> Nil {
   assert has_discard(confirmation_actions, engine.Handshake)
   let assert Ok(engine.Step(_, [])) = engine.confirm_client_handshake(client)
   Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn fresh_client_advertises_psk_dhe_for_future_tickets_test() -> Nil {
+  let #(client_config, _) = configs([<<"h3">>])
+  let assert Ok(engine.Step(_, actions)) = engine.start_client(client_config)
+  let encoded = sent_at(actions, engine.Initial)
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.ClientHello, body),
+    <<>>,
+  )) = handshake.decode_next(encoded, handshake.default_limits())
+  let assert Ok(hello.ClientHello(_, _, _, extensions)) =
+    hello.decode_client(body, hello.default_limits())
+  assert list.any(extensions, fn(value) {
+    value == extension.Extension(extension.PskKeyExchangeModes, <<1, 1>>)
+  })
+  assert !list.any(extensions, fn(value) {
+    case value {
+      extension.Extension(extension.PreSharedKey, _) -> True
+      _ -> False
+    }
+  })
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -423,6 +447,28 @@ pub fn validates_v2_version_information_in_both_directions_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn direct_v2_allows_peer_without_compatible_version_information_test() -> Nil {
+  let #(client, server) = v2_configs()
+  let client =
+    engine.ClientConfig(
+      ..client,
+      transport_parameters: remove_version_information(
+        client.transport_parameters,
+      ),
+    )
+  let server =
+    engine.ServerConfig(
+      ..server,
+      transport_parameters: remove_version_information(
+        server.transport_parameters,
+      ),
+    )
+
+  let assert Ok(_) = receive_server_flight(client, server)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn validates_version_negotiation_available_versions_test() -> Nil {
   let #(client_config, server_config) = configs([<<"h3">>])
   let client_config =
@@ -457,6 +503,27 @@ pub fn validates_version_negotiation_available_versions_test() -> Nil {
   assert receive_server_flight(client_config, downgrade_server)
     == Error(engine.VersionNegotiationFailure)
   assert receive_server_flight(client_config, server_config)
+    == Error(engine.VersionNegotiationFailure)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn tentatively_switches_only_to_an_offered_compatible_version_test() -> Nil {
+  let #(base, _) = configs([<<"h3">>])
+  let config =
+    engine.ClientConfig(..base, transport_parameters: [
+      transport_parameter.VersionInformation(version.Version1, [
+        version.Version2,
+        version.Version1,
+      ]),
+      ..base.transport_parameters
+    ])
+  let assert Ok(engine.Step(client, _)) = engine.start_client(config)
+  let assert Ok(switched) =
+    engine.negotiate_client_version(client, version.Version2)
+  assert engine.client_phase(switched) == engine.AwaitingPeerHello
+  assert engine.negotiate_client_version(client, version.Version1)
+    == Error(engine.VersionNegotiationFailure)
+  assert engine.negotiate_client_version(client, version.Unknown(0xface_b00c))
     == Error(engine.VersionNegotiationFailure)
 }
 
@@ -534,6 +601,17 @@ fn replace_version_information(
       }
     })
   ]
+}
+
+fn remove_version_information(
+  parameters: List(transport_parameter.Parameter),
+) -> List(transport_parameter.Parameter) {
+  list.filter(parameters, fn(parameter) {
+    case parameter {
+      transport_parameter.VersionInformation(_, _) -> False
+      _ -> True
+    }
+  })
 }
 
 fn receive_server_flight(

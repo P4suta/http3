@@ -2273,11 +2273,10 @@ fn accept_connection(
   case
     dict.size(worker.connections) >= maximum_connections,
     bit_array.byte_size(original_destination) >= 8,
-    bit_array.byte_size(peer_connection_id) >= 8,
     bit_array.byte_size(datagram) >= 1200
   {
-    True, _, _, _ | _, False, _, _ | _, _, False, _ | _, _, _, False -> worker
-    False, True, True, True ->
+    True, _, _ | _, False, _ | _, _, False -> worker
+    False, True, True ->
       case
         case selected_local_connection_id {
           Some(value) -> Ok(value)
@@ -2369,11 +2368,10 @@ fn send_retry(
 ) -> Worker {
   case
     bit_array.byte_size(original_destination) >= 8,
-    bit_array.byte_size(peer_connection_id) >= 8,
     unique_connection_id(worker, 8)
   {
-    False, _, _ | _, False, _ | _, _, Error(_) -> worker
-    True, True, Ok(retry_source) -> {
+    False, _ | _, Error(_) -> worker
+    True, Ok(retry_source) -> {
       let #(address, port) = udp.endpoint_parts(peer)
       let now = udp.monotonic_millisecond()
       case

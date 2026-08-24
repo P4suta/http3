@@ -383,6 +383,11 @@ pub fn outstanding_frames(state: State) -> List(frame.Frame) {
   outstanding_packet_frames(state.sent_packets, [])
 }
 
+/// Return retained packets for protocol transitions such as 0-RTT rejection.
+pub fn outstanding_packets(state: State) -> List(SentPacket) {
+  state.sent_packets
+}
+
 /// Return the packet number that the next successful send will consume.
 pub fn next_packet_number(state: State) -> Int {
   state.next_packet_number
