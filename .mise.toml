@@ -3,9 +3,14 @@ gleam = "1.18.1"
 erlang = "29.0.5"
 rebar = "3.27.0"
 actionlint = "1.7.12"
+go = "1.27.0"
+python = "3.12.13"
+uv = "0.12.5"
 taplo = "0.10.0"
 typos = "1.49.0"
 markdownlint-cli2 = "0.22.1"
+shellcheck = "0.11.0"
+shfmt = "3.13.1"
 "pipx:reuse" = "6.2.0"
 
 [tasks.format]
@@ -65,6 +70,29 @@ run = "gleam run -m http3_benchmark -- load"
 description = "Run a sustained 160,000-stream HTTP/3 soak workload"
 run = "gleam run -m http3_benchmark -- soak"
 
+[tasks.interop]
+description = "Run both independent HTTP/3 peer phase gates"
+run = "bash test/interop/run.sh all"
+
+[tasks.interop-setup]
+description = "Install the hash-locked aioquic interoperability peer"
+run = [
+  "uv venv --clear --python 3.12.13 build/interop-venv",
+  "uv pip sync --python build/interop-venv/bin/python --require-hashes --strict test/interop/requirements.lock",
+]
+
+[tasks.interop-lock]
+description = "Regenerate the hash-locked aioquic peer dependency set"
+run = "uv pip compile test/interop/requirements.txt --output-file test/interop/requirements.lock --generate-hashes --universal --python-version 3.12 --exclude-newer 2026-08-24 --custom-compile-command 'mise run interop-lock'"
+
+[tasks.interop-aioquic]
+description = "Run bidirectional advanced aioquic interoperability"
+run = "bash test/interop/run.sh aioquic"
+
+[tasks.interop-quicgo]
+description = "Run bidirectional QUIC v1/v2 quic-go interoperability"
+run = "bash test/interop/run.sh quicgo"
+
 [tasks.docs]
 description = "Build package documentation"
 run = "gleam docs build"
@@ -84,6 +112,8 @@ run = [
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
+  "shellcheck test/interop/run.sh",
+  "shfmt -d test/interop/run.sh",
   "typos",
   "reuse lint",
 ]
@@ -103,6 +133,8 @@ run = [
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
+  "shellcheck test/interop/run.sh",
+  "shfmt -d test/interop/run.sh",
   "typos",
   "reuse lint",
 ]

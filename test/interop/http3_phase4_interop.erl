@@ -15,7 +15,8 @@ run(Port, ResumptionPort, QlogDirectory) ->
     {ok, {capabilities, true, true, false, true}} =
         http3@transport:capabilities(ConnectionTransport),
 
-    Stream = open_request(Connection, Port, <<"/advanced">>),
+    Stream = open_extended_request(Connection, Port, <<"/advanced">>),
+    {ok, {response, 200, Headers}} = http3@client:next_event(Stream),
     StreamTransport = http3@client:stream_transport(Stream),
     {ok, Priority} = http3@transport:priority(1, true),
     {ok, nil} = http3@transport:set_priority(StreamTransport, Priority),
@@ -25,7 +26,8 @@ run(Port, ResumptionPort, QlogDirectory) ->
     {ok, nil} = http3@transport:send_datagram(StreamTransport, <<"gleam-ping">>),
     {ok, <<"aioquic-pong">>} = http3@transport:next_datagram(StreamTransport),
     {ok, nil} = http3@client:finish(Stream),
-    {200, Headers, <<"aioquic-advanced">>} = collect(Stream),
+    {200, Headers, <<"aioquic-advanced">>} =
+        collect(Stream, 200, Headers, <<>>),
     {<<"x-interop-peer">>, <<"aioquic-1.3.0">>} =
         lists:keyfind(<<"x-interop-peer">>, 1, Headers),
 
@@ -85,6 +87,19 @@ open_request(Connection, Port, Path) ->
     Request3 = gleam@http@request:set_path(Request2, Path),
     Request = gleam@http@request:set_body(Request3, nil),
     {ok, Stream} = http3@client:open_stream(Connection, Request),
+    Stream.
+
+open_extended_request(Connection, Port, Path) ->
+    Request0 = gleam@http@request:new(),
+    Request1 = gleam@http@request:set_host(Request0, <<"localhost">>),
+    Request2 = gleam@http@request:set_port(Request1, Port),
+    Request3 = gleam@http@request:set_path(Request2, Path),
+    Request = gleam@http@request:set_body(Request3, nil),
+    {ok, Stream} = http3@client:open_extended_connect(
+        Connection,
+        Request,
+        <<"test-datagram">>
+    ),
     Stream.
 
 collect(Stream) ->
