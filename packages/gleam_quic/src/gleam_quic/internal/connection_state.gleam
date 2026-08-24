@@ -116,6 +116,7 @@ pub type Config {
     maximum_total_streams: Int,
     maximum_udp_payload_size: Int,
     maximum_datagram_frame_size: Int,
+    grease_quic_bit: Bool,
     idle_timeout_milliseconds: Int,
     draining_timeout_milliseconds: Int,
   )
@@ -243,6 +244,7 @@ pub opaque type State {
     peer_ack_delay_exponent: Int,
     peer_maximum_udp_payload_size: Int,
     peer_maximum_datagram_frame_size: Int,
+    peer_grease_quic_bit: Bool,
     peer_disabled_active_migration: Bool,
     estimator: rtt.Estimator,
     congestion: CongestionState,
@@ -316,6 +318,7 @@ pub fn default_config(role: Role) -> Config {
     maximum_total_streams: 1024,
     maximum_udp_payload_size: 65_527,
     maximum_datagram_frame_size: 65_535,
+    grease_quic_bit: True,
     idle_timeout_milliseconds: 30_000,
     draining_timeout_milliseconds: 3000,
   )
@@ -397,6 +400,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     peer_ack_delay_exponent: 3,
     peer_maximum_udp_payload_size: 1200,
     peer_maximum_datagram_frame_size: 0,
+    peer_grease_quic_bit: False,
     peer_disabled_active_migration: False,
     estimator: estimator,
     congestion: congestion,
@@ -928,6 +932,11 @@ pub fn active_migration_available(state: State) -> Bool {
   state.phase == Established && !state.peer_disabled_active_migration
 }
 
+/// Return whether both endpoints negotiated RFC 9287 QUIC Bit greasing.
+pub fn grease_quic_bit_negotiated(state: State) -> Bool {
+  state.config.grease_quic_bit && state.peer_grease_quic_bit
+}
+
 /// Reset the confirmed size after repeated loss of formerly working large
 /// datagrams while preserving the configured discovery ceiling.
 pub fn report_pmtu_black_hole(state: State) -> State {
@@ -981,7 +990,8 @@ pub fn receive_protected_long_packet(
   now_milliseconds: Int,
 ) -> Result(LongPacketReceipt, Error) {
   use #(kind, packet_version) <- result.try(
-    wire_packet.inspect_long(datagram) |> map_wire_result,
+    wire_packet.inspect_long_with_grease(datagram, state.config.grease_quic_bit)
+    |> map_wire_result,
   )
   case packet_version == state.config.version {
     False -> Error(ProtocolViolation)
@@ -1675,6 +1685,7 @@ fn decrypt_short_packet(
     datagram,
     destination_connection_id_length,
     expected_packet_number,
+    state.config.grease_quic_bit,
     None,
   )
 }
@@ -1684,6 +1695,7 @@ fn try_short_candidates(
   datagram: BitArray,
   destination_connection_id_length: Int,
   expected_packet_number: Int,
+  accept_greased_quic_bit: Bool,
   last_error: Option(wire_packet.Error),
 ) -> Result(ShortDecryption, Error) {
   case candidates {
@@ -1696,11 +1708,12 @@ fn try_short_candidates(
       let keys =
         wire_packet.TrafficPacketKeys(key_phase.candidate_keys(candidate))
       case
-        wire_packet.unprotect_short(
+        wire_packet.unprotect_short_with_grease(
           datagram,
           destination_connection_id_length,
           expected_packet_number,
           keys,
+          accept_greased_quic_bit,
         )
       {
         Ok(decoded) ->
@@ -1711,6 +1724,7 @@ fn try_short_candidates(
             datagram,
             destination_connection_id_length,
             expected_packet_number,
+            accept_greased_quic_bit,
             Some(error),
           )
       }
@@ -1805,7 +1819,7 @@ fn protect_long_payload(
   keys: wire_packet.PacketKeys,
 ) -> Result(BitArray, Error) {
   let protected =
-    wire_packet.protect_long(
+    wire_packet.protect_long_with_grease(
       kind,
       state.config.version,
       destination_connection_id,
@@ -1814,10 +1828,11 @@ fn protect_long_payload(
       largest_acknowledged,
       plaintext,
       keys,
+      state.peer_grease_quic_bit,
     )
   case protected {
     Error(wire_packet.InsufficientHeaderProtectionSample) ->
-      wire_packet.protect_long(
+      wire_packet.protect_long_with_grease(
         kind,
         state.config.version,
         destination_connection_id,
@@ -1826,6 +1841,7 @@ fn protect_long_payload(
         largest_acknowledged,
         <<plaintext:bits, 0, 0, 0>>,
         keys,
+        state.peer_grease_quic_bit,
       )
       |> map_wire_result
     _ -> protected |> map_wire_result
@@ -1844,7 +1860,7 @@ fn protect_short_payload(
   let largest_acknowledged =
     packet_space.largest_acknowledged(state.application_space)
   let protected =
-    wire_packet.protect_short(
+    wire_packet.protect_short_with_grease(
       destination_connection_id,
       packet_number,
       largest_acknowledged,
@@ -1852,10 +1868,11 @@ fn protect_short_payload(
       spin,
       plaintext,
       keys,
+      state.peer_grease_quic_bit,
     )
   case protected {
     Error(wire_packet.InsufficientHeaderProtectionSample) ->
-      wire_packet.protect_short(
+      wire_packet.protect_short_with_grease(
         destination_connection_id,
         packet_number,
         largest_acknowledged,
@@ -1863,6 +1880,7 @@ fn protect_short_payload(
         spin,
         <<plaintext:bits, 0, 0, 0>>,
         keys,
+        state.peer_grease_quic_bit,
       )
       |> map_wire_result
     _ -> protected |> map_wire_result
@@ -1881,7 +1899,13 @@ fn receive_versioned_long_packet(
   let expected =
     packet_space.expected_packet_number(packet_space_for_level(state, level))
   use decoded <- result.try(
-    wire_packet.unprotect_long(datagram, expected, keys) |> map_wire_result,
+    wire_packet.unprotect_long_with_grease(
+      datagram,
+      expected,
+      keys,
+      state.config.grease_quic_bit,
+    )
+    |> map_wire_result,
   )
   finish_long_packet(
     state,
@@ -2315,6 +2339,8 @@ fn apply_peer_parameter(
       }
     transport_parameter.MaxDatagramFrameSize(size) ->
       Ok(State(..state, peer_maximum_datagram_frame_size: size))
+    transport_parameter.GreaseQuicBit ->
+      Ok(State(..state, peer_grease_quic_bit: True))
     transport_parameter.DisableActiveMigration ->
       Ok(State(..state, peer_disabled_active_migration: True))
     _ -> Ok(state)

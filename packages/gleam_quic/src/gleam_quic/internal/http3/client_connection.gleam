@@ -779,6 +779,7 @@ fn client_transport_config(
     ..config,
     version: selected_version,
     maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    grease_quic_bit: True,
     maximum_datagram_frame_size: case http_datagrams {
       True -> maximum_datagram_frame_bytes
       False -> 0
@@ -792,6 +793,7 @@ fn client_transport_parameters(
   selected_version: Version,
 ) -> List(transport_parameter.Parameter) {
   let parameters = [
+    transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(30_000),
     transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
     transport_parameter.InitialMaxData(1_048_576),

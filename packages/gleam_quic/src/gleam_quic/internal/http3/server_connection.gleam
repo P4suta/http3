@@ -772,6 +772,7 @@ fn server_transport_config(
       maximum_body_bytes + 1_048_576,
     ),
     maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    grease_quic_bit: True,
     maximum_datagram_frame_size: case http_datagrams {
       True -> maximum_datagram_frame_bytes
       False -> 0
@@ -786,6 +787,7 @@ fn server_transport_parameters(
   http_datagrams: Bool,
 ) -> List(transport_parameter.Parameter) {
   let parameters = [
+    transport_parameter.GreaseQuicBit,
     transport_parameter.OriginalDestinationConnectionId(
       original_destination_connection_id,
     ),

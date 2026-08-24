@@ -84,6 +84,32 @@ pub fn protect_long(
   plaintext: BitArray,
   keys: PacketKeys,
 ) -> Result(BitArray, Error) {
+  protect_long_with_grease(
+    kind,
+    version,
+    destination_connection_id,
+    source_connection_id,
+    packet_number,
+    largest_acknowledged,
+    plaintext,
+    keys,
+    False,
+  )
+}
+
+/// Protect one long-header packet and, after negotiation, derive an
+/// unpredictable QUIC Bit from secret packet-protection material.
+pub fn protect_long_with_grease(
+  kind: LongKind,
+  version: Version,
+  destination_connection_id: BitArray,
+  source_connection_id: BitArray,
+  packet_number: Int,
+  largest_acknowledged: Option(Int),
+  plaintext: BitArray,
+  keys: PacketKeys,
+  grease_quic_bit: Bool,
+) -> Result(BitArray, Error) {
   use _ <- result.try(validate_long_inputs(
     kind,
     version,
@@ -95,6 +121,11 @@ pub fn protect_long(
     packet_number,
     largest_acknowledged,
   ))
+  use fixed_bit <- result.try(select_fixed_bit(
+    keys,
+    packet_number,
+    grease_quic_bit,
+  ))
   use header_prefix <- result.try(long_header_prefix(
     kind,
     version,
@@ -102,6 +133,7 @@ pub fn protect_long(
     source_connection_id,
     bit_array.byte_size(encoded_packet_number),
     bit_array.byte_size(plaintext) + 16,
+    fixed_bit,
   ))
   let header = <<header_prefix:bits, encoded_packet_number:bits>>
   use protected_payload <- result.try(protect_payload(
@@ -126,14 +158,32 @@ pub fn unprotect_long(
   expected_packet_number: Int,
   keys: PacketKeys,
 ) -> Result(DecodedLong, Error) {
-  use parsed <- result.try(parse_long(datagram))
-  unprotect_parsed_long(parsed, expected_packet_number, keys)
+  unprotect_long_with_grease(datagram, expected_packet_number, keys, False)
 }
 
-/// Inspect invariant long-header metadata needed to select read keys. No
-/// protected field or payload is trusted by this operation.
-pub fn inspect_long(datagram: BitArray) -> Result(#(LongKind, Version), Error) {
-  use parsed <- result.try(parse_long(datagram))
+/// Unprotect a long-header packet while accepting a negotiated zero QUIC Bit.
+pub fn unprotect_long_with_grease(
+  datagram: BitArray,
+  expected_packet_number: Int,
+  keys: PacketKeys,
+  accept_greased_quic_bit: Bool,
+) -> Result(DecodedLong, Error) {
+  use parsed <- result.try(parse_long(datagram, accept_greased_quic_bit))
+  unprotect_parsed_long(
+    parsed,
+    expected_packet_number,
+    keys,
+    accept_greased_quic_bit,
+  )
+}
+
+/// Inspect a protected long header after the local endpoint advertised QUIC
+/// Bit greasing.
+pub fn inspect_long_with_grease(
+  datagram: BitArray,
+  accept_greased_quic_bit: Bool,
+) -> Result(#(LongKind, Version), Error) {
+  use parsed <- result.try(parse_long(datagram, accept_greased_quic_bit))
   let ParsedLong(kind, version_value, _, _, _, _, _) = parsed
   Ok(#(kind, version_value))
 }
@@ -148,6 +198,29 @@ pub fn protect_short(
   plaintext: BitArray,
   keys: PacketKeys,
 ) -> Result(BitArray, Error) {
+  protect_short_with_grease(
+    destination_connection_id,
+    packet_number,
+    largest_acknowledged,
+    key_phase,
+    spin,
+    plaintext,
+    keys,
+    False,
+  )
+}
+
+/// Protect one short-header packet and optionally grease the QUIC Bit.
+pub fn protect_short_with_grease(
+  destination_connection_id: BitArray,
+  packet_number: Int,
+  largest_acknowledged: Option(Int),
+  key_phase: Bool,
+  spin: Bool,
+  plaintext: BitArray,
+  keys: PacketKeys,
+  grease_quic_bit: Bool,
+) -> Result(BitArray, Error) {
   use _ <- result.try(validate_short_inputs(
     destination_connection_id,
     plaintext,
@@ -156,11 +229,17 @@ pub fn protect_short(
     packet_number,
     largest_acknowledged,
   ))
+  use fixed_bit <- result.try(select_fixed_bit(
+    keys,
+    packet_number,
+    grease_quic_bit,
+  ))
   let first_byte =
     short_first_byte(
       bit_array.byte_size(encoded_packet_number),
       key_phase,
       spin,
+      fixed_bit,
     )
   let header_prefix = <<first_byte, destination_connection_id:bits>>
   let header = <<header_prefix:bits, encoded_packet_number:bits>>
@@ -186,8 +265,30 @@ pub fn unprotect_short(
   expected_packet_number: Int,
   keys: PacketKeys,
 ) -> Result(DecodedShort, Error) {
+  unprotect_short_with_grease(
+    datagram,
+    destination_connection_id_length,
+    expected_packet_number,
+    keys,
+    False,
+  )
+}
+
+/// Authenticate a short-header packet while accepting a negotiated zero QUIC
+/// Bit.
+pub fn unprotect_short_with_grease(
+  datagram: BitArray,
+  destination_connection_id_length: Int,
+  expected_packet_number: Int,
+  keys: PacketKeys,
+  accept_greased_quic_bit: Bool,
+) -> Result(DecodedShort, Error) {
   use #(protected_first, destination, protected_payload) <- result.try(
-    parse_short(datagram, destination_connection_id_length),
+    parse_short(
+      datagram,
+      destination_connection_id_length,
+      accept_greased_quic_bit,
+    ),
   )
   use mask <- result.try(header_mask_from_protected_payload(
     keys,
@@ -207,7 +308,10 @@ pub fn unprotect_short(
     encoded_packet_number,
     protected_body,
   ) = unprotected
-  use _ <- result.try(validate_unprotected_short(first_byte))
+  use _ <- result.try(validate_unprotected_short(
+    first_byte,
+    accept_greased_quic_bit,
+  ))
   use packet_number <- result.try(reconstruct_packet_number(
     encoded_packet_number,
     expected_packet_number,
@@ -292,6 +396,7 @@ fn long_header_prefix(
   source: BitArray,
   packet_number_length: Int,
   protected_body_length: Int,
+  fixed_bit: Bool,
 ) -> Result(BitArray, Error) {
   use packet_type <- result.try(long_packet_type(kind))
   use type_bits <- result.try(
@@ -309,7 +414,8 @@ fn long_header_prefix(
     |> map_varint_result,
   )
   let first_byte =
-    0xc0
+    0x80
+    |> set_fixed_bit(fixed_bit)
     |> int.bitwise_or(int.bitwise_shift_left(type_bits, 4))
     |> int.bitwise_or(packet_number_length - 1)
   let invariant = <<
@@ -348,6 +454,7 @@ fn short_first_byte(
   packet_number_length: Int,
   key_phase: Bool,
   spin: Bool,
+  fixed_bit: Bool,
 ) -> Int {
   let key_phase_bit = case key_phase {
     True -> 0x04
@@ -357,7 +464,8 @@ fn short_first_byte(
     True -> 0x20
     False -> 0
   }
-  0x40
+  0
+  |> set_fixed_bit(fixed_bit)
   |> int.bitwise_or(key_phase_bit)
   |> int.bitwise_or(spin_bit)
   |> int.bitwise_or(packet_number_length - 1)
@@ -475,18 +583,26 @@ fn unprotect_payload(
   }
 }
 
-fn parse_long(datagram: BitArray) -> Result(ParsedLong, Error) {
+fn parse_long(
+  datagram: BitArray,
+  accept_greased_quic_bit: Bool,
+) -> Result(ParsedLong, Error) {
   case byte_aligned(datagram) {
     False -> Error(NonByteAligned)
-    True -> parse_aligned_long(datagram)
+    True -> parse_aligned_long(datagram, accept_greased_quic_bit)
   }
 }
 
-fn parse_aligned_long(datagram: BitArray) -> Result(ParsedLong, Error) {
+fn parse_aligned_long(
+  datagram: BitArray,
+  accept_greased_quic_bit: Bool,
+) -> Result(ParsedLong, Error) {
   case datagram {
     <<first_byte, wire_version:size(32), destination_length, rest:bits>> -> {
       case
-        int.bitwise_and(first_byte, 0xc0) == 0xc0 && destination_length <= 20
+        header_form_is_long(first_byte)
+        && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
+        && destination_length <= 20
       {
         False -> Error(InvalidHeader)
         True ->
@@ -617,6 +733,7 @@ fn unprotect_parsed_long(
   parsed: ParsedLong,
   expected_packet_number: Int,
   keys: PacketKeys,
+  accept_greased_quic_bit: Bool,
 ) -> Result(DecodedLong, Error) {
   let ParsedLong(
     kind,
@@ -643,7 +760,10 @@ fn unprotect_parsed_long(
     encoded_packet_number,
     protected_body,
   ) = unprotected
-  use _ <- result.try(validate_unprotected_long(first_byte))
+  use _ <- result.try(validate_unprotected_long(
+    first_byte,
+    accept_greased_quic_bit,
+  ))
   use packet_number <- result.try(reconstruct_packet_number(
     encoded_packet_number,
     expected_packet_number,
@@ -669,29 +789,37 @@ fn unprotect_parsed_long(
 fn parse_short(
   datagram: BitArray,
   destination_length: Int,
+  accept_greased_quic_bit: Bool,
 ) -> Result(#(Int, BitArray, BitArray), Error) {
   case byte_aligned(datagram) {
     False -> Error(NonByteAligned)
-    True -> parse_aligned_short(datagram, destination_length)
+    True ->
+      parse_aligned_short(datagram, destination_length, accept_greased_quic_bit)
   }
 }
 
 fn parse_aligned_short(
   datagram: BitArray,
   destination_length: Int,
+  accept_greased_quic_bit: Bool,
 ) -> Result(#(Int, BitArray, BitArray), Error) {
   case destination_length < 0 || destination_length > 20 {
     True -> Error(InvalidHeader)
-    False -> parse_short_header(datagram, destination_length)
+    False ->
+      parse_short_header(datagram, destination_length, accept_greased_quic_bit)
   }
 }
 
 fn parse_short_header(
   datagram: BitArray,
   destination_length: Int,
+  accept_greased_quic_bit: Bool,
 ) -> Result(#(Int, BitArray, BitArray), Error) {
   use #(first_byte, rest) <- result.try(split_first(datagram))
-  case int.bitwise_and(first_byte, 0xc0) == 0x40 {
+  case
+    !header_form_is_long(first_byte)
+    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
+  {
     True -> finish_short_parse(first_byte, rest, destination_length)
     False -> Error(InvalidHeader)
   }
@@ -709,9 +837,13 @@ fn finish_short_parse(
   }
 }
 
-fn validate_unprotected_long(first_byte: Int) -> Result(Nil, Error) {
+fn validate_unprotected_long(
+  first_byte: Int,
+  accept_greased_quic_bit: Bool,
+) -> Result(Nil, Error) {
   case
-    int.bitwise_and(first_byte, 0xc0) == 0xc0
+    header_form_is_long(first_byte)
+    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
     && int.bitwise_and(first_byte, 0x0c) == 0
   {
     True -> Ok(Nil)
@@ -719,13 +851,58 @@ fn validate_unprotected_long(first_byte: Int) -> Result(Nil, Error) {
   }
 }
 
-fn validate_unprotected_short(first_byte: Int) -> Result(Nil, Error) {
+fn validate_unprotected_short(
+  first_byte: Int,
+  accept_greased_quic_bit: Bool,
+) -> Result(Nil, Error) {
   case
-    int.bitwise_and(first_byte, 0xc0) == 0x40
+    !header_form_is_long(first_byte)
+    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
     && int.bitwise_and(first_byte, 0x18) == 0
   {
     True -> Ok(Nil)
     False -> Error(InvalidHeader)
+  }
+}
+
+fn header_form_is_long(first_byte: Int) -> Bool {
+  int.bitwise_and(first_byte, 0x80) == 0x80
+}
+
+fn fixed_bit_is_valid(first_byte: Int, accept_greased: Bool) -> Bool {
+  accept_greased || int.bitwise_and(first_byte, 0x40) == 0x40
+}
+
+fn set_fixed_bit(first_byte: Int, fixed: Bool) -> Int {
+  case fixed {
+    True -> int.bitwise_or(first_byte, 0x40)
+    False -> first_byte
+  }
+}
+
+fn select_fixed_bit(
+  keys: PacketKeys,
+  packet_number: Int,
+  grease: Bool,
+) -> Result(Bool, Error) {
+  case grease {
+    False -> Ok(True)
+    True -> {
+      let secret = case keys {
+        InitialPacketKeys(initial_crypto.PacketKeys(secret, _, _, _)) -> secret
+        TrafficPacketKeys(traffic_keys.TrafficKeys(secret: secret, ..)) ->
+          secret
+      }
+      case
+        crypto.hmac(crypto.Sha256, secret, <<
+          "grease_quic_bit":utf8,
+          packet_number:size(64),
+        >>)
+      {
+        Ok(<<first, _:bits>>) -> Ok(int.bitwise_and(first, 1) == 1)
+        Ok(_) | Error(_) -> Error(CryptoFailure)
+      }
+    }
   }
 }
 

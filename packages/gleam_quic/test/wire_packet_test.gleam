@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam_quic/internal/initial_crypto
 import gleam_quic/internal/tls/hello
@@ -180,4 +181,75 @@ pub fn rejects_short_samples_tampering_and_invalid_context_test() -> Nil {
       wire_packet.TrafficPacketKeys(keys),
     )
     == Error(wire_packet.InvalidHeader)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn negotiated_quic_bit_greasing_is_unpredictable_and_authenticated_test() -> Nil {
+  let assert Ok(keys) =
+    traffic_keys.from_secret(version.Version1, hello.Aes128GcmSha256, <<9:256>>)
+  let protected =
+    integers(0, 63)
+    |> list.map(fn(packet_number) {
+      let assert Ok(bytes) =
+        wire_packet.protect_short_with_grease(
+          destination_connection_id,
+          packet_number,
+          None,
+          False,
+          False,
+          <<1, 2, 3, 4>>,
+          wire_packet.TrafficPacketKeys(keys),
+          True,
+        )
+      #(packet_number, bytes)
+    })
+
+  assert list.any(protected, fn(packet) {
+    let assert #(_, <<first, _:bits>>) = packet
+    int.bitwise_and(first, 0x40) == 0
+  })
+  assert list.any(protected, fn(packet) {
+    let assert #(_, <<first, _:bits>>) = packet
+    int.bitwise_and(first, 0x40) == 0x40
+  })
+  assert list.any(protected, fn(packet) {
+    let #(packet_number, bytes) = packet
+    let assert <<first, _:bits>> = bytes
+    int.bitwise_and(first, 0x40) == 0
+    && wire_packet.unprotect_short(
+      bytes,
+      bit_array.byte_size(destination_connection_id),
+      packet_number,
+      wire_packet.TrafficPacketKeys(keys),
+    )
+    == Error(wire_packet.InvalidHeader)
+  })
+
+  protected
+  |> list.each(fn(packet) {
+    let #(packet_number, bytes) = packet
+    assert wire_packet.unprotect_short_with_grease(
+        bytes,
+        bit_array.byte_size(destination_connection_id),
+        packet_number,
+        wire_packet.TrafficPacketKeys(keys),
+        True,
+      )
+      == Ok(
+        wire_packet.DecodedShort(
+          destination_connection_id,
+          packet_number,
+          False,
+          False,
+          <<1, 2, 3, 4>>,
+        ),
+      )
+  })
+}
+
+fn integers(first: Int, last: Int) -> List(Int) {
+  case first > last {
+    True -> []
+    False -> [first, ..integers(first + 1, last)]
+  }
 }

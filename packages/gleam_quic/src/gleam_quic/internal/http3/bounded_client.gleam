@@ -668,6 +668,7 @@ fn client_transport_config(selected_version: Version) -> transport.Config {
     ..config,
     version: selected_version,
     maximum_udp_payload_size: 1200,
+    grease_quic_bit: True,
     maximum_datagram_frame_size: 0,
   )
 }
@@ -677,6 +678,7 @@ fn client_transport_parameters(
   selected_version: Version,
 ) -> List(transport_parameter.Parameter) {
   [
+    transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(30_000),
     transport_parameter.MaxUdpPayloadSize(1200),
     transport_parameter.InitialMaxData(1_048_576),

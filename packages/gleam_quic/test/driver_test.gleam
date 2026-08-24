@@ -79,6 +79,8 @@ pub fn completes_a_protected_quic_handshake_over_datagrams_test() -> Nil {
     drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
   assert driver.phase(client) == connection_state.Established
   assert driver.phase(server) == connection_state.Established
+  assert connection_state.grease_quic_bit_negotiated(driver.connection(client))
+  assert connection_state.grease_quic_bit_negotiated(driver.connection(server))
   assert connection_state.can_issue_session_ticket(driver.connection(server))
   assert driver.peer_connection_id(client) == original_destination_connection_id
   assert connection_state.packet_space_discarded(
@@ -965,6 +967,7 @@ fn tls_configs_for_version(
   let assert Ok(chain) = authentication.certificate_chain_from_pem(server_pem)
   let assert Ok(signing_key) = authentication.signing_key_from_pem(key_pem)
   let shared_parameters = [
+    transport_parameter.GreaseQuicBit,
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1014,6 +1017,7 @@ fn retry_tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
   let assert Ok(chain) = authentication.certificate_chain_from_pem(server_pem)
   let assert Ok(signing_key) = authentication.signing_key_from_pem(key_pem)
   let shared_parameters = [
+    transport_parameter.GreaseQuicBit,
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
