@@ -519,6 +519,15 @@ pub fn ping(state: State) -> Result(State, Error) {
   Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
 }
 
+/// Queue one server-issued QUIC address-validation token.
+pub fn queue_new_token(state: State, token: BitArray) -> Result(State, Error) {
+  use connection <- result.try(
+    transport.queue_new_token(driver.connection(state.quic), token)
+    |> map_transport_result,
+  )
+  Ok(State(..state, quic: driver.put_connection(state.quic, connection)))
+}
+
 /// Change the live congestion controller.
 pub fn set_congestion_algorithm(
   state: State,

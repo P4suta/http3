@@ -64,6 +64,8 @@ const ticket_age_tolerance_milliseconds = 10_000
 
 const retry_token_lifetime_milliseconds = 10_000
 
+const new_token_lifetime_milliseconds = 86_400_000
+
 /// A live listener command subject and its owner-monitoring actor.
 pub opaque type Listener {
   Listener(commands: Subject(Command), worker: Pid, timeout_milliseconds: Int)
@@ -322,6 +324,7 @@ type PeerState {
   PeerState(
     connection: server_connection.State,
     qlog_writer: Option(qlog.Writer),
+    token_endpoint: Option(udp.Endpoint),
     next_keepalive_milliseconds: Int,
     next_pmtu_probe_milliseconds: Int,
     candidate_path: Option(CandidatePath),
@@ -1986,16 +1989,17 @@ fn route_initial(
           address,
           port,
           now,
-          retry_token_lifetime_milliseconds,
+          new_token_lifetime_milliseconds,
         )
       {
         Ok(address_token.Token(
           address_token.Retry,
           original_destination,
           retry_source,
-          _,
+          issued_at,
         ))
           if retry_source == destination
+          && now - issued_at <= retry_token_lifetime_milliseconds
         ->
           accept_connection(
             worker,
@@ -2020,7 +2024,14 @@ fn route_initial(
             datagram,
             marking,
           )
-        _ -> worker
+        _ ->
+          send_retry(
+            worker,
+            peer,
+            protocol_version,
+            destination,
+            peer_connection_id,
+          )
       }
     }
   }
@@ -2214,6 +2225,7 @@ fn accept_connection(
                         PeerState(
                           connection,
                           qlog_writer,
+                          None,
                           case worker.keepalive_milliseconds {
                             0 -> 0
                             interval -> now + interval
@@ -2408,7 +2420,8 @@ fn tick_and_flush_entries(
               connection_id,
               PeerState(..peer, connection: connection),
             )
-            |> maybe_probe_connection(connection_id, now)
+          let worker = maybe_queue_new_token(worker, connection_id, now)
+          let worker = maybe_probe_connection(worker, connection_id, now)
           flush_connection(
             worker,
             connection_id,
@@ -2418,6 +2431,56 @@ fn tick_and_flush_entries(
         }
       }
       tick_and_flush_entries(worker, rest, now)
+    }
+  }
+}
+
+fn maybe_queue_new_token(
+  worker: Worker,
+  connection_id: BitArray,
+  now: Int,
+) -> Worker {
+  case dict.get(worker.connections, connection_id) {
+    Error(_) -> worker
+    Ok(peer) -> {
+      let endpoint = server_connection.peer(peer.connection)
+      let already_issued = case peer.token_endpoint {
+        Some(previous) -> same_endpoint(previous, endpoint)
+        None -> False
+      }
+      case server_connection.is_established(peer.connection), already_issued {
+        False, _ | _, True -> worker
+        True, False -> {
+          let #(address, port) = udp.endpoint_parts(endpoint)
+          case
+            address_token.seal(
+              worker.address_token_key,
+              address_token.NewToken,
+              address,
+              port,
+              <<>>,
+              <<>>,
+              now,
+            )
+          {
+            Error(_) -> worker
+            Ok(token) ->
+              case server_connection.queue_new_token(peer.connection, token) {
+                Error(_) -> worker
+                Ok(connection) ->
+                  put_peer(
+                    worker,
+                    connection_id,
+                    PeerState(
+                      ..peer,
+                      connection: connection,
+                      token_endpoint: Some(endpoint),
+                    ),
+                  )
+              }
+          }
+        }
+      }
     }
   }
 }

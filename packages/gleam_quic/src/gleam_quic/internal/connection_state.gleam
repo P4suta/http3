@@ -41,6 +41,8 @@ const maximum_crypto_buffer_bytes = 1_048_576
 
 const maximum_crypto_offset = 4_194_304
 
+const maximum_address_token_bytes = 4096
+
 /// Endpoint role fixes stream-ID ownership and amplification behavior.
 pub type Role {
   Client
@@ -1196,6 +1198,22 @@ pub fn queue_ping(state: State) -> Result(State, Error) {
   case state.phase {
     Established -> Ok(queue_application_frame(state, frame.Ping))
     _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Queue a bounded NEW_TOKEN frame from an established server endpoint.
+pub fn queue_new_token(state: State, token: BitArray) -> Result(State, Error) {
+  let size = bit_array.byte_size(token)
+  case
+    bit_array.bit_size(token) % 8 == 0,
+    size > 0 && size <= maximum_address_token_bytes,
+    state.config.role,
+    state.phase
+  {
+    False, _, _, _ | _, False, _, _ -> Error(InvalidInput)
+    True, True, Server, Established ->
+      Ok(queue_application_frame(state, frame.NewToken(token)))
+    _, _, _, _ -> Error(ConnectionUnavailable)
   }
 }
 

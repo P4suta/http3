@@ -20,6 +20,8 @@ const minimum_initial_datagram_bytes = 1200
 
 const maximum_padding_adjustments = 8
 
+const maximum_initial_token_bytes = 4096
+
 /// Stable endpoint role.
 pub type Role {
   Client
@@ -38,6 +40,7 @@ pub opaque type State {
     original_destination_connection_id: BitArray,
     initial_token: BitArray,
     server_packet_received: Bool,
+    retry_received: Bool,
   )
 }
 
@@ -71,8 +74,28 @@ pub fn start_client(
   local_connection_id: BitArray,
   now_ms: Int,
 ) -> Result(State, Error) {
+  start_client_with_token(
+    config,
+    tls,
+    original_destination_connection_id,
+    local_connection_id,
+    <<>>,
+    now_ms,
+  )
+}
+
+/// Start a client with one cached server-issued address-validation token.
+pub fn start_client_with_token(
+  config: connection_state.Config,
+  tls: engine.Step(engine.Client),
+  original_destination_connection_id: BitArray,
+  local_connection_id: BitArray,
+  initial_token: BitArray,
+  now_ms: Int,
+) -> Result(State, Error) {
   use _ <- result.try(validate_connection_id(original_destination_connection_id))
   use _ <- result.try(validate_connection_id(local_connection_id))
+  use _ <- result.try(validate_initial_token(initial_token))
   use connection <- result.try(
     connection_state.new(config, now_ms) |> map_connection_result,
   )
@@ -94,7 +117,8 @@ pub fn start_client(
     local_connection_id,
     original_destination_connection_id,
     original_destination_connection_id,
-    <<>>,
+    initial_token,
+    False,
     False,
   ))
 }
@@ -133,6 +157,7 @@ pub fn start_server(
     peer_connection_id,
     original_destination_connection_id,
     <<>>,
+    False,
     False,
   ))
 }
@@ -656,7 +681,7 @@ fn receive_retry(
   case
     state.role == Client
     && !state.server_packet_received
-    && state.initial_token == <<>>
+    && !state.retry_received
     && packet_version == state.version
     && destination == state.local_connection_id
     && source != state.original_destination_connection_id
@@ -686,6 +711,7 @@ fn receive_retry(
               peer_connection_id: source,
               initial_token: token,
               server_packet_received: True,
+              retry_received: True,
             ),
           )
         }
@@ -757,6 +783,16 @@ fn require_destination(
 fn validate_connection_id(value: BitArray) -> Result(Nil, Error) {
   let size = bit_array.byte_size(value)
   case bit_array.bit_size(value) % 8 == 0 && size >= 8 && size <= 20 {
+    True -> Ok(Nil)
+    False -> Error(InvalidInput)
+  }
+}
+
+fn validate_initial_token(value: BitArray) -> Result(Nil, Error) {
+  case
+    bit_array.bit_size(value) % 8 == 0
+    && bit_array.byte_size(value) <= maximum_initial_token_bytes
+  {
     True -> Ok(Nil)
     False -> Error(InvalidInput)
   }

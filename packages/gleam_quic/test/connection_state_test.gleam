@@ -757,6 +757,31 @@ pub fn queues_negotiated_datagrams_and_reports_tokens_distinctly_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn only_established_servers_can_queue_bounded_new_tokens_test() -> Nil {
+  let assert Ok(server) = established(connection_state.Server)
+  let assert Ok(server) =
+    connection_state.queue_new_token(server, <<"address-token":utf8>>)
+  let assert Ok(connection_state.PacketPrepared(
+    server,
+    engine.OneRtt,
+    0,
+    [frame.HandshakeDone],
+  )) = connection_state.prepare_packet(server, engine.OneRtt, 1200, 1)
+  let assert Ok(connection_state.PacketPrepared(
+    _,
+    engine.OneRtt,
+    0,
+    [frame.NewToken(<<"address-token":utf8>>)],
+  )) = connection_state.prepare_packet(server, engine.OneRtt, 1200, 1)
+
+  let assert Ok(client) = established(connection_state.Client)
+  assert connection_state.queue_new_token(client, <<"address-token":utf8>>)
+    == Error(connection_state.ConnectionUnavailable)
+  assert connection_state.queue_new_token(server, <<>>)
+    == Error(connection_state.InvalidInput)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn closes_idles_and_converges_deterministically_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(connection) =

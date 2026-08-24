@@ -40,6 +40,7 @@ pub type Config {
     trust_store: authentication.TrustStore,
     http_datagrams: Bool,
     resumption_ticket: Option(session_ticket.ClientTicket),
+    address_token: BitArray,
     maximum_pushes: Int,
     quic_version: Version,
   )
@@ -512,11 +513,12 @@ fn establish_version(
     |> result.replace_error(TlsHandshakeFailed),
   )
   use quic <- result.try(
-    driver.start_client(
+    driver.start_client_with_token(
       client_transport_config(config.http_datagrams, selected_version),
       tls,
       original_destination_connection_id,
       local_connection_id,
+      config.address_token,
       now,
     )
     |> result.map_error(fn(error) { QuicTransportFailed("start", error) }),

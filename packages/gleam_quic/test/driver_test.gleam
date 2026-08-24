@@ -399,6 +399,36 @@ pub fn authenticates_retry_and_restarts_initial_keys_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn cached_address_token_can_fall_back_to_authenticated_retry_test() -> Nil {
+  let #(client_tls_config, _) = retry_tls_configs()
+  let client_tls_config =
+    engine.ClientConfig(..client_tls_config, hostname: "::1")
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(client) =
+    driver.start_client_with_token(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      <<"cached-token":utf8>>,
+      0,
+    )
+  let assert Ok(Some(first_initial)) = driver.prepare_datagram(client, 1000, 1)
+  let assert Ok(#(packet.Initial(_, first_token, _), _)) =
+    packet.parse_long(driver.prepared_bytes(first_initial))
+  assert first_token == <<"cached-token":utf8>>
+  let assert Ok(client) = driver.commit_datagram(first_initial, 1)
+
+  let assert Ok(client) = driver.receive_datagram(client, retry_datagram(), 10)
+  assert driver.peer_connection_id(client) == retry_source_connection_id
+  let assert Ok(Some(retried_initial)) =
+    driver.prepare_datagram(client, 1000, 11)
+  let assert Ok(#(packet.Initial(_, retry_token, _), _)) =
+    packet.parse_long(driver.prepared_bytes(retried_initial))
+  assert retry_token == <<"address-token":utf8>>
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn pads_initial_and_rejects_wrong_destination_test() -> Nil {
   let #(client_tls_config, server_tls_config) = tls_configs()
   let assert Ok(client_tls) = engine.start_client(client_tls_config)

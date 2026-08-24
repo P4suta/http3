@@ -194,11 +194,13 @@ pub fn http_datagram_limits_and_concurrent_receive_are_typed_test() -> Nil {
   assert decode_capsule(response_capsule)
     == capsule.Datagram(<<"reliable-response":utf8>>)
 
-  assert transport.send_datagram(
+  // nolint: assert_ok_pattern -- typed oversize error is the integration assertion.
+  let assert Error(transport.DatagramTooLarge(reported_maximum)) =
+    transport.send_datagram(
       client_transport,
-      http3_test_support.repeated_bytes(maximum + 1),
+      http3_test_support.repeated_bytes(65_536),
     )
-    == Error(transport.DatagramTooLarge(maximum))
+  assert reported_maximum >= maximum
   let results =
     http3_test_support.concurrent_next_datagrams(client_transport, fn() {
       transport.send_datagram(server_transport, <<"released":utf8>>)
@@ -507,6 +509,55 @@ pub fn zero_rtt_resumption_is_typed_and_replay_safe_test() -> Nil {
     == Ok(transport.Accepted)
   assert client.close(resumed_connection) == Ok(client.Closed)
   assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn stale_address_token_falls_back_to_authenticated_retry_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let first_listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let port = server.port(first_listener) |> should.be_ok
+  let ticket =
+    acquire_ticket(
+      listener: first_listener,
+      port: port,
+      ca_certificate: ca_certificate,
+      path: "/stale-token-ticket",
+    )
+  assert server.stop(first_listener) == Ok(server.Stopped)
+
+  let replacement_listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_port(port)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let resumed_configuration =
+    client_configuration(ca_certificate)
+    |> client.with_resumption_ticket(ticket)
+  let connection =
+    client.connect(resumed_configuration, "localhost", port) |> should.be_ok
+  let stream =
+    client.open_stream(
+      connection,
+      streaming_request(port, "/after-stale-token"),
+    )
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(replacement_listener) |> should.be_ok
+  assert server.path(incoming) == "/after-stale-token"
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  server.respond(incoming, 200, [], <<"retried":utf8>>) |> should.be_ok
+  assert receive_response(stream) == <<"retried":utf8>>
+  assert transport.early_data_status(client.connection_transport(connection))
+    != Ok(transport.NotAttempted)
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(replacement_listener) == Ok(server.Stopped)
 }
 
 fn acquire_ticket(

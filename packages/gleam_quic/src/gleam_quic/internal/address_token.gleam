@@ -228,8 +228,8 @@ fn validate_decoded(
     decoded
   case valid_connection_ids_for_kind(kind, connection_id, retry_source) {
     False -> Error(Malformed)
-    True if address != expected_address || port != expected_port ->
-      Error(AddressMismatch)
+    True if address != expected_address -> Error(AddressMismatch)
+    True if kind == Retry && port != expected_port -> Error(AddressMismatch)
     True if issued_at > now || now - issued_at > maximum_age -> Error(Expired)
     True -> Ok(Token(kind, connection_id, retry_source, issued_at))
   }

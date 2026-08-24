@@ -22,6 +22,8 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
     )
   assert address_token.open(token_key, fresh, address, 4433, 1000, 100)
     == Ok(address_token.Token(address_token.NewToken, <<>>, <<>>, 1000))
+  assert address_token.open(token_key, fresh, address, 4434, 1000, 100)
+    == Ok(address_token.Token(address_token.NewToken, <<>>, <<>>, 1000))
   let nonce = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11>>
   let assert Ok(token) =
     address_token.seal_with_nonce(

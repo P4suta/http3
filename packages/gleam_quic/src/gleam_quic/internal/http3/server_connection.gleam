@@ -288,6 +288,14 @@ pub fn ping(state: State) -> Result(State, Error) {
   |> result.map_error(SessionFailure)
 }
 
+/// Queue one authenticated NEW_TOKEN frame on an established connection.
+pub fn queue_new_token(state: State, token: BitArray) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.queue_new_token(http3, token)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
+}
+
 /// Protect at most one datagram without committing transport accounting.
 pub fn prepare_datagram(
   state: State,

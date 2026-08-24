@@ -71,6 +71,7 @@ pub opaque type ResumptionTicket {
     hostname: String,
     port: Int,
     ticket: session_ticket.ClientTicket,
+    address_token: BitArray,
   )
 }
 
@@ -276,6 +277,7 @@ type Worker {
     resumption_attempted: Bool,
     early_data_status: EarlyDataStatus,
     latest_ticket: Option(ResumptionTicket),
+    latest_address_token: BitArray,
     ticket_waiter: Option(TicketWaiter),
     priorities: Dict(Int, #(Int, Bool)),
     keepalive_milliseconds: Int,
@@ -568,9 +570,9 @@ fn initialise(
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
 ) -> Nil {
-  let native_ticket = case resumption_ticket {
-    Some(ResumptionTicket(_, _, ticket)) -> Some(ticket)
-    None -> None
+  let #(native_ticket, initial_address_token) = case resumption_ticket {
+    Some(ResumptionTicket(_, _, ticket, token)) -> #(Some(ticket), token)
+    None -> #(None, <<>>)
   }
   let config =
     client_connection.Config(
@@ -580,6 +582,7 @@ fn initialise(
       trust_store,
       http_datagrams,
       native_ticket,
+      initial_address_token,
       maximum_pushes,
       quic_version,
     )
@@ -635,6 +638,7 @@ fn initialise(
               None -> NotAttempted
             },
             None,
+            initial_address_token,
             None,
             dict.new(),
             keepalive_milliseconds,
@@ -1647,10 +1651,17 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
       Worker(..worker, early_data_status: Accepted)
     session.TransportEvent(transport.EarlyDataWasRejected) ->
       Worker(..worker, early_data_status: Rejected)
+    session.TransportEvent(transport.NewTokenReceived(token)) ->
+      store_address_token(worker, token)
     session.TransportEvent(transport.SessionTicketStored(ticket)) ->
       store_ticket(
         worker,
-        ResumptionTicket(worker.hostname, worker.port, ticket),
+        ResumptionTicket(
+          worker.hostname,
+          worker.port,
+          ticket,
+          worker.latest_address_token,
+        ),
       )
     session.TransportEvent(transport.PathValidated) -> {
       case worker.qlog_writer {
@@ -1901,6 +1912,15 @@ fn store_ticket(worker: Worker, ticket: ResumptionTicket) -> Worker {
     }
     None -> Worker(..worker, latest_ticket: Some(ticket))
   }
+}
+
+fn store_address_token(worker: Worker, token: BitArray) -> Worker {
+  let latest_ticket = case worker.latest_ticket {
+    None -> None
+    Some(ResumptionTicket(hostname, port, ticket, _)) ->
+      Some(ResumptionTicket(hostname, port, ticket, token))
+  }
+  Worker(..worker, latest_ticket: latest_ticket, latest_address_token: token)
 }
 
 fn enqueue_validated(
@@ -2473,7 +2493,7 @@ fn valid_resumption_origin(
 ) -> Bool {
   case ticket {
     None -> True
-    Some(ResumptionTicket(bound_hostname, bound_port, _)) ->
+    Some(ResumptionTicket(bound_hostname, bound_port, _, _)) ->
       hostname == bound_hostname && port == bound_port
   }
 }
