@@ -184,6 +184,30 @@ pub fn rejects_short_samples_tampering_and_invalid_context_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_authenticated_reserved_bits_as_a_protocol_violation_test() -> Nil {
+  let assert Ok(keys) =
+    traffic_keys.from_secret(version.Version1, hello.Aes128GcmSha256, <<4:256>>)
+  let assert Ok(reserved) =
+    wire_packet.protect_short_with_reserved_bits(
+      destination_connection_id,
+      0,
+      None,
+      False,
+      False,
+      <<1, 2, 3, 4>>,
+      wire_packet.TrafficPacketKeys(keys),
+      0x08,
+    )
+  assert wire_packet.unprotect_short(
+      reserved,
+      bit_array.byte_size(destination_connection_id),
+      0,
+      wire_packet.TrafficPacketKeys(keys),
+    )
+    == Error(wire_packet.InvalidReservedBits)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn negotiated_quic_bit_greasing_is_unpredictable_and_authenticated_test() -> Nil {
   let assert Ok(keys) =
     traffic_keys.from_secret(version.Version1, hello.Aes128GcmSha256, <<9:256>>)

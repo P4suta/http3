@@ -1,0 +1,8 @@
+import fault_injection_test
+
+pub fn main() -> Nil {
+  fault_injection_test.fault_injection_duplicate_packet_is_idempotent_test()
+  fault_injection_test.fault_injection_corrupt_packet_is_discarded_and_retransmitted_test()
+  fault_injection_test.fault_injection_delayed_packet_is_recovered_test()
+  fault_injection_test.fault_injection_path_mtu_limit_keeps_requests_live_test()
+}

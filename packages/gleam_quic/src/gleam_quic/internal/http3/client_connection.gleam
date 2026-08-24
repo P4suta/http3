@@ -889,14 +889,7 @@ fn discard_or_fail_driver(
 }
 
 fn discard_driver_error(error: driver.Error) -> Bool {
-  case error {
-    driver.InvalidInput
-    | driver.DestinationConnectionIdMismatch
-    | driver.PacketFailure(_)
-    | driver.ConnectionFailure(transport.MissingReadKeys(_))
-    | driver.ConnectionFailure(transport.MissingWriteKeys(_)) -> True
-    _ -> False
-  }
+  driver.discardable_receive_error(error)
 }
 
 fn validate(config: Config) -> Result(Nil, Error) {

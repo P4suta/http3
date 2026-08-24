@@ -4509,6 +4509,7 @@ fn map_wire_result(
 ) -> Result(value, Error) {
   case value {
     Ok(decoded) -> Ok(decoded)
+    Error(wire_packet.InvalidReservedBits) -> Error(ProtocolViolation)
     Error(error) -> Error(WirePacketFailure(error))
   }
 }

@@ -704,24 +704,54 @@ fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
         True -> Ok(Worker(..worker, next_pmtu_probe_milliseconds: 0))
         False -> {
           let before = client_connection.stats(worker.connection)
-          client_connection.probe_path_mtu(worker.connection, now)
-          |> result.map(fn(connection) {
-            record_qlog_io(
-              worker.qlog_writer,
-              before,
-              client_connection.stats(connection),
-              now,
-            )
-            Worker(
-              ..worker,
-              connection: connection,
-              next_pmtu_probe_milliseconds: now
-                + pmtu_probe_interval_milliseconds,
-            )
-          })
-          |> result.map_error(map_connection_error)
+          case client_connection.probe_path_mtu(worker.connection, now) {
+            Error(error) ->
+              case is_send_pressure(error) {
+                True ->
+                  Ok(
+                    Worker(
+                      ..worker,
+                      next_pmtu_probe_milliseconds: now
+                        + pmtu_probe_interval_milliseconds,
+                    ),
+                  )
+                False -> Error(map_connection_error(error))
+              }
+            Ok(connection) -> {
+              record_qlog_io(
+                worker.qlog_writer,
+                before,
+                client_connection.stats(connection),
+                now,
+              )
+              Ok(
+                Worker(
+                  ..worker,
+                  connection: connection,
+                  next_pmtu_probe_milliseconds: now
+                    + pmtu_probe_interval_milliseconds,
+                ),
+              )
+            }
+          }
         }
       }
+  }
+}
+
+fn is_send_pressure(error: client_connection.Error) -> Bool {
+  case error {
+    client_connection.Http3OperationFailed(
+      _,
+      session.DriverFailure(driver.ConnectionFailure(transport.PacingLimited(_))),
+    )
+    | client_connection.Http3OperationFailed(
+        _,
+        session.DriverFailure(driver.ConnectionFailure(
+          transport.CongestionLimited,
+        )),
+      ) -> True
+    _ -> False
   }
 }
 

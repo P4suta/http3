@@ -81,6 +81,34 @@ pub fn with_lossy_server(run: fn(Int, BitArray) -> result) -> result {
   })
 }
 
+/// Run a test through a proxy that duplicates the first client datagram.
+pub fn with_duplicating_proxy(run: fn(Int, BitArray) -> result) -> result {
+  with_server(fn(port, ca_certificate) {
+    with_duplicating_proxy_ffi(port, ca_certificate, run)
+  })
+}
+
+/// Run a test through a proxy that corrupts the first client datagram.
+pub fn with_corrupting_proxy(run: fn(Int, BitArray) -> result) -> result {
+  with_server(fn(port, ca_certificate) {
+    with_corrupting_proxy_ffi(port, ca_certificate, run)
+  })
+}
+
+/// Run a test through a proxy that delays the first client datagram.
+pub fn with_delaying_proxy(run: fn(Int, BitArray) -> result) -> result {
+  with_server(fn(port, ca_certificate) {
+    with_delaying_proxy_ffi(port, ca_certificate, run)
+  })
+}
+
+/// Run a test through a proxy enforcing the QUIC 1200-byte path minimum.
+pub fn with_mtu_limited_proxy(run: fn(Int, BitArray) -> result) -> result {
+  with_server(fn(port, ca_certificate) {
+    with_mtu_limited_proxy_ffi(port, ca_certificate, run)
+  })
+}
+
 /// Run a test through a proxy that reverses the first two client datagrams.
 pub fn with_reordering_proxy(run: fn(Int, BitArray) -> result) -> result {
   with_server(fn(port, ca_certificate) {
@@ -90,6 +118,34 @@ pub fn with_reordering_proxy(run: fn(Int, BitArray) -> result) -> result {
 
 @external(erlang, "http3_test_ffi", "with_lossy_proxy")
 fn with_lossy_proxy(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result
+
+@external(erlang, "http3_test_ffi", "with_duplicating_proxy")
+fn with_duplicating_proxy_ffi(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result
+
+@external(erlang, "http3_test_ffi", "with_corrupting_proxy")
+fn with_corrupting_proxy_ffi(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result
+
+@external(erlang, "http3_test_ffi", "with_delaying_proxy")
+fn with_delaying_proxy_ffi(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result
+
+@external(erlang, "http3_test_ffi", "with_mtu_limited_proxy")
+fn with_mtu_limited_proxy_ffi(
   server_port: Int,
   ca_certificate: BitArray,
   run: fn(Int, BitArray) -> result,

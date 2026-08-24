@@ -66,6 +66,29 @@ pub type Error {
   ConnectionFailure(connection_state.Error)
 }
 
+/// Return whether a receive failure occurred before packet authentication and
+/// therefore must be silently discarded instead of closing the connection.
+pub fn discardable_receive_error(error: Error) -> Bool {
+  case error {
+    InvalidInput | DestinationConnectionIdMismatch | PacketFailure(_) -> True
+    ConnectionFailure(connection_state.MissingReadKeys(_))
+    | ConnectionFailure(connection_state.MissingWriteKeys(_))
+    | ConnectionFailure(connection_state.WirePacketFailure(
+        wire_packet.AuthenticationFailed,
+      ))
+    | ConnectionFailure(connection_state.WirePacketFailure(
+        wire_packet.InvalidHeader,
+      ))
+    | ConnectionFailure(connection_state.WirePacketFailure(
+        wire_packet.Truncated,
+      ))
+    | ConnectionFailure(connection_state.WirePacketFailure(
+        wire_packet.InsufficientHeaderProtectionSample,
+      )) -> True
+    _ -> False
+  }
+}
+
 /// Start a client after TLS has emitted its first ClientHello actions.
 pub fn start_client(
   config: connection_state.Config,

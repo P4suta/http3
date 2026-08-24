@@ -65,6 +65,7 @@ type ParsedLong {
 pub type Error {
   NonByteAligned
   InvalidHeader
+  InvalidReservedBits
   Truncated
   UnsupportedVersion
   InvalidPacketNumber
@@ -221,6 +222,56 @@ pub fn protect_short_with_grease(
   keys: PacketKeys,
   grease_quic_bit: Bool,
 ) -> Result(BitArray, Error) {
+  protect_short_with_options(
+    destination_connection_id,
+    packet_number,
+    largest_acknowledged,
+    key_phase,
+    spin,
+    plaintext,
+    keys,
+    grease_quic_bit,
+    0,
+  )
+}
+
+/// Construct an otherwise authentic short-header packet with specified
+/// reserved bits. This is only used by the internal protocol-negative tests.
+pub fn protect_short_with_reserved_bits(
+  destination_connection_id: BitArray,
+  packet_number: Int,
+  largest_acknowledged: Option(Int),
+  key_phase: Bool,
+  spin: Bool,
+  plaintext: BitArray,
+  keys: PacketKeys,
+  reserved_bits: Int,
+) -> Result(BitArray, Error) {
+  protect_short_with_options(
+    destination_connection_id,
+    packet_number,
+    largest_acknowledged,
+    key_phase,
+    spin,
+    plaintext,
+    keys,
+    False,
+    reserved_bits,
+  )
+}
+
+fn protect_short_with_options(
+  destination_connection_id: BitArray,
+  packet_number: Int,
+  largest_acknowledged: Option(Int),
+  key_phase: Bool,
+  spin: Bool,
+  plaintext: BitArray,
+  keys: PacketKeys,
+  grease_quic_bit: Bool,
+  reserved_bits: Int,
+) -> Result(BitArray, Error) {
+  use _ <- result.try(validate_reserved_bits(reserved_bits))
   use _ <- result.try(validate_short_inputs(
     destination_connection_id,
     plaintext,
@@ -240,6 +291,7 @@ pub fn protect_short_with_grease(
       key_phase,
       spin,
       fixed_bit,
+      reserved_bits,
     )
   let header_prefix = <<first_byte, destination_connection_id:bits>>
   let header = <<header_prefix:bits, encoded_packet_number:bits>>
@@ -308,10 +360,6 @@ pub fn unprotect_short_with_grease(
     encoded_packet_number,
     protected_body,
   ) = unprotected
-  use _ <- result.try(validate_unprotected_short(
-    first_byte,
-    accept_greased_quic_bit,
-  ))
   use packet_number <- result.try(reconstruct_packet_number(
     encoded_packet_number,
     expected_packet_number,
@@ -322,6 +370,10 @@ pub fn unprotect_short_with_grease(
     packet_number,
     header,
     protected_body,
+  ))
+  use _ <- result.try(validate_unprotected_short(
+    first_byte,
+    accept_greased_quic_bit,
   ))
   Ok(DecodedShort(
     destination,
@@ -455,6 +507,7 @@ fn short_first_byte(
   key_phase: Bool,
   spin: Bool,
   fixed_bit: Bool,
+  reserved_bits: Int,
 ) -> Int {
   let key_phase_bit = case key_phase {
     True -> 0x04
@@ -468,7 +521,17 @@ fn short_first_byte(
   |> set_fixed_bit(fixed_bit)
   |> int.bitwise_or(key_phase_bit)
   |> int.bitwise_or(spin_bit)
+  |> int.bitwise_or(reserved_bits)
   |> int.bitwise_or(packet_number_length - 1)
+}
+
+fn validate_reserved_bits(reserved_bits: Int) -> Result(Nil, Error) {
+  case
+    reserved_bits >= 0 && reserved_bits == int.bitwise_and(reserved_bits, 0x18)
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidHeader)
+  }
 }
 
 fn protect_complete_header(
@@ -760,10 +823,6 @@ fn unprotect_parsed_long(
     encoded_packet_number,
     protected_body,
   ) = unprotected
-  use _ <- result.try(validate_unprotected_long(
-    first_byte,
-    accept_greased_quic_bit,
-  ))
   use packet_number <- result.try(reconstruct_packet_number(
     encoded_packet_number,
     expected_packet_number,
@@ -774,6 +833,10 @@ fn unprotect_parsed_long(
     packet_number,
     header,
     protected_body,
+  ))
+  use _ <- result.try(validate_unprotected_long(
+    first_byte,
+    accept_greased_quic_bit,
   ))
   Ok(DecodedLong(
     kind,
@@ -841,13 +904,15 @@ fn validate_unprotected_long(
   first_byte: Int,
   accept_greased_quic_bit: Bool,
 ) -> Result(Nil, Error) {
+  let reserved_bits_are_zero = int.bitwise_and(first_byte, 0x0c) == 0
   case
     header_form_is_long(first_byte)
-    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
-    && int.bitwise_and(first_byte, 0x0c) == 0
+    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit),
+    reserved_bits_are_zero
   {
-    True -> Ok(Nil)
-    False -> Error(InvalidHeader)
+    False, _ -> Error(InvalidHeader)
+    True, True -> Ok(Nil)
+    True, False -> Error(InvalidReservedBits)
   }
 }
 
@@ -855,13 +920,15 @@ fn validate_unprotected_short(
   first_byte: Int,
   accept_greased_quic_bit: Bool,
 ) -> Result(Nil, Error) {
+  let reserved_bits_are_zero = int.bitwise_and(first_byte, 0x18) == 0
   case
     !header_form_is_long(first_byte)
-    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit)
-    && int.bitwise_and(first_byte, 0x18) == 0
+    && fixed_bit_is_valid(first_byte, accept_greased_quic_bit),
+    reserved_bits_are_zero
   {
-    True -> Ok(Nil)
-    False -> Error(InvalidHeader)
+    False, _ -> Error(InvalidHeader)
+    True, True -> Ok(Nil)
+    True, False -> Error(InvalidReservedBits)
   }
 }
 

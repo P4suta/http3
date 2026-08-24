@@ -16,7 +16,11 @@
     server_certificate_selection_credentials/0,
     server_owner_cleanup/1,
     start_task/1,
+    with_corrupting_proxy/3,
+    with_delaying_proxy/3,
+    with_duplicating_proxy/3,
     with_lossy_proxy/3,
+    with_mtu_limited_proxy/3,
     with_qlog_directory/1,
     with_reordering_proxy/3
 ]).
@@ -355,6 +359,30 @@ await_process_down(Pid, Monitor) ->
 with_lossy_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
     with_proxy(ServerPort, packet_loss, Fun, CaCert).
 
+-spec with_duplicating_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_duplicating_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, duplication, Fun, CaCert).
+
+-spec with_corrupting_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_corrupting_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, corruption, Fun, CaCert).
+
+-spec with_delaying_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_delaying_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, delay, Fun, CaCert).
+
+-spec with_mtu_limited_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_mtu_limited_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, mtu_limit, Fun, CaCert).
+
 -spec with_reordering_proxy(
     inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
 ) -> Result.
@@ -401,6 +429,14 @@ start_proxy_socket(Parent, ReadyRef, ServerPort, Mode) ->
 
 initial_proxy_state(packet_loss) ->
     #{drop_client => true};
+initial_proxy_state(duplication) ->
+    #{duplicate_client => true};
+initial_proxy_state(corruption) ->
+    #{corrupt_client => true, corrupt_server => true};
+initial_proxy_state(delay) ->
+    #{delay_client => true};
+initial_proxy_state(mtu_limit) ->
+    #{dropped_large => 0};
 initial_proxy_state(reordering) ->
     #{held_client => undefined, reordering_done => false}.
 
@@ -412,7 +448,11 @@ proxy_loop(Socket, ServerPort, Mode, Client, State) ->
         {udp, Socket, Address, ClientPort, Packet} ->
             NewState = proxy_client_packet(Socket, ServerPort, Mode, Packet, State),
             proxy_loop(Socket, ServerPort, Mode, {Address, ClientPort}, NewState);
+        {forward_delayed_client, Packet} ->
+            ok = gen_udp:send(Socket, {127, 0, 0, 1}, ServerPort, Packet),
+            proxy_loop(Socket, ServerPort, Mode, Client, State);
         stop ->
+            ensure_fault_was_exercised(Mode, State),
             gen_udp:close(Socket)
     after ?FIXTURE_TIMEOUT * 4 ->
         gen_udp:close(Socket)
@@ -420,6 +460,42 @@ proxy_loop(Socket, ServerPort, Mode, Client, State) ->
 
 proxy_client_packet(_Socket, _ServerPort, packet_loss, _Packet, #{drop_client := true} = State) ->
     State#{drop_client => false};
+proxy_client_packet(
+    Socket,
+    ServerPort,
+    duplication,
+    Packet,
+    #{duplicate_client := true} = State
+) ->
+    ok = gen_udp:send(Socket, {127, 0, 0, 1}, ServerPort, Packet),
+    ok = gen_udp:send(Socket, {127, 0, 0, 1}, ServerPort, Packet),
+    State#{duplicate_client => false};
+proxy_client_packet(
+    Socket,
+    ServerPort,
+    corruption,
+    Packet = <<First, _/binary>>,
+    #{corrupt_client := true} = State
+) when First band 16#80 =:= 0 ->
+    ok = gen_udp:send(Socket, {127, 0, 0, 1}, ServerPort, corrupt_packet(Packet)),
+    State#{corrupt_client => false};
+proxy_client_packet(
+    _Socket,
+    _ServerPort,
+    delay,
+    Packet,
+    #{delay_client := true} = State
+) ->
+    _ = erlang:send_after(100, self(), {forward_delayed_client, Packet}),
+    State#{delay_client => false};
+proxy_client_packet(
+    _Socket,
+    _ServerPort,
+    mtu_limit,
+    Packet,
+    #{dropped_large := Dropped} = State
+) when byte_size(Packet) > 1200 ->
+    State#{dropped_large => Dropped + 1};
 proxy_client_packet(
     _Socket,
     _ServerPort,
@@ -442,8 +518,30 @@ proxy_client_packet(Socket, ServerPort, _Mode, Packet, State) ->
     ok = gen_udp:send(Socket, {127, 0, 0, 1}, ServerPort, Packet),
     State.
 
+corrupt_packet(Packet) when byte_size(Packet) > 0 ->
+    PrefixSize = bit_size(Packet) - 8,
+    <<Prefix:PrefixSize/bits, Last>> = Packet,
+    <<Prefix/bits, (Last bxor 1)>>.
+
 proxy_server_packet(_Socket, _Mode, undefined, _Packet, State) ->
     State;
+proxy_server_packet(
+    Socket,
+    corruption,
+    Client,
+    Packet = <<First, _/binary>>,
+    #{corrupt_server := true} = State
+) when First band 16#80 =:= 0 ->
+    ok = send_to_client(Socket, Client, corrupt_packet(Packet)),
+    State#{corrupt_server => false};
+proxy_server_packet(
+    _Socket,
+    mtu_limit,
+    _Client,
+    Packet,
+    #{dropped_large := Dropped} = State
+) when byte_size(Packet) > 1200 ->
+    State#{dropped_large => Dropped + 1};
 proxy_server_packet(Socket, _Mode, Client, Packet, State) ->
     ok = send_to_client(Socket, Client, Packet),
     State.
@@ -451,20 +549,40 @@ proxy_server_packet(Socket, _Mode, Client, Packet, State) ->
 send_to_client(Socket, {Address, Port}, Packet) ->
     gen_udp:send(Socket, Address, Port, Packet).
 
+ensure_fault_was_exercised(packet_loss, #{drop_client := true}) ->
+    erlang:error(packet_loss_fault_not_exercised);
+ensure_fault_was_exercised(duplication, #{duplicate_client := true}) ->
+    erlang:error(duplication_fault_not_exercised);
+ensure_fault_was_exercised(corruption, #{corrupt_client := true}) ->
+    erlang:error(client_corruption_fault_not_exercised);
+ensure_fault_was_exercised(corruption, #{corrupt_server := true}) ->
+    erlang:error(server_corruption_fault_not_exercised);
+ensure_fault_was_exercised(delay, #{delay_client := true}) ->
+    erlang:error(delay_fault_not_exercised);
+ensure_fault_was_exercised(reordering, #{reordering_done := false}) ->
+    erlang:error(reordering_fault_not_exercised);
+ensure_fault_was_exercised(mtu_limit, #{dropped_large := 0}) ->
+    erlang:error(mtu_fault_not_exercised);
+ensure_fault_was_exercised(_Mode, _State) ->
+    ok.
+
 stop_proxy(Proxy, Monitor) ->
     Proxy ! stop,
-    await_proxy_down(Proxy, Monitor).
+    case await_proxy_down(Proxy, Monitor) of
+        normal -> ok;
+        Reason -> erlang:error({proxy_stop_failed, Reason})
+    end.
 
 await_proxy_down(Proxy, Monitor) ->
     receive
-        {'DOWN', Monitor, process, Proxy, _Reason} -> ok
+        {'DOWN', Monitor, process, Proxy, Reason} -> Reason
     after ?FIXTURE_TIMEOUT ->
         exit(Proxy, kill),
         receive
-            {'DOWN', Monitor, process, Proxy, _Reason} -> ok
+            {'DOWN', Monitor, process, Proxy, Reason} -> Reason
         after ?FIXTURE_TIMEOUT ->
             demonitor(Monitor, [flush]),
-            ok
+            timeout
         end
     end.
 

@@ -14,6 +14,7 @@ import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
 import gleam_quic/internal/udp
+import gleam_quic/internal/wire_packet
 import gleam_quic/packet
 import gleam_quic/transport_parameter
 import gleam_quic/version
@@ -44,6 +45,23 @@ type NetworkError {
 
 type SessionPeers {
   SessionPeers(client: session.State, server: session.State, now_ms: Int)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn discards_unauthenticated_packets_without_hiding_protocol_errors_test() -> Nil {
+  assert driver.discardable_receive_error(
+    driver.ConnectionFailure(connection_state.WirePacketFailure(
+      wire_packet.AuthenticationFailed,
+    )),
+  )
+  assert driver.discardable_receive_error(
+    driver.ConnectionFailure(connection_state.WirePacketFailure(
+      wire_packet.InvalidHeader,
+    )),
+  )
+  assert !driver.discardable_receive_error(driver.ConnectionFailure(
+    connection_state.ProtocolViolation,
+  ))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

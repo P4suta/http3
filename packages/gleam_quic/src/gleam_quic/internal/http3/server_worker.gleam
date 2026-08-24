@@ -2591,7 +2591,16 @@ fn send_pmtu_probe(
   case server_connection.prepare_pmtu_probe(peer.connection, now) {
     Error(error) ->
       case is_send_pressure(error) {
-        True -> worker
+        True ->
+          put_peer(
+            worker,
+            connection_id,
+            PeerState(
+              ..peer,
+              next_pmtu_probe_milliseconds: now
+                + pmtu_probe_interval_milliseconds,
+            ),
+          )
         False ->
           fail_connection(worker, connection_id, map_connection_error(error))
       }
@@ -4047,30 +4056,9 @@ fn is_send_pressure(error: server_connection.Error) -> Bool {
 
 fn discard_connection_error(error: server_connection.Error) -> Bool {
   case error {
-    server_connection.DriverFailure(driver.InvalidInput)
-    | server_connection.DriverFailure(driver.DestinationConnectionIdMismatch)
-    | server_connection.DriverFailure(driver.PacketFailure(_))
-    | server_connection.DriverFailure(driver.ConnectionFailure(transport.MissingReadKeys(
-        _,
-      )))
-    | server_connection.DriverFailure(driver.ConnectionFailure(transport.MissingWriteKeys(
-        _,
-      )))
-    | server_connection.SessionFailure(session.DriverFailure(
-        driver.InvalidInput,
-      ))
-    | server_connection.SessionFailure(session.DriverFailure(
-        driver.DestinationConnectionIdMismatch,
-      ))
-    | server_connection.SessionFailure(session.DriverFailure(driver.PacketFailure(
-        _,
-      )))
-    | server_connection.SessionFailure(session.DriverFailure(driver.ConnectionFailure(transport.MissingReadKeys(
-        _,
-      ))))
-    | server_connection.SessionFailure(session.DriverFailure(driver.ConnectionFailure(transport.MissingWriteKeys(
-        _,
-      )))) -> True
+    server_connection.DriverFailure(error)
+    | server_connection.SessionFailure(session.DriverFailure(error)) ->
+      driver.discardable_receive_error(error)
     _ -> False
   }
 }
