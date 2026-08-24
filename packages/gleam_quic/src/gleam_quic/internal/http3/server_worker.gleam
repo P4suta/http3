@@ -812,15 +812,15 @@ fn loop(worker: Worker) -> Nil {
         Ok(ReceivedCommand(command)) ->
           case handle_command(worker, command) {
             Error(Nil) -> Nil
-            Ok(worker) -> network_step(worker)
+            Ok(worker) -> network_step(worker, 0)
           }
-        Error(Nil) -> network_step(worker)
+        Error(Nil) -> network_step(worker, network_poll_milliseconds)
       }
   }
 }
 
-fn network_step(worker: Worker) -> Nil {
-  case udp.receive(worker.socket, network_poll_milliseconds) {
+fn network_step(worker: Worker, receive_timeout_milliseconds: Int) -> Nil {
+  case udp.receive(worker.socket, receive_timeout_milliseconds) {
     Ok(datagram) -> {
       let datagrams =
         receive_batch(worker.socket, maximum_receive_batch - 1, [datagram])

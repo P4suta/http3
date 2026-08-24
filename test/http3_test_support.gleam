@@ -48,6 +48,10 @@ pub fn checkpoint(signal: Signal) -> Nil
 @external(erlang, "http3_test_ffi", "release_signal")
 pub fn release_signal(signal: Signal) -> Nil
 
+/// Pause a test process while independently owned transport workers continue.
+@external(erlang, "http3_test_ffi", "pause_milliseconds")
+pub fn pause_milliseconds(milliseconds: Int) -> Nil
+
 /// Race two listener accepts and stop the listener to release the blocked one.
 @external(erlang, "http3_test_ffi", "concurrent_accepts")
 pub fn concurrent_accepts(

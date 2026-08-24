@@ -685,9 +685,9 @@ fn loop(worker: Worker) -> Nil {
         Ok(ReceivedCommand(command)) ->
           case handle_command(worker, command) {
             Error(Nil) -> Nil
-            Ok(worker) -> loop_after_network(worker)
+            Ok(worker) -> pump_and_loop(worker, 0)
           }
-        Error(Nil) -> loop_after_network(worker)
+        Error(Nil) -> pump_and_loop(worker, network_poll_milliseconds)
       }
   }
 }
@@ -774,9 +774,9 @@ fn maybe_queue_keepalive(worker: Worker, now: Int) -> Worker {
   }
 }
 
-fn loop_after_network(worker: Worker) -> Nil {
+fn pump_and_loop(worker: Worker, receive_timeout_milliseconds: Int) -> Nil {
   let before = client_connection.stats(worker.connection)
-  case client_connection.pump(worker.connection, network_poll_milliseconds) {
+  case client_connection.pump(worker.connection, receive_timeout_milliseconds) {
     Ok(connection) -> {
       record_qlog_io(
         worker.qlog_writer,

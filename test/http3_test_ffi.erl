@@ -9,6 +9,7 @@
     checkpoint/1,
     await_task/1,
     new_signal/0,
+    pause_milliseconds/1,
     qlog_event_count/2,
     release_signal/1,
     repeated_bytes/1,
@@ -27,6 +28,10 @@
 
 -define(FIXTURE_TIMEOUT, 2000).
 -define(CONCURRENCY_TIMEOUT, 5000).
+
+-spec pause_milliseconds(non_neg_integer()) -> nil.
+pause_milliseconds(Milliseconds) ->
+    timer:sleep(Milliseconds).
 
 -spec with_qlog_directory(fun((binary()) -> term())) -> term().
 with_qlog_directory(Fun) when is_function(Fun, 1) ->

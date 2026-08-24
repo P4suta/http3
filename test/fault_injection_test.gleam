@@ -25,6 +25,9 @@ pub fn fault_injection_path_mtu_limit_keeps_requests_live_test() -> Nil {
     let connection =
       client.connect(configuration, "localhost", port) |> should.be_ok
 
+    // PMTU probing starts after the connection has been idle for its fixed
+    // probe interval. Do not make this assertion depend on request latency.
+    http3_test_support.pause_milliseconds(75)
     run_requests(connection: connection, port: port, remaining: 8)
 
     let connection_transport = client.connection_transport(connection)
