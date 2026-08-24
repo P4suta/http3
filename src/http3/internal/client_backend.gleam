@@ -27,6 +27,8 @@ pub type Failure {
   RequestAlreadyFinished
   StreamFinished
   StreamCancelled
+  ConnectionDraining
+  RequestRejected
   OriginMismatch
   UnsafeEarlyDataMethod(String)
   ResumptionOriginMismatch
@@ -128,6 +130,8 @@ fn from_native_error(error: native_client.Error) -> Failure {
     native_client.RequestAlreadyFinished -> RequestAlreadyFinished
     native_client.StreamFinished -> StreamFinished
     native_client.StreamCancelled -> StreamCancelled
+    native_client.ConnectionDraining -> ConnectionDraining
+    native_client.RequestRejected -> RequestRejected
     native_client.OriginMismatch -> OriginMismatch
     native_client.UnsafeEarlyDataMethod(method) -> UnsafeEarlyDataMethod(method)
     native_client.ResumptionOriginMismatch -> ResumptionOriginMismatch
@@ -166,6 +170,8 @@ pub fn normalize_error(error: RawError) -> Failure {
     #(20, _, _) -> OriginMismatch
     #(21, _, method) -> UnsafeEarlyDataMethod(method)
     #(22, _, _) -> ResumptionOriginMismatch
+    #(23, _, _) -> ConnectionDraining
+    #(24, _, _) -> RequestRejected
     #(_, _, message) -> BackendFailure(message)
   }
 }

@@ -275,6 +275,8 @@ fn map_native_error(error: native_client.Error) -> client_backend.Failure {
       client_backend.RequestAlreadyFinished
     native_client.StreamFinished -> client_backend.StreamFinished
     native_client.StreamCancelled -> client_backend.StreamCancelled
+    native_client.ConnectionDraining -> client_backend.ConnectionDraining
+    native_client.RequestRejected -> client_backend.RequestRejected
     native_client.OriginMismatch -> client_backend.OriginMismatch
     native_client.UnsafeEarlyDataMethod(method) ->
       client_backend.UnsafeEarlyDataMethod(method)

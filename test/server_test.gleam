@@ -218,6 +218,41 @@ pub fn graceful_stop_drains_active_request_and_rejects_accept_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let active =
+    client.open_stream(connection, streaming_request(port, "/active-drain"))
+    |> should.be_ok
+  client.finish(active) |> should.be_ok
+  let rejected =
+    client.open_stream(connection, streaming_request(port, "/queued-drain"))
+    |> should.be_ok
+  client.finish(rejected) |> should.be_ok
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == "/active-drain"
+  assert server.next_event(incoming) == Ok(server.End)
+  let drain_task =
+    http3_test_support.start_task(fn() { server.graceful_stop(listener) })
+  assert server.accept(listener) == Error(server.ListenerClosed)
+  assert client.next_event(rejected) == Error(client.RequestRejected)
+  await_connection_draining(connection: connection, port: port, attempts: 100)
+
+  server.respond(incoming, 200, [], <<"active-complete":utf8>>)
+  |> should.be_ok
+  assert collect_response_events(active, [])
+    == [
+      client.Response(200, []),
+      client.Data(<<"active-complete":utf8>>),
+      client.End,
+    ]
+  assert http3_test_support.await_task(drain_task) == Ok(server.Drained)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =
@@ -548,6 +583,32 @@ fn collect_response_events(
   case event {
     client.End -> list.reverse([event, ..events])
     _ -> collect_response_events(stream, [event, ..events])
+  }
+}
+
+fn await_connection_draining(
+  connection connection: client.Connection,
+  port port: Int,
+  attempts attempts: Int,
+) -> Nil {
+  assert attempts > 0
+  case
+    client.open_stream(connection, streaming_request(port, "/after-goaway"))
+  {
+    Error(client.ConnectionDraining) -> Nil
+    Ok(stream) -> {
+      client.finish(stream) |> should.be_ok
+      assert client.next_event(stream) == Error(client.RequestRejected)
+      await_connection_draining(
+        connection: connection,
+        port: port,
+        attempts: attempts - 1,
+      )
+    }
+    Error(error) -> {
+      assert error == client.ConnectionDraining
+      Nil
+    }
   }
 }
 

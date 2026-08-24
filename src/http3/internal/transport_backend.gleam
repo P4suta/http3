@@ -309,7 +309,9 @@ fn map_native_error(error: native_client.Error) -> Failure {
     native_client.CongestionLimited -> CongestionLimited
     native_client.StreamFinished
     | native_client.StreamCancelled
-    | native_client.StreamReset(_) -> UnknownStream
+    | native_client.StreamReset(_)
+    | native_client.RequestRejected -> UnknownStream
+    native_client.ConnectionDraining -> ConnectionClosed
     native_client.ConnectFailed
     | native_client.HandshakeFailed
     | native_client.ResolutionFailed

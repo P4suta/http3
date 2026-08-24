@@ -12,6 +12,7 @@ import gleam_quic/internal/driver
 import gleam_quic/internal/http3/client_connection
 import gleam_quic/internal/http3/connection_state as http3_state
 import gleam_quic/internal/http3/datagram
+import gleam_quic/internal/http3/drain
 import gleam_quic/internal/http3/header_semantics
 import gleam_quic/internal/http3/message_stream
 import gleam_quic/internal/http3/session
@@ -29,6 +30,8 @@ const worker_reply_grace_milliseconds = 100
 const pmtu_probe_interval_milliseconds = 50
 
 const request_cancelled_code = 0x10c
+
+const request_rejected_code = 0x10b
 
 // Keep each HTTP DATA frame comfortably below the per-stream retained-send
 // bound. Larger public chunks are advanced incrementally by the actor.
@@ -124,6 +127,8 @@ pub type Error {
   RequestAlreadyFinished
   StreamFinished
   StreamCancelled
+  ConnectionDraining
+  RequestRejected
   OriginMismatch
   UnsafeEarlyDataMethod(String)
   ResumptionOriginMismatch
@@ -1623,6 +1628,9 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
       enqueue_data(worker, identifier, bytes)
     session.Http3Event(http3_state.StreamFinished(identifier)) ->
       finish_response(worker, identifier)
+    session.TransportEvent(transport.StreamWasReset(identifier, code))
+      if code == request_rejected_code
+    -> fail_stream(worker, identifier, RequestRejected)
     session.TransportEvent(transport.StreamWasReset(identifier, code)) ->
       fail_stream(worker, identifier, StreamReset(code))
     session.Http3Event(http3_state.HttpDatagram(identifier, payload)) ->
@@ -1647,6 +1655,8 @@ fn dispatch_event(worker: Worker, event: session.Event) -> Worker {
       finish_push_response(worker, identifier)
     session.Http3Event(http3_state.PushCancelled(identifier)) ->
       fail_push(worker, identifier, StreamCancelled)
+    session.Http3Event(http3_state.GoAwayReceived(_, rejected)) ->
+      fail_stream_ids(worker, rejected, RequestRejected)
     session.TransportEvent(transport.EarlyDataWasAccepted) ->
       Worker(..worker, early_data_status: Accepted)
     session.TransportEvent(transport.EarlyDataWasRejected) ->
@@ -2063,6 +2073,18 @@ fn fail_all_streams(worker: Worker, error: Error) -> Worker {
   fail_stream_entries(worker, dict.to_list(worker.streams), error)
 }
 
+fn fail_stream_ids(
+  worker: Worker,
+  identifiers: List(Int),
+  error: Error,
+) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] ->
+      fail_stream_ids(fail_stream(worker, identifier, error), rest, error)
+  }
+}
+
 fn fail_all_pushes(worker: Worker, error: Error) -> Worker {
   fail_push_entries(worker, dict.keys(worker.pushes), error)
 }
@@ -2477,6 +2499,14 @@ fn map_connection_error(error: client_connection.Error) -> Error {
         transport.CongestionLimited,
       )),
     ) -> CongestionLimited
+    client_connection.Http3OperationFailed(
+      _,
+      session.Http3Failure(http3_state.DrainFailure(drain.NewWorkAfterGoAway)),
+    ) -> ConnectionDraining
+    client_connection.Http3OperationFailed(
+      _,
+      session.Http3Failure(http3_state.RequestRejected(_)),
+    ) -> RequestRejected
     client_connection.Http3OperationFailed(operation, _) ->
       Http3Failed(operation)
     client_connection.PeerClosed -> ConnectionClosed

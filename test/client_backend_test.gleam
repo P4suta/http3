@@ -34,6 +34,10 @@ pub fn backend_streaming_failures_are_normalized_test() -> Nil {
     == client_backend.StreamCancelled
   assert client_backend.normalize_error(#(20, 0, "origin mismatch"))
     == client_backend.OriginMismatch
+  assert client_backend.normalize_error(#(23, 0, "connection draining"))
+    == client_backend.ConnectionDraining
+  assert client_backend.normalize_error(#(24, 0, "request rejected"))
+    == client_backend.RequestRejected
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

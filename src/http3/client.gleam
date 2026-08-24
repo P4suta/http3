@@ -222,6 +222,12 @@ pub type Error {
   /// The stream was cancelled locally.
   StreamCancelled
 
+  /// The peer sent GOAWAY; new work must use another connection.
+  ConnectionDraining
+
+  /// The peer did not process this request; replay it only when safe.
+  RequestRejected
+
   /// A request does not match the connection's host and port.
   OriginMismatch
 
@@ -678,6 +684,8 @@ fn from_backend_failure(
     client_backend.RequestAlreadyFinished -> RequestAlreadyFinished
     client_backend.StreamFinished -> StreamFinished
     client_backend.StreamCancelled -> StreamCancelled
+    client_backend.ConnectionDraining -> ConnectionDraining
+    client_backend.RequestRejected -> RequestRejected
     client_backend.OriginMismatch -> OriginMismatch
     client_backend.UnsafeEarlyDataMethod(method) ->
       UnsafeEarlyDataMethod(method)

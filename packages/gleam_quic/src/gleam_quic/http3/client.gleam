@@ -178,6 +178,8 @@ pub type Error {
   RequestAlreadyFinished
   StreamFinished
   StreamCancelled
+  ConnectionDraining
+  RequestRejected
   OriginMismatch
   UnsafeEarlyDataMethod(String)
   ResumptionOriginMismatch
@@ -841,6 +843,8 @@ fn map_worker_error(error: client_worker.Error) -> Error {
     client_worker.RequestAlreadyFinished -> RequestAlreadyFinished
     client_worker.StreamFinished -> StreamFinished
     client_worker.StreamCancelled -> StreamCancelled
+    client_worker.ConnectionDraining -> ConnectionDraining
+    client_worker.RequestRejected -> RequestRejected
     client_worker.OriginMismatch -> OriginMismatch
     client_worker.UnsafeEarlyDataMethod(method) -> UnsafeEarlyDataMethod(method)
     client_worker.ResumptionOriginMismatch -> ResumptionOriginMismatch
