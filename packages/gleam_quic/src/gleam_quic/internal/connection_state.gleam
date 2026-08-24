@@ -1268,7 +1268,10 @@ fn abort_established_stream(
   }
   let state =
     State(..state, streams: dict.insert(state.streams, identifier, stream))
-  Ok(queue_application_frame_list(state, list.append(reset_frames, stop_frames)))
+  Ok(
+    queue_application_frame_list(state, list.append(reset_frames, stop_frames))
+    |> cleanup_stream_if_terminal(identifier),
+  )
 }
 
 fn reset_send_direction(
@@ -1362,6 +1365,11 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
 /// Return stable connection progress.
 pub fn phase(state: State) -> Phase {
   state.phase
+}
+
+/// Return the number of transport streams still retaining live state.
+pub fn active_stream_count(state: State) -> Int {
+  dict.size(state.streams)
 }
 
 /// Return outstanding congestion-controlled bytes on the active path.
@@ -3213,12 +3221,19 @@ fn receive_stream_frame(
   data: BitArray,
   fin: Bool,
 ) -> Result(State, Error) {
-  case stream_data_allowed(state, level) {
+  case
+    stream_data_allowed(state, level)
+    && stream_id.can_receive(identifier, local_endpoint(state.config.role))
+  {
     False -> Error(ProtocolViolation)
     True -> {
       use state <- result.try(ensure_remote_stream(state, identifier))
       case dict.get(state.streams, identifier) {
-        Error(_) -> Error(UnknownStream(identifier))
+        Error(Nil) ->
+          case stream_was_opened(state, identifier) {
+            True -> Ok(state)
+            False -> Error(UnknownStream(identifier))
+          }
         Ok(stream) ->
           apply_received_stream_data(
             state,
@@ -3270,26 +3285,37 @@ fn receive_stream_reset(
   error_code: Int,
   final_size: Int,
 ) -> Result(State, Error) {
-  use state <- result.try(ensure_remote_stream(state, identifier))
-  case dict.get(state.streams, identifier) {
-    Error(_) -> Error(UnknownStream(identifier))
-    Ok(stream) ->
-      case stream_state.receive_reset(stream, error_code, final_size) {
-        Error(_) -> Error(StreamFailure)
-        Ok(#(stream, newly_received)) ->
-          case flow_control.receive(state.connection_receiver, newly_received) {
-            Error(_) -> Error(FlowControlFailure)
-            Ok(receiver) ->
-              Ok(
-                State(
-                  ..state,
-                  streams: dict.insert(state.streams, identifier, stream),
-                  connection_receiver: receiver,
-                )
-                |> add_event(StreamWasReset(identifier, error_code)),
-              )
+  case stream_id.can_receive(identifier, local_endpoint(state.config.role)) {
+    False -> Error(ProtocolViolation)
+    True -> {
+      use state <- result.try(ensure_remote_stream(state, identifier))
+      case dict.get(state.streams, identifier) {
+        Error(Nil) ->
+          case stream_was_opened(state, identifier) {
+            True -> Ok(state)
+            False -> Error(UnknownStream(identifier))
+          }
+        Ok(stream) ->
+          case stream_state.receive_reset(stream, error_code, final_size) {
+            Error(_) -> Error(StreamFailure)
+            Ok(#(stream, newly_received)) ->
+              case
+                flow_control.receive(state.connection_receiver, newly_received)
+              {
+                Error(_) -> Error(FlowControlFailure)
+                Ok(receiver) ->
+                  Ok(
+                    State(
+                      ..state,
+                      streams: dict.insert(state.streams, identifier, stream),
+                      connection_receiver: receiver,
+                    )
+                    |> add_event(StreamWasReset(identifier, error_code)),
+                  )
+              }
           }
       }
+    }
   }
 }
 
@@ -3298,20 +3324,31 @@ fn receive_stop_sending(
   identifier: Int,
   error_code: Int,
 ) -> Result(State, Error) {
-  case dict.get(state.streams, identifier) {
-    Error(_) -> Error(UnknownStream(identifier))
-    Ok(stream) ->
-      case stream_state.reset_send(stream, error_code) {
-        Error(_) -> Error(StreamFailure)
-        Ok(#(stream, reset)) ->
-          Ok(
-            State(
-              ..state,
-              streams: dict.insert(state.streams, identifier, stream),
-            )
-            |> queue_application_frame(reset),
-          )
+  case stream_id.can_send(identifier, local_endpoint(state.config.role)) {
+    False -> Error(ProtocolViolation)
+    True -> {
+      use state <- result.try(ensure_remote_stream(state, identifier))
+      case dict.get(state.streams, identifier) {
+        Error(Nil) ->
+          case stream_was_opened(state, identifier) {
+            True -> Ok(state)
+            False -> Error(UnknownStream(identifier))
+          }
+        Ok(stream) ->
+          case stream_state.reset_send(stream, error_code) {
+            Error(_) -> Error(StreamFailure)
+            Ok(#(stream, reset)) ->
+              Ok(
+                State(
+                  ..state,
+                  streams: dict.insert(state.streams, identifier, stream),
+                )
+                |> queue_application_frame(reset)
+                |> cleanup_stream_if_terminal(identifier),
+              )
+          }
       }
+    }
   }
 }
 
@@ -3320,19 +3357,29 @@ fn update_stream_send_limit(
   identifier: Int,
   limit: Int,
 ) -> Result(State, Error) {
-  case dict.get(state.streams, identifier) {
-    Error(_) -> Error(UnknownStream(identifier))
-    Ok(stream) ->
-      Ok(
-        State(
-          ..state,
-          streams: dict.insert(
-            state.streams,
-            identifier,
-            stream_state.update_send_limit(stream, limit),
-          ),
-        ),
-      )
+  case stream_id.can_send(identifier, local_endpoint(state.config.role)) {
+    False -> Error(ProtocolViolation)
+    True -> {
+      use state <- result.try(ensure_remote_stream(state, identifier))
+      case dict.get(state.streams, identifier) {
+        Error(Nil) ->
+          case stream_was_opened(state, identifier) {
+            True -> Ok(state)
+            False -> Error(UnknownStream(identifier))
+          }
+        Ok(stream) ->
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(
+                state.streams,
+                identifier,
+                stream_state.update_send_limit(stream, limit),
+              ),
+            ),
+          )
+      }
+    }
   }
 }
 
@@ -3521,7 +3568,24 @@ fn tick_path_validation(state: State, now_milliseconds: Int) -> State {
 fn ensure_remote_stream(state: State, identifier: Int) -> Result(State, Error) {
   case dict.has_key(state.streams, identifier) {
     True -> Ok(state)
-    False -> create_missing_remote_streams(state, identifier)
+    False ->
+      case stream_was_opened(state, identifier) {
+        True -> Ok(state)
+        False -> create_missing_remote_streams(state, identifier)
+      }
+  }
+}
+
+fn stream_was_opened(state: State, identifier: Int) -> Bool {
+  case stream_id.decode(identifier) {
+    Error(stream_id.OutOfRange) -> False
+    Ok(stream_id.StreamId(index, initiator, direction)) -> {
+      let limit = case initiator == local_endpoint(state.config.role) {
+        True -> local_limit(state, direction)
+        False -> remote_limit(state, direction)
+      }
+      index < flow_control.opened_streams(limit)
+    }
   }
 }
 
@@ -3717,6 +3781,58 @@ fn insert_new_stream(
   }
 }
 
+fn cleanup_stream_if_terminal(state: State, identifier: Int) -> State {
+  case dict.get(state.streams, identifier) {
+    Error(Nil) -> state
+    Ok(stream) ->
+      case stream_state.is_terminal(stream) {
+        False -> state
+        True ->
+          State(
+            ..state,
+            streams: dict.delete(state.streams, identifier),
+            stream_order: list.filter(state.stream_order, fn(value) {
+              value != identifier
+            }),
+          )
+          |> replenish_remote_stream_credit(identifier)
+      }
+  }
+}
+
+fn replenish_remote_stream_credit(state: State, identifier: Int) -> State {
+  case stream_id.decode(identifier) {
+    Error(stream_id.OutOfRange) -> state
+    Ok(stream_id.StreamId(_, initiator, direction)) ->
+      case initiator == remote_endpoint(state.config.role) {
+        False -> state
+        True -> {
+          let #(limit, advertised) =
+            remote_limit(state, direction)
+            |> flow_control.replenish_stream_limit
+          let state = put_remote_limit(state, direction, limit)
+          case advertised {
+            None -> state
+            Some(maximum) ->
+              queue_application_frame(
+                state,
+                frame.MaxStreams(frame_stream_direction(direction), maximum),
+              )
+          }
+        }
+      }
+  }
+}
+
+fn frame_stream_direction(
+  direction: stream_id.Direction,
+) -> frame.StreamDirection {
+  case direction {
+    stream_id.Bidirectional -> frame.Bidirectional
+    stream_id.Unidirectional -> frame.Unidirectional
+  }
+}
+
 fn initial_stream_send_limit(
   state: State,
   locally_initiated: Bool,
@@ -3752,7 +3868,7 @@ fn apply_stream_read(
           new_stream_limit,
           new_connection_limit,
         )
-      Ok(#(state, outcome))
+      Ok(#(cleanup_stream_if_terminal(state, identifier), outcome))
     }
   }
 }
@@ -4012,7 +4128,8 @@ fn acknowledge_stream_frame(
                 State(
                   ..state,
                   streams: dict.insert(state.streams, identifier, stream),
-                ),
+                )
+                |> cleanup_stream_if_terminal(identifier),
               )
           }
       }

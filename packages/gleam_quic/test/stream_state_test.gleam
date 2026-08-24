@@ -110,3 +110,22 @@ pub fn rejects_invalid_stream_configuration_and_final_sizes_test() -> Nil {
   assert stream_state.receive_reset(stream, 1, 2)
     == Error(stream_state.FinalSizeFailure)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn becomes_terminal_only_after_every_available_direction_closes_test() -> Nil {
+  let assert Ok(stream) =
+    stream_state.new(0, stream_id.Client, 10, 10, 30, 10, 10, 10, 30)
+  let assert Ok(#(stream, 1)) =
+    stream_state.receive_data(stream, 0, <<"r">>, True)
+  let assert Ok(stream_state.ReadData(stream, <<"r">>, True, _)) =
+    stream_state.read(stream, 10)
+  assert !stream_state.is_terminal(stream)
+
+  let assert Ok(stream) = stream_state.queue_send(stream, <<"q">>, True)
+  let assert Ok(stream_state.Emit(stream, sent)) =
+    stream_state.poll_send(stream, 10)
+  assert !stream_state.is_terminal(stream)
+  let assert Ok(stream) = stream_state.on_frame_acked(stream, sent)
+
+  assert stream_state.is_terminal(stream)
+}

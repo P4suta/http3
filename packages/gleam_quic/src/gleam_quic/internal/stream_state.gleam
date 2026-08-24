@@ -280,6 +280,17 @@ pub fn send_finished(state: State) -> Bool {
   state.fin_acknowledged || state.send_reset
 }
 
+/// Return whether every direction available to the local endpoint is closed.
+pub fn is_terminal(state: State) -> Bool {
+  let receive_finished =
+    !stream_id.can_receive(state.identifier, state.local_endpoint)
+    || state.receive_status == ReceiveTerminal
+  let local_send_finished =
+    !stream_id.can_send(state.identifier, state.local_endpoint)
+    || send_finished(state)
+  receive_finished && local_send_finished
+}
+
 fn validate_configuration(
   identifier: Int,
   maximum_buffered_send_bytes: Int,

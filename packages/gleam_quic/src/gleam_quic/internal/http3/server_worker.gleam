@@ -19,6 +19,7 @@ import gleam_quic/internal/http3/message_stream
 import gleam_quic/internal/http3/priority
 import gleam_quic/internal/http3/server_connection
 import gleam_quic/internal/http3/session
+import gleam_quic/internal/http3/terminal_registry
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/qlog
 import gleam_quic/internal/qpack/header.{type Header, Header}
@@ -65,6 +66,8 @@ const ticket_age_tolerance_milliseconds = 10_000
 const retry_token_lifetime_milliseconds = 10_000
 
 const new_token_lifetime_milliseconds = 86_400_000
+
+const maximum_terminal_handles = 1024
 
 /// A live listener command subject and its owner-monitoring actor.
 pub opaque type Listener {
@@ -316,6 +319,11 @@ type PushState {
   )
 }
 
+type TerminalState {
+  TerminalCompleted
+  TerminalFailed(Error)
+}
+
 type CandidatePath {
   CandidatePath(endpoint: udp.Endpoint, received_bytes: Int, sent_bytes: Int)
 }
@@ -348,8 +356,10 @@ type Worker {
     connections: Dict(BitArray, PeerState),
     aliases: Dict(BitArray, BitArray),
     requests: Dict(Int, RequestState),
+    request_terminals: terminal_registry.Registry(TerminalState),
     next_request_id: Int,
     pushes: Dict(Int, PushState),
+    push_terminals: terminal_registry.Registry(TerminalState),
     next_push_handle_id: Int,
     pending_requests: List(Int),
     accept_waiter: Option(AcceptWaiter),
@@ -769,8 +779,10 @@ fn initialise(
         dict.new(),
         dict.new(),
         dict.new(),
+        terminal_registry.new(maximum_terminal_handles),
         0,
         dict.new(),
+        terminal_registry.new(maximum_terminal_handles),
         0,
         [],
         None,
@@ -898,10 +910,11 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     SetPriority(identifier, urgency, incremental, reply) ->
       handle_set_priority(worker, identifier, urgency, incremental, reply)
     GetPriority(identifier, reply) -> {
-      let outcome =
-        dict.get(worker.requests, identifier)
-        |> result.map(fn(request) { request.priority })
-        |> result.replace_error(StreamFinished)
+      let outcome = case dict.get(worker.requests, identifier) {
+        Ok(request) -> Ok(request.priority)
+        Error(_) ->
+          Error(request_terminal_error(worker, identifier, StreamFinished))
+      }
       process.send(reply, outcome)
       Ok(worker)
     }
@@ -1154,8 +1167,8 @@ fn reject_pending_requests(worker: Worker, identifiers: List(Int)) -> Worker {
     [] -> worker
     [identifier, ..rest] -> {
       let worker =
-        fail_request(worker, identifier, ListenerClosed)
-        |> abort_request(identifier, request_rejected_code)
+        abort_request(worker, identifier, request_rejected_code)
+        |> fail_request(identifier, ListenerClosed)
       reject_pending_requests(worker, rest)
     }
   }
@@ -1184,7 +1197,10 @@ fn handle_next(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(
+        reply,
+        Error(request_terminal_error(worker, identifier, StreamFinished)),
+      )
       Ok(worker)
     }
     Ok(request) ->
@@ -1237,7 +1253,10 @@ fn handle_send_response(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(
+        reply,
+        Error(request_terminal_error(worker, identifier, ResponseAlreadyStarted)),
+      )
       Ok(worker)
     }
     Ok(_) if status < 200 || status > 599 ->
@@ -1321,7 +1340,12 @@ fn handle_send_informational(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        request_terminal_error(worker, identifier, ResponseAlreadyStarted),
+      )
     Ok(_) if status < 100 || status >= 200 || status == 101 ->
       reply_error(worker, reply, InvalidInput)
     Ok(request) ->
@@ -1370,7 +1394,14 @@ fn handle_send_chunk(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(
+        reply,
+        Error(request_terminal_error(
+          worker,
+          identifier,
+          ResponseAlreadyFinished,
+        )),
+      )
       Ok(worker)
     }
     Ok(request) -> {
@@ -1414,7 +1445,12 @@ fn handle_finish_response(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        request_terminal_error(worker, identifier, ResponseAlreadyFinished),
+      )
     Ok(request) ->
       case
         request.response_started,
@@ -1467,7 +1503,12 @@ fn handle_send_trailers(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        request_terminal_error(worker, identifier, ResponseAlreadyFinished),
+      )
     Ok(request) ->
       case
         request.response_started,
@@ -1611,7 +1652,12 @@ fn handle_send_push_response(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        push_terminal_error(worker, identifier, ResponseAlreadyStarted),
+      )
     Ok(_) if status < 200 || status > 599 ->
       reply_error(worker, reply, InvalidInput)
     Ok(push) ->
@@ -1673,7 +1719,12 @@ fn handle_send_push_chunk(
   deadline: Int,
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        push_terminal_error(worker, identifier, ResponseAlreadyFinished),
+      )
     Ok(push) -> {
       let total = push.response_body_bytes + bit_array.byte_size(bytes)
       case
@@ -1715,7 +1766,12 @@ fn handle_finish_push(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        push_terminal_error(worker, identifier, ResponseAlreadyFinished),
+      )
     Ok(push) ->
       case
         push.response_started,
@@ -1760,7 +1816,12 @@ fn handle_send_push_trailers(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        push_terminal_error(worker, identifier, ResponseAlreadyFinished),
+      )
     Ok(push) ->
       case
         push.response_started,
@@ -1816,7 +1877,12 @@ fn handle_send_datagram(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
-    Error(_) -> reply_error(worker, reply, StreamFinished)
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        request_terminal_error(worker, identifier, StreamFinished),
+      )
     Ok(request) ->
       case
         update_peer_connection(worker, request.connection_id, fn(connection) {
@@ -1844,7 +1910,10 @@ fn handle_next_datagram(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(
+        reply,
+        Error(request_terminal_error(worker, identifier, StreamFinished)),
+      )
       Ok(worker)
     }
     Ok(request) ->
@@ -1893,7 +1962,12 @@ fn handle_set_priority(
   reply: Subject(Result(Nil, Error)),
 ) -> Result(Worker, Nil) {
   case dict.get(worker.requests, identifier), urgency >= 0 && urgency <= 7 {
-    Error(_), _ -> reply_error(worker, reply, StreamFinished)
+    Error(_), _ ->
+      reply_error(
+        worker,
+        reply,
+        request_terminal_error(worker, identifier, StreamFinished),
+      )
     _, False -> reply_error(worker, reply, InvalidInput)
     Ok(request), True -> {
       process.send(reply, Ok(Nil))
@@ -2885,15 +2959,20 @@ fn accept_request_head(
 fn deliver_request(worker: Worker, identifier: Int) -> Worker {
   case worker.drain_waiter, worker.accept_waiter {
     Some(_), _ ->
-      fail_request(worker, identifier, ListenerClosed)
-      |> abort_request(identifier, request_rejected_code)
+      abort_request(worker, identifier, request_rejected_code)
+      |> fail_request(identifier, ListenerClosed)
     None, Some(AcceptWaiter(reply, _)) -> {
       process.send(reply, incoming(worker, identifier))
       Worker(..worker, accept_waiter: None)
     }
     None, None ->
       case list.length(worker.pending_requests) >= maximum_pending_requests {
-        True -> abort_request(worker, identifier, excessive_load_code)
+        True ->
+          abort_request(worker, identifier, excessive_load_code)
+          |> fail_request(
+            identifier,
+            BackendFailure("pending request limit exceeded"),
+          )
         False ->
           Worker(
             ..worker,
@@ -2915,14 +2994,10 @@ fn enqueue_body_data(
       let total = request.received_body_bytes + bit_array.byte_size(bytes)
       case total > worker.request_body_limit {
         True ->
-          abort_request(
-            fail_request(
-              worker,
-              identifier,
-              RequestBodyTooLarge(worker.request_body_limit),
-            ),
+          abort_request(worker, identifier, request_cancelled_code)
+          |> fail_request(
             identifier,
-            request_cancelled_code,
+            RequestBodyTooLarge(worker.request_body_limit),
           )
         False -> {
           let request = RequestState(..request, received_body_bytes: total)
@@ -2985,14 +3060,10 @@ fn enqueue_request_event(
       }
       case buffered > worker.stream_buffer_limit {
         True ->
-          abort_request(
-            fail_request(
-              worker,
-              identifier,
-              ConsumerTooSlow(worker.stream_buffer_limit),
-            ),
+          abort_request(worker, identifier, request_cancelled_code)
+          |> fail_request(
             identifier,
-            request_cancelled_code,
+            ConsumerTooSlow(worker.stream_buffer_limit),
           )
         False ->
           put_request(
@@ -3033,8 +3104,8 @@ fn enqueue_datagram(
             request.buffered_datagram_bytes + bit_array.byte_size(payload)
           case buffered > worker.stream_buffer_limit {
             True ->
-              fail_request(
-                worker,
+              abort_request(worker, identifier, request_cancelled_code)
+              |> fail_request(
                 identifier,
                 DatagramBufferExceeded(worker.stream_buffer_limit),
               )
@@ -3796,11 +3867,134 @@ fn put_request(
   identifier: Int,
   request: RequestState,
 ) -> Worker {
-  Worker(..worker, requests: dict.insert(worker.requests, identifier, request))
+  case request_terminal(request) {
+    None ->
+      Worker(
+        ..worker,
+        requests: dict.insert(worker.requests, identifier, request),
+      )
+    Some(terminal) -> {
+      let error = terminal_error(terminal, StreamFinished)
+      notify_event_waiter(request.event_waiter, Error(error))
+      notify_datagram_waiter(request.datagram_waiter, Error(error))
+      notify_pending_send(request.pending_send, Error(error))
+      Worker(
+        ..forget_request_from_peer(worker, request),
+        requests: dict.delete(worker.requests, identifier),
+        request_terminals: terminal_registry.insert(
+          worker.request_terminals,
+          identifier,
+          terminal,
+        ),
+        pending_requests: list.filter(worker.pending_requests, fn(value) {
+          value != identifier
+        }),
+      )
+    }
+  }
 }
 
 fn put_push(worker: Worker, identifier: Int, push: PushState) -> Worker {
-  Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
+  case push_terminal(push) {
+    None ->
+      Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
+    Some(terminal) -> {
+      notify_pending_send(
+        push.pending_send,
+        Error(terminal_error(terminal, StreamFinished)),
+      )
+      Worker(
+        ..forget_push_from_peer(worker, push),
+        pushes: dict.delete(worker.pushes, identifier),
+        push_terminals: terminal_registry.insert(
+          worker.push_terminals,
+          identifier,
+          terminal,
+        ),
+      )
+    }
+  }
+}
+
+fn request_terminal(request: RequestState) -> Option(TerminalState) {
+  case
+    request.events,
+    request.failure,
+    request.request_finished && request.response_finished
+  {
+    [], Some(error), _ -> Some(TerminalFailed(error))
+    [], None, True -> Some(TerminalCompleted)
+    _, _, _ -> None
+  }
+}
+
+fn push_terminal(push: PushState) -> Option(TerminalState) {
+  case push.failure, push.response_finished {
+    Some(error), _ -> Some(TerminalFailed(error))
+    None, True -> Some(TerminalCompleted)
+    None, False -> None
+  }
+}
+
+fn request_terminal_error(
+  worker: Worker,
+  identifier: Int,
+  completed: Error,
+) -> Error {
+  retained_terminal_error(worker.request_terminals, identifier, completed)
+}
+
+fn push_terminal_error(
+  worker: Worker,
+  identifier: Int,
+  completed: Error,
+) -> Error {
+  retained_terminal_error(worker.push_terminals, identifier, completed)
+}
+
+fn retained_terminal_error(
+  terminals: terminal_registry.Registry(TerminalState),
+  identifier: Int,
+  completed: Error,
+) -> Error {
+  terminal_registry.get(terminals, identifier)
+  |> result.map(fn(terminal) { terminal_error(terminal, completed) })
+  |> result.unwrap(StreamFinished)
+}
+
+fn terminal_error(terminal: TerminalState, completed: Error) -> Error {
+  case terminal {
+    TerminalCompleted -> completed
+    TerminalFailed(error) -> error
+  }
+}
+
+fn forget_request_from_peer(worker: Worker, request: RequestState) -> Worker {
+  case dict.get(worker.connections, request.connection_id) {
+    Error(_) -> worker
+    Ok(peer) ->
+      put_peer(
+        worker,
+        request.connection_id,
+        PeerState(
+          ..peer,
+          requests: dict.delete(peer.requests, request.stream_id),
+          priorities: dict.delete(peer.priorities, request.stream_id),
+        ),
+      )
+  }
+}
+
+fn forget_push_from_peer(worker: Worker, push: PushState) -> Worker {
+  case dict.get(worker.connections, push.connection_id) {
+    Error(_) -> worker
+    Ok(peer) ->
+      put_peer(
+        worker,
+        push.connection_id,
+        PeerState(..peer, pushes: dict.delete(peer.pushes, push.push_id)),
+      )
+  }
 }
 
 fn reply_error(

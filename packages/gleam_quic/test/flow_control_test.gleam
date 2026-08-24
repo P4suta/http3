@@ -42,3 +42,16 @@ pub fn enforces_peer_stream_count_without_id_reuse_test() -> Nil {
   let assert Ok(limit) = flow_control.open_stream(limit, 2)
   assert flow_control.opened_streams(limit) == 3
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn replenishes_concurrent_peer_stream_credit_after_close_test() -> Nil {
+  let assert Ok(limit) = flow_control.new_stream_limit(2)
+  let assert Ok(limit) = flow_control.open_stream(limit, 0)
+  let assert Ok(limit) = flow_control.open_stream(limit, 1)
+
+  let #(limit, advertised) = flow_control.replenish_stream_limit(limit)
+
+  assert advertised == Some(3)
+  let assert Ok(limit) = flow_control.open_stream(limit, 2)
+  assert flow_control.opened_streams(limit) == 3
+}

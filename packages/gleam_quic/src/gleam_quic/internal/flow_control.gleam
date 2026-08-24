@@ -3,6 +3,8 @@
 import gleam/option.{type Option, None, Some}
 import gleam_quic/varint
 
+const maximum_stream_count = 1_152_921_504_606_846_975
+
 /// Receive-side aggregate credit and consumption state.
 pub opaque type Receiver {
   Receiver(
@@ -165,6 +167,19 @@ pub fn opened_streams(stream_limit: StreamLimit) -> Int {
   stream_limit.opened
 }
 
+/// Replenish one unit of peer stream concurrency after a stream closes.
+pub fn replenish_stream_limit(
+  stream_limit: StreamLimit,
+) -> #(StreamLimit, Option(Int)) {
+  case stream_limit.limit < maximum_stream_count {
+    False -> #(stream_limit, None)
+    True -> {
+      let next = stream_limit.limit + 1
+      #(StreamLimit(..stream_limit, limit: next), Some(next))
+    }
+  }
+}
+
 fn consume_valid(
   receiver: Receiver,
   bytes: Int,
@@ -201,7 +216,7 @@ fn consume_valid(
 }
 
 fn valid_stream_limit(limit: Int) -> Bool {
-  limit >= 0 && limit <= 1_152_921_504_606_846_975
+  limit >= 0 && limit <= maximum_stream_count
 }
 
 fn minimum(left: Int, right: Int) -> Int {

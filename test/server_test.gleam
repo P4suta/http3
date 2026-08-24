@@ -237,9 +237,9 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
   assert server.next_event(incoming) == Ok(server.End)
   let drain_task =
     http3_test_support.start_task(fn() { server.graceful_stop(listener) })
+  await_connection_draining(connection: connection, port: port, attempts: 100)
   assert server.accept(listener) == Error(server.ListenerClosed)
   assert client.next_event(rejected) == Error(client.RequestRejected)
-  await_connection_draining(connection: connection, port: port, attempts: 100)
 
   server.respond(incoming, 200, [], <<"active-complete":utf8>>)
   |> should.be_ok

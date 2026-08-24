@@ -16,6 +16,7 @@ import gleam_quic/internal/http3/drain
 import gleam_quic/internal/http3/header_semantics
 import gleam_quic/internal/http3/message_stream
 import gleam_quic/internal/http3/session
+import gleam_quic/internal/http3/terminal_registry
 import gleam_quic/internal/qlog
 import gleam_quic/internal/qpack/header.{type Header, Header}
 import gleam_quic/internal/tls/authentication
@@ -32,6 +33,8 @@ const pmtu_probe_interval_milliseconds = 50
 const request_cancelled_code = 0x10c
 
 const request_rejected_code = 0x10b
+
+const maximum_terminal_handles = 1024
 
 // Keep each HTTP DATA frame comfortably below the per-stream retained-send
 // bound. Larger public chunks are advanced incrementally by the actor.
@@ -264,11 +267,19 @@ type PushState {
   )
 }
 
+type TerminalState {
+  TerminalCompleted
+  TerminalCancelled
+  TerminalFailed(Error)
+}
+
 type Worker {
   Worker(
     connection: client_connection.State,
     streams: Dict(Int, StreamState),
+    stream_terminals: terminal_registry.Registry(TerminalState),
     pushes: Dict(Int, PushState),
+    push_terminals: terminal_registry.Registry(TerminalState),
     pending_pushes: List(Int),
     push_waiter: Option(PushWaiter),
     commands: Subject(Command),
@@ -626,7 +637,9 @@ fn initialise(
           loop(Worker(
             connection,
             dict.new(),
+            terminal_registry.new(maximum_terminal_handles),
             dict.new(),
+            terminal_registry.new(maximum_terminal_handles),
             [],
             None,
             commands,
@@ -862,7 +875,7 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     Next(identifier, reply, deadline) ->
       case dict.get(worker.streams, identifier) {
         Error(_) -> {
-          process.send(reply, Error(StreamFinished))
+          process.send(reply, Error(stream_terminal_error(worker, identifier)))
           Ok(worker)
         }
         Ok(stream) -> handle_next(worker, identifier, stream, reply, deadline)
@@ -1047,7 +1060,7 @@ fn handle_next_push_event(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(reply, Error(push_terminal_error(worker, identifier)))
       Ok(worker)
     }
     Ok(push) ->
@@ -1117,7 +1130,10 @@ fn handle_cancel_push(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.pushes, identifier) {
     Error(_) -> {
-      process.send(reply, Ok(AlreadyCompleted))
+      process.send(
+        reply,
+        Ok(terminal_cancellation(worker.push_terminals, identifier)),
+      )
       Ok(worker)
     }
     Ok(push) ->
@@ -1216,7 +1232,7 @@ fn handle_next_datagram(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.streams, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(reply, Error(stream_terminal_error(worker, identifier)))
       Ok(worker)
     }
     Ok(stream) ->
@@ -1371,7 +1387,7 @@ fn handle_send(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.streams, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(reply, Error(stream_terminal_error(worker, identifier)))
       Ok(worker)
     }
     Ok(stream) ->
@@ -1523,7 +1539,10 @@ fn handle_cancel(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.streams, identifier) {
     Error(_) -> {
-      process.send(reply, Ok(AlreadyCompleted))
+      process.send(
+        reply,
+        Ok(terminal_cancellation(worker.stream_terminals, identifier)),
+      )
       Ok(worker)
     }
     Ok(stream) ->
@@ -1584,7 +1603,7 @@ fn update_stream(
 ) -> Result(Worker, Nil) {
   case dict.get(worker.streams, identifier) {
     Error(_) -> {
-      process.send(reply, Error(StreamFinished))
+      process.send(reply, Error(stream_terminal_error(worker, identifier)))
       Ok(worker)
     }
     Ok(stream) ->
@@ -2210,11 +2229,111 @@ fn new_stream_state() -> StreamState {
 }
 
 fn put_stream(worker: Worker, identifier: Int, stream: StreamState) -> Worker {
-  Worker(..worker, streams: dict.insert(worker.streams, identifier, stream))
+  case stream_terminal(stream) {
+    None ->
+      Worker(..worker, streams: dict.insert(worker.streams, identifier, stream))
+    Some(terminal) -> {
+      let error = terminal_error(terminal)
+      notify_waiter(stream.waiter, Error(error))
+      notify_pending_send(stream.pending_send, Error(error))
+      notify_datagram_waiter(stream.datagram_waiter, Error(error))
+      Worker(
+        ..worker,
+        streams: dict.delete(worker.streams, identifier),
+        stream_terminals: terminal_registry.insert(
+          worker.stream_terminals,
+          identifier,
+          terminal,
+        ),
+        priorities: dict.delete(worker.priorities, identifier),
+      )
+    }
+  }
 }
 
 fn put_push(worker: Worker, identifier: Int, push: PushState) -> Worker {
-  Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
+  case push_terminal(push) {
+    None ->
+      Worker(..worker, pushes: dict.insert(worker.pushes, identifier, push))
+    Some(terminal) -> {
+      notify_waiter(push.waiter, Error(terminal_error(terminal)))
+      Worker(
+        ..worker,
+        pushes: dict.delete(worker.pushes, identifier),
+        push_terminals: terminal_registry.insert(
+          worker.push_terminals,
+          identifier,
+          terminal,
+        ),
+        pending_pushes: list.filter(worker.pending_pushes, fn(value) {
+          value != identifier
+        }),
+      )
+    }
+  }
+}
+
+fn stream_terminal(stream: StreamState) -> Option(TerminalState) {
+  case
+    stream.events,
+    stream.failure,
+    stream.cancelled,
+    stream.request_finished && stream.response_finished
+  {
+    [], Some(error), _, _ -> Some(TerminalFailed(error))
+    [], None, True, _ -> Some(TerminalCancelled)
+    [], None, False, True -> Some(TerminalCompleted)
+    _, _, _, _ -> None
+  }
+}
+
+fn push_terminal(push: PushState) -> Option(TerminalState) {
+  case push.events, push.failure, push.cancelled, push.response_finished {
+    [], Some(error), _, _ -> Some(TerminalFailed(error))
+    [], None, True, _ -> Some(TerminalCancelled)
+    [], None, False, True -> Some(TerminalCompleted)
+    _, _, _, _ -> None
+  }
+}
+
+fn stream_terminal_error(worker: Worker, identifier: Int) -> Error {
+  retained_terminal_error(worker.stream_terminals, identifier)
+}
+
+fn push_terminal_error(worker: Worker, identifier: Int) -> Error {
+  retained_terminal_error(worker.push_terminals, identifier)
+}
+
+fn retained_terminal_error(
+  terminals: terminal_registry.Registry(TerminalState),
+  identifier: Int,
+) -> Error {
+  terminal_registry.get(terminals, identifier)
+  |> result.map(terminal_error)
+  |> result.unwrap(StreamFinished)
+}
+
+fn terminal_error(terminal: TerminalState) -> Error {
+  case terminal {
+    TerminalCompleted -> StreamFinished
+    TerminalCancelled -> StreamCancelled
+    TerminalFailed(error) -> error
+  }
+}
+
+fn terminal_cancellation(
+  terminals: terminal_registry.Registry(TerminalState),
+  identifier: Int,
+) -> Cancellation {
+  case terminal_registry.get(terminals, identifier) {
+    Ok(TerminalCancelled) -> AlreadyCancelled
+    Ok(TerminalFailed(error)) ->
+      case locally_cancelled(error) {
+        True -> AlreadyCancelled
+        False -> AlreadyCompleted
+      }
+    Ok(_) | Error(_) -> AlreadyCompleted
+  }
 }
 
 fn mark_push_delivered(worker: Worker, identifier: Int) -> Worker {

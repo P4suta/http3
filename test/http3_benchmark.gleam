@@ -186,6 +186,7 @@ fn run_trial(
   let client_configuration =
     configure_client(ca_certificate, configuration.payload_bytes)
   let payload = http3_test_support.repeated_bytes(configuration.payload_bytes)
+  prime_runtime(client_configuration, port)
   let Metrics(processes_before, memory_before, messages_before) = metrics()
   let started = monotonic_microseconds()
   let tasks =
@@ -243,6 +244,16 @@ fn run_trial(
     messages_before: messages_before,
     messages_after: messages_after,
   )
+}
+
+fn prime_runtime(configuration: client.Client, port: Int) -> Nil {
+  let connection =
+    client.connect(configuration, "localhost", port)
+    |> must("prime client runtime")
+  case client.close(connection) {
+    Ok(client.Closed) | Ok(client.AlreadyClosed) -> Nil
+    Error(error) -> fail(#("close priming connection", error))
+  }
 }
 
 fn configure_server(

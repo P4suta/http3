@@ -126,6 +126,51 @@ pub fn opens_receives_and_reads_flow_controlled_streams_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn removes_terminal_streams_and_replenishes_peer_concurrency_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Server)
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    _,
+    [frame.HandshakeDone],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Stream(2, 0, <<"done">>, True)],
+      packet_space.NotEct,
+      10,
+    )
+  assert connection_state.active_stream_count(connection) == 1
+
+  let assert Ok(#(connection, read)) =
+    connection_state.read_stream(connection, 2, 16)
+  assert connection_state.read_data(read) == Some(#(<<"done">>, True))
+  assert connection_state.active_stream_count(connection) == 0
+
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    _,
+    frames,
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 20)
+  assert contains_max_streams(frames, frame.Unidirectional, 101)
+
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.Stream(2, 0, <<"done">>, True)],
+      packet_space.NotEct,
+      21,
+    )
+  assert connection_state.active_stream_count(connection) == 0
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn sends_streams_round_robin_and_recovers_congestion_credit_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(#(connection, first_id)) =
@@ -1028,5 +1073,19 @@ fn list_contains_ack(frames: List(frame.Frame)) -> Bool {
     [] -> False
     [frame.Ack(_), ..] -> True
     [_, ..rest] -> list_contains_ack(rest)
+  }
+}
+
+fn contains_max_streams(
+  frames: List(frame.Frame),
+  direction: frame.StreamDirection,
+  maximum: Int,
+) -> Bool {
+  case frames {
+    [] -> False
+    [frame.MaxStreams(value_direction, value), ..]
+      if value_direction == direction && value == maximum
+    -> True
+    [_, ..rest] -> contains_max_streams(rest, direction, maximum)
   }
 }
