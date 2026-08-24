@@ -10,3 +10,8 @@ the DNS subject alternative name `localhost` and IP subject alternative name
 deliberate `127.0.0.1` mismatch. The fixtures are valid from 2026-08-24 through
 2036-08-21 so pinned builds do not depend on the machine clock being close to
 the generation date.
+
+`default-server.pem` and `default-server-key.pem` are a self-signed Ed25519
+fallback credential valid only for `default.invalid`. The SNI selection test
+uses it as the listener default and succeeds only when the separately
+configured `localhost` credential is selected.

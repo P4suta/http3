@@ -940,6 +940,7 @@ fn tls_configs_for_version(
       certificate_chain: chain,
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
+      alternative_credentials: [],
     ),
   )
 }
@@ -989,6 +990,7 @@ fn retry_tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
       certificate_chain: chain,
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
+      alternative_credentials: [],
     ),
   )
 }

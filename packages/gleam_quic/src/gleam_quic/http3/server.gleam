@@ -1,14 +1,22 @@
 //// Bounded and streaming HTTP/3 server powered by the native QUIC stack.
 
 import gleam/bit_array
+import gleam/list
 import gleam/option.{type Option, Some}
 import gleam/result
+import gleam/string
+import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/http3/server_connection
 import gleam_quic/internal/http3/server_worker
 import gleam_quic/internal/tls/authentication
+import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
 
 const maximum_timeout_milliseconds = 3_600_000
+
+const minimum_keepalive_milliseconds = 1000
+
+const maximum_keepalive_milliseconds = 29_000
 
 /// Secure listener configuration with decoded runtime-owned credentials.
 pub opaque type Server {
@@ -16,12 +24,14 @@ pub opaque type Server {
     certificate_chain: List(BitArray),
     signing_key: authentication.SigningKey,
     signature_scheme: extension_value.SignatureScheme,
+    alternative_credentials: List(engine.ServerCredential),
     port: Int,
     timeout_milliseconds: Int,
     request_body_limit: Int,
     response_body_limit: Int,
     stream_buffer_limit: Int,
     http_datagrams: Bool,
+    keepalive_milliseconds: Int,
     ipv6: Bool,
     qlog_directory: String,
   )
@@ -81,16 +91,29 @@ pub type EarlyDataStatus {
   Rejected
 }
 
+/// A live request path snapshot in microseconds and bytes.
+pub type PathStats {
+  PathStats(Int, Int, Int, Int, Int, Int, Bool, Bool)
+}
+
+/// Runtime traffic counters for one accepted connection.
+pub type ConnectionStats {
+  ConnectionStats(Int, Int, Int, Int, Int, Int, Int, Int)
+}
+
 /// Invalid secure server configuration.
 pub type ConfigurationError {
   InvalidCertificate
   InvalidPrivateKey
   IncompatiblePrivateKey
+  InvalidServerName
+  DuplicateServerName
   InvalidPort(Int)
   InvalidTimeout
   InvalidRequestBodyLimit
   InvalidResponseBodyLimit
   InvalidStreamBufferLimit
+  InvalidKeepalive
   InvalidQlogDirectory
 }
 
@@ -146,15 +169,85 @@ pub fn new(
     certificate_chain,
     signing_key,
     signature_scheme,
+    [],
     0,
     30_000,
     8_388_608,
     8_388_608,
     262_144,
     False,
+    0,
     False,
     "",
   ))
+}
+
+/// Return whether a name is an exact DNS name or single-label wildcard.
+pub fn is_valid_server_name(server_name: String) -> Bool {
+  engine.valid_server_name_pattern(server_name)
+}
+
+/// Add an SNI-selected certificate, with exact names preferred to wildcards.
+pub fn with_certificate(
+  server: Server,
+  server_name: String,
+  certificate_pem: BitArray,
+  private_key_pem: BitArray,
+) -> Result(Server, ConfigurationError) {
+  let server_name = string.lowercase(server_name)
+  use Nil <- result.try(case engine.valid_server_name_pattern(server_name) {
+    True -> Ok(Nil)
+    False -> Error(InvalidServerName)
+  })
+  use Nil <- result.try(
+    case
+      list.any(server.alternative_credentials, fn(credential) {
+        credential.server_name == server_name
+      })
+    {
+      True -> Error(DuplicateServerName)
+      False -> Ok(Nil)
+    },
+  )
+  use certificate_chain <- result.try(
+    authentication.certificate_chain_from_pem(certificate_pem)
+    |> result.replace_error(InvalidCertificate),
+  )
+  use signing_key <- result.try(
+    authentication.signing_key_from_pem(private_key_pem)
+    |> result.replace_error(InvalidPrivateKey),
+  )
+  use signature_scheme <- result.try(
+    authentication.signing_key_scheme(signing_key)
+    |> result.replace_error(IncompatiblePrivateKey),
+  )
+  let credential =
+    engine.ServerCredential(
+      server_name,
+      certificate_chain,
+      signing_key,
+      signature_scheme,
+    )
+  Ok(
+    Server(..server, alternative_credentials: [
+      credential,
+      ..server.alternative_credentials
+    ]),
+  )
+}
+
+/// Configure periodic QUIC PING frames on accepted connections.
+pub fn with_keepalive(
+  server: Server,
+  milliseconds: Int,
+) -> Result(Server, ConfigurationError) {
+  case
+    milliseconds >= minimum_keepalive_milliseconds
+    && milliseconds <= maximum_keepalive_milliseconds
+  {
+    True -> Ok(Server(..server, keepalive_milliseconds: milliseconds))
+    False -> Error(InvalidKeepalive)
+  }
 }
 
 /// Return whether bytes decode as a non-empty PEM certificate chain.
@@ -257,7 +350,9 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     server.certificate_chain,
     server.signing_key,
     server.signature_scheme,
+    server.alternative_credentials,
     server.http_datagrams,
+    server.keepalive_milliseconds,
     server.ipv6,
     server.qlog_directory,
   )
@@ -431,6 +526,34 @@ pub fn capabilities(
 ) -> Result(#(Bool, Bool, Bool, Bool), Error) {
   let Request(handle) = request
   server_worker.capabilities(handle) |> result.map_error(map_error)
+}
+
+/// Snapshot one accepted request's QUIC path metrics.
+pub fn path_stats(request: Request) -> Result(PathStats, Error) {
+  let Request(handle) = request
+  server_worker.path_stats(handle)
+  |> result.map(fn(snapshot) {
+    let transport.PathSnapshot(a, b, c, d, e, f, g, h) = snapshot
+    PathStats(a, b, c, d, e, f, g, h)
+  })
+  |> result.map_error(map_error)
+}
+
+/// Snapshot one accepted request's connection counters.
+pub fn connection_stats(request: Request) -> Result(ConnectionStats, Error) {
+  let Request(handle) = request
+  server_worker.connection_stats(handle)
+  |> result.map(fn(stats) {
+    let server_connection.Stats(a, b, c, d, e, f, g, h) = stats
+    ConnectionStats(a, b, c, d, e, f, g, h)
+  })
+  |> result.map_error(map_error)
+}
+
+/// Return the current non-fragmenting QUIC UDP payload size.
+pub fn maximum_transmission_unit(request: Request) -> Result(Int, Error) {
+  let Request(handle) = request
+  server_worker.maximum_transmission_unit(handle) |> result.map_error(map_error)
 }
 
 /// Return the largest HTTP Datagram payload for one request.

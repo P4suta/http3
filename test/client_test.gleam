@@ -192,6 +192,16 @@ pub fn server_push_limit_is_bounded_and_can_be_disabled_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_keepalive_interval_is_bounded_test() -> Nil {
+  assert client.with_keepalive(client.new(), 999)
+    == Error(client.InvalidKeepalive)
+  assert client.with_keepalive(client.new(), 29_001)
+    == Error(client.InvalidKeepalive)
+  let _configured = client.with_keepalive(client.new(), 1000) |> should.be_ok
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bounded_client_round_trip_over_real_udp_test() -> Nil {
   http3_test_support.with_server(fn(port, ca_certificate) {
     let configuration = client.with_timeout(client.new(), 3000) |> should.be_ok

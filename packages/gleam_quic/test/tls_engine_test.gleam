@@ -16,6 +16,19 @@ import gleam_quic/version
 fn fixture(name: String) -> Result(BitArray, Nil)
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_name_patterns_are_strict_and_single_label_test() -> Nil {
+  assert engine.valid_server_name_pattern("example.com")
+  assert engine.valid_server_name_pattern("*.example.com")
+  assert !engine.valid_server_name_pattern("")
+  assert !engine.valid_server_name_pattern("127.0.0.1")
+  assert !engine.valid_server_name_pattern("*example.com")
+  assert engine.server_name_matches("example.com", "EXAMPLE.COM")
+  assert engine.server_name_matches("*.example.com", "api.example.com")
+  assert !engine.server_name_matches("*.example.com", "a.b.example.com")
+  assert !engine.server_name_matches("*.example.com", "example.com")
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_authenticated_client_server_handshake_test() -> Nil {
   let #(client_config, server_config) = configs([<<"h3">>])
   let assert Ok(server) = engine.start_server(server_config)
@@ -362,6 +375,7 @@ fn configs(
       certificate_chain: chain,
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
+      alternative_credentials: [],
     )
   #(client, server)
 }

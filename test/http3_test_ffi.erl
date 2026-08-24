@@ -12,6 +12,7 @@
     release_signal/1,
     repeated_bytes/1,
     server_credentials/0,
+    server_certificate_selection_credentials/0,
     server_owner_cleanup/1,
     start_task/1,
     with_lossy_proxy/3,
@@ -76,6 +77,22 @@ server_credentials() ->
     {ok, CertificatePem} = file:read_file(fixture_path("server.pem")),
     {ok, PrivateKeyPem} = file:read_file(fixture_path("server-key.pem")),
     {CertificatePem, PrivateKeyPem, read_certificate("ca.pem")}.
+
+-spec server_certificate_selection_credentials() ->
+    {binary(), binary(), binary(), binary(), binary()}.
+server_certificate_selection_credentials() ->
+    {ok, FallbackCertificate} =
+        file:read_file(fixture_path("default-server.pem")),
+    {ok, FallbackPrivateKey} =
+        file:read_file(fixture_path("default-server-key.pem")),
+    {Certificate, PrivateKey, CaCertificate} = server_credentials(),
+    {
+        FallbackCertificate,
+        FallbackPrivateKey,
+        Certificate,
+        PrivateKey,
+        CaCertificate
+    }.
 
 -spec new_signal() -> tuple().
 new_signal() ->

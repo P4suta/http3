@@ -36,6 +36,7 @@ pub fn connect(
   stream_buffer_limit stream_buffer_limit: Int,
   http_datagrams http_datagrams: Bool,
   maximum_pushes maximum_pushes: Int,
+  keepalive_milliseconds keepalive_milliseconds: Int,
   quic_v2 quic_v2: Bool,
   qlog_directory qlog_directory: String,
   resumption_tickets resumption_tickets: List(ResumptionTicketHandle),
@@ -66,6 +67,12 @@ pub fn connect(
         native_client.with_push_limit(configured, maximum_pushes)
         |> map_configuration_result,
       )
+      use configured <- result.try(case keepalive_milliseconds {
+        0 -> Ok(configured)
+        interval ->
+          native_client.with_keepalive(configured, interval)
+          |> map_configuration_result
+      })
       use configured <- result.try(configure_trust(configured, ca_certificates))
       let configured = case http_datagrams {
         True -> native_client.with_http_datagrams(configured)
@@ -222,6 +229,7 @@ fn map_configuration_result(
       native_client.InvalidResponseBodyLimit -> "response body limit"
       native_client.InvalidStreamBufferLimit -> "stream buffer limit"
       native_client.InvalidPushLimit -> "server push limit"
+      native_client.InvalidKeepalive -> "keepalive interval"
       native_client.InvalidCaCertificate -> "CA certificate"
       native_client.InvalidQlogDirectory -> "qlog directory"
     }

@@ -23,6 +23,16 @@ pub fn await_task(task: Task(value)) -> value
 @external(erlang, "http3_test_ffi", "server_credentials")
 pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
 
+/// Read fallback and localhost credentials for the SNI selection test.
+@external(erlang, "http3_test_ffi", "server_certificate_selection_credentials")
+pub fn server_certificate_selection_credentials() -> #(
+  BitArray,
+  BitArray,
+  BitArray,
+  BitArray,
+  BitArray,
+)
+
 /// A test-only one-shot process checkpoint.
 pub type Signal
 

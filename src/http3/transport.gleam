@@ -317,6 +317,18 @@ pub fn maximum_transmission_unit(connection: Connection) -> Result(Int, Error) {
   transport_backend.maximum_transmission_unit(handle) |> map_failure
 }
 
+/// Return the current discovered path MTU for a client or server stream.
+pub fn stream_maximum_transmission_unit(stream: Stream) -> Result(Int, Error) {
+  case stream {
+    ClientStream(handle) ->
+      transport_backend.client_stream_maximum_transmission_unit(handle)
+      |> map_failure
+    ServerStream(handle) ->
+      transport_backend.server_stream_maximum_transmission_unit(handle)
+      |> map_failure
+  }
+}
+
 /// Snapshot path RTT and congestion metrics.
 pub fn path_stats(connection: Connection) -> Result(PathStats, Error) {
   let Connection(handle) = connection
@@ -343,6 +355,15 @@ pub fn path_stats(connection: Connection) -> Result(PathStats, Error) {
       ))
     Error(error) -> Error(from_backend_failure(error))
   }
+}
+
+/// Snapshot path RTT and congestion metrics for a client or server stream.
+pub fn stream_path_stats(stream: Stream) -> Result(PathStats, Error) {
+  let result = case stream {
+    ClientStream(handle) -> transport_backend.client_stream_path_stats(handle)
+    ServerStream(handle) -> transport_backend.server_stream_path_stats(handle)
+  }
+  map_path_stats(result)
 }
 
 /// Snapshot connection traffic and batching counters.
@@ -375,12 +396,84 @@ pub fn connection_stats(
   }
 }
 
+/// Snapshot connection counters for a client or server request stream.
+pub fn stream_connection_stats(
+  stream: Stream,
+) -> Result(ConnectionStats, Error) {
+  let result = case stream {
+    ClientStream(handle) ->
+      transport_backend.client_stream_connection_stats(handle)
+    ServerStream(handle) ->
+      transport_backend.server_stream_connection_stats(handle)
+  }
+  map_connection_stats(result)
+}
+
 fn map_capabilities(
   result: Result(transport_backend.RawCapabilities, transport_backend.Failure),
 ) -> Result(Capabilities, Error) {
   case result {
     Ok(#(datagrams, migration, zero_rtt, qlog)) ->
       Ok(Capabilities(datagrams, migration, zero_rtt, qlog))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
+fn map_path_stats(
+  result: Result(transport_backend.RawPathStats, transport_backend.Failure),
+) -> Result(PathStats, Error) {
+  case result {
+    Ok(#(
+      smoothed,
+      latest,
+      minimum,
+      variance,
+      window,
+      in_flight,
+      recovery,
+      congested,
+    )) ->
+      Ok(PathStats(
+        smoothed,
+        latest,
+        minimum,
+        variance,
+        window,
+        in_flight,
+        recovery,
+        congested,
+      ))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
+fn map_connection_stats(
+  result: Result(
+    transport_backend.RawConnectionStats,
+    transport_backend.Failure,
+  ),
+) -> Result(ConnectionStats, Error) {
+  case result {
+    Ok(#(
+      received,
+      sent,
+      data_received,
+      data_sent,
+      acknowledgements,
+      retransmissions,
+      flushes,
+      coalesced,
+    )) ->
+      Ok(ConnectionStats(
+        received,
+        sent,
+        data_received,
+        data_sent,
+        acknowledgements,
+        retransmissions,
+        flushes,
+        coalesced,
+      ))
     Error(error) -> Error(from_backend_failure(error))
   }
 }

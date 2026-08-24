@@ -46,6 +46,7 @@ pub fn send(
   timeout_milliseconds timeout_milliseconds: Int,
   response_body_limit response_body_limit: Int,
   quic_v2 quic_v2: Bool,
+  keepalive_milliseconds keepalive_milliseconds: Int,
 ) -> Result(Response, Failure) {
   let PreparedRequest(host, port, headers, body) = request
   use client <- result.try(
@@ -65,6 +66,12 @@ pub fn send(
     native_client.with_response_body_limit(client, response_body_limit)
     |> result.map_error(from_native_configuration_error),
   )
+  use client <- result.try(case keepalive_milliseconds {
+    0 -> Ok(client)
+    interval ->
+      native_client.with_keepalive(client, interval)
+      |> result.map_error(from_native_configuration_error)
+  })
   use client <- result.try(case ca_certificates {
     [] -> Ok(client)
     certificates ->
@@ -91,6 +98,7 @@ fn from_native_configuration_error(
     native_client.InvalidCaCertificate -> "invalid CA certificate"
     native_client.InvalidQlogDirectory -> "invalid qlog directory"
     native_client.InvalidPushLimit -> "invalid server push limit"
+    native_client.InvalidKeepalive -> "invalid keepalive interval"
   }
   ConnectFailed(message)
 }

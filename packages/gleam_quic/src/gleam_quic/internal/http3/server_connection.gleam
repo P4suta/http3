@@ -31,6 +31,7 @@ pub type Config {
     certificate_chain: List(BitArray),
     signing_key: authentication.SigningKey,
     signature_scheme: extension_value.SignatureScheme,
+    alternative_credentials: List(engine.ServerCredential),
     ticket_key: BitArray,
     http_datagrams: Bool,
     maximum_body_bytes: Int,
@@ -52,7 +53,10 @@ pub type Stats {
     packets_sent: Int,
     data_received: Int,
     data_sent: Int,
+    acknowledgements_sent: Int,
+    retransmissions: Int,
     flushes: Int,
+    packets_coalesced: Int,
   )
 }
 
@@ -130,6 +134,7 @@ pub fn accept_initial(
       certificate_chain: config.certificate_chain,
       signing_key: config.signing_key,
       signature_scheme: config.signature_scheme,
+      alternative_credentials: config.alternative_credentials,
     )
   use tls <- result.try(
     engine.start_server_with_resumption(tls_config, resumption_policy)
@@ -271,6 +276,14 @@ pub fn tick(state: State, now_ms: Int) -> Result(State, Error) {
       |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
       |> result.map_error(SessionFailure)
   }
+}
+
+/// Queue one QUIC PING on an established connection.
+pub fn ping(state: State) -> Result(State, Error) {
+  use http3 <- result.try(require_session(state))
+  session.ping(http3)
+  |> result.map(fn(http3) { State(..state, protocol: Established(http3)) })
+  |> result.map_error(SessionFailure)
 }
 
 /// Protect at most one datagram without committing transport accounting.
@@ -572,14 +585,30 @@ pub fn path_snapshot(state: State) -> Option(transport.PathSnapshot) {
   }
 }
 
+/// Return the current non-fragmenting QUIC UDP payload size when established.
+pub fn path_mtu(state: State) -> Option(Int) {
+  case state.protocol {
+    Handshaking(_) -> None
+    Established(http3) -> Some(session.path_mtu(http3))
+  }
+}
+
 /// Snapshot listener-owned packet and byte counters.
 pub fn stats(state: State) -> Stats {
+  let counters = case state.protocol {
+    Handshaking(quic) -> transport.connection_counters(driver.connection(quic))
+    Established(http3) -> session.connection_counters(http3)
+  }
+  let transport.ConnectionCounters(acks, retransmissions, coalesced) = counters
   Stats(
     state.packets_received,
     state.packets_sent,
     state.data_received,
     state.data_sent,
+    acks,
+    retransmissions,
     state.flushes,
+    coalesced,
   )
 }
 
@@ -608,49 +637,53 @@ fn promote(state: State, now_ms: Int) -> Result(State, Error) {
     Established(_) -> Ok(state)
     Handshaking(quic) ->
       case driver.phase(quic) {
-        transport.Established -> {
-          let can_issue_ticket =
-            transport.can_issue_session_ticket(driver.connection(quic))
-          let datagrams =
-            state.config.http_datagrams
-            && transport.maximum_datagram_data_size(driver.connection(quic))
-            |> result.is_ok
-          use http3 <- result.try(
-            session.start(quic, server_http3_config(state.config), datagrams)
-            |> result.map_error(SessionFailure),
-          )
-          case can_issue_ticket {
-            False ->
-              Ok(
-                State(
-                  ..state,
-                  protocol: Established(http3),
-                  ticket_issued: False,
-                ),
-              )
-            True -> {
-              use http3 <- result.try(
-                session.issue_session_ticket(
-                  http3,
-                  state.config.ticket_key,
-                  now_ms,
-                  session_ticket_lifetime_seconds,
-                  True,
-                )
-                |> result.map_error(SessionFailure),
-              )
-              Ok(
-                State(
-                  ..state,
-                  protocol: Established(http3),
-                  ticket_issued: True,
-                ),
-              )
-            }
-          }
-        }
+        transport.Established -> establish_http3(state, quic, now_ms)
         _ -> Ok(state)
       }
+  }
+}
+
+fn establish_http3(
+  state: State,
+  quic: driver.State,
+  now_ms: Int,
+) -> Result(State, Error) {
+  let connection = driver.connection(quic)
+  let can_issue_ticket = transport.can_issue_session_ticket(connection)
+  let datagrams =
+    state.config.http_datagrams
+    && transport.maximum_datagram_data_size(connection) |> result.is_ok
+  use http3 <- result.try(
+    session.start(quic, server_http3_config(state.config), datagrams)
+    |> result.map_error(SessionFailure),
+  )
+  use #(http3, ticket_issued) <- result.try(issue_initial_session_ticket(
+    http3,
+    can_issue_ticket,
+    state.config,
+    now_ms,
+  ))
+  Ok(State(..state, protocol: Established(http3), ticket_issued: ticket_issued))
+}
+
+fn issue_initial_session_ticket(
+  http3: session.State,
+  can_issue_ticket: Bool,
+  config: Config,
+  now_ms: Int,
+) -> Result(#(session.State, Bool), Error) {
+  case can_issue_ticket {
+    False -> Ok(#(http3, False))
+    True ->
+      session.issue_session_ticket(
+        http3,
+        config.ticket_key,
+        now_ms,
+        session_ticket_lifetime_seconds,
+        True,
+      )
+      |> result.map(fn(http3) { #(http3, True) })
+      |> result.map_error(SessionFailure)
   }
 }
 

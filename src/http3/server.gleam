@@ -20,6 +20,10 @@ const default_body_limit = 8_388_608
 
 const default_stream_buffer_limit = 262_144
 
+const minimum_keepalive_milliseconds = 1000
+
+const maximum_keepalive_milliseconds = 29_000
+
 @external(erlang, "http3_internal_transport_ffi", "server_stream")
 fn make_transport_stream(
   handle: server_backend.RequestHandle,
@@ -30,12 +34,14 @@ pub opaque type Configuration {
   Configuration(
     certificate: BitArray,
     private_key: BitArray,
+    alternative_certificates: List(#(String, BitArray, BitArray)),
     port: Int,
     timeout_milliseconds: Int,
     request_body_limit: Int,
     response_body_limit: Int,
     stream_buffer_limit: Int,
     http_datagrams: Bool,
+    keepalive_milliseconds: Int,
     address_family: AddressFamily,
     qlog_directory: String,
   )
@@ -92,11 +98,14 @@ pub type DrainResult {
 pub type ConfigurationError {
   InvalidCertificate
   InvalidPrivateKey
+  InvalidServerName
+  DuplicateServerName
   InvalidPort(Int)
   InvalidTimeout
   InvalidRequestBodyLimit
   InvalidResponseBodyLimit
   InvalidStreamBufferLimit
+  InvalidKeepalive
 }
 
 /// A server, request, or response failure.
@@ -148,15 +157,76 @@ pub fn new(
   Ok(Configuration(
     certificate: certificate,
     private_key: private_key,
+    alternative_certificates: [],
     port: 0,
     timeout_milliseconds: default_timeout_milliseconds,
     request_body_limit: default_body_limit,
     response_body_limit: default_body_limit,
     stream_buffer_limit: default_stream_buffer_limit,
     http_datagrams: False,
+    keepalive_milliseconds: 0,
     address_family: Ipv4,
     qlog_directory: "",
   ))
+}
+
+/// Add a certificate selected by an exact SNI name or `*.` wildcard.
+///
+/// Exact names take precedence over wildcard names. The certificate and key
+/// are parsed eagerly; the original certificate remains the fallback for an
+/// unknown name or a client that omits SNI.
+pub fn with_certificate(
+  configuration configuration: Configuration,
+  server_name server_name: String,
+  certificate certificate: BitArray,
+  private_key private_key: BitArray,
+) -> Result(Configuration, ConfigurationError) {
+  let server_name = string.lowercase(server_name)
+  use <- bool.guard(
+    when: !server_backend.valid_server_name(server_name),
+    return: Error(InvalidServerName),
+  )
+  use <- bool.guard(
+    when: list.any(configuration.alternative_certificates, fn(entry) {
+      let #(configured, _, _) = entry
+      configured == server_name
+    }),
+    return: Error(DuplicateServerName),
+  )
+  use <- bool.guard(
+    when: bit_array.bit_size(certificate) == 0
+      || bit_array.bit_size(certificate) % 8 != 0
+      || !server_backend.valid_certificate(certificate),
+    return: Error(InvalidCertificate),
+  )
+  use <- bool.guard(
+    when: bit_array.bit_size(private_key) == 0
+      || bit_array.bit_size(private_key) % 8 != 0
+      || !server_backend.valid_private_key(private_key),
+    return: Error(InvalidPrivateKey),
+  )
+  Ok(
+    Configuration(..configuration, alternative_certificates: [
+      #(server_name, certificate, private_key),
+      ..configuration.alternative_certificates
+    ]),
+  )
+}
+
+/// Send periodic QUIC PING frames on accepted connections.
+///
+/// Keepalive is disabled by default. The interval must be from one through
+/// twenty-nine seconds so it remains below the advertised idle timeout.
+pub fn with_keepalive(
+  configuration configuration: Configuration,
+  milliseconds milliseconds: Int,
+) -> Result(Configuration, ConfigurationError) {
+  use <- bool.guard(
+    when: milliseconds < minimum_keepalive_milliseconds
+      || milliseconds > maximum_keepalive_milliseconds,
+    return: Error(InvalidKeepalive),
+  )
+  Ok(Configuration(..configuration, keepalive_milliseconds: milliseconds))
 }
 
 /// Enable RFC 9297 HTTP Datagrams for accepted connections.
@@ -166,15 +236,16 @@ pub fn with_http_datagrams(configuration: Configuration) -> Configuration {
 
 /// Select the IP family used by the UDP listener.
 pub fn with_address_family(
-  configuration: Configuration,
-  address_family: AddressFamily,
+  configuration configuration: Configuration,
+  address_family address_family: AddressFamily,
 ) -> Configuration {
   Configuration(..configuration, address_family: address_family)
 }
 
+// nolint: unused_exports -- stable public convenience API for downstream users.
 /// Bind the listener to the IPv6 wildcard address.
 pub fn with_ipv6(configuration: Configuration) -> Configuration {
-  with_address_family(configuration, Ipv6)
+  with_address_family(configuration: configuration, address_family: Ipv6)
 }
 
 /// Enable qlog tracing for accepted connections.
@@ -244,12 +315,14 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
   let Configuration(
     certificate,
     private_key,
+    alternative_certificates,
     port,
     timeout,
     request_limit,
     response_limit,
     buffer_limit,
     http_datagrams,
+    keepalive_milliseconds,
     address_family,
     qlog_directory,
   ) = configuration
@@ -257,12 +330,14 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     server_backend.start(
       certificate,
       private_key,
+      alternative_certificates,
       port,
       timeout,
       request_limit,
       response_limit,
       buffer_limit,
       http_datagrams,
+      keepalive_milliseconds,
       address_family == Ipv6,
       qlog_directory,
     )

@@ -564,6 +564,11 @@ pub fn path_snapshot(state: State) -> transport.PathSnapshot {
   transport.path_snapshot(driver.connection(state.quic))
 }
 
+/// Snapshot transport-owned ACK, retransmission, and coalescing counters.
+pub fn connection_counters(state: State) -> transport.ConnectionCounters {
+  transport.connection_counters(driver.connection(state.quic))
+}
+
 /// Poll and protect at most one UDP datagram.
 pub fn prepare_datagram(
   state: State,

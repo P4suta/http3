@@ -103,12 +103,26 @@ pub fn opens_receives_and_reads_flow_controlled_streams_test() -> Nil {
   assert connection_state.read_data(read) == Some(#(<<"hello">>, True))
 
   let assert Ok(connection_state.PacketPrepared(
-    _,
+    prepared,
     engine.OneRtt,
     0,
     response_frames,
   )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 35)
   assert list_contains_ack(response_frames)
+  assert connection_state.connection_counters(prepared)
+    == connection_state.ConnectionCounters(0, 0, 0)
+  let assert Ok(committed) =
+    connection_state.commit_packet(
+      prepared,
+      engine.OneRtt,
+      0,
+      response_frames,
+      64,
+      ecn.NotEct,
+      35,
+    )
+  assert connection_state.connection_counters(committed)
+    == connection_state.ConnectionCounters(1, 0, 0)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -174,6 +188,64 @@ pub fn sends_streams_round_robin_and_recovers_congestion_credit_test() -> Nil {
     )
   assert connection_state.bytes_in_flight(connection) == 0
   assert connection_state.congestion_window(connection) > 12_000
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn counts_only_ack_eliciting_packets_declared_lost_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ping],
+      100,
+      ecn.NotEct,
+      1,
+    )
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.Ping],
+      100,
+      ecn.NotEct,
+      2,
+    )
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      2,
+      [frame.Ping],
+      100,
+      ecn.NotEct,
+      3,
+    )
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      3,
+      [frame.Ping],
+      100,
+      ecn.NotEct,
+      4,
+    )
+  let assert Ok(connection) =
+    connection_state.record_datagram_received(connection, 64, 5)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(3, 3)], None))],
+      packet_space.NotEct,
+      5,
+    )
+  assert connection_state.connection_counters(connection)
+    == connection_state.ConnectionCounters(0, 3, 0)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -386,6 +458,8 @@ pub fn derives_initial_keys_and_processes_coalesced_wire_packets_test() -> Nil {
   assert destination == initial_destination_connection_id
   assert source == <<9, 10, 11, 12>>
   assert rest == handshake_packet
+  assert connection_state.connection_counters(server)
+    == connection_state.ConnectionCounters(0, 0, 1)
   let assert Ok(connection_state.LongPacketReceipt(server, _, _, <<>>)) =
     connection_state.receive_protected_long_packet(
       server,
@@ -393,6 +467,8 @@ pub fn derives_initial_keys_and_processes_coalesced_wire_packets_test() -> Nil {
       packet_space.NotEct,
       1,
     )
+  assert connection_state.connection_counters(server)
+    == connection_state.ConnectionCounters(0, 0, 1)
   let assert Ok(connection_state.PacketPrepared(
     _,
     engine.Initial,
@@ -901,6 +977,7 @@ fn tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
       certificate_chain: chain,
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
+      alternative_credentials: [],
     ),
   )
 }

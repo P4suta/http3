@@ -263,15 +263,17 @@ pub fn path_snapshot(state: State) -> transport.PathSnapshot {
 
 /// Snapshot runtime-owned connection counters.
 pub fn stats(state: State) -> Stats {
+  let transport.ConnectionCounters(acks, retransmissions, coalesced) =
+    session.connection_counters(state.session)
   Stats(
     state.packets_received,
     state.packets_sent,
     state.data_received,
     state.data_sent,
-    0,
-    0,
+    acks,
+    retransmissions,
     state.flushes,
-    0,
+    coalesced,
   )
 }
 

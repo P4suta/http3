@@ -44,6 +44,7 @@ pub type Config {
     maximum_response_body_bytes: Int,
     trust_store: authentication.TrustStore,
     quic_version: Version,
+    keepalive_milliseconds: Int,
   )
 }
 
@@ -280,6 +281,8 @@ fn request_after_handshake(
     Collector(None, [], <<>>, False),
     config.maximum_response_body_bytes,
     deadline,
+    config.keepalive_milliseconds,
+    next_keepalive(config.keepalive_milliseconds),
   ))
   graceful_close(http3, socket, peer)
   Ok(response)
@@ -391,6 +394,8 @@ fn collect_response(
   collector: Collector,
   body_limit: Int,
   deadline: Int,
+  keepalive_milliseconds: Int,
+  next_keepalive_milliseconds: Int,
 ) -> Result(#(session.State, Response), Error) {
   let #(state, events) = session.take_events(state)
   use collector <- result.try(apply_events(
@@ -406,6 +411,12 @@ fn collect_response(
     _, _, remaining if remaining <= 0 -> Error(Timeout)
     _, _, remaining -> {
       let now = udp.monotonic_millisecond()
+      use #(state, next_keepalive_milliseconds) <- result.try(maybe_keepalive(
+        state,
+        keepalive_milliseconds,
+        next_keepalive_milliseconds,
+        now,
+      ))
       use state <- result.try(
         session.tick(state, now)
         |> result.map_error(fn(error) { Http3OperationFailed("tick", error) }),
@@ -434,6 +445,8 @@ fn collect_response(
             collector,
             body_limit,
             deadline,
+            keepalive_milliseconds,
+            next_keepalive_milliseconds,
           )
         False -> {
           use state <- result.try(receive_session(
@@ -450,10 +463,34 @@ fn collect_response(
             collector,
             body_limit,
             deadline,
+            keepalive_milliseconds,
+            next_keepalive_milliseconds,
           )
         }
       }
     }
+  }
+}
+
+fn next_keepalive(interval: Int) -> Int {
+  case interval {
+    0 -> 0
+    _ -> udp.monotonic_millisecond() + interval
+  }
+}
+
+fn maybe_keepalive(
+  state: session.State,
+  interval: Int,
+  next: Int,
+  now: Int,
+) -> Result(#(session.State, Int), Error) {
+  case interval > 0 && now >= next {
+    False -> Ok(#(state, next))
+    True ->
+      session.ping(state)
+      |> result.map(fn(state) { #(state, now + interval) })
+      |> result.map_error(fn(error) { Http3OperationFailed("keepalive", error) })
   }
 }
 
@@ -773,6 +810,13 @@ fn validate(config: Config, body: BitArray) -> Result(Nil, Error) {
     && config.port <= 65_535
     && config.timeout_milliseconds > 0
     && config.maximum_response_body_bytes > 0
+    && {
+      config.keepalive_milliseconds == 0
+      || {
+        config.keepalive_milliseconds >= 1000
+        && config.keepalive_milliseconds <= 29_000
+      }
+    }
     && {
       config.quic_version == version.Version1
       || config.quic_version == version.Version2

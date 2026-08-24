@@ -25,6 +25,7 @@ import gleam_quic/internal/qpack/header.{type Header, Header}
 import gleam_quic/internal/retry_integrity
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
+import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/udp
@@ -224,6 +225,15 @@ type Command {
     request_id: Int,
     reply: Subject(Result(server_connection.EarlyDataStatus, Error)),
   )
+  PathStats(
+    request_id: Int,
+    reply: Subject(Result(transport.PathSnapshot, Error)),
+  )
+  ConnectionStats(
+    request_id: Int,
+    reply: Subject(Result(server_connection.Stats, Error)),
+  )
+  MaximumTransmissionUnit(request_id: Int, reply: Subject(Result(Int, Error)))
 }
 
 type LoopMessage {
@@ -309,6 +319,7 @@ type CandidatePath {
 type PeerState {
   PeerState(
     connection: server_connection.State,
+    next_keepalive_milliseconds: Int,
     candidate_path: Option(CandidatePath),
     requests: Dict(Int, Int),
     pushes: Dict(Int, Int),
@@ -340,6 +351,7 @@ type Worker {
     request_body_limit: Int,
     response_body_limit: Int,
     stream_buffer_limit: Int,
+    keepalive_milliseconds: Int,
     qlog_writer: Option(qlog.Writer),
   )
 }
@@ -359,7 +371,9 @@ pub fn start(
   certificate_chain: List(BitArray),
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
+  alternative_credentials: List(engine.ServerCredential),
   http_datagrams: Bool,
+  keepalive_milliseconds: Int,
   ipv6: Bool,
   qlog_directory: String,
 ) -> Result(Listener, Error) {
@@ -370,6 +384,10 @@ pub fn start(
     && request_body_limit > 0
     && response_body_limit > 0
     && stream_buffer_limit > 0
+    && {
+      keepalive_milliseconds == 0
+      || { keepalive_milliseconds >= 1000 && keepalive_milliseconds <= 29_000 }
+    }
     && certificate_chain != []
   {
     False -> Error(InvalidInput)
@@ -389,7 +407,9 @@ pub fn start(
             certificate_chain,
             signing_key,
             signature_scheme,
+            alternative_credentials,
             http_datagrams,
+            keepalive_milliseconds,
             ipv6,
             qlog_directory,
           )
@@ -584,6 +604,27 @@ pub fn capabilities(
   call(request.listener, fn(reply) { Capabilities(request.identifier, reply) })
 }
 
+/// Snapshot path diagnostics for one request's connection.
+pub fn path_stats(request: Request) -> Result(transport.PathSnapshot, Error) {
+  call(request.listener, fn(reply) { PathStats(request.identifier, reply) })
+}
+
+/// Snapshot connection traffic counters for one request's connection.
+pub fn connection_stats(
+  request: Request,
+) -> Result(server_connection.Stats, Error) {
+  call(request.listener, fn(reply) {
+    ConnectionStats(request.identifier, reply)
+  })
+}
+
+/// Return the current non-fragmenting UDP payload size for a request path.
+pub fn maximum_transmission_unit(request: Request) -> Result(Int, Error) {
+  call(request.listener, fn(reply) {
+    MaximumTransmissionUnit(request.identifier, reply)
+  })
+}
+
 /// Return the maximum HTTP Datagram payload for one request.
 pub fn maximum_datagram_size(request: Request) -> Result(Int, Error) {
   call(request.listener, fn(reply) {
@@ -646,7 +687,9 @@ fn initialise(
   certificate_chain: List(BitArray),
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
+  alternative_credentials: List(engine.ServerCredential),
   http_datagrams: Bool,
+  keepalive_milliseconds: Int,
   ipv6: Bool,
   qlog_directory: String,
 ) -> Nil {
@@ -716,6 +759,7 @@ fn initialise(
           certificate_chain,
           signing_key,
           signature_scheme,
+          alternative_credentials,
           ticket_key,
           http_datagrams,
           int.max(request_body_limit, response_body_limit),
@@ -746,6 +790,7 @@ fn initialise(
         request_body_limit,
         response_body_limit,
         stream_buffer_limit,
+        keepalive_milliseconds,
         qlog_writer,
       ))
     }
@@ -875,6 +920,36 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       let outcome =
         with_request_connection(worker, identifier, fn(_, peer, _) {
           Ok(server_connection.early_data_status(peer.connection))
+        })
+      process.send(reply, outcome)
+      Ok(worker)
+    }
+    PathStats(identifier, reply) -> {
+      let outcome =
+        with_request_connection(worker, identifier, fn(_, peer, _) {
+          case server_connection.path_snapshot(peer.connection) {
+            Some(snapshot) -> Ok(snapshot)
+            None -> Error(BackendFailure("path not established"))
+          }
+        })
+      process.send(reply, outcome)
+      Ok(worker)
+    }
+    ConnectionStats(identifier, reply) -> {
+      let outcome =
+        with_request_connection(worker, identifier, fn(_, peer, _) {
+          Ok(server_connection.stats(peer.connection))
+        })
+      process.send(reply, outcome)
+      Ok(worker)
+    }
+    MaximumTransmissionUnit(identifier, reply) -> {
+      let outcome =
+        with_request_connection(worker, identifier, fn(_, peer, _) {
+          case server_connection.path_mtu(peer.connection) {
+            Some(mtu) -> Ok(mtu)
+            None -> Error(BackendFailure("path not established"))
+          }
         })
       process.send(reply, outcome)
       Ok(worker)
@@ -2149,6 +2224,10 @@ fn accept_connection(
                     local_connection_id,
                     PeerState(
                       connection,
+                      case worker.keepalive_milliseconds {
+                        0 -> 0
+                        interval -> now + interval
+                      },
                       None,
                       dict.new(),
                       dict.new(),
@@ -2326,6 +2405,7 @@ fn tick_and_flush_entries(
   case entries {
     [] -> worker
     [#(connection_id, peer), ..rest] -> {
+      let peer = maybe_queue_keepalive(peer, worker.keepalive_milliseconds, now)
       let worker = case server_connection.tick(peer.connection, now) {
         Error(error) ->
           fail_connection(worker, connection_id, map_connection_error(error))
@@ -2343,6 +2423,26 @@ fn tick_and_flush_entries(
       }
       tick_and_flush_entries(worker, rest, now)
     }
+  }
+}
+
+fn maybe_queue_keepalive(
+  peer: PeerState,
+  interval: Int,
+  now: Int,
+) -> PeerState {
+  case interval > 0 && now >= peer.next_keepalive_milliseconds {
+    False -> peer
+    True ->
+      case server_connection.ping(peer.connection) {
+        Error(_) -> peer
+        Ok(connection) ->
+          PeerState(
+            ..peer,
+            connection: connection,
+            next_keepalive_milliseconds: now + interval,
+          )
+      }
   }
 }
 

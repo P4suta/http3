@@ -30,6 +30,51 @@ pub fn qlog_directory_is_explicit_and_validated_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_keepalive_sends_ping_over_real_udp_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let configuration =
+    client_configuration(ca_certificate)
+    |> client.with_keepalive(1000)
+    |> should.be_ok
+  let connection =
+    client.connect(configuration, "localhost", port) |> should.be_ok
+  let controls = client.connection_transport(connection)
+  let sent = settle_sent_packets(controls, -1, 0, 100)
+  assert await_sent_packets(controls, sent, 150) > sent
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_keepalive_sends_ping_over_real_udp_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_keepalive(1000)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let controls = client.connection_transport(connection)
+  let received = settle_received_packets(controls, -1, 0, 100)
+  assert await_received_packets(controls, received, 150) > received
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn transport_backend_errors_are_normalized_test() -> Nil {
   assert transport_backend.normalize_error(#(1, 0, "ignored"))
     == transport_backend.ConnectionClosed
@@ -201,6 +246,26 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
         == Ok(transport.Capabilities(True, True, False, True))
       assert transport.maximum_datagram_size(stream_transport) |> should.be_ok
         > 0
+      assert transport.stream_maximum_transmission_unit(stream_transport)
+        |> should.be_ok
+        >= 1200
+      let transport.PathStats(_, _, _, _, window, in_flight, _, _) =
+        transport.stream_path_stats(stream_transport) |> should.be_ok
+      assert window > 0
+      assert in_flight >= 0
+      let transport.ConnectionStats(
+        packets_received,
+        packets_sent,
+        _,
+        _,
+        acknowledgements,
+        _,
+        _,
+        _,
+      ) = transport.stream_connection_stats(stream_transport) |> should.be_ok
+      assert packets_received > 0
+      assert packets_sent > 0
+      assert acknowledgements > 0
 
       let client_priority =
         await_stream_priority(stream_transport, 1, True, 100)
@@ -463,10 +528,11 @@ fn advanced_client(
     |> should.be_ok
   client.finish(migrated) |> should.be_ok
   assert receive_response(migrated) == <<"second":utf8>>
-  let transport.ConnectionStats(received, sent, _, _, _, _, _, _) =
+  let transport.ConnectionStats(received, sent, _, _, acknowledgements, _, _, _) =
     transport.connection_stats(connection_transport) |> should.be_ok
   assert received > 0
   assert sent > 0
+  assert acknowledgements > 0
   assert client.close(connection) == Ok(client.Closed)
 }
 
@@ -497,6 +563,84 @@ fn decode_capsule(bytes: BitArray) -> capsule.Capsule {
   let assert Ok(capsule.Ready(decoder, decoded)) = capsule.next(decoder)
   assert capsule.finish(decoder) == Ok(Nil)
   decoded
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn settle_sent_packets(
+  connection: transport.Connection,
+  previous: Int,
+  stable: Int,
+  attempts: Int,
+) -> Int {
+  let transport.ConnectionStats(_, current, _, _, _, _, _, _) =
+    transport.connection_stats(connection) |> should.be_ok
+  case current == previous, stable >= 5 {
+    True, True -> current
+    True, False -> {
+      assert attempts > 0
+      settle_sent_packets(connection, current, stable + 1, attempts - 1)
+    }
+    False, _ -> {
+      assert attempts > 0
+      settle_sent_packets(connection, current, 0, attempts - 1)
+    }
+  }
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn await_sent_packets(
+  connection: transport.Connection,
+  baseline: Int,
+  attempts: Int,
+) -> Int {
+  let transport.ConnectionStats(_, current, _, _, _, _, _, _) =
+    transport.connection_stats(connection) |> should.be_ok
+  case current > baseline {
+    True -> current
+    False -> {
+      assert attempts > 0
+      await_sent_packets(connection, baseline, attempts - 1)
+    }
+  }
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn settle_received_packets(
+  connection: transport.Connection,
+  previous: Int,
+  stable: Int,
+  attempts: Int,
+) -> Int {
+  let transport.ConnectionStats(current, _, _, _, _, _, _, _) =
+    transport.connection_stats(connection) |> should.be_ok
+  case current == previous, stable >= 5 {
+    True, True -> current
+    True, False -> {
+      assert attempts > 0
+      settle_received_packets(connection, current, stable + 1, attempts - 1)
+    }
+    False, _ -> {
+      assert attempts > 0
+      settle_received_packets(connection, current, 0, attempts - 1)
+    }
+  }
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn await_received_packets(
+  connection: transport.Connection,
+  baseline: Int,
+  attempts: Int,
+) -> Int {
+  let transport.ConnectionStats(current, _, _, _, _, _, _, _) =
+    transport.connection_stats(connection) |> should.be_ok
+  case current > baseline {
+    True -> current
+    False -> {
+      assert attempts > 0
+      await_received_packets(connection, baseline, attempts - 1)
+    }
+  }
 }
 
 fn client_configuration(ca_certificate: BitArray) -> client.Client {

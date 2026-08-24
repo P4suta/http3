@@ -80,6 +80,70 @@ pub fn ipv6_server_round_trip_over_real_udp_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_keepalive_interval_is_bounded_test() -> Nil {
+  let #(certificate, private_key, _) = http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  assert server.with_keepalive(configuration, 999)
+    == Error(server.InvalidKeepalive)
+  assert server.with_keepalive(configuration, 29_001)
+    == Error(server.InvalidKeepalive)
+  let _configured = server.with_keepalive(configuration, 1000) |> should.be_ok
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_selects_certificate_by_sni_over_real_udp_test() -> Nil {
+  let #(
+    fallback_certificate,
+    fallback_private_key,
+    localhost_certificate,
+    localhost_private_key,
+    ca_certificate,
+  ) = http3_test_support.server_certificate_selection_credentials()
+  let configuration =
+    server.new(fallback_certificate, fallback_private_key) |> should.be_ok
+  assert server.with_certificate(
+      configuration,
+      "127.0.0.1",
+      localhost_certificate,
+      localhost_private_key,
+    )
+    == Error(server.InvalidServerName)
+  let configuration =
+    server.with_certificate(
+      configuration,
+      "localhost",
+      localhost_certificate,
+      localhost_private_key,
+    )
+    |> should.be_ok
+  assert server.with_certificate(
+      configuration,
+      "LOCALHOST",
+      localhost_certificate,
+      localhost_private_key,
+    )
+    == Error(server.DuplicateServerName)
+  let listener = server.start(configuration) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let request =
+        request.new()
+        |> request.set_host("localhost")
+        |> request.set_port(port)
+        |> request.set_path("/sni")
+        |> request.set_body(<<>>)
+      client.send(client_configuration(ca_certificate), request)
+    })
+  let incoming = server.accept(listener) |> should.be_ok
+  server.respond(incoming, 200, [], <<"selected":utf8>>) |> should.be_ok
+  let reply = http3_test_support.await_task(client_task) |> should.be_ok
+  assert reply.body == <<"selected":utf8>>
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_server_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =

@@ -40,6 +40,10 @@ const default_stream_buffer_limit = 262_144
 
 const default_maximum_pushes = 16
 
+const minimum_keepalive_milliseconds = 1000
+
+const maximum_keepalive_milliseconds = 29_000
+
 @external(erlang, "http3_internal_transport_ffi", "client_connection")
 fn make_transport_connection(
   handle: client_stream_backend.ConnectionHandle,
@@ -65,6 +69,7 @@ pub opaque type Client {
     ca_certificates: List(BitArray),
     http_datagrams: Bool,
     maximum_pushes: Int,
+    keepalive_milliseconds: Int,
     quic_version: transport.QuicVersion,
     qlog_directory: String,
     resumption_tickets: List(client_stream_backend.ResumptionTicketHandle),
@@ -138,6 +143,9 @@ pub type ConfigurationError {
 
   /// A push limit must be between zero and 1024.
   InvalidPushLimit
+
+  /// A keepalive interval must be from one through twenty-nine seconds.
+  InvalidKeepalive
 
   /// A CA certificate must be a non-empty, byte-aligned DER certificate.
   InvalidCaCertificate
@@ -241,10 +249,27 @@ pub fn new() -> Client {
     ca_certificates: [],
     http_datagrams: False,
     maximum_pushes: default_maximum_pushes,
+    keepalive_milliseconds: 0,
     quic_version: transport.QuicV1,
     qlog_directory: "",
     resumption_tickets: [],
   )
+}
+
+/// Send periodic QUIC PING frames while waiting or reusing a connection.
+///
+/// Keepalive is disabled by default. The interval must remain below the
+/// advertised 30-second idle timeout and cannot be shorter than one second.
+pub fn with_keepalive(
+  client client: Client,
+  milliseconds milliseconds: Int,
+) -> Result(Client, ConfigurationError) {
+  use <- bool.guard(
+    when: milliseconds < minimum_keepalive_milliseconds
+      || milliseconds > maximum_keepalive_milliseconds,
+    return: Error(InvalidKeepalive),
+  )
+  Ok(Client(..client, keepalive_milliseconds: milliseconds))
 }
 
 /// Enable RFC 9297 HTTP Datagrams for reusable connections.
@@ -270,8 +295,8 @@ pub fn with_push_limit(
 ///
 /// Compatible version negotiation remains enabled for v1 and v2.
 pub fn with_quic_version(
-  client: Client,
-  quic_version: transport.QuicVersion,
+  client client: Client,
+  quic_version quic_version: transport.QuicVersion,
 ) -> Client {
   Client(..client, quic_version: quic_version)
 }
@@ -383,6 +408,7 @@ fn send_prepared(
       client.timeout_milliseconds,
       client.response_body_limit,
       client.quic_version == transport.QuicV2,
+      client.keepalive_milliseconds,
     )
   {
     Ok(#(status, headers, body)) -> Ok(response.Response(status, headers, body))
@@ -412,6 +438,7 @@ pub fn connect(
           client.stream_buffer_limit,
           client.http_datagrams,
           client.maximum_pushes,
+          client.keepalive_milliseconds,
           client.quic_version == transport.QuicV2,
           client.qlog_directory,
           client.resumption_tickets,

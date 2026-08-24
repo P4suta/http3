@@ -276,6 +276,8 @@ type Worker {
     latest_ticket: Option(ResumptionTicket),
     ticket_waiter: Option(TicketWaiter),
     priorities: Dict(Int, #(Int, Bool)),
+    keepalive_milliseconds: Int,
+    next_keepalive_milliseconds: Int,
   )
 }
 
@@ -293,6 +295,7 @@ pub fn connect(
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
   maximum_pushes: Int,
+  keepalive_milliseconds: Int,
   quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
@@ -305,6 +308,10 @@ pub fn connect(
     && stream_buffer_limit > 0
     && maximum_pushes >= 0
     && maximum_pushes <= 1024
+    && {
+      keepalive_milliseconds == 0
+      || { keepalive_milliseconds >= 1000 && keepalive_milliseconds <= 29_000 }
+    }
   {
     False -> Error(InvalidInput)
     True ->
@@ -325,6 +332,7 @@ pub fn connect(
                 trust_store,
                 http_datagrams,
                 maximum_pushes,
+                keepalive_milliseconds,
                 quic_version,
                 qlog_directory,
                 resumption_ticket,
@@ -552,6 +560,7 @@ fn initialise(
   trust_store: authentication.TrustStore,
   http_datagrams: Bool,
   maximum_pushes: Int,
+  keepalive_milliseconds: Int,
   quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
@@ -603,29 +612,36 @@ fn initialise(
               port,
             )),
           )
-          loop(Worker(
-            connection,
-            dict.new(),
-            dict.new(),
-            [],
-            None,
-            commands,
-            selector,
-            timeout_milliseconds,
-            stream_buffer_limit,
-            hostname,
-            port,
-            http_datagrams,
-            qlog_writer,
-            option.is_some(resumption_ticket),
-            case resumption_ticket {
-              Some(_) -> Pending
-              None -> NotAttempted
-            },
-            None,
-            None,
-            dict.new(),
-          ))
+          loop(
+            Worker(
+              connection,
+              dict.new(),
+              dict.new(),
+              [],
+              None,
+              commands,
+              selector,
+              timeout_milliseconds,
+              stream_buffer_limit,
+              hostname,
+              port,
+              http_datagrams,
+              qlog_writer,
+              option.is_some(resumption_ticket),
+              case resumption_ticket {
+                Some(_) -> Pending
+                None -> NotAttempted
+              },
+              None,
+              None,
+              dict.new(),
+              keepalive_milliseconds,
+              case keepalive_milliseconds {
+                0 -> 0
+                interval -> udp.monotonic_millisecond() + interval
+              },
+            ),
+          )
         }
       }
   }
@@ -634,7 +650,9 @@ fn initialise(
 
 fn loop(worker: Worker) -> Nil {
   let worker = dispatch_connection_events(worker)
-  let worker = expire_waiters(worker, udp.monotonic_millisecond())
+  let now = udp.monotonic_millisecond()
+  let worker = expire_waiters(worker, now)
+  let worker = maybe_queue_keepalive(worker, now)
   case process.selector_receive(worker.selector, within: 0) {
     Ok(OwnerExited) -> shutdown(worker, "owner exited")
     Ok(ReceivedCommand(command)) ->
@@ -643,6 +661,25 @@ fn loop(worker: Worker) -> Nil {
         Ok(worker) -> loop_after_network(worker)
       }
     Error(Nil) -> loop_after_network(worker)
+  }
+}
+
+fn maybe_queue_keepalive(worker: Worker, now: Int) -> Worker {
+  case
+    worker.keepalive_milliseconds > 0
+    && now >= worker.next_keepalive_milliseconds
+  {
+    False -> worker
+    True ->
+      case client_connection.ping(worker.connection) {
+        Error(_) -> worker
+        Ok(connection) ->
+          Worker(
+            ..worker,
+            connection: connection,
+            next_keepalive_milliseconds: now + worker.keepalive_milliseconds,
+          )
+      }
   }
 }
 

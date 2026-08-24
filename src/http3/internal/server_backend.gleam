@@ -51,15 +51,23 @@ pub fn valid_private_key(private_key: BitArray) -> Bool {
   native_server.is_valid_private_key(private_key)
 }
 
+pub fn valid_server_name(server_name: String) -> Bool {
+  native_server.is_valid_server_name(server_name)
+}
+
 pub fn start(
   certificate certificate: BitArray,
   private_key private_key: BitArray,
+  alternative_certificates alternative_certificates: List(
+    #(String, BitArray, BitArray),
+  ),
   port port: Int,
   timeout_milliseconds timeout_milliseconds: Int,
   request_body_limit request_body_limit: Int,
   response_body_limit response_body_limit: Int,
   stream_buffer_limit stream_buffer_limit: Int,
   http_datagrams http_datagrams: Bool,
+  keepalive_milliseconds keepalive_milliseconds: Int,
   ipv6 ipv6: Bool,
   qlog_directory qlog_directory: String,
 ) -> Result(ListenerHandle, Failure) {
@@ -67,6 +75,10 @@ pub fn start(
     native_server.new(certificate, private_key)
     |> result.map_error(map_configuration_error),
   )
+  use configuration <- result.try(configure_certificates(
+    configuration,
+    alternative_certificates,
+  ))
   use configuration <- result.try(
     native_server.with_port(configuration, port)
     |> result.map_error(map_configuration_error),
@@ -91,6 +103,12 @@ pub fn start(
     True -> native_server.with_http_datagrams(configuration)
     False -> configuration
   }
+  use configuration <- result.try(case keepalive_milliseconds {
+    0 -> Ok(configuration)
+    interval ->
+      native_server.with_keepalive(configuration, interval)
+      |> result.map_error(map_configuration_error)
+  })
   let configuration = case ipv6 {
     True -> native_server.with_ipv6(configuration)
     False -> configuration
@@ -110,14 +128,38 @@ fn map_configuration_error(error: native_server.ConfigurationError) -> Failure {
     native_server.InvalidCertificate -> "certificate"
     native_server.InvalidPrivateKey -> "private key"
     native_server.IncompatiblePrivateKey -> "certificate/private-key pairing"
+    native_server.InvalidServerName -> "server name"
+    native_server.DuplicateServerName -> "duplicate server name"
     native_server.InvalidPort(_) -> "listener port"
     native_server.InvalidTimeout -> "listener timeout"
     native_server.InvalidRequestBodyLimit -> "request body limit"
     native_server.InvalidResponseBodyLimit -> "response body limit"
     native_server.InvalidStreamBufferLimit -> "stream buffer limit"
+    native_server.InvalidKeepalive -> "keepalive interval"
     native_server.InvalidQlogDirectory -> "qlog directory"
   }
   StartFailed("invalid server " <> detail)
+}
+
+fn configure_certificates(
+  server: native_server.Server,
+  certificates: List(#(String, BitArray, BitArray)),
+) -> Result(native_server.Server, Failure) {
+  case certificates {
+    [] -> Ok(server)
+    [#(server_name, certificate, private_key), ..rest] -> {
+      use server <- result.try(
+        native_server.with_certificate(
+          server,
+          server_name,
+          certificate,
+          private_key,
+        )
+        |> result.map_error(map_configuration_error),
+      )
+      configure_certificates(server, rest)
+    }
+  }
 }
 
 pub fn port(listener: ListenerHandle) -> Result(Int, Failure) {

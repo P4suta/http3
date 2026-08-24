@@ -189,6 +189,19 @@ pub fn maximum_transmission_unit(
   native_client.maximum_transmission_unit(connection) |> map_native_result
 }
 
+pub fn client_stream_maximum_transmission_unit(
+  stream: client_stream_backend.StreamHandle,
+) -> Result(Int, Failure) {
+  native_client.maximum_transmission_unit_for_stream(stream)
+  |> map_native_result
+}
+
+pub fn server_stream_maximum_transmission_unit(
+  request: server_backend.RequestHandle,
+) -> Result(Int, Failure) {
+  native_server.maximum_transmission_unit(request) |> map_native_server_result
+}
+
 pub fn path_stats(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(RawPathStats, Failure) {
@@ -200,6 +213,28 @@ pub fn path_stats(
   |> map_native_result
 }
 
+pub fn client_stream_path_stats(
+  stream: client_stream_backend.StreamHandle,
+) -> Result(RawPathStats, Failure) {
+  native_client.path_stats_for_stream(stream)
+  |> result.map(fn(stats) {
+    let native_client.PathStats(a, b, c, d, e, f, g, h) = stats
+    #(a, b, c, d, e, f, g, h)
+  })
+  |> map_native_result
+}
+
+pub fn server_stream_path_stats(
+  request: server_backend.RequestHandle,
+) -> Result(RawPathStats, Failure) {
+  native_server.path_stats(request)
+  |> result.map(fn(stats) {
+    let native_server.PathStats(a, b, c, d, e, f, g, h) = stats
+    #(b * 1000, a * 1000, c * 1000, d * 1000, e, f, g, h)
+  })
+  |> map_native_server_result
+}
+
 pub fn connection_stats(
   connection: client_stream_backend.ConnectionHandle,
 ) -> Result(RawConnectionStats, Failure) {
@@ -209,6 +244,28 @@ pub fn connection_stats(
     #(a, b, c, d, e, f, g, h)
   })
   |> map_native_result
+}
+
+pub fn client_stream_connection_stats(
+  stream: client_stream_backend.StreamHandle,
+) -> Result(RawConnectionStats, Failure) {
+  native_client.connection_stats_for_stream(stream)
+  |> result.map(fn(stats) {
+    let native_client.ConnectionStats(a, b, c, d, e, f, g, h) = stats
+    #(a, b, c, d, e, f, g, h)
+  })
+  |> map_native_result
+}
+
+pub fn server_stream_connection_stats(
+  request: server_backend.RequestHandle,
+) -> Result(RawConnectionStats, Failure) {
+  native_server.connection_stats(request)
+  |> result.map(fn(stats) {
+    let native_server.ConnectionStats(a, b, c, d, e, f, g, h) = stats
+    #(a, b, c, d, e, f, g, h)
+  })
+  |> map_native_server_result
 }
 
 pub fn normalize_error(error: RawError) -> Failure {

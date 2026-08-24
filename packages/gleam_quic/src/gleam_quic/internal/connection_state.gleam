@@ -80,6 +80,15 @@ pub type PathSnapshot {
   )
 }
 
+/// Transport-owned diagnostic counters that survive HTTP/3 orchestration.
+pub type ConnectionCounters {
+  ConnectionCounters(
+    acknowledgements_sent: Int,
+    retransmissions: Int,
+    packets_coalesced: Int,
+  )
+}
+
 /// Resource and transport policy for one connection.
 pub type Config {
   Config(
@@ -240,6 +249,9 @@ pub opaque type State {
     path_validator: path_validation.Validator,
     peer_connection_ids: Option(connection_id.Registry),
     events: List(Event),
+    acknowledgements_sent: Int,
+    retransmissions: Int,
+    packets_coalesced: Int,
     last_activity_milliseconds: Int,
     close_deadline_milliseconds: Option(Int),
   )
@@ -391,6 +403,9 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     path_validator: path_validation.new(),
     peer_connection_ids: None,
     events: [],
+    acknowledgements_sent: 0,
+    retransmissions: 0,
+    packets_coalesced: 0,
     last_activity_milliseconds: now_milliseconds,
     close_deadline_milliseconds: None,
   ))
@@ -951,14 +966,21 @@ pub fn receive_protected_long_packet(
   )
   case packet_version == state.config.version {
     False -> Error(ProtocolViolation)
-    True ->
-      receive_versioned_long_packet(
+    True -> {
+      use receipt <- result.try(receive_versioned_long_packet(
         state,
         kind,
         datagram,
         codepoint,
         now_milliseconds,
-      )
+      ))
+      let LongPacketReceipt(state, destination, source, rest) = receipt
+      let state = case rest {
+        <<>> -> state
+        _ -> State(..state, packets_coalesced: state.packets_coalesced + 1)
+      }
+      Ok(LongPacketReceipt(state, destination, source, rest))
+    }
   }
 }
 
@@ -1342,6 +1364,15 @@ pub fn path_snapshot(state: State) -> PathSnapshot {
     in_flight,
     recovery,
     in_flight >= window,
+  )
+}
+
+/// Snapshot ACK, loss-retransmission, and packet-coalescing counters.
+pub fn connection_counters(state: State) -> ConnectionCounters {
+  ConnectionCounters(
+    state.acknowledgements_sent,
+    state.retransmissions,
+    state.packets_coalesced,
   )
 }
 
@@ -2726,6 +2757,13 @@ fn commit_valid_packet(
           pacer: pacing,
           amplification: amplification,
           ecn: ecn_state,
+          acknowledgements_sent: state.acknowledgements_sent
+            + list.count(frames, fn(value) {
+              case value {
+                frame.Ack(_) -> True
+                _ -> False
+              }
+            }),
           last_activity_milliseconds: case ack_eliciting {
             True -> now_milliseconds
             False -> state.last_activity_milliseconds
@@ -3942,6 +3980,10 @@ fn apply_lost_packets(
   case packets {
     [] -> Ok(state)
     [packet, ..rest] -> {
+      let state = case frames_ack_eliciting(packet.frames) {
+        True -> State(..state, retransmissions: state.retransmissions + 1)
+        False -> state
+      }
       use state <- result.try(lose_congestion_packet(
         state,
         packet,

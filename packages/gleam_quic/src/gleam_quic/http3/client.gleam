@@ -22,6 +22,10 @@ const default_stream_buffer_limit = 262_144
 
 const default_maximum_pushes = 16
 
+const minimum_keepalive_milliseconds = 1000
+
+const maximum_keepalive_milliseconds = 29_000
+
 type Trust {
   SystemTrust
   ExplicitTrust(List(BitArray))
@@ -38,6 +42,7 @@ pub opaque type Client {
     trust: Trust,
     http_datagrams: Bool,
     maximum_pushes: Int,
+    keepalive_milliseconds: Int,
     quic_version: QuicVersion,
     qlog_directory: String,
     resumption_ticket: Option(ResumptionTicket),
@@ -142,6 +147,7 @@ pub type ConfigurationError {
   InvalidResponseBodyLimit
   InvalidStreamBufferLimit
   InvalidPushLimit
+  InvalidKeepalive
   InvalidCaCertificate
   InvalidQlogDirectory
 }
@@ -207,10 +213,26 @@ pub fn new(
         SystemTrust,
         False,
         default_maximum_pushes,
+        0,
         QuicV1,
         "",
         None,
       ))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Configure periodic QUIC PING frames from one through twenty-nine seconds.
+pub fn with_keepalive(
+  client: Client,
+  milliseconds: Int,
+) -> Result(Client, ConfigurationError) {
+  case
+    milliseconds >= minimum_keepalive_milliseconds
+    && milliseconds <= maximum_keepalive_milliseconds
+  {
+    True -> Ok(Client(..client, keepalive_milliseconds: milliseconds))
+    False -> Error(InvalidKeepalive)
   }
 }
 
@@ -338,6 +360,7 @@ pub fn send(
         QuicV1 -> version.Version1
         QuicV2 -> version.Version2
       },
+      keepalive_milliseconds: client.keepalive_milliseconds,
     )
   case bounded_client.send(config, headers, body) {
     Ok(bounded_client.Response(status, headers, body)) ->
@@ -362,6 +385,7 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     trust_store,
     client.http_datagrams,
     client.maximum_pushes,
+    client.keepalive_milliseconds,
     case client.quic_version {
       QuicV1 -> version.Version1
       QuicV2 -> version.Version2
@@ -690,6 +714,61 @@ pub fn connection_stats(
 ) -> Result(ConnectionStats, Error) {
   let Connection(handle) = connection
   case client_worker.connection_stats(handle) {
+    Ok(client_connection.Stats(a, b, c, d, e, f, g, h)) ->
+      Ok(ConnectionStats(a, b, c, d, e, f, g, h))
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Return the current path MTU for a request stream's connection.
+pub fn maximum_transmission_unit_for_stream(
+  stream: Stream,
+) -> Result(Int, Error) {
+  let Stream(handle) = stream
+  client_worker.stream_connection(handle)
+  |> client_worker.maximum_transmission_unit
+  |> result.map_error(map_worker_error)
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Snapshot path state for a request stream's connection.
+pub fn path_stats_for_stream(stream: Stream) -> Result(PathStats, Error) {
+  let Stream(handle) = stream
+  let connection = client_worker.stream_connection(handle)
+  case client_worker.path_stats(connection) {
+    Ok(transport.PathSnapshot(
+      latest,
+      smoothed,
+      minimum,
+      variation,
+      window,
+      in_flight,
+      recovery,
+      congested,
+    )) ->
+      Ok(PathStats(
+        smoothed * 1000,
+        latest * 1000,
+        minimum * 1000,
+        variation * 1000,
+        window,
+        in_flight,
+        recovery,
+        congested,
+      ))
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+// nolint: unused_exports -- consumed by the parent http3 package.
+/// Snapshot counters for a request stream's connection.
+pub fn connection_stats_for_stream(
+  stream: Stream,
+) -> Result(ConnectionStats, Error) {
+  let Stream(handle) = stream
+  let connection = client_worker.stream_connection(handle)
+  case client_worker.connection_stats(connection) {
     Ok(client_connection.Stats(a, b, c, d, e, f, g, h)) ->
       Ok(ConnectionStats(a, b, c, d, e, f, g, h))
     Error(error) -> Error(map_worker_error(error))

@@ -3,6 +3,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam_quic/internal/crypto
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
@@ -78,6 +79,16 @@ pub type ClientConfig {
 }
 
 /// Inputs required for a certificate-authenticated server handshake.
+pub type ServerCredential {
+  ServerCredential(
+    server_name: String,
+    certificate_chain: List(BitArray),
+    signing_key: authentication.SigningKey,
+    signature_scheme: extension_value.SignatureScheme,
+  )
+}
+
+/// Inputs required for a certificate-authenticated server handshake.
 pub type ServerConfig {
   ServerConfig(
     version: Version,
@@ -86,6 +97,7 @@ pub type ServerConfig {
     certificate_chain: List(BitArray),
     signing_key: authentication.SigningKey,
     signature_scheme: extension_value.SignatureScheme,
+    alternative_credentials: List(ServerCredential),
   )
 }
 
@@ -819,6 +831,7 @@ fn accept_client_hello(
     <<>> -> {
       use Nil <- result.try(require_client_tls13(extensions))
       use server_name <- result.try(client_server_name(extensions))
+      let config = select_server_credential(config, server_name)
       use selected_alpn <- result.try(select_client_alpn(
         extensions,
         config.application_protocols,
@@ -958,13 +971,14 @@ fn accept_second_client_hello(
     <<>> -> {
       use Nil <- result.try(require_client_tls13(extensions))
       use server_name <- result.try(client_server_name(extensions))
+      let config = select_server_credential(context.config, server_name)
       use selected_alpn <- result.try(select_client_alpn(
         extensions,
-        context.config.application_protocols,
+        config.application_protocols,
       ))
       use Nil <- result.try(require_server_signature(
         extensions,
-        context.config.signature_scheme,
+        config.signature_scheme,
       ))
       use peer_parameters <- result.try(client_transport_parameters(extensions))
       use client_public_key <- result.try(client_x25519_key(extensions))
@@ -975,7 +989,7 @@ fn accept_second_client_hello(
         client_hello,
         server_name,
         selected_alpn,
-        context.config,
+        config,
       ))
       let selection_cipher =
         selected_resumption_cipher(selection, context.selected_cipher_suite)
@@ -986,7 +1000,7 @@ fn accept_second_client_hello(
         False -> Error(InvalidHelloRetryRequest)
         True ->
           build_server_flight(
-            context.config,
+            config,
             server_name,
             encoded_client_hello,
             context.selected_cipher_suite,
@@ -999,6 +1013,95 @@ fn accept_second_client_hello(
       }
     }
     _ -> Error(InvalidHelloRetryRequest)
+  }
+}
+
+/// Validate an exact DNS name or a single-label wildcard certificate pattern.
+pub fn valid_server_name_pattern(pattern: String) -> Bool {
+  let normalized = string.lowercase(pattern)
+  case string.starts_with(normalized, "*.") {
+    True -> {
+      let suffix = string.drop_start(normalized, 2)
+      suffix != ""
+      && !authentication.is_ip_address(suffix)
+      && extension_value.encode_server_name(suffix) |> result.is_ok
+    }
+    False ->
+      normalized != ""
+      && !authentication.is_ip_address(normalized)
+      && extension_value.encode_server_name(normalized) |> result.is_ok
+  }
+}
+
+/// Match an SNI DNS name with exact-name precedence handled by selection.
+pub fn server_name_matches(pattern: String, server_name: String) -> Bool {
+  let pattern = string.lowercase(pattern)
+  let server_name = string.lowercase(server_name)
+  case string.split(pattern, "."), string.split(server_name, ".") {
+    ["*", ..suffix], [_, ..name_suffix] -> suffix != [] && suffix == name_suffix
+    _, _ -> pattern == server_name
+  }
+}
+
+fn select_server_credential(
+  config: ServerConfig,
+  server_name: String,
+) -> ServerConfig {
+  case server_name {
+    "" -> config
+    _ -> {
+      let selected = case
+        find_exact_credential(
+          config.alternative_credentials,
+          string.lowercase(server_name),
+        )
+      {
+        Some(credential) -> Some(credential)
+        None ->
+          find_wildcard_credential(config.alternative_credentials, server_name)
+      }
+      case selected {
+        None -> config
+        Some(credential) ->
+          ServerConfig(
+            ..config,
+            certificate_chain: credential.certificate_chain,
+            signing_key: credential.signing_key,
+            signature_scheme: credential.signature_scheme,
+          )
+      }
+    }
+  }
+}
+
+fn find_exact_credential(
+  credentials: List(ServerCredential),
+  server_name: String,
+) -> Option(ServerCredential) {
+  case credentials {
+    [] -> None
+    [credential, ..rest] ->
+      case string.lowercase(credential.server_name) == server_name {
+        True -> Some(credential)
+        False -> find_exact_credential(rest, server_name)
+      }
+  }
+}
+
+fn find_wildcard_credential(
+  credentials: List(ServerCredential),
+  server_name: String,
+) -> Option(ServerCredential) {
+  case credentials {
+    [] -> None
+    [credential, ..rest] ->
+      case
+        string.starts_with(credential.server_name, "*.")
+        && server_name_matches(credential.server_name, server_name)
+      {
+        True -> Some(credential)
+        False -> find_wildcard_credential(rest, server_name)
+      }
   }
 }
 
