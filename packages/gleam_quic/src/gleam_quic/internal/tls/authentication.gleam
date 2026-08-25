@@ -28,6 +28,7 @@ pub type Error {
   IdentityMismatch
   InvalidSignature
   IncompatibleSignatureScheme
+  InvalidCertificatePurpose
   RuntimeUnavailable
 }
 
@@ -52,11 +53,32 @@ fn raw_validate_server_certificate(
   hostname: String,
 ) -> Result(VerifiedPeer, Int)
 
+@external(erlang, "gleam_quic_tls_ffi", "validate_client_certificate")
+fn raw_validate_client_certificate(
+  certificate_chain: List(BitArray),
+  trust_store: TrustStore,
+) -> Result(VerifiedPeer, Int)
+
+@external(erlang, "gleam_quic_tls_ffi", "validate_client_certificate_purpose")
+fn raw_validate_client_certificate_purpose(
+  certificate_chain: List(BitArray),
+) -> Result(Nil, Int)
+
+@external(erlang, "gleam_quic_tls_ffi", "verified_peer_fingerprint")
+fn raw_verified_peer_fingerprint(peer: VerifiedPeer) -> Result(BitArray, Int)
+
 @external(erlang, "gleam_quic_tls_ffi", "signing_key_from_pem")
 fn raw_signing_key_from_pem(pem: BitArray) -> Result(SigningKey, Int)
 
 @external(erlang, "gleam_quic_tls_ffi", "signing_key_scheme")
 fn raw_signing_key_scheme(signing_key: SigningKey) -> Result(Int, Int)
+
+@external(erlang, "gleam_quic_tls_ffi", "signing_key_matches_certificate")
+fn raw_signing_key_matches_certificate(
+  certificate_chain: List(BitArray),
+  signing_key: SigningKey,
+  signature_scheme: Int,
+) -> Result(Bool, Int)
 
 @external(erlang, "gleam_quic_tls_ffi", "sign")
 fn raw_sign(
@@ -132,6 +154,47 @@ pub fn validate_server_certificate(
   }
 }
 
+/// Validate a non-empty client certificate path for TLS client authentication.
+pub fn validate_client_certificate(
+  certificate_chain certificate_chain: List(BitArray),
+  trust_store trust_store: TrustStore,
+) -> Result(VerifiedPeer, Error) {
+  case certificate_chain {
+    [] -> Error(EmptyCertificateChain)
+    _ ->
+      case all_byte_aligned(certificate_chain) {
+        False -> Error(NonByteAligned)
+        True ->
+          raw_validate_client_certificate(certificate_chain, trust_store)
+          |> map_result
+      }
+  }
+}
+
+/// Validate clientAuth purpose and digital-signature usage without implying
+/// that the certificate has been accepted by any remote trust store.
+pub fn validate_client_certificate_purpose(
+  certificate_chain certificate_chain: List(BitArray),
+) -> Result(Nil, Error) {
+  case certificate_chain {
+    [] -> Error(EmptyCertificateChain)
+    _ ->
+      case all_byte_aligned(certificate_chain) {
+        False -> Error(NonByteAligned)
+        True ->
+          raw_validate_client_certificate_purpose(certificate_chain)
+          |> map_result
+      }
+  }
+}
+
+/// Return the SHA-256 fingerprint of a path-validated leaf certificate.
+pub fn verified_peer_fingerprint(
+  peer peer: VerifiedPeer,
+) -> Result(BitArray, Error) {
+  raw_verified_peer_fingerprint(peer) |> map_result
+}
+
 /// Return whether a service identity is an IPv4 or IPv6 address literal.
 pub fn is_ip_address(hostname: String) -> Bool {
   raw_is_ip_address(hostname)
@@ -162,6 +225,27 @@ pub fn signing_key_scheme(
     0x0807 -> Ok(extension_value.Ed25519)
     0x0808 -> Ok(extension_value.Ed448)
     _ -> Error(IncompatibleSignatureScheme)
+  }
+}
+
+/// Check that the leaf certificate contains the public key for this signer.
+pub fn signing_key_matches_certificate(
+  certificate_chain certificate_chain: List(BitArray),
+  signing_key signing_key: SigningKey,
+  signature_scheme signature_scheme: SignatureScheme,
+) -> Result(Bool, Error) {
+  case certificate_chain, all_byte_aligned(certificate_chain) {
+    [], _ -> Error(EmptyCertificateChain)
+    _, False -> Error(NonByteAligned)
+    _, True -> {
+      use identifier <- result.try(signature_scheme_identifier(signature_scheme))
+      raw_signing_key_matches_certificate(
+        certificate_chain,
+        signing_key,
+        identifier,
+      )
+      |> map_result
+    }
   }
 }
 
@@ -231,6 +315,7 @@ fn map_result(value: Result(output, Int)) -> Result(output, Error) {
     Error(6) -> Error(IdentityMismatch)
     Error(7) -> Error(InvalidSignature)
     Error(8) -> Error(IncompatibleSignatureScheme)
+    Error(9) -> Error(InvalidCertificatePurpose)
     Error(_) -> Error(RuntimeUnavailable)
   }
 }

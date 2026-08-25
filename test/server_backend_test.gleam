@@ -1,9 +1,13 @@
+import gleam/option.{Some}
+import http3/failure as runtime_failure
 import http3/internal/server_backend
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn server_backend_failures_are_normalized_test() -> Nil {
   assert server_backend.normalize_error(#(2, 0, "timeout"))
-    == server_backend.Timeout
+    == server_backend.RuntimeFailure(runtime_failure.Timeout(
+      runtime_failure.Operation,
+    ))
   assert server_backend.normalize_error(#(7, 32, "request limit"))
     == server_backend.RequestBodyTooLarge(32)
   assert server_backend.normalize_error(#(8, 64, "response limit"))
@@ -15,7 +19,10 @@ pub fn server_backend_failures_are_normalized_test() -> Nil {
   assert server_backend.normalize_error(#(11, 0, "concurrent receive"))
     == server_backend.ConcurrentReceive
   assert server_backend.normalize_error(#(5, 270, "stream reset"))
-    == server_backend.StreamReset(270)
+    == server_backend.RuntimeFailure(runtime_failure.Closed(
+      runtime_failure.Peer,
+      Some(270),
+    ))
   assert server_backend.normalize_error(#(15, 0, "content-length mismatch"))
     == server_backend.InvalidContentLength
 }

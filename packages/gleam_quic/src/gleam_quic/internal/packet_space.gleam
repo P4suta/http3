@@ -184,6 +184,15 @@ pub fn ack_due(state: State, now_milliseconds: Int) -> Bool {
   }
 }
 
+/// Return the delayed-ACK deadline, using zero for an immediate ACK.
+pub fn ack_deadline(state: State) -> Option(Int) {
+  case state.discarded, state.ack_immediate, state.ack_deadline_milliseconds {
+    True, _, _ -> None
+    False, True, _ -> Some(0)
+    False, False, deadline -> deadline
+  }
+}
+
 /// Build an ACK_ECN when due and reset only the scheduling counters.
 ///
 /// ACK Delay is encoded in microseconds divided by 2^ack_delay_exponent.

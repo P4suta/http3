@@ -1,7 +1,13 @@
 //// Bounded RFC 9297 Capsule Protocol codec for Extended CONNECT streams.
+////
+//// Capsule and QUIC variable-length integer ownership lives in the `http3`
+//// package; no raw transport codec crosses the package boundary.
 
+import gleam/bit_array
+import gleam/bool
 import gleam/result
-import gleam_quic/internal/http3/capsule as core
+
+const maximum_integer = 4_611_686_018_427_387_903
 
 /// One standard DATAGRAM Capsule or an extension capsule.
 pub type Capsule {
@@ -11,7 +17,11 @@ pub type Capsule {
 
 /// Incremental decoder retaining at most its configured byte limit.
 pub opaque type Decoder {
-  Decoder(state: core.State)
+  Decoder(
+    buffered: BitArray,
+    maximum_capsule_bytes: Int,
+    maximum_buffered_bytes: Int,
+  )
 }
 
 /// Result of parsing at most one capsule.
@@ -35,9 +45,12 @@ pub fn decoder(
   maximum_capsule_bytes maximum_capsule_bytes: Int,
   maximum_buffered_bytes maximum_buffered_bytes: Int,
 ) -> Result(Decoder, Error) {
-  core.new(maximum_capsule_bytes, maximum_buffered_bytes)
-  |> result.map(Decoder)
-  |> result.map_error(map_error)
+  use <- bool.guard(
+    when: maximum_capsule_bytes < 0
+      || maximum_buffered_bytes < maximum_capsule_bytes,
+    return: Error(InvalidConfiguration),
+  )
+  Ok(Decoder(<<>>, maximum_capsule_bytes, maximum_buffered_bytes))
 }
 
 /// Append one byte-aligned HTTP DATA fragment.
@@ -45,61 +58,125 @@ pub fn push(
   decoder decoder: Decoder,
   bytes bytes: BitArray,
 ) -> Result(Decoder, Error) {
-  let Decoder(state) = decoder
-  core.push(state, bytes)
-  |> result.map(Decoder)
-  |> result.map_error(map_error)
+  case bit_array.bit_size(bytes) % 8 {
+    remainder if remainder != 0 -> Error(NonByteAligned)
+    _ -> {
+      let size =
+        bit_array.byte_size(decoder.buffered) + bit_array.byte_size(bytes)
+      case size > decoder.maximum_buffered_bytes {
+        True -> Error(BufferLimitExceeded(decoder.maximum_buffered_bytes))
+        False ->
+          Ok(
+            Decoder(..decoder, buffered: <<decoder.buffered:bits, bytes:bits>>),
+          )
+      }
+    }
+  }
 }
 
 /// Parse at most one capsule while preserving following bytes.
 pub fn next(decoder: Decoder) -> Result(Outcome, Error) {
-  let Decoder(state) = decoder
-  case core.next(state) {
-    Ok(core.NeedMore(state)) -> Ok(NeedMore(Decoder(state)))
-    Ok(core.CapsuleReady(state, value)) ->
-      Ok(Ready(Decoder(state), from_core(value)))
-    Error(error) -> Error(map_error(error))
+  case decoder.buffered {
+    <<>> -> Ok(NeedMore(decoder))
+    bytes -> decode_type(decoder, bytes)
   }
 }
 
 /// Validate that stream FIN arrived exactly on a capsule boundary.
 pub fn finish(decoder: Decoder) -> Result(Nil, Error) {
-  let Decoder(state) = decoder
-  core.finish(state) |> result.map_error(map_error)
+  case decoder.buffered {
+    <<>> -> Ok(Nil)
+    _ -> Error(Truncated)
+  }
 }
 
 /// Encode one complete capsule.
 pub fn encode(capsule: Capsule) -> Result(BitArray, Error) {
-  core.encode(to_core(capsule)) |> result.map_error(map_error)
+  let #(capsule_type, payload) = case capsule {
+    Datagram(payload) -> #(0, payload)
+    Extension(capsule_type, payload) -> #(capsule_type, payload)
+  }
+  case bit_array.bit_size(payload) % 8 {
+    remainder if remainder != 0 -> Error(NonByteAligned)
+    _ -> {
+      use capsule_type <- result.try(encode_integer(capsule_type))
+      use length <- result.try(encode_integer(bit_array.byte_size(payload)))
+      Ok(<<capsule_type:bits, length:bits, payload:bits>>)
+    }
+  }
 }
 
 /// Return bytes retained for an incomplete or following capsule.
 pub fn buffered_bytes(decoder: Decoder) -> Int {
-  let Decoder(state) = decoder
-  core.buffered_bytes(state)
+  bit_array.byte_size(decoder.buffered)
 }
 
-fn to_core(capsule: Capsule) -> core.Capsule {
-  case capsule {
-    Datagram(payload) -> core.Datagram(payload)
-    Extension(capsule_type, value) -> core.Unknown(capsule_type, value)
+fn decode_type(decoder: Decoder, bytes: BitArray) -> Result(Outcome, Error) {
+  case decode_integer(bytes) {
+    Error(Nil) -> Ok(NeedMore(decoder))
+    Ok(#(capsule_type, rest)) -> decode_length(decoder, capsule_type, rest)
   }
 }
 
-fn from_core(capsule: core.Capsule) -> Capsule {
-  case capsule {
-    core.Datagram(payload) -> Datagram(payload)
-    core.Unknown(capsule_type, value) -> Extension(capsule_type, value)
+// nolint: label_possible -- private parser helpers read clearly in wire order.
+fn decode_length(
+  decoder: Decoder,
+  capsule_type: Int,
+  bytes: BitArray,
+) -> Result(Outcome, Error) {
+  case decode_integer(bytes) {
+    Error(Nil) -> Ok(NeedMore(decoder))
+    Ok(#(length, payload_and_rest)) ->
+      case length > decoder.maximum_capsule_bytes {
+        True -> Error(CapsuleLimitExceeded(decoder.maximum_capsule_bytes))
+        False -> take_capsule(decoder, capsule_type, length, payload_and_rest)
+      }
   }
 }
 
-fn map_error(error: core.Error) -> Error {
-  case error {
-    core.InvalidConfiguration -> InvalidConfiguration
-    core.NonByteAligned -> NonByteAligned
-    core.BufferLimitExceeded(limit) -> BufferLimitExceeded(limit)
-    core.CapsuleLimitExceeded(limit) -> CapsuleLimitExceeded(limit)
-    core.TruncatedCapsule -> Truncated
-    core.IntegerFailure(_) -> InvalidCapsuleType
+// nolint: label_possible -- private parser helpers read clearly in wire order.
+fn take_capsule(
+  decoder: Decoder,
+  capsule_type: Int,
+  length: Int,
+  bytes: BitArray,
+) -> Result(Outcome, Error) {
+  use <- bool.guard(
+    when: bit_array.byte_size(bytes) < length,
+    return: Ok(NeedMore(decoder)),
+  )
+  let bits = length * 8
+  case bytes {
+    <<payload:bits-size(bits), rest:bits>> -> {
+      let capsule = case capsule_type {
+        0 -> Datagram(payload)
+        extension -> Extension(extension, payload)
+      }
+      Ok(Ready(Decoder(..decoder, buffered: rest), capsule))
+    }
+    _ -> Ok(NeedMore(decoder))
+  }
+}
+
+fn decode_integer(bytes: BitArray) -> Result(#(Int, BitArray), Nil) {
+  case bytes {
+    <<0:2, value:6, rest:bits>> -> Ok(#(value, rest))
+    <<1:2, value:14, rest:bits>> -> Ok(#(value, rest))
+    <<2:2, value:30, rest:bits>> -> Ok(#(value, rest))
+    <<3:2, value:62, rest:bits>> -> Ok(#(value, rest))
+    _ -> Error(Nil)
+  }
+}
+
+fn encode_integer(value: Int) -> Result(BitArray, Error) {
+  use <- bool.guard(
+    when: value < 0 || value > maximum_integer,
+    return: Error(InvalidCapsuleType),
+  )
+  case value {
+    value if value <= 63 -> Ok(<<0:2, value:6>>)
+    value if value <= 16_383 -> Ok(<<1:2, value:14>>)
+    value if value <= 1_073_741_823 -> Ok(<<2:2, value:30>>)
+    value -> Ok(<<3:2, value:62>>)
   }
 }

@@ -2,10 +2,11 @@
 
 ## Project status
 
-`http3` is unpublished. The repository-defined v1 implementation and local
-qualification gates are complete, including the repository-owned QUIC/TLS
-core, but the code has not had an independent third-party security audit and
-is not yet a supported production release.
+`http3` is unpublished. The former v1 completion decision was reopened on
+2026-08-25 because known architecture, TLS, conformance, performance,
+security-tooling, and distribution findings remain. The code has not had an
+independent third-party security audit and is not a supported production
+release.
 
 The version in `gleam.toml` is tool metadata and does not indicate that a tag
 or release exists.
@@ -41,9 +42,9 @@ coordinate remediation and disclosure through the private channel.
 - Raw processes, atoms, maps, references, sockets, trust-store terms, keys,
   traffic secrets, protocol messages, and mailbox formats do not cross the
   public API.
-- Untrusted packet, frame, extension, header, table, stream, queue, certificate,
-  ticket, Capsule, and Datagram inputs are bounded before allocation or
-  dispatch.
+- Known packet, frame, extension, header, table, stream, queue, certificate,
+  ticket, Capsule, and Datagram allocations have finite local or protocol
+  bounds. The complete peer-controlled-state audit remains a release gate.
 - Operations have fixed deadlines, explicit body and stream-buffer limits,
   bounded retained terminal state, and deterministic owner-driven cleanup.
 - TLS authenticators, Retry integrity, PSK binders, Finished values, and
@@ -66,6 +67,6 @@ coordinate remediation and disclosure through the private channel.
 - The production dependency graph contains no external QUIC implementation,
   NIF, or C library.
 
-The evidence, reviewed boundaries, residual operational risks, and source
-audit are documented in the
+The current evidence, open findings, reviewed boundaries, and residual risks
+are documented in the [conformance matrix](docs/CONFORMANCE.md) and
 [pre-publication security review](docs/SECURITY_REVIEW.md).

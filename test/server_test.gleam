@@ -3,8 +3,11 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/list
+import gleam/option.{None}
 import gleeunit/should
 import http3/client
+import http3/config
+import http3/failure
 import http3/server
 import http3_test_support
 
@@ -54,7 +57,7 @@ pub fn ipv6_server_round_trip_over_real_udp_test() -> Nil {
   let configuration = server.with_timeout(configuration, 3000) |> should.be_ok
   let listener =
     configuration
-    |> server.with_address_family(server.Ipv6)
+    |> server.with_address_family(config.Ipv6)
     |> server.start
     |> should.be_ok
   let port = server.port(listener) |> should.be_ok
@@ -144,6 +147,141 @@ pub fn server_selects_certificate_by_sni_over_real_udp_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn certificate_reload_is_atomic_and_preserves_existing_connections_test() -> Nil {
+  let #(
+    fallback_certificate,
+    fallback_private_key,
+    localhost_certificate,
+    localhost_private_key,
+    ca_certificate,
+  ) = http3_test_support.server_certificate_selection_credentials()
+  let valid =
+    server.new(localhost_certificate, localhost_private_key) |> should.be_ok
+  let listener = server.start(valid) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let existing =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+
+  // The replacement is fully decoded before the actor swaps one value.
+  let untrusted =
+    server.new(fallback_certificate, fallback_private_key) |> should.be_ok
+  server.reload_certificates(listener, untrusted) |> should.be_ok
+
+  // Existing authenticated connections retain their original TLS state.
+  let existing_stream =
+    client.open_stream(existing, streaming_request(port, "/existing"))
+    |> should.be_ok
+  client.finish(existing_stream) |> should.be_ok
+  let existing_request = server.accept(listener) |> should.be_ok
+  assert server.path(existing_request) == "/existing"
+  assert server.read_body(existing_request) |> should.be_ok == <<>>
+  server.respond(existing_request, 200, [], <<"still-open":utf8>>)
+  |> should.be_ok
+  let #(existing_status, _, existing_body) =
+    receive_client_response(existing_stream, [])
+  assert existing_status == 200
+  assert existing_body == <<"still-open":utf8>>
+
+  // A new handshake observes the newly installed, deliberately untrusted set.
+  let rejected_configuration =
+    client_configuration(ca_certificate)
+    |> client.with_timeout(1000)
+    |> should.be_ok
+  assert client.connect(rejected_configuration, "localhost", port)
+    == Error(client.Failure(failure.Tls(failure.Peer)))
+
+  server.reload_certificates(listener, valid) |> should.be_ok
+  let replacement =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let replacement_stream =
+    client.open_stream(replacement, streaming_request(port, "/replacement"))
+    |> should.be_ok
+  client.finish(replacement_stream) |> should.be_ok
+  let replacement_request = server.accept(listener) |> should.be_ok
+  assert server.path(replacement_request) == "/replacement"
+  assert server.read_body(replacement_request) |> should.be_ok == <<>>
+  server.respond(replacement_request, 204, [], <<>>) |> should.be_ok
+  let #(replacement_status, _, replacement_body) =
+    receive_client_response(replacement_stream, [])
+  assert replacement_status == 204
+  assert replacement_body == <<>>
+
+  assert client.close(existing) == Ok(client.Closed)
+  assert client.close(replacement) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn configured_queue_limit_bounds_peer_event_count_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let limits =
+    config.default_limits()
+    |> config.with_limit(failure.Queue, 4)
+    |> should.be_ok
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_limits(limits)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/empty-flood"))
+    |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+
+  send_small_chunks(stream, 5)
+  http3_test_support.pause_milliseconds(50)
+  assert server.next_event(incoming) == Ok(server.Data(<<1>>))
+  assert server.next_event(incoming) == Ok(server.Data(<<1>>))
+  assert server.next_event(incoming) == Ok(server.Data(<<1>>))
+  assert server.next_event(incoming) == Ok(server.Data(<<1>>))
+  assert server.next_event(incoming)
+    == Error(server.Failure(failure.Limit(failure.Queue, 4)))
+
+  let _close_result = client.close(connection)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_queue_limit_bounds_small_response_frames_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let limits =
+    config.default_limits()
+    |> config.with_limit(failure.Queue, 4)
+    |> should.be_ok
+  let configuration =
+    client_configuration(ca_certificate) |> client.with_limits(limits)
+  let connection =
+    client.connect(configuration, "localhost", port) |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/response-flood"))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+
+  server.send_response(incoming, 200, []) |> should.be_ok
+  send_small_response_chunks(incoming, 5)
+  http3_test_support.pause_milliseconds(50)
+
+  assert client.next_event(stream) == Ok(client.Response(200, []))
+  assert client.next_event(stream) == Ok(client.Data(<<1>>))
+  assert client.next_event(stream) == Ok(client.Data(<<1>>))
+  assert client.next_event(stream) == Ok(client.Data(<<1>>))
+  assert client.next_event(stream)
+    == Error(client.Failure(failure.Limit(failure.Queue, 4)))
+
+  let _close_result = client.close(connection)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_server_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =
@@ -204,7 +342,8 @@ pub fn graceful_stop_drains_active_request_and_rejects_accept_test() -> Nil {
   assert server.next_event(incoming) == Ok(server.End)
   let drain_task =
     http3_test_support.start_task(fn() { server.graceful_stop(listener) })
-  assert server.accept(listener) == Error(server.ListenerClosed)
+  assert server.accept(listener)
+    == Error(server.Failure(failure.Closed(failure.Local, None)))
   server.respond(incoming, 200, [], <<"drained":utf8>>) |> should.be_ok
 
   assert http3_test_support.await_task(client_task)
@@ -238,7 +377,8 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
   let drain_task =
     http3_test_support.start_task(fn() { server.graceful_stop(listener) })
   await_connection_draining(connection: connection, port: port, attempts: 100)
-  assert server.accept(listener) == Error(server.ListenerClosed)
+  assert server.accept(listener)
+    == Error(server.Failure(failure.Closed(failure.Local, None)))
   assert client.next_event(rejected) == Error(client.RequestRejected)
 
   server.respond(incoming, 200, [], <<"active-complete":utf8>>)
@@ -358,7 +498,7 @@ pub fn server_stop_releases_blocked_accept_test() -> Nil {
 
   assert server.stop(listener) == Ok(server.Stopped)
   assert http3_test_support.await_task(accept_task)
-    == Error(server.ListenerClosed)
+    == Error(server.Failure(failure.Closed(failure.Local, None)))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -428,7 +568,7 @@ pub fn server_reports_abrupt_peer_termination_test() -> Nil {
   http3_test_support.release_signal(signal)
   let _client_close = http3_test_support.await_task(client_task)
   assert http3_test_support.await_task(receive_task)
-    == Error(server.ConnectionClosed)
+    == Error(server.Failure(failure.Closed(failure.Peer, None)))
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
@@ -437,8 +577,66 @@ pub fn server_rejects_concurrent_accepts_test() -> Nil {
   let #(listener, _, _) = start_server()
   let results = http3_test_support.concurrent_accepts(listener)
   assert list.contains(results, Error(server.ConcurrentAccept))
-  assert list.contains(results, Error(server.ListenerClosed))
+  assert list.contains(
+    results,
+    Error(server.Failure(failure.Closed(failure.Local, None))),
+  )
   assert server.stop(listener) == Ok(server.AlreadyStopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn configured_accept_waiter_capacity_allows_two_callers_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let limits =
+    config.default_limits()
+    |> config.with_limit(failure.AcceptWaiters, 2)
+    |> should.be_ok
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_limits(limits)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let first_accept =
+    http3_test_support.start_task(fn() { server.accept(listener) })
+  let second_accept =
+    http3_test_support.start_task(fn() { server.accept(listener) })
+  http3_test_support.pause_milliseconds(50)
+
+  let first_client = start_bounded_client(port, ca_certificate, "/waiter-one")
+  let second_client = start_bounded_client(port, ca_certificate, "/waiter-two")
+  let first_request =
+    http3_test_support.await_task(first_accept) |> should.be_ok
+  let second_request =
+    http3_test_support.await_task(second_accept) |> should.be_ok
+  server.respond(
+    first_request,
+    200,
+    [],
+    bit_array.from_string(server.path(first_request)),
+  )
+  |> should.be_ok
+  server.respond(
+    second_request,
+    200,
+    [],
+    bit_array.from_string(server.path(second_request)),
+  )
+  |> should.be_ok
+
+  let first_response =
+    http3_test_support.await_task(first_client) |> should.be_ok
+  let second_response =
+    http3_test_support.await_task(second_client) |> should.be_ok
+  assert list.contains([first_response.body, second_response.body], <<
+    "/waiter-one":utf8,
+  >>)
+  assert list.contains([first_response.body, second_response.body], <<
+    "/waiter-two":utf8,
+  >>)
+  assert server.stop(listener) == Ok(server.Stopped)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -543,6 +741,26 @@ fn start_bounded_client_with_path_and_body(
       |> request.set_body(body)
     client.send(client_configuration(ca_certificate), request)
   })
+}
+
+fn send_small_chunks(stream: client.Stream, remaining: Int) -> Nil {
+  case remaining {
+    0 -> Nil
+    _ -> {
+      client.send_chunk(stream, <<1>>) |> should.be_ok
+      send_small_chunks(stream, remaining - 1)
+    }
+  }
+}
+
+fn send_small_response_chunks(request: server.Request, remaining: Int) -> Nil {
+  case remaining {
+    0 -> Nil
+    _ -> {
+      let _send_result = server.send_chunk(request, <<1>>)
+      send_small_response_chunks(request, remaining - 1)
+    }
+  }
 }
 
 fn streaming_request(port: Int, path: String) -> request.Request(Nil) {

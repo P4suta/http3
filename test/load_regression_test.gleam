@@ -43,7 +43,6 @@ pub fn drains_bursty_concurrent_handshakes_over_real_udp_test() -> Nil {
   let server_result = serve_requests(listener, concurrent_connections)
   let stop_result = server.stop(listener)
   let client_results = list.map(tasks, http3_test_support.await_task)
-
   assert server_result == Ok(Nil)
   assert stop_result == Ok(server.Stopped)
   assert_client_results(client_results)

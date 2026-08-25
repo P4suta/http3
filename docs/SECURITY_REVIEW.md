@@ -4,17 +4,18 @@
 
 | Item | Value |
 | --- | --- |
-| Review date | 2026-08-24 |
-| Implementation baseline | `b64ac4444b50c0ee84914bcedc1f3e01a98fec9a` |
+| Review date | Reopened 2026-08-25 |
+| Implementation baseline | Current uncommitted pre-release worktree; not a release candidate |
 | Runtime baseline | Gleam 1.18.1, Erlang/OTP 29.0.5 |
 | Scope | Root public API and adapters, repository-owned QUIC/TLS/HTTP/3/QPACK core, production Erlang FFI, manifests, tests, and CI |
 | Review type | Internal source and behavior review |
-| Outcome | No unresolved critical, high, or known correctness finding in the reviewed v1 scope |
+| Outcome | In progress; unresolved release findings are tracked in the conformance matrix through `PRE-012` |
 
 This is a pre-publication internal review, not a claim of formal verification,
-cryptographic certification, or an independent third-party audit. The review
-establishes that the intended trust boundaries are present in source and that
-the repository's adversarial qualification gates pass.
+cryptographic certification, or an independent third-party audit. The former
+clean outcome is withdrawn. The [conformance matrix](CONFORMANCE.md) is the
+authoritative finding list until a clean-archive release-candidate review
+finishes.
 
 ## Threat model
 
@@ -74,7 +75,7 @@ sizes, catch runtime exceptions, and return closed errors. The native Gleam
 layer coordinates:
 
 - SHA-256/SHA-384, HMAC, HKDF extract/expand, and TLS 1.3 HKDF labels;
-- X25519 key agreement;
+- X25519 and P-256 key agreement, including HelloRetryRequest;
 - AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305 payload protection;
 - AES-ECB and ChaCha20 QUIC header protection;
 - QUIC v1/v2 Initial secrets and Retry integrity;
@@ -97,7 +98,11 @@ verification-disable flag.
 The TLS FFI decodes bounded PEM/DER material, validates paths with OTP
 `public_key`, and checks the leaf identity. Tests cover trusted and untrusted
 paths, DNS and IP identities, wildcard boundaries, mismatches, malformed
-material, signature tampering, and custom CA behavior.
+material, signature tampering, custom CA behavior, clientAuth purpose and key
+usage, certificate/private-key matching, and redacted leaf fingerprints.
+Public mTLS supports disabled, optional, and required policy. Resumed
+connections reauthenticate the client, and mTLS forces an offered 0-RTT path
+to authenticated 1-RTT fallback.
 
 The server validates every certificate/key pair before listener startup.
 Additional credentials use strict, single-label SNI wildcard matching; the
@@ -133,6 +138,14 @@ client permits only GET, HEAD, and OPTIONS before early-data acceptance is
 known. If a peer rejects 0-RTT, queued request bytes are sent after 1-RTT keys
 become available rather than being lost.
 
+Multi-node deployments can additionally require a caller-managed atomic
+test-and-record in shared storage. The callback receives only a
+domain-separated replay fingerprint and its remaining validity. It executes in
+a disposable monitored process under a one-to-10,000-millisecond deadline.
+Rejection, callback error or exit, and timeout all fail closed to 1-RTT while
+preserving authenticated PSK resumption; no callback result can expose ticket
+or traffic-secret contents.
+
 Applications must still treat every 0-RTT request as replayable at the
 application layer. “Safe method” is a transport admission rule, not a promise
 that a particular handler has no side effect.
@@ -153,8 +166,8 @@ coverage.
 
 ## Parser and denial-of-service bounds
 
-All incremental parsers accept explicit byte/count limits or enforce protocol
-maximums before allocating. Reviewed peer-controlled state includes:
+Reviewed incremental parsers accept explicit byte/count limits or enforce
+protocol maximums before allocating. Known peer-controlled state includes:
 
 - packet and frame lengths, ACK ranges, CRYPTO and STREAM offsets, final sizes,
   overlap, and reassembly buffers;
@@ -173,9 +186,12 @@ maximums before allocating. Reviewed peer-controlled state includes:
 
 Invalid authentication is discarded before application dispatch. Queue
 saturation returns typed pressure or cancels the affected stream; it does not
-silently grow a mailbox. Terminal stream state uses bounded FIFO retention.
-The 160,000-stream soak returns below its starting process count with zero
-queued mailbox messages after cleanup.
+silently grow a per-stream event queue. Client and server request/response and
+Datagram queues now have count and byte bounds and amortized O(1) operations.
+Terminal stream state uses bounded FIFO retention. Listener-wide mailboxes,
+one-actor-per-connection isolation, and the complete global memory budget
+remain open findings. The retained 160,000-stream soak is historical evidence,
+not proof for this changed worktree.
 
 ## HTTP semantics and extensions
 
@@ -201,13 +217,18 @@ limits.
 qlog is opt-in and requires an explicitly validated writable directory. Each
 connection creates a unique trace, so client/server or concurrent connections
 cannot overwrite one another. File creation retries are bounded and cleanup
-closes the device.
+closes the device. A bounded asynchronous admission process caps waiting events
+at 1024 plus one in-flight write and reports dropped, write-error, and queued
+counters.
 
 Traces contain transport metadata and application-protocol details and must be
 protected as sensitive data. The implementation does not log traffic secrets,
 private keys, raw session-ticket fields, or certificate trust-store terms.
 Public errors include protocol context and numeric codes without secret
-material.
+material. The output is pinned to qlog main schema 14 and QUIC/HTTP3 events 13,
+which remain diagnostic Internet-Drafts. Deterministic device-writer failure is
+covered without crashing the transport; full event coverage, schema validation,
+and qvis validation remain open.
 
 ## Dependencies and source audit
 
@@ -227,11 +248,37 @@ variable.
 Development peers are separately pinned: aioquic 1.3.0 has a
 hash-locked Python dependency closure, and quic-go 0.61.0 has Go module
 checksums. They execute as bounded out-of-process loopback peers and are absent
-from package manifests.
+from package manifests. A root archive cannot yet consume a published-style
+exact `gleam_quic` dependency because development uses a path dependency; the
+local-registry two-package simulation is an open release gate.
 
-## Adversarial verification
+The current source gate runs gitleaks with only the three documented fixture-
+key fingerprints ignored, four repository Semgrep boundary/FFI rules, REUSE,
+and Dialyzer/xref over all five production Erlang FFI modules. The online OSV gate
+has no unignored finding. Its sole time-bounded exception, `GO-2026-5932`, is
+in the interop-only `x/crypto` module: quic-go reaches `chacha20`, while the
+advisory applies to the unimported deprecated `openpgp` package. The exception
+expires on 2026-11-25 and must be re-reviewed with any quic-go update. Syft
+generates a CycloneDX 1.7 evidence artifact; clean-archive completeness and
+reproducibility remain part of the release simulation.
 
-The reviewed baseline passes:
+The local core-package stage separately verifies the original Hex checksum,
+requires metadata and actual archive contents to agree, rejects test/build/git
+and interop paths, credential files, private-key markers, and HTTP/3/QPACK
+modules, then canonicalizes metadata order and outer tar attributes. Two
+exports must normalize to the same bytes. This qualifies the core artifact
+mechanism only; exact-semver root packaging and clean-archive SBOM evidence
+remain open.
+
+On 2026-08-25, the current worktree passed the complete `mise run security`
+task: exact-key gitleaks, four repository Semgrep rules, the configured OSV
+scan, REUSE, Dialyzer, production-FFI xref, and CycloneDX generation. This is
+local tool evidence only; it does not replace coverage, clean-archive package
+qualification, the expanded peer/platform matrix, or an independent audit.
+
+## Historical adversarial verification
+
+The superseded 2026-08-24 baseline recorded:
 
 - 278 native tests and 108 public-package tests;
 - 10,000 generated wire-codec properties;
@@ -243,17 +290,27 @@ The reviewed baseline passes:
   Datagram, migration, qlog, resumption, and observed 0-RTT; and
 - fixed load and a 160,000-stream soak with process and mailbox convergence.
 
-`mise run check` additionally enforces warnings-as-errors, compiler API
-boundaries, documentation, source/prose/config/workflow/shell/spelling lint,
-and REUSE licensing. Exact commands and performance rows are in
-[Testing](TESTING.md) and [Performance](../benchmarks/README.md).
+Those results do not qualify the current changed worktree. The current normal
+gate additionally checks canonical compiler API snapshots for both packages,
+Dialyzer/xref, gitleaks, and local Semgrep rules; the separate security gate
+adds OSV and CycloneDX generation. Coverage thresholds, expanded faults and
+peers, package simulation, clean-archive security/SBOM qualification, and the
+complete release rerun remain open. Exact requirements are in
+[Testing](TESTING.md) and the [conformance matrix](CONFORMANCE.md).
 
 ## Residual and operational risks
 
-No unresolved implementation finding was identified, but operators must still
-account for:
+Known implementation and qualification findings remain. In particular,
+reviewers must account for:
 
 - the absence of an independent third-party security audit;
+- root HTTP/3 workers have not yet adopted the completed generic QUIC public
+  API and remain coupled to package-private transport primitives;
+- listener-wide connection ownership instead of one supervised actor per
+  connection, plus incomplete global admission/memory enforcement;
+- incomplete OTP 28/29 and external-peer credential/mTLS interoperability;
+- incomplete standards/errata, qlog, CUBIC, coverage, expanded interop,
+  security-tool, and distribution gates;
 - application-level replay and authorization policy for 0-RTT;
 - secure storage and rotation of certificate private keys and qlog files;
 - operating-system trust-store quality, entropy, clock, UDP buffer, firewall,
@@ -264,8 +321,7 @@ account for:
   anti-amplification and resource bounds; and
 - changes in future OTP cryptographic or X.509 behavior.
 
-OTP 28 and 29 both pass clean root/native builds and all tests locally. Before
-publication, observe the configured Linux/macOS/Windows hosted matrix and
-review any dependency or standards errata that appeared after this dated
-baseline. Before a production deployment, prefer an independent security
-review and deployment-specific load testing.
+The intended OTP 28/29 and Linux/macOS/Windows matrices must be rerun after
+these findings close. Do not deploy this source as a supported production
+release. Before any future production deployment, obtain an independent
+security review and deployment-specific load testing.

@@ -3,8 +3,10 @@
 Thank you for helping build `http3`. The project is pre-alpha, so changes to
 the eventual public API should start from the constraints in
 [Architecture](docs/ARCHITECTURE.md) and the ordered work in
-[Roadmap](docs/ROADMAP.md). All behavior changes follow the workflow and gates
-in [Testing](docs/TESTING.md).
+[Roadmap](docs/ROADMAP.md). The
+[conformance matrix](docs/CONFORMANCE.md) is the source of truth for release
+findings. All behavior changes follow the workflow and gates in
+[Testing](docs/TESTING.md).
 
 ## Development setup
 
@@ -28,7 +30,12 @@ the CI definition covers the complete supported range.
 3. Start every behavior change with a failing test, and add a reproducing test
    before fixing a bug.
 4. Update public documentation and `CHANGELOG.md` when behavior changes.
-5. Run `mise run check` before proposing the change.
+5. Review both canonical API snapshot diffs when public signatures change.
+6. Run `mise run check` before proposing the change.
+
+For an intentional public API change, inspect the compiler interface and then
+run `mise run api-update`. Commit both resulting snapshot changes with the API
+change; never refresh snapshots merely to silence an unexpected difference.
 
 Do not add placeholder exports. A client or server operation should be public
 only after it performs the documented protocol work.

@@ -6,6 +6,8 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import http3/capsule
 import http3/client
+import http3/config
+import http3/failure as runtime_failure
 import http3/internal/transport_backend
 import http3/server
 import http3/transport
@@ -87,7 +89,10 @@ pub fn transport_backend_errors_are_normalized_test() -> Nil {
   assert transport_backend.normalize_error(#(7, 4096, "ignored"))
     == transport_backend.DatagramBufferExceeded(4096)
   assert transport_backend.normalize_error(#(99, 0, "backend"))
-    == transport_backend.BackendFailure("backend")
+    == transport_backend.RuntimeFailure(runtime_failure.Http3(
+      runtime_failure.Local,
+      None,
+    ))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -154,15 +159,22 @@ pub fn http_datagrams_require_explicit_negotiation_test() -> Nil {
 pub fn http_datagram_limits_and_concurrent_receive_are_typed_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
+  let datagram_limits =
+    config.default_limits()
+    |> config.with_limit(runtime_failure.Datagram, 32)
+    |> should.be_ok
   let listener =
     server.new(certificate, private_key)
     |> should.be_ok
+    |> server.with_limits(datagram_limits)
     |> server.with_http_datagrams
     |> server.start
     |> should.be_ok
   let port = server.port(listener) |> should.be_ok
   let configuration =
-    client_configuration(ca_certificate) |> client.with_http_datagrams
+    client_configuration(ca_certificate)
+    |> client.with_limits(datagram_limits)
+    |> client.with_http_datagrams
   let connection =
     client.connect(configuration, "localhost", port) |> should.be_ok
   let stream =
@@ -180,6 +192,8 @@ pub fn http_datagram_limits_and_concurrent_receive_are_typed_test() -> Nil {
   let server_transport = server.request_transport(incoming)
   let maximum =
     transport.maximum_datagram_size(client_transport) |> should.be_ok
+  assert maximum > 0
+  assert maximum <= 32
 
   client.send_capsule(stream, capsule.Datagram(<<"reliable-request":utf8>>))
   |> should.be_ok
@@ -266,6 +280,10 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
       assert packets_received > 0
       assert packets_sent > 0
       assert acknowledgements > 0
+      let transport.TelemetryStats(_, qlog_errors, queued_events) =
+        transport.stream_telemetry_stats(stream_transport) |> should.be_ok
+      assert qlog_errors == 0
+      assert queued_events <= 1025
 
       let client_priority =
         await_stream_priority(stream_transport, 1, True, 100)
@@ -421,6 +439,7 @@ pub fn zero_rtt_resumption_is_typed_and_replay_safe_test() -> Nil {
   let listener =
     server.new(certificate, private_key)
     |> should.be_ok
+    |> server.with_single_node_zero_rtt
     |> server.start
     |> should.be_ok
   let port = server.port(listener) |> should.be_ok
@@ -512,6 +531,100 @@ pub fn zero_rtt_resumption_is_typed_and_replay_safe_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn external_replay_guard_accepts_real_zero_rtt_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  assert server.replay_guard(0, fn(_) { Ok(server.AcceptEarlyData) })
+    == Error(server.InvalidReplayGuardTimeout)
+  assert server.replay_guard(10_001, fn(_) { Ok(server.AcceptEarlyData) })
+    == Error(server.InvalidReplayGuardTimeout)
+  let guard =
+    server.replay_guard(100, fn(attempt) {
+      assert bit_array.byte_size(server.replay_fingerprint(attempt)) == 32
+      assert server.replay_valid_for_milliseconds(attempt) > 0
+      Ok(server.AcceptEarlyData)
+    })
+    |> should.be_ok
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_external_zero_rtt(guard)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let ticket =
+    acquire_ticket(
+      listener: listener,
+      port: port,
+      ca_certificate: ca_certificate,
+      path: "/external-ticket",
+    )
+  let connection =
+    client_configuration(ca_certificate)
+    |> client.with_address_family(config.Ipv4)
+    |> client.with_resumption_ticket(ticket)
+    |> client.connect("localhost", port)
+    |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/external-early"))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == "/external-early"
+  assert transport.stream_early_data_status(server.request_transport(incoming))
+    == Ok(transport.Accepted)
+  server.respond(incoming, 200, [], <<"accepted":utf8>>) |> should.be_ok
+  assert receive_response(stream) == <<"accepted":utf8>>
+  assert transport.early_data_status(client.connection_transport(connection))
+    == Ok(transport.Accepted)
+
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn external_replay_guard_failure_falls_back_to_one_rtt_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let guard = server.replay_guard(100, fn(_) { Error(Nil) }) |> should.be_ok
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_external_zero_rtt(guard)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let ticket =
+    acquire_ticket(
+      listener: listener,
+      port: port,
+      ca_certificate: ca_certificate,
+      path: "/fallback-ticket",
+    )
+  let connection =
+    client_configuration(ca_certificate)
+    |> client.with_address_family(config.Ipv4)
+    |> client.with_resumption_ticket(ticket)
+    |> client.connect("localhost", port)
+    |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/fallback-1rtt"))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == "/fallback-1rtt"
+  assert transport.stream_early_data_status(server.request_transport(incoming))
+    == Ok(transport.Rejected)
+  server.respond(incoming, 200, [], <<"fallback":utf8>>) |> should.be_ok
+  assert receive_response(stream) == <<"fallback":utf8>>
+  let controls = client.connection_transport(connection)
+  assert transport.early_data_status(controls) == Ok(transport.Rejected)
+  assert transport.resumption_status(controls) == Ok(transport.Resumed)
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn stale_address_token_falls_back_to_authenticated_retry_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
@@ -555,9 +668,196 @@ pub fn stale_address_token_falls_back_to_authenticated_retry_test() -> Nil {
   server.respond(incoming, 200, [], <<"retried":utf8>>) |> should.be_ok
   assert receive_response(stream) == <<"retried":utf8>>
   assert transport.early_data_status(client.connection_transport(connection))
-    != Ok(transport.NotAttempted)
+    == Ok(transport.NotAttempted)
+  assert transport.resumption_status(client.connection_transport(connection))
+    == Ok(transport.FullHandshake)
   assert client.close(connection) == Ok(client.Closed)
   assert server.stop(replacement_listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn operational_keys_survive_listener_restart_without_enabling_zero_rtt_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let ticket_key = server.operational_key(<<0x11:256>>) |> should.be_ok
+  let token_key = server.operational_key(<<0x22:256>>) |> should.be_ok
+  let reset_key = server.operational_key(<<0x33:256>>) |> should.be_ok
+  let keys =
+    server.operational_keys(
+      server.key_ring(ticket_key),
+      server.key_ring(token_key),
+      server.key_ring(reset_key),
+    )
+    |> should.be_ok
+  let first_listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_operational_keys(keys)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(first_listener) |> should.be_ok
+  let ticket =
+    acquire_ticket(
+      listener: first_listener,
+      port: port,
+      ca_certificate: ca_certificate,
+      path: "/restart-ticket",
+    )
+  assert transport.ticket_storage_key(<<1>>)
+    == Error(transport.InvalidTicketStorageKey)
+  let storage_key = transport.ticket_storage_key(<<0x55:256>>) |> should.be_ok
+  let wrong_storage_key =
+    transport.ticket_storage_key(<<0x56:256>>) |> should.be_ok
+  let exported =
+    transport.export_resumption_ticket(ticket, storage_key) |> should.be_ok
+  assert transport.import_resumption_ticket(exported, wrong_storage_key)
+    == Error(transport.InvalidResumptionTicket)
+  assert transport.import_resumption_ticket(
+      flip_last_byte(exported),
+      storage_key,
+    )
+    == Error(transport.InvalidResumptionTicket)
+  assert server.stop(first_listener) == Ok(server.Stopped)
+
+  let replacement_listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_operational_keys(keys)
+    |> server.with_port(port)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let restored_ticket =
+    transport.import_resumption_ticket(exported, storage_key) |> should.be_ok
+  let connection =
+    client_configuration(ca_certificate)
+    |> client.with_resumption_ticket(restored_ticket)
+    |> client.connect("localhost", port)
+    |> should.be_ok
+  assert transport.early_data_status(client.connection_transport(connection))
+    == Ok(transport.NotAttempted)
+  assert transport.resumption_status(client.connection_transport(connection))
+    == Ok(transport.Resumed)
+  let post_request =
+    streaming_request(port, "/after-restart")
+    |> request.set_method(http.Post)
+  let stream =
+    client.open_stream(connection, post_request)
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(replacement_listener) |> should.be_ok
+  assert server.method(incoming) == http.Post
+  assert server.path(incoming) == "/after-restart"
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  server.respond(incoming, 200, [], <<"resumed":utf8>>) |> should.be_ok
+  assert receive_response(stream) == <<"resumed":utf8>>
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(replacement_listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn operational_keys_are_opaque_bounded_and_domain_separated_test() -> Nil {
+  assert server.operational_key(<<1>>) == Error(server.InvalidOperationalKey)
+  let first = server.operational_key(<<0x41:256>>) |> should.be_ok
+  let second = server.operational_key(<<0x42:256>>) |> should.be_ok
+  let third = server.operational_key(<<0x43:256>>) |> should.be_ok
+  let fourth = server.operational_key(<<0x44:256>>) |> should.be_ok
+  let ring = server.key_ring(first)
+  assert server.rotate_key_ring(ring, first)
+    == Error(server.DuplicateOperationalKey)
+  let rotated = server.rotate_key_ring(ring, fourth) |> should.be_ok
+  assert server.operational_keys(rotated, server.key_ring(second), ring)
+    == Error(server.DuplicateOperationalKey)
+  let _keys =
+    server.operational_keys(
+      rotated,
+      server.key_ring(second),
+      server.key_ring(third),
+    )
+    |> should.be_ok
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn live_operational_key_rotation_accepts_exactly_one_previous_generation_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let old_ticket = server.operational_key(<<0x10:256>>) |> should.be_ok
+  let old_token = server.operational_key(<<0x20:256>>) |> should.be_ok
+  let old_reset = server.operational_key(<<0x30:256>>) |> should.be_ok
+  let old_keys =
+    server.operational_keys(
+      server.key_ring(old_ticket),
+      server.key_ring(old_token),
+      server.key_ring(old_reset),
+    )
+    |> should.be_ok
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.with_operational_keys(old_keys)
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let issued_with_old =
+    acquire_ticket(
+      listener: listener,
+      port: port,
+      ca_certificate: ca_certificate,
+      path: "/old-generation",
+    )
+
+  let new_ticket = server.operational_key(<<0x11:256>>) |> should.be_ok
+  let new_token = server.operational_key(<<0x21:256>>) |> should.be_ok
+  let new_reset = server.operational_key(<<0x31:256>>) |> should.be_ok
+  let rotating_keys =
+    server.operational_keys(
+      server.rotate_key_ring(server.key_ring(old_ticket), new_ticket)
+        |> should.be_ok,
+      server.rotate_key_ring(server.key_ring(old_token), new_token)
+        |> should.be_ok,
+      server.rotate_key_ring(server.key_ring(old_reset), new_reset)
+        |> should.be_ok,
+    )
+    |> should.be_ok
+  server.reload_operational_keys(listener, rotating_keys) |> should.be_ok
+  let issued_with_new =
+    resume_and_acquire_ticket(
+      listener,
+      port,
+      ca_certificate,
+      issued_with_old,
+      "/accepted-previous",
+      transport.Resumed,
+    )
+
+  let current_only =
+    server.operational_keys(
+      server.key_ring(new_ticket),
+      server.key_ring(new_token),
+      server.key_ring(new_reset),
+    )
+    |> should.be_ok
+  server.reload_operational_keys(listener, current_only) |> should.be_ok
+  let _expired_ticket =
+    resume_and_acquire_ticket(
+      listener,
+      port,
+      ca_certificate,
+      issued_with_old,
+      "/expired-previous",
+      transport.FullHandshake,
+    )
+  let _current_ticket =
+    resume_and_acquire_ticket(
+      listener,
+      port,
+      ca_certificate,
+      issued_with_new,
+      "/accepted-current",
+      transport.Resumed,
+    )
+  assert server.stop(listener) == Ok(server.Stopped)
 }
 
 fn acquire_ticket(
@@ -584,6 +884,36 @@ fn acquire_ticket(
     |> should.be_ok
   assert client.close(connection) == Ok(client.Closed)
   ticket
+}
+
+// nolint: label_possible -- positional arguments keep this private fixture compact.
+fn resume_and_acquire_ticket(
+  listener: server.Listener,
+  port: Int,
+  ca_certificate: BitArray,
+  ticket: transport.ResumptionTicket,
+  path: String,
+  expected: transport.ResumptionStatus,
+) -> transport.ResumptionTicket {
+  let connection =
+    client_configuration(ca_certificate)
+    |> client.with_resumption_ticket(ticket)
+    |> client.connect("localhost", port)
+    |> should.be_ok
+  let controls = client.connection_transport(connection)
+  assert transport.resumption_status(controls) == Ok(expected)
+  let stream =
+    client.open_stream(connection, streaming_request(port, path))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == path
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  server.respond(incoming, 200, [], <<"rotated":utf8>>) |> should.be_ok
+  assert receive_response(stream) == <<"rotated":utf8>>
+  let next = transport.resumption_ticket(controls) |> should.be_ok
+  assert client.close(connection) == Ok(client.Closed)
+  next
 }
 
 fn exercise_qlog_connection(
@@ -665,6 +995,10 @@ fn advanced_client(
   assert received > 0
   assert sent > 0
   assert acknowledgements > 0
+  let transport.TelemetryStats(_, qlog_errors, queued_events) =
+    transport.telemetry_stats(connection_transport) |> should.be_ok
+  assert qlog_errors == 0
+  assert queued_events <= 1025
   assert client.close(connection) == Ok(client.Closed)
 }
 
@@ -683,6 +1017,7 @@ fn await_stream_priority(
     True -> observed
     False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(1)
       await_stream_priority(stream, urgency, incremental, attempts - 1)
     }
   }
@@ -710,10 +1045,12 @@ fn settle_sent_packets(
     True, True -> current
     True, False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       settle_sent_packets(connection, current, stable + 1, attempts - 1)
     }
     False, _ -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       settle_sent_packets(connection, current, 0, attempts - 1)
     }
   }
@@ -731,6 +1068,7 @@ fn await_sent_packets(
     True -> current
     False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       await_sent_packets(connection, baseline, attempts - 1)
     }
   }
@@ -749,10 +1087,12 @@ fn settle_received_packets(
     True, True -> current
     True, False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       settle_received_packets(connection, current, stable + 1, attempts - 1)
     }
     False, _ -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       settle_received_packets(connection, current, 0, attempts - 1)
     }
   }
@@ -770,6 +1110,7 @@ fn await_received_packets(
     True -> current
     False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       await_received_packets(connection, baseline, attempts - 1)
     }
   }
@@ -784,6 +1125,7 @@ fn await_connection_mtu(
     True -> current
     False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       await_connection_mtu(connection, attempts - 1)
     }
   }
@@ -796,6 +1138,7 @@ fn await_stream_mtu(stream: transport.Stream, attempts: Int) -> Int {
     True -> current
     False -> {
       assert attempts > 0
+      http3_test_support.pause_milliseconds(10)
       await_stream_mtu(stream, attempts - 1)
     }
   }
@@ -824,4 +1167,12 @@ fn receive_response_loop(stream: client.Stream, body: BitArray) -> BitArray {
     client.End -> body
     _ -> receive_response_loop(stream, body)
   }
+}
+
+fn flip_last_byte(bytes: BitArray) -> BitArray {
+  let prefix_size = { bit_array.byte_size(bytes) - 1 } * 8
+  // nolint: assert_ok_pattern -- callers always provide non-empty ciphertext.
+  let assert <<prefix:bits-size(prefix_size), last>> = bytes
+  let changed = { last + 1 } % 256
+  <<prefix:bits, changed>>
 }

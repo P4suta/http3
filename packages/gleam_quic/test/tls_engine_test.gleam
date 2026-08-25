@@ -1,6 +1,6 @@
 import gleam/bit_array
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam_quic/internal/crypto
 import gleam_quic/internal/tls/anti_replay
@@ -65,6 +65,86 @@ pub fn completes_authenticated_client_server_handshake_test() -> Nil {
     engine.confirm_client_handshake(client)
   assert has_discard(confirmation_actions, engine.Handshake)
   let assert Ok(engine.Step(_, [])) = engine.confirm_client_handshake(client)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn required_client_certificate_authenticates_redacted_identity_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let #(credential, client_trust_store) = client_authentication_material()
+  let client_config =
+    engine.ClientConfig(..client_config, client_credential: Some(credential))
+  let server_config =
+    engine.ServerConfig(
+      ..server_config,
+      client_authentication: engine.ClientAuthenticationRequired(
+        client_trust_store,
+      ),
+    )
+
+  let assert Ok(#(_, server)) = complete_handshake(client_config, server_config)
+  let assert Some(identity) = engine.server_client_identity(server)
+  let assert Ok(fingerprint) =
+    authentication.verified_peer_fingerprint(identity)
+  assert bit_array.byte_size(fingerprint) == 32
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn optional_client_certificate_accepts_anonymous_client_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let #(_, client_trust_store) = client_authentication_material()
+  let server_config =
+    engine.ServerConfig(
+      ..server_config,
+      client_authentication: engine.ClientAuthenticationOptional(
+        client_trust_store,
+      ),
+    )
+
+  let assert Ok(#(_, server)) = complete_handshake(client_config, server_config)
+  assert engine.server_client_identity(server) == None
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn required_client_certificate_rejects_anonymous_client_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let #(_, client_trust_store) = client_authentication_material()
+  let server_config =
+    engine.ServerConfig(
+      ..server_config,
+      client_authentication: engine.ClientAuthenticationRequired(
+        client_trust_store,
+      ),
+    )
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(_, client_actions)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+  assert engine.handle_server(
+      server,
+      engine.Handshake,
+      sent_at(client_actions, engine.Handshake),
+    )
+    == Error(engine.ClientCertificateRequired)
   Nil
 }
 
@@ -218,6 +298,98 @@ pub fn completes_one_hello_retry_request_and_discards_initial_keys_test() -> Nil
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn completes_p256_key_exchange_in_first_client_hello_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client_with_strategy(client_config, engine.EagerP256KeyShare)
+  assert client_hello_key_share_group(client_actions)
+    == extension_value.Secp256r1
+
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  assert server_hello_key_share_group(server_actions)
+    == extension_value.Secp256r1
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(_, finish_actions)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+  let assert Ok(engine.Step(server, complete_actions)) =
+    engine.handle_server(
+      server,
+      engine.Handshake,
+      sent_at(finish_actions, engine.Handshake),
+    )
+  assert engine.server_phase(server) == engine.Connected
+  assert has_complete(complete_actions)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn completes_p256_hello_retry_request_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client_with_strategy(
+      client_config,
+      engine.DeferredP256KeyShare,
+    )
+
+  let assert Ok(engine.Step(server, retry_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  assert hello_retry_request_group(retry_actions) == extension_value.Secp256r1
+  let assert Ok(engine.Step(client, second_actions)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(retry_actions, engine.Initial),
+    )
+  assert client_hello_key_share_group(second_actions)
+    == extension_value.Secp256r1
+
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(second_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(_, finish_actions)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+  let assert Ok(engine.Step(server, _)) =
+    engine.handle_server(
+      server,
+      engine.Handshake,
+      sent_at(finish_actions, engine.Handshake),
+    )
+  assert engine.server_phase(server) == engine.Connected
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_psk_resumption_and_accepts_replay_checked_early_data_test() -> Nil {
   let #(client_config, server_config) = configs([<<"h3">>])
   let ticket_key = <<0x61:256>>
@@ -303,6 +475,95 @@ pub fn completes_psk_resumption_and_accepts_replay_checked_early_data_test() -> 
   assert engine.server_phase(server) == engine.Connected
   assert has_discard(complete_actions, engine.ZeroRtt)
   let assert Some(_) = engine.server_replay_cache(server)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn mtls_resumption_reauthenticates_and_rejects_zero_rtt_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let #(credential, client_trust_store) = client_authentication_material()
+  let client_config =
+    engine.ClientConfig(..client_config, client_credential: Some(credential))
+  let server_config =
+    engine.ServerConfig(
+      ..server_config,
+      client_authentication: engine.ClientAuthenticationRequired(
+        client_trust_store,
+      ),
+    )
+  let ticket_key = <<0x91:256>>
+  let resumption_master_secret = <<0x92:256>>
+  let issued_at = 30_000_000
+  let assert Ok(remembered_parameters) =
+    transport_parameter.encode_all(
+      server_config.transport_parameters,
+      transport_parameter.Server,
+    )
+  let assert Ok(new_ticket) =
+    session_ticket.issue(
+      ticket_key:,
+      issued_at_milliseconds: issued_at,
+      lifetime_seconds: 3600,
+      resumption_master_secret:,
+      algorithm: crypto.Sha256,
+      cipher_suite: hello.Aes128GcmSha256,
+      server_name: "localhost",
+      alpn: <<"h3">>,
+      quic_version: 1,
+      remembered_transport_parameters: remembered_parameters,
+      permit_early_data: True,
+    )
+  let assert Ok(ticket) =
+    session_ticket.store(
+      new_ticket:,
+      received_at_milliseconds: issued_at,
+      resumption_master_secret:,
+      algorithm: crypto.Sha256,
+      cipher_suite: hello.Aes128GcmSha256,
+      server_name: "localhost",
+      alpn: <<"h3">>,
+      quic_version: 1,
+      remembered_transport_parameters: remembered_parameters,
+    )
+  let assert Ok(replay_cache) = anti_replay.new(60_000, 128)
+  let assert Ok(policy) =
+    resumption.server_policy(ticket_key, issued_at + 50, 100, replay_cache)
+  let assert Ok(server) =
+    engine.start_server_with_resumption(server_config, policy)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client_resuming(client_config, ticket, issued_at + 50, True)
+  assert has_write_keys(client_actions, engine.ZeroRtt)
+
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  assert !has_read_keys(server_actions, engine.ZeroRtt)
+  assert list.contains(server_actions, engine.EarlyDataRejected)
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(_client, finish_actions)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+  assert list.contains(finish_actions, engine.EarlyDataRejected)
+  let assert Ok(engine.Step(server, _)) =
+    engine.handle_server(
+      server,
+      engine.Handshake,
+      sent_at(finish_actions, engine.Handshake),
+    )
+  assert engine.server_resumed(server)
+  assert !engine.server_early_data_accepted(server)
+  let assert Some(_) = engine.server_client_identity(server)
   Nil
 }
 
@@ -546,6 +807,7 @@ fn configs(
         transport_parameter.MaxUdpPayloadSize(1200),
       ],
       trust_store: trust_store,
+      client_credential: None,
       retried: False,
       version_negotiated: False,
     )
@@ -563,8 +825,57 @@ fn configs(
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
       alternative_credentials: [],
+      client_authentication: engine.ClientAuthenticationDisabled,
     )
   #(client, server)
+}
+
+fn client_authentication_material() -> #(
+  engine.ClientCredential,
+  authentication.TrustStore,
+) {
+  let assert Ok(certificate_pem) = fixture("client.pem")
+  let assert Ok(private_key_pem) = fixture("client-key.pem")
+  let assert Ok(chain) =
+    authentication.certificate_chain_from_pem(certificate_pem)
+  let assert Ok(signing_key) =
+    authentication.signing_key_from_pem(private_key_pem)
+  let assert Ok(signature_scheme) =
+    authentication.signing_key_scheme(signing_key)
+  let assert Ok(trust_store) =
+    authentication.trust_store_from_pem(certificate_pem)
+  #(engine.ClientCredential(chain, signing_key, signature_scheme), trust_store)
+}
+
+fn complete_handshake(
+  client_config: engine.ClientConfig,
+  server_config: engine.ServerConfig,
+) -> Result(#(engine.Client, engine.Server), engine.Error) {
+  use server <- result.try(engine.start_server(server_config))
+  use engine.Step(client, client_actions) <- result.try(engine.start_client(
+    client_config,
+  ))
+  use engine.Step(server, server_actions) <- result.try(engine.handle_server(
+    server,
+    engine.Initial,
+    sent_at(client_actions, engine.Initial),
+  ))
+  use engine.Step(client, _) <- result.try(engine.handle_client(
+    client,
+    engine.Initial,
+    sent_at(server_actions, engine.Initial),
+  ))
+  use engine.Step(client, client_actions) <- result.try(engine.handle_client(
+    client,
+    engine.Handshake,
+    sent_at(server_actions, engine.Handshake),
+  ))
+  use engine.Step(server, _) <- result.try(engine.handle_server(
+    server,
+    engine.Handshake,
+    sent_at(client_actions, engine.Handshake),
+  ))
+  Ok(#(client, server))
 }
 
 fn v2_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
@@ -637,6 +948,72 @@ fn receive_server_flight(
     engine.Handshake,
     sent_at(server_actions, engine.Handshake),
   )
+}
+
+fn client_hello_key_share_group(
+  actions: List(engine.Action),
+) -> extension_value.NamedGroup {
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.ClientHello, body),
+    <<>>,
+  )) =
+    handshake.decode_next(
+      sent_at(actions, engine.Initial),
+      handshake.default_limits(),
+    )
+  let assert Ok(hello.ClientHello(_, _, _, extensions)) =
+    hello.decode_client(body, hello.default_limits())
+  let assert Ok([extension_value.KeyShare(group, _)]) =
+    extension_data(extensions, extension.KeyShare)
+    |> extension_value.decode_client_key_shares
+  group
+}
+
+fn server_hello_key_share_group(
+  actions: List(engine.Action),
+) -> extension_value.NamedGroup {
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.ServerHello, body),
+    <<>>,
+  )) =
+    handshake.decode_next(
+      sent_at(actions, engine.Initial),
+      handshake.default_limits(),
+    )
+  let assert Ok(hello.ServerHello(_, _, _, extensions)) =
+    hello.decode_server(body, hello.default_limits())
+  let assert Ok(extension_value.KeyShare(group, _)) =
+    extension_data(extensions, extension.KeyShare)
+    |> extension_value.decode_server_key_share
+  group
+}
+
+fn hello_retry_request_group(
+  actions: List(engine.Action),
+) -> extension_value.NamedGroup {
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.ServerHello, body),
+    <<>>,
+  )) =
+    handshake.decode_next(
+      sent_at(actions, engine.Initial),
+      handshake.default_limits(),
+    )
+  let assert Ok(hello.HelloRetryRequest(_, _, extensions)) =
+    hello.decode_server(body, hello.default_limits())
+  let assert Ok(group) =
+    extension_data(extensions, extension.KeyShare)
+    |> extension_value.decode_selected_group
+  group
+}
+
+fn extension_data(
+  extensions: List(extension.Extension),
+  kind: extension.Kind,
+) -> BitArray {
+  let assert [extension.Extension(_, data)] =
+    list.filter(extensions, fn(value) { value.kind == kind })
+  data
 }
 
 fn sent_at(

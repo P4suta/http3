@@ -1,9 +1,11 @@
+import gleam/option.{None, Some}
+import http3/failure
 import http3/internal/client_backend
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn backend_timeout_is_normalized_test() -> Nil {
   assert client_backend.normalize_error(#(3, 0, "request timeout"))
-    == client_backend.Timeout
+    == client_backend.RuntimeFailure(failure.Timeout(failure.Total))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -15,7 +17,7 @@ pub fn backend_body_limit_is_normalized_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn backend_stream_reset_is_normalized_test() -> Nil {
   assert client_backend.normalize_error(#(6, 268, "stream reset"))
-    == client_backend.StreamReset(268)
+    == client_backend.RuntimeFailure(failure.Closed(failure.Peer, Some(268)))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -43,11 +45,11 @@ pub fn backend_streaming_failures_are_normalized_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn backend_protocol_error_is_normalized_test() -> Nil {
   assert client_backend.normalize_error(#(7, 257, "protocol failure"))
-    == client_backend.ProtocolError(257, "protocol failure")
+    == client_backend.RuntimeFailure(failure.Http3(failure.Peer, Some(257)))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn unknown_backend_error_is_normalized_test() -> Nil {
   assert client_backend.normalize_error(#(99, 0, "unknown"))
-    == client_backend.BackendFailure("unknown")
+    == client_backend.RuntimeFailure(failure.Http3(failure.Local, None))
 }

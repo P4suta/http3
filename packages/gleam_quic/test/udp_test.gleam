@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/list
 import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
@@ -28,6 +29,12 @@ pub fn resolves_literal_addresses_without_runtime_terms_test() -> Nil {
   })
   assert udp.resolve("", udp.Any) == Error(udp.InvalidInput)
   assert udp.resolve("bad\u{0000}name", udp.Any) == Error(udp.InvalidInput)
+  let assert Ok(timed) = udp.resolve_with_timeout("127.0.0.1", udp.Any, 1000)
+  assert list.any(timed, fn(address) {
+    udp.address_bytes(address) == <<127, 0, 0, 1>>
+  })
+  assert udp.resolve_with_timeout("localhost", udp.Any, 0)
+    == Error(udp.InvalidInput)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -77,6 +84,68 @@ pub fn exchanges_real_ipv4_udp_datagrams_and_cleans_up_test() -> Nil {
   let assert Ok(Nil) = udp.close(right_socket)
   assert udp.receive(left_socket, 1) == Error(udp.Closed)
   assert udp.monotonic_millisecond() >= started
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn active_once_delivers_exactly_one_bounded_mailbox_datagram_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(sender) = udp.open(ephemeral)
+  let assert Ok(receiver) = udp.open(ephemeral)
+  let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
+  let selector =
+    process.new_selector()
+    |> process.select_other(fn(value) { value })
+
+  let assert Ok(Nil) = udp.activate_once(receiver)
+  let assert Ok(Nil) =
+    udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
+  let assert Ok(Nil) =
+    udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok(udp.Datagram(_, <<"first">>, _)) =
+    udp.receive_active(receiver, message)
+  assert process.selector_receive(selector, within: 10) == Error(Nil)
+
+  let assert Ok(Nil) = udp.activate_once(receiver)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok(udp.Datagram(_, <<"second">>, _)) =
+    udp.receive_active(receiver, message)
+  let assert Ok(Nil) = udp.close(sender)
+  let assert Ok(Nil) = udp.close(receiver)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn relay_waits_for_credit_before_forwarding_another_batch_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(sender) = udp.open(ephemeral)
+  let assert Ok(receiver) = udp.open(ephemeral)
+  let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
+  let selector =
+    process.new_selector()
+    |> process.select_other(fn(value) { value })
+  let assert Ok(relay) = udp.start_relay(receiver)
+
+  let assert Ok(Nil) =
+    udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok([udp.Datagram(_, <<"first">>, _)]) =
+    udp.receive_relay_batch(relay, message)
+
+  let assert Ok(Nil) =
+    udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
+  assert process.selector_receive(selector, within: 10) == Error(Nil)
+
+  let assert Ok(Nil) = udp.continue_relay(relay)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok([udp.Datagram(_, <<"second">>, _)]) =
+    udp.receive_relay_batch(relay, message)
+
+  let assert Ok(Nil) = udp.stop_relay(relay)
+  let assert Ok(Nil) = udp.close(sender)
+  Nil
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -133,5 +202,38 @@ pub fn exchanges_consecutive_ipv6_datagrams_from_wildcard_sockets_test() -> Nil 
   assert bit_array.byte_size(reply) == 1200
   let assert Ok(Nil) = udp.close(left_socket)
   let assert Ok(Nil) = udp.close(right_socket)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn dual_stack_socket_accepts_ipv4_and_ipv6_datagrams_test() -> Nil {
+  let assert Ok(ipv4_loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ipv6_loopback) = udp.ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+  let assert Ok(ipv4_ephemeral) = udp.endpoint(ipv4_loopback, 0)
+  let assert Ok(ipv6_ephemeral) = udp.endpoint(ipv6_loopback, 0)
+  let assert Ok(ipv4_sender) = udp.open(ipv4_ephemeral)
+  let assert Ok(ipv6_sender) = udp.open(ipv6_ephemeral)
+  let assert Ok(receiver) = udp.open_dual_stack(0)
+  let assert Ok(local) = udp.local_endpoint(receiver)
+  let #(_, port) = udp.endpoint_parts(local)
+  let assert Ok(ipv4_receiver) = udp.endpoint(ipv4_loopback, port)
+  let assert Ok(ipv6_receiver) = udp.endpoint(ipv6_loopback, port)
+
+  let assert Ok(Nil) =
+    udp.send(ipv4_sender, ipv4_receiver, <<"ipv4">>, ecn.NotEct)
+  let assert Ok(Nil) =
+    udp.send(ipv6_sender, ipv6_receiver, <<"ipv6">>, ecn.NotEct)
+  let assert Ok(udp.Datagram(_, first, _)) = udp.receive(receiver, 1000)
+  let assert Ok(udp.Datagram(_, second, _)) = udp.receive(receiver, 1000)
+  assert {
+    first == <<"ipv4">>
+    && second == <<"ipv6">>
+    || first == <<"ipv6">>
+    && second == <<"ipv4">>
+  }
+
+  let assert Ok(Nil) = udp.close(ipv4_sender)
+  let assert Ok(Nil) = udp.close(ipv6_sender)
+  let assert Ok(Nil) = udp.close(receiver)
   Nil
 }

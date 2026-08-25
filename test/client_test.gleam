@@ -3,10 +3,12 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 import gleam_quic/internal/tls/authentication
 import gleeunit/should
 import http3/client
+import http3/failure
 import http3/transport
 import http3_test_support
 
@@ -289,7 +291,8 @@ pub fn client_times_out_incomplete_response_test() -> Nil {
       |> request.set_path("/timeout")
       |> request.set_body(<<>>)
 
-    assert client.send(configuration, request) == Error(client.Timeout)
+    assert client.send(configuration, request)
+      == Error(client.Failure(failure.Timeout(failure.Total)))
   })
 }
 
@@ -416,7 +419,8 @@ pub fn client_reports_peer_termination_test() -> Nil {
       |> request.set_path("/close")
       |> request.set_body(<<>>)
 
-    assert client.send(configuration, request) == Error(client.ConnectionClosed)
+    assert client.send(configuration, request)
+      == Error(client.Failure(failure.Closed(failure.Peer, None)))
   })
 }
 
@@ -505,7 +509,7 @@ pub fn streaming_client_cancellation_is_idempotent_test() -> Nil {
 
     assert client.cancel(stream) == Ok(client.Cancelled)
     assert client.cancel(stream) == Ok(client.AlreadyCancelled)
-    assert client.next_event(stream) == Error(client.StreamCancelled)
+    assert client.next_event(stream) == Error(client.Failure(failure.Cancelled))
     assert client.close(connection) == Ok(client.Closed)
   })
 }
@@ -611,7 +615,7 @@ pub fn streaming_client_rejects_concurrent_receivers_test() -> Nil {
 
     let results = http3_test_support.concurrent_next_events(stream)
     assert list.contains(results, Error(client.ConcurrentReceive))
-    assert list.contains(results, Error(client.StreamCancelled))
+    assert list.contains(results, Error(client.Failure(failure.Cancelled)))
     assert client.cancel(stream) == Ok(client.AlreadyCancelled)
     assert client.close(connection) == Ok(client.Closed)
   })
@@ -629,7 +633,7 @@ pub fn streaming_client_cancellation_race_is_safe_test() -> Nil {
     let results = http3_test_support.concurrent_cancellations(stream)
     assert list.contains(results, Ok(client.Cancelled))
     assert list.contains(results, Ok(client.AlreadyCancelled))
-    assert client.next_event(stream) == Error(client.StreamCancelled)
+    assert client.next_event(stream) == Error(client.Failure(failure.Cancelled))
     assert client.close(connection) == Ok(client.Closed)
   })
 }
@@ -659,7 +663,8 @@ pub fn streaming_client_reports_peer_termination_test() -> Nil {
       |> should.be_ok
     client.finish(stream) |> should.be_ok
 
-    assert client.next_event(stream) == Error(client.ConnectionClosed)
+    assert client.next_event(stream)
+      == Error(client.Failure(failure.Closed(failure.Peer, None)))
     let _close_result = client.close(connection)
     Nil
   })
@@ -679,7 +684,8 @@ pub fn streaming_client_times_out_incomplete_response_test() -> Nil {
       |> should.be_ok
     client.finish(stream) |> should.be_ok
 
-    assert client.next_event(stream) == Error(client.Timeout)
+    assert client.next_event(stream)
+      == Error(client.Failure(failure.Timeout(failure.Operation)))
     assert client.close(connection) == Ok(client.Closed)
   })
 }

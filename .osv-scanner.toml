@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "Interop-only quic-go reaches x/crypto/chacha20; the advisory applies to the unimported, deprecated openpgp package. Recheck when updating quic-go."
+ignoreUntil = 2026-11-25

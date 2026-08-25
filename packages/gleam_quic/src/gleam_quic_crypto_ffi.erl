@@ -16,6 +16,9 @@
     hmac_sha256/2,
     hmac_sha384/2,
     secure_random/1,
+    p256_generate/0,
+    p256_public/1,
+    p256_shared/2,
     x25519_generate/0,
     x25519_public/1,
     x25519_shared/2
@@ -29,6 +32,8 @@ is_supported() ->
                 _ = crypto:strong_rand_bytes(1),
                 _ = crypto:hash(sha256, <<>>),
                 {_PublicKey, _PrivateKey} = crypto:generate_key(ecdh, x25519),
+                {_P256PublicKey, _P256PrivateKey} =
+                    crypto:generate_key(ecdh, prime256v1),
                 {_AesCiphertext, _AesTag} = crypto:crypto_one_time_aead(
                     aes_128_gcm,
                     <<0:128>>,
@@ -83,6 +88,69 @@ hmac_sha384(_Key, _Data) ->
 secure_random(Length) when is_integer(Length), Length >= 0, Length =< 65535 ->
     with_crypto(fun() -> crypto:strong_rand_bytes(Length) end);
 secure_random(_Length) ->
+    {error, 1}.
+
+-spec p256_generate() -> {ok, {binary(), binary()}} | {error, 2}.
+p256_generate() ->
+    case ensure_crypto() of
+        ok ->
+            try crypto:generate_key(ecdh, prime256v1) of
+                {<<4, _Coordinates:64/binary>> = PublicKey, PrivateKey}
+                    when is_binary(PrivateKey), byte_size(PrivateKey) =:= 32 ->
+                    {ok, {PublicKey, PrivateKey}};
+                _Other ->
+                    {error, 2}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end.
+
+-spec p256_public(binary()) -> {ok, binary()} | {error, 1 | 2}.
+p256_public(PrivateKey)
+    when is_binary(PrivateKey), byte_size(PrivateKey) =:= 32 ->
+    case ensure_crypto() of
+        ok ->
+            try crypto:generate_key(ecdh, prime256v1, PrivateKey) of
+                {<<4, _Coordinates:64/binary>> = PublicKey, _PrivateKey} ->
+                    {ok, PublicKey};
+                _Other ->
+                    {error, 2}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end;
+p256_public(_PrivateKey) ->
+    {error, 1}.
+
+-spec p256_shared(binary(), binary()) -> {ok, binary()} | {error, 1 | 2 | 4}.
+p256_shared(PrivateKey, <<4, _Coordinates:64/binary>> = PeerPublicKey)
+    when is_binary(PrivateKey), byte_size(PrivateKey) =:= 32 ->
+    case ensure_crypto() of
+        ok ->
+            try crypto:compute_key(
+                ecdh,
+                PeerPublicKey,
+                PrivateKey,
+                prime256v1
+            ) of
+                <<0:256>> -> {error, 4};
+                SharedSecret
+                    when is_binary(SharedSecret), byte_size(SharedSecret) =:= 32 ->
+                    {ok, SharedSecret};
+                _Other ->
+                    {error, 2}
+            catch
+                error:_Reason -> {error, 1};
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end;
+p256_shared(_PrivateKey, _PeerPublicKey) ->
     {error, 1}.
 
 -spec x25519_generate() -> {ok, {binary(), binary()}} | {error, 2}.
@@ -330,8 +398,7 @@ with_crypto(Operation) ->
     case ensure_crypto() of
         ok ->
             try Operation() of
-                Value when is_binary(Value) -> {ok, Value};
-                _Other -> {error, 2}
+                Value when is_binary(Value) -> {ok, Value}
             catch
                 _Class:_Reason -> {error, 2}
             end;

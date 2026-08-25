@@ -1,16 +1,22 @@
 -module(gleam_quic_tls_ffi).
 
+-include_lib("public_key/include/public_key.hrl").
+
 -export([
     certificate_chain_from_pem/1,
     constant_time_equal/2,
     is_ip_address/1,
     sign/3,
     signing_key_from_pem/1,
+    signing_key_matches_certificate/3,
     signing_key_scheme/1,
     system_trust_store/0,
     trust_store_from_der/1,
     trust_store_from_pem/1,
+    validate_client_certificate/2,
+    validate_client_certificate_purpose/1,
     validate_server_certificate/3,
+    verified_peer_fingerprint/1,
     verify/4
 ]).
 
@@ -100,6 +106,59 @@ validate_server_certificate(
 validate_server_certificate(_CertificateChain, _TrustStore, _Hostname) ->
     {error, 1}.
 
+-spec validate_client_certificate([binary()], tuple()) ->
+    {ok, tuple()} | {error, 1 | 2 | 3 | 5 | 9}.
+validate_client_certificate(
+    CertificateChain,
+    {gleam_quic_trust_store, TrustAnchors}
+) when is_list(CertificateChain), CertificateChain =/= [],
+       is_list(TrustAnchors), TrustAnchors =/= [] ->
+    case ensure_public_key() of
+        ok -> validate_client_chain(CertificateChain, TrustAnchors);
+        error -> {error, 2}
+    end;
+validate_client_certificate(_CertificateChain, _TrustStore) ->
+    {error, 1}.
+
+-spec validate_client_certificate_purpose([binary()]) ->
+    {ok, nil} | {error, 1 | 2 | 3 | 9}.
+validate_client_certificate_purpose([LeafDer | _CertificateChain])
+    when is_binary(LeafDer) ->
+    case ensure_public_key() of
+        ok ->
+            try public_key:pkix_decode_cert(LeafDer, otp) of
+                Leaf ->
+                    case valid_client_certificate_purpose(Leaf) of
+                        true -> {ok, nil};
+                        false -> {error, 9}
+                    end
+            catch
+                _Class:_Reason -> {error, 3}
+            end;
+        error ->
+            {error, 2}
+    end;
+validate_client_certificate_purpose(_CertificateChain) ->
+    {error, 1}.
+
+-spec verified_peer_fingerprint(tuple()) -> {ok, binary()} | {error, 1 | 2}.
+verified_peer_fingerprint(
+    {gleam_quic_verified_peer, LeafDer, _LeafCertificate, _PublicKeyInfo}
+) when is_binary(LeafDer) ->
+    case ensure_crypto() of
+        ok ->
+            try crypto:hash(sha256, LeafDer) of
+                Fingerprint when is_binary(Fingerprint), byte_size(Fingerprint) =:= 32 ->
+                    {ok, Fingerprint}
+            catch
+                _Class:_Reason -> {error, 2}
+            end;
+        error ->
+            {error, 2}
+    end;
+verified_peer_fingerprint(_Peer) ->
+    {error, 1}.
+
 -spec signing_key_from_pem(binary()) -> {ok, tuple()} | {error, 2 | 3}.
 signing_key_from_pem(Pem) when is_binary(Pem) ->
     case ensure_public_key() of
@@ -123,6 +182,37 @@ signing_key_scheme({gleam_quic_signing_key, Key}) ->
         error -> {error, 8}
     end;
 signing_key_scheme(_Key) ->
+    {error, 1}.
+
+-spec signing_key_matches_certificate([binary()], tuple(), integer()) ->
+    {ok, boolean()} | {error, 1 | 2 | 3 | 5}.
+signing_key_matches_certificate(
+    [LeafDer | _CertificateChain],
+    {gleam_quic_signing_key, _Key} = SigningKey,
+    Scheme
+) when is_binary(LeafDer), is_integer(Scheme) ->
+    case ensure_public_key() of
+        ok ->
+            case validate_chain([LeafDer], [LeafDer]) of
+                {ok, Peer} ->
+                    Content = <<"gleam_quic credential validation">>,
+                    case sign(SigningKey, Scheme, Content) of
+                        {ok, Signature} ->
+                            case verify(Peer, Scheme, Content, Signature) of
+                                {ok, nil} -> {ok, true};
+                                {error, 7} -> {ok, false};
+                                {error, 8} -> {ok, false};
+                                {error, Reason} -> {error, Reason}
+                            end;
+                        {error, 8} -> {ok, false};
+                        {error, Reason} -> {error, Reason}
+                    end;
+                {error, Reason} -> {error, Reason}
+            end;
+        error ->
+            {error, 2}
+    end;
+signing_key_matches_certificate(_CertificateChain, _SigningKey, _Scheme) ->
     {error, 1}.
 
 -spec sign(tuple(), integer(), binary()) -> {ok, binary()} | {error, 1 | 2 | 8}.
@@ -152,7 +242,7 @@ sign(_Key, _Scheme, _Content) ->
 -spec verify(tuple(), integer(), binary(), binary()) ->
     {ok, nil} | {error, 1 | 2 | 7 | 8}.
 verify(
-    {gleam_quic_verified_peer, _LeafCertificate, PublicKeyInfo},
+    {gleam_quic_verified_peer, _LeafDer, _LeafCertificate, PublicKeyInfo},
     Scheme,
     Content,
     Signature
@@ -225,6 +315,32 @@ decode_pem_certificates(Pem) ->
 -spec validate_chain_and_identity([binary()], [binary()], binary()) ->
     {ok, tuple()} | {error, 3 | 5 | 6}.
 validate_chain_and_identity(CertificateChain, TrustAnchors, Hostname) ->
+    case validate_chain(CertificateChain, TrustAnchors) of
+        {ok, {gleam_quic_verified_peer, _LeafDer, Leaf, _PublicKeyInfo} = Peer} ->
+            case verify_service_identity(Leaf, Hostname) of
+                true -> {ok, Peer};
+                false -> {error, 6}
+            end;
+        Error ->
+            Error
+    end.
+
+-spec validate_client_chain([binary()], [binary()]) ->
+    {ok, tuple()} | {error, 3 | 5 | 9}.
+validate_client_chain(CertificateChain, TrustAnchors) ->
+    case validate_chain(CertificateChain, TrustAnchors) of
+        {ok, {gleam_quic_verified_peer, _LeafDer, Leaf, _PublicKeyInfo} = Peer} ->
+            case valid_client_certificate_purpose(Leaf) of
+                true -> {ok, Peer};
+                false -> {error, 9}
+            end;
+        Error ->
+            Error
+    end.
+
+-spec validate_chain([binary()], [binary()]) ->
+    {ok, tuple()} | {error, 3 | 5}.
+validate_chain(CertificateChain, TrustAnchors) ->
     try
         lists:foreach(
             fun(Der) -> public_key:pkix_decode_cert(Der, otp) end,
@@ -234,16 +350,56 @@ validate_chain_and_identity(CertificateChain, TrustAnchors, Hostname) ->
         Leaf = public_key:pkix_decode_cert(LeafDer, otp),
         case find_valid_path(TrustAnchors, CertificateChain) of
             {ok, PublicKeyInfo} ->
-                case verify_service_identity(Leaf, Hostname) of
-                    true -> {ok, {gleam_quic_verified_peer, Leaf, PublicKeyInfo}};
-                    false -> {error, 6}
-                end;
+                {ok, {gleam_quic_verified_peer, LeafDer, Leaf, PublicKeyInfo}};
             error ->
                 {error, 5}
         end
     catch
         _Class:_Reason -> {error, 3}
     end.
+
+-spec valid_client_certificate_purpose(tuple()) -> boolean().
+valid_client_certificate_purpose(
+    #'OTPCertificate'{
+        tbsCertificate = #'OTPTBSCertificate'{extensions = Extensions}
+    }
+) ->
+    extension_allows_client_auth(Extensions) andalso
+        extension_allows_digital_signature(Extensions).
+
+-spec extension_allows_client_auth(term()) -> boolean().
+extension_allows_client_auth(asn1_NOVALUE) ->
+    true;
+extension_allows_client_auth(Extensions) when is_list(Extensions) ->
+    case find_extension(?'id-ce-extKeyUsage', Extensions) of
+        none -> true;
+        {some, Usages} when is_list(Usages) ->
+            lists:member(?'id-kp-clientAuth', Usages) orelse
+                lists:member({2, 5, 29, 37, 0}, Usages);
+        {some, _Other} -> false
+    end;
+extension_allows_client_auth(_Extensions) ->
+    false.
+
+-spec extension_allows_digital_signature(term()) -> boolean().
+extension_allows_digital_signature(asn1_NOVALUE) ->
+    true;
+extension_allows_digital_signature(Extensions) when is_list(Extensions) ->
+    case find_extension(?'id-ce-keyUsage', Extensions) of
+        none -> true;
+        {some, Usages} when is_list(Usages) -> lists:member(digitalSignature, Usages);
+        {some, _Other} -> false
+    end;
+extension_allows_digital_signature(_Extensions) ->
+    false.
+
+-spec find_extension(tuple(), [tuple()]) -> none | {some, term()}.
+find_extension(_Identifier, []) ->
+    none;
+find_extension(Identifier, [#'Extension'{extnID = Identifier, extnValue = Value} | _]) ->
+    {some, Value};
+find_extension(Identifier, [_Other | Rest]) ->
+    find_extension(Identifier, Rest).
 
 -spec find_valid_path([binary()], [binary()]) -> {ok, tuple()} | error.
 find_valid_path([], _CertificateChain) ->
@@ -289,7 +445,6 @@ private_key_entries(Entries) ->
 
 -spec is_private_key_entry(tuple()) -> boolean().
 is_private_key_entry({'PrivateKeyInfo', _Der, not_encrypted}) -> true;
-is_private_key_entry({'OneAsymmetricKey', _Der, not_encrypted}) -> true;
 is_private_key_entry({'ECPrivateKey', _Der, not_encrypted}) -> true;
 is_private_key_entry({'RSAPrivateKey', _Der, not_encrypted}) -> true;
 is_private_key_entry(_Entry) -> false.
@@ -368,6 +523,13 @@ public_key_value(_Oid, Key, Parameters) -> {Key, Parameters}.
 -spec ensure_public_key() -> ok | error.
 ensure_public_key() ->
     case application:ensure_all_started(public_key) of
+        {ok, _Applications} -> ok;
+        {error, _Reason} -> error
+    end.
+
+-spec ensure_crypto() -> ok | error.
+ensure_crypto() ->
+    case application:ensure_all_started(crypto) of
         {ok, _Applications} -> ok;
         {error, _Reason} -> error
     end.

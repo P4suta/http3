@@ -1,6 +1,8 @@
 //// Typed UDP, address, ECN, and monotonic-clock runtime boundary.
 
 import gleam/bit_array
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/result
 import gleam/string
@@ -29,6 +31,9 @@ pub opaque type Endpoint {
 /// A passive UDP socket owned by the calling Erlang process.
 pub type Socket
 
+/// A bounded active-once relay that owns a UDP socket for an endpoint actor.
+pub type Relay
+
 /// One received UDP datagram and its observed IP ECN marking.
 pub type Datagram {
   Datagram(
@@ -53,11 +58,21 @@ pub type Error {
 @external(erlang, "gleam_quic_udp_ffi", "open")
 fn raw_open(address: BitArray, port: Int) -> Result(Socket, Int)
 
+@external(erlang, "gleam_quic_udp_ffi", "open_dual_stack")
+fn raw_open_dual_stack(port: Int) -> Result(Socket, Int)
+
 @external(erlang, "gleam_quic_udp_ffi", "local_endpoint")
 fn raw_local_endpoint(socket: Socket) -> Result(#(BitArray, Int), Int)
 
 @external(erlang, "gleam_quic_udp_ffi", "resolve")
 fn raw_resolve(host: String, family: Int) -> Result(List(BitArray), Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "resolve_timeout")
+fn raw_resolve_with_timeout(
+  host: String,
+  family: Int,
+  timeout_milliseconds: Int,
+) -> Result(List(BitArray), Int)
 
 @external(erlang, "gleam_quic_udp_ffi", "send")
 fn raw_send(
@@ -74,14 +89,44 @@ fn raw_receive(
   timeout_milliseconds: Int,
 ) -> Result(#(BitArray, Int, BitArray, Int), Int)
 
+@external(erlang, "gleam_quic_udp_ffi", "active_once")
+fn raw_activate_once(socket: Socket) -> Result(Nil, Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "active_datagram")
+fn raw_active_datagram(
+  socket: Socket,
+  message: Dynamic,
+) -> Result(#(BitArray, Int, BitArray, Int), Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "start_relay")
+fn raw_start_relay(socket: Socket) -> Result(Relay, Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "relay_batch")
+fn raw_relay_batch(
+  relay: Relay,
+  message: Dynamic,
+) -> Result(List(#(BitArray, Int, BitArray, Int)), Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "continue_relay")
+fn raw_continue_relay(relay: Relay) -> Result(Nil, Int)
+
+@external(erlang, "gleam_quic_udp_ffi", "stop_relay")
+fn raw_stop_relay(relay: Relay) -> Result(Nil, Int)
+
 @external(erlang, "gleam_quic_udp_ffi", "supports_ecn")
 fn raw_supports_ecn(socket: Socket) -> Bool
 
 @external(erlang, "gleam_quic_udp_ffi", "close")
 fn raw_close(socket: Socket) -> Result(Nil, Int)
 
+@external(erlang, "gleam_quic_udp_ffi", "transfer_owner")
+fn raw_transfer_owner(socket: Socket, owner: Pid) -> Result(Nil, Int)
+
 @external(erlang, "gleam_quic_udp_ffi", "monotonic_millisecond")
 fn raw_monotonic_millisecond() -> Int
+
+@external(erlang, "gleam_quic_udp_ffi", "unix_millisecond")
+fn raw_unix_millisecond() -> Int
 
 /// Construct a validated IPv4 address.
 pub fn ipv4(a: Int, b: Int, c: Int, d: Int) -> Result(Address, Error) {
@@ -163,9 +208,45 @@ pub fn resolve(
   }
 }
 
+/// Resolve a DNS name or literal under one finite caller-selected deadline.
+pub fn resolve_with_timeout(
+  host host: String,
+  family family: AddressFamily,
+  timeout_milliseconds timeout_milliseconds: Int,
+) -> Result(List(Address), Error) {
+  case
+    string.is_empty(host)
+    || string.length(host) > 253
+    || string.contains(host, "\u{0000}")
+    || timeout_milliseconds <= 0
+    || timeout_milliseconds > 2_147_483_647
+  {
+    True -> Error(InvalidInput)
+    False -> {
+      use addresses <- result.try(
+        raw_resolve_with_timeout(
+          host,
+          address_family_code(family),
+          timeout_milliseconds,
+        )
+        |> map_raw_result,
+      )
+      addresses_from_bytes(addresses, [])
+    }
+  }
+}
+
 /// Bind a passive socket. Port zero asks the OS for an ephemeral port.
 pub fn open(local: Endpoint) -> Result(Socket, Error) {
   raw_open(local.address.bytes, local.port) |> map_raw_result
+}
+
+/// Bind one IPv6 socket that also accepts IPv4-mapped datagrams.
+pub fn open_dual_stack(port: Int) -> Result(Socket, Error) {
+  case port >= 0 && port <= 65_535 {
+    False -> Error(InvalidInput)
+    True -> raw_open_dual_stack(port) |> map_raw_result
+  }
 }
 
 /// Return the concrete local endpoint assigned by the OS.
@@ -224,14 +305,79 @@ pub fn receive(
   }
 }
 
+/// Arm a socket to deliver at most one datagram to its owner's mailbox.
+///
+/// The owner must call this again after consuming the delivered datagram.
+/// This keeps the endpoint mailbox bounded to one in-flight socket message.
+pub fn activate_once(socket: Socket) -> Result(Nil, Error) {
+  raw_activate_once(socket) |> map_raw_result
+}
+
+/// Decode one active-mode mailbox value for the selected socket.
+///
+/// Values belonging to another selector source are rejected without exposing
+/// their runtime representation.
+pub fn receive_active(
+  socket: Socket,
+  message: Dynamic,
+) -> Result(Datagram, Error) {
+  use #(address, port, payload, codepoint) <- result.try(
+    raw_active_datagram(socket, message) |> map_raw_result,
+  )
+  use peer <- result.try(endpoint_from_bytes(address, port))
+  use marking <- result.try(received_ecn(codepoint))
+  Ok(Datagram(peer, payload, marking))
+}
+
+/// Transfer a socket to a bounded active-once receive relay.
+///
+/// The relay forwards at most one batch to its owner, then waits for explicit
+/// credit. This keeps raw runtime messages and socket ownership out of the
+/// protocol actor while bounding its mailbox independently of network load.
+pub fn start_relay(socket: Socket) -> Result(Relay, Error) {
+  raw_start_relay(socket) |> map_raw_result
+}
+
+/// Decode one relay batch into transport-neutral datagrams.
+pub fn receive_relay_batch(
+  relay: Relay,
+  message: Dynamic,
+) -> Result(List(Datagram), Error) {
+  use values <- result.try(raw_relay_batch(relay, message) |> map_raw_result)
+  relay_datagrams(values, [])
+}
+
+/// Return one batch of receive credit to a relay.
+pub fn continue_relay(relay: Relay) -> Result(Nil, Error) {
+  raw_continue_relay(relay) |> map_raw_result
+}
+
+/// Stop a relay and synchronously close its socket.
+pub fn stop_relay(relay: Relay) -> Result(Nil, Error) {
+  raw_stop_relay(relay) |> map_raw_result
+}
+
 /// Close the socket. Closing an already closed socket is successful.
 pub fn close(socket: Socket) -> Result(Nil, Error) {
   raw_close(socket) |> map_raw_result
 }
 
+/// Transfer a passive socket to another bounded protocol actor.
+///
+/// This succeeds only when called by the socket's current owner.
+pub fn transfer_owner(socket: Socket, owner: Pid) -> Result(Nil, Error) {
+  raw_transfer_owner(socket, owner) |> map_raw_result
+}
+
 /// Milliseconds elapsed since the runtime boundary was initialized.
 pub fn monotonic_millisecond() -> Int {
   raw_monotonic_millisecond()
+}
+
+/// Return Unix time only for encrypted persistence timestamps.
+/// Protocol timers continue to use the monotonic clock exclusively.
+pub fn unix_millisecond() -> Int {
+  raw_unix_millisecond()
 }
 
 fn endpoint_from_bytes(bytes: BitArray, port: Int) -> Result(Endpoint, Error) {
@@ -253,6 +399,20 @@ fn addresses_from_bytes(
     [bytes, ..rest] -> {
       use Endpoint(address, _) <- result.try(endpoint_from_bytes(bytes, 0))
       addresses_from_bytes(rest, [address, ..reversed])
+    }
+  }
+}
+
+fn relay_datagrams(
+  values: List(#(BitArray, Int, BitArray, Int)),
+  reversed: List(Datagram),
+) -> Result(List(Datagram), Error) {
+  case values {
+    [] -> Ok(list.reverse(reversed))
+    [#(address, port, payload, codepoint), ..rest] -> {
+      use peer <- result.try(endpoint_from_bytes(address, port))
+      use marking <- result.try(received_ecn(codepoint))
+      relay_datagrams(rest, [Datagram(peer, payload, marking), ..reversed])
     }
   }
 }

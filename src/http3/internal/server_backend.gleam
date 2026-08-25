@@ -1,8 +1,12 @@
 //// Typed normalization around the repository-owned HTTP/3 server.
 
+import gleam/bool
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/http3/server as native_server
+import gleam_quic
+import http3/config
+import http3/failure as runtime_failure
+import http3/internal/native/server as native_server
 
 pub type ListenerHandle =
   native_server.Listener
@@ -12,6 +16,25 @@ pub type RequestHandle =
 
 pub type PushHandle =
   native_server.Push
+
+pub type ReplayGuard =
+  native_server.ReplayGuard
+
+pub opaque type OperationalKey {
+  OperationalKey(native: native_server.OperationalKey)
+}
+
+pub opaque type KeyRing {
+  KeyRing(native: native_server.KeyRing)
+}
+
+pub opaque type OperationalKeys {
+  OperationalKeys(
+    ticket: KeyRing,
+    address_token: KeyRing,
+    stateless_reset: KeyRing,
+  )
+}
 
 pub type RawError =
   #(Int, Int, String)
@@ -23,12 +46,7 @@ pub type RawEvent =
   #(Int, List(#(String, String)), BitArray)
 
 pub type Failure {
-  StartFailed(String)
-  Timeout
-  ListenerClosed
-  ConnectionClosed
-  StreamReset(Int)
-  ProtocolError(Int, String)
+  RuntimeFailure(runtime_failure.Failure)
   RequestBodyTooLarge(Int)
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
@@ -40,7 +58,6 @@ pub type Failure {
   ResponseAlreadyFinished
   PushCancelled
   InvalidContentLength
-  BackendFailure(String)
 }
 
 pub fn valid_certificate(certificate: BitArray) -> Bool {
@@ -55,6 +72,49 @@ pub fn valid_server_name(server_name: String) -> Bool {
   native_server.is_valid_server_name(server_name)
 }
 
+pub fn operational_key(bytes: BitArray) -> Result(OperationalKey, Nil) {
+  native_server.operational_key(bytes)
+  |> result.map(OperationalKey)
+  |> result.replace_error(Nil)
+}
+
+pub fn key_ring(key: OperationalKey) -> KeyRing {
+  KeyRing(native_server.key_ring(key.native))
+}
+
+pub fn rotate_key_ring(
+  ring ring: KeyRing,
+  key key: OperationalKey,
+) -> Result(KeyRing, Nil) {
+  native_server.rotate_key_ring(ring.native, key.native)
+  |> result.map(KeyRing)
+  |> result.replace_error(Nil)
+}
+
+pub fn operational_keys(
+  ticket ticket: KeyRing,
+  address_token address_token: KeyRing,
+  stateless_reset stateless_reset: KeyRing,
+) -> Result(OperationalKeys, Nil) {
+  use <- bool.guard(
+    when: !native_server.operational_key_rings_are_distinct(
+      ticket.native,
+      address_token.native,
+      stateless_reset.native,
+    ),
+    return: Error(Nil),
+  )
+  Ok(OperationalKeys(ticket, address_token, stateless_reset))
+}
+
+pub fn replay_guard(
+  timeout_milliseconds: Int,
+  check: fn(BitArray, Int) -> Result(Bool, Nil),
+) -> Result(ReplayGuard, Nil) {
+  native_server.replay_guard(timeout_milliseconds, check)
+  |> result.replace_error(Nil)
+}
+
 pub fn start(
   certificate certificate: BitArray,
   private_key private_key: BitArray,
@@ -63,13 +123,29 @@ pub fn start(
   ),
   port port: Int,
   timeout_milliseconds timeout_milliseconds: Int,
+  drain_timeout_milliseconds drain_timeout_milliseconds: Int,
+  idle_timeout_milliseconds idle_timeout_milliseconds: Int,
   request_body_limit request_body_limit: Int,
   response_body_limit response_body_limit: Int,
   stream_buffer_limit stream_buffer_limit: Int,
+  connection_limit connection_limit: Int,
+  handshake_limit handshake_limit: Int,
+  queue_limit queue_limit: Int,
+  telemetry_limit telemetry_limit: Int,
+  bidirectional_stream_limit bidirectional_stream_limit: Int,
+  unidirectional_stream_limit unidirectional_stream_limit: Int,
+  frame_limit frame_limit: Int,
+  datagram_limit datagram_limit: Int,
+  qpack_table_limit qpack_table_limit: Int,
+  qpack_blocked_stream_limit qpack_blocked_stream_limit: Int,
+  accept_waiter_limit accept_waiter_limit: Int,
   http_datagrams http_datagrams: Bool,
   keepalive_milliseconds keepalive_milliseconds: Int,
-  ipv6 ipv6: Bool,
+  address_family address_family: config.AddressFamily,
   qlog_directory qlog_directory: String,
+  allow_zero_rtt allow_zero_rtt: Bool,
+  replay_guard replay_guard: Option(ReplayGuard),
+  operational_keys operational_keys: Option(OperationalKeys),
 ) -> Result(ListenerHandle, Failure) {
   use configuration <- result.try(
     native_server.new(certificate, private_key)
@@ -88,6 +164,14 @@ pub fn start(
     |> result.map_error(map_configuration_error),
   )
   use configuration <- result.try(
+    native_server.with_drain_timeout(configuration, drain_timeout_milliseconds)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_idle_timeout(configuration, idle_timeout_milliseconds)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
     native_server.with_request_body_limit(configuration, request_body_limit)
     |> result.map_error(map_configuration_error),
   )
@@ -97,6 +181,59 @@ pub fn start(
   )
   use configuration <- result.try(
     native_server.with_stream_buffer_limit(configuration, stream_buffer_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_connection_limit(configuration, connection_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_handshake_limit(configuration, handshake_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_queue_limit(configuration, queue_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_telemetry_limit(configuration, telemetry_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_bidirectional_stream_limit(
+      configuration,
+      bidirectional_stream_limit,
+    )
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_unidirectional_stream_limit(
+      configuration,
+      unidirectional_stream_limit,
+    )
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_frame_limit(configuration, frame_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_datagram_limit(configuration, datagram_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_qpack_table_limit(configuration, qpack_table_limit)
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_qpack_blocked_stream_limit(
+      configuration,
+      qpack_blocked_stream_limit,
+    )
+    |> result.map_error(map_configuration_error),
+  )
+  use configuration <- result.try(
+    native_server.with_accept_waiter_limit(configuration, accept_waiter_limit)
     |> result.map_error(map_configuration_error),
   )
   let configuration = case http_datagrams {
@@ -109,10 +246,12 @@ pub fn start(
       native_server.with_keepalive(configuration, interval)
       |> result.map_error(map_configuration_error)
   })
-  let configuration = case ipv6 {
-    True -> native_server.with_ipv6(configuration)
-    False -> configuration
-  }
+  let configuration =
+    native_server.with_address_family(configuration, case address_family {
+      config.Ipv4 -> gleam_quic.Ipv4
+      config.Ipv6 -> gleam_quic.Ipv6
+      config.DualStack -> gleam_quic.DualStack
+    })
   let configuration = case qlog_directory {
     "" -> Ok(configuration)
     _ -> native_server.with_qlog(configuration, qlog_directory)
@@ -120,25 +259,75 @@ pub fn start(
   use configuration <- result.try(
     configuration |> result.map_error(map_configuration_error),
   )
+  let configuration = case replay_guard, allow_zero_rtt {
+    Some(guard), _ -> native_server.with_external_zero_rtt(configuration, guard)
+    None, True -> native_server.with_single_node_zero_rtt(configuration)
+    None, False -> configuration
+  }
+  use configuration <- result.try(configure_operational_keys(
+    configuration,
+    operational_keys,
+  ))
   native_server.start(configuration) |> result.map_error(map_native_error)
 }
 
-fn map_configuration_error(error: native_server.ConfigurationError) -> Failure {
-  let detail = case error {
-    native_server.InvalidCertificate -> "certificate"
-    native_server.InvalidPrivateKey -> "private key"
-    native_server.IncompatiblePrivateKey -> "certificate/private-key pairing"
-    native_server.InvalidServerName -> "server name"
-    native_server.DuplicateServerName -> "duplicate server name"
-    native_server.InvalidPort(_) -> "listener port"
-    native_server.InvalidTimeout -> "listener timeout"
-    native_server.InvalidRequestBodyLimit -> "request body limit"
-    native_server.InvalidResponseBodyLimit -> "response body limit"
-    native_server.InvalidStreamBufferLimit -> "stream buffer limit"
-    native_server.InvalidKeepalive -> "keepalive interval"
-    native_server.InvalidQlogDirectory -> "qlog directory"
+/// Replace the complete prevalidated certificate set for new handshakes.
+pub fn reload_certificates(
+  listener listener: ListenerHandle,
+  certificate certificate: BitArray,
+  private_key private_key: BitArray,
+  alternative_certificates alternative_certificates: List(
+    #(String, BitArray, BitArray),
+  ),
+) -> Result(Nil, Failure) {
+  use replacement <- result.try(
+    native_server.new(certificate, private_key)
+    |> result.map_error(map_configuration_error),
+  )
+  use replacement <- result.try(configure_certificates(
+    replacement,
+    alternative_certificates,
+  ))
+  native_server.reload_certificates(listener, replacement)
+  |> result.map_error(map_native_error)
+}
+
+/// Atomically replace current/previous server operational keys.
+pub fn reload_operational_keys(
+  listener listener: ListenerHandle,
+  keys keys: OperationalKeys,
+) -> Result(Nil, Failure) {
+  let OperationalKeys(ticket, address_token, stateless_reset) = keys
+  native_server.reload_operational_key_rings(
+    listener,
+    ticket.native,
+    address_token.native,
+    stateless_reset.native,
+  )
+  |> result.map_error(map_native_error)
+}
+
+fn configure_operational_keys(
+  server: native_server.Server,
+  keys: Option(OperationalKeys),
+) -> Result(native_server.Server, Failure) {
+  case keys {
+    None -> Ok(server)
+    Some(OperationalKeys(ticket, address_token, stateless_reset)) ->
+      native_server.with_operational_key_rings(
+        server,
+        ticket.native,
+        address_token.native,
+        stateless_reset.native,
+      )
+      |> result.map_error(map_configuration_error)
   }
-  StartFailed("invalid server " <> detail)
+}
+
+fn map_configuration_error(
+  _error: native_server.ConfigurationError,
+) -> Failure {
+  RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
 }
 
 fn configure_certificates(
@@ -297,12 +486,18 @@ pub fn graceful_stop(listener: ListenerHandle) -> Result(Int, Failure) {
 
 pub fn normalize_error(error: RawError) -> Failure {
   case error {
-    #(1, _, message) -> StartFailed(message)
-    #(2, _, _) -> Timeout
-    #(3, _, _) -> ListenerClosed
-    #(4, _, _) -> ConnectionClosed
-    #(5, code, _) -> StreamReset(code)
-    #(6, code, message) -> ProtocolError(code, message)
+    #(1, _, _) ->
+      RuntimeFailure(runtime_failure.Socket(runtime_failure.BindSocket))
+    #(2, _, _) ->
+      RuntimeFailure(runtime_failure.Timeout(runtime_failure.Operation))
+    #(3, _, _) ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Local, None))
+    #(4, _, _) ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Peer, None))
+    #(5, code, _) ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Peer, Some(code)))
+    #(6, code, _) ->
+      RuntimeFailure(runtime_failure.Http3(runtime_failure.Peer, Some(code)))
     #(7, limit, _) -> RequestBodyTooLarge(limit)
     #(8, limit, _) -> ResponseBodyTooLarge(limit)
     #(9, limit, _) -> ConsumerTooSlow(limit)
@@ -312,18 +507,24 @@ pub fn normalize_error(error: RawError) -> Failure {
     #(13, _, _) -> ResponseNotStarted
     #(14, _, _) -> ResponseAlreadyFinished
     #(15, _, _) -> InvalidContentLength
-    #(_, _, message) -> BackendFailure(message)
+    #(_, _, _) ->
+      RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
   }
 }
 
 fn map_native_error(error: native_server.Error) -> Failure {
   case error {
-    native_server.StartFailed -> StartFailed("native listener start failed")
-    native_server.Timeout -> Timeout
-    native_server.ListenerClosed -> ListenerClosed
-    native_server.ConnectionClosed -> ConnectionClosed
-    native_server.StreamReset(code) -> StreamReset(code)
-    native_server.ProtocolError(code, message) -> ProtocolError(code, message)
+    native_server.StartFailed ->
+      RuntimeFailure(runtime_failure.Socket(runtime_failure.BindSocket))
+    native_server.Timeout ->
+      RuntimeFailure(runtime_failure.Timeout(runtime_failure.Operation))
+    native_server.ListenerClosed ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Local, None))
+    native_server.ConnectionClosed ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Peer, None))
+    native_server.StreamReset(code) ->
+      RuntimeFailure(runtime_failure.Closed(runtime_failure.Peer, Some(code)))
+    native_server.Failure(failure) -> RuntimeFailure(failure)
     native_server.RequestBodyTooLarge(limit) -> RequestBodyTooLarge(limit)
     native_server.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     native_server.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
@@ -335,15 +536,19 @@ fn map_native_error(error: native_server.Error) -> Failure {
     native_server.ResponseAlreadyFinished -> ResponseAlreadyFinished
     native_server.PushCancelled -> PushCancelled
     native_server.InvalidContentLength -> InvalidContentLength
+    native_server.DatagramTooLarge(maximum) ->
+      RuntimeFailure(runtime_failure.Limit(runtime_failure.Datagram, maximum))
+    native_server.DatagramBufferExceeded(maximum) ->
+      RuntimeFailure(runtime_failure.Limit(runtime_failure.Buffer, maximum))
+    native_server.ConcurrentDatagramReceive ->
+      RuntimeFailure(runtime_failure.Overload(runtime_failure.AcceptWaiters))
+    native_server.CongestionLimited ->
+      RuntimeFailure(runtime_failure.Overload(runtime_failure.Queue))
     native_server.InvalidInput
     | native_server.InvalidHeaderEncoding
     | native_server.DatagramsNotNegotiated
     | native_server.DatagramNotAssociated
-    | native_server.DatagramTooLarge(_)
-    | native_server.DatagramBufferExceeded(_)
-    | native_server.ConcurrentDatagramReceive
-    | native_server.StreamFinished
-    | native_server.CongestionLimited -> BackendFailure("native server failure")
-    native_server.BackendFailure(message) -> BackendFailure(message)
+    | native_server.StreamFinished ->
+      RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
   }
 }

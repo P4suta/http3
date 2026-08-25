@@ -7,6 +7,7 @@ licences = ["MIT", "Apache-2.0"]
 internal_modules = ["http3/internal/**"]
 
 [dependencies]
+gleam_erlang = ">= 1.3.0 and < 2.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_quic = { path = "packages/gleam_quic" }
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
@@ -17,7 +18,11 @@ glinter = ">= 2.19.2 and < 3.0.0"
 
 [documentation]
 pages = [
-  { title = "Public v1 gate", path = "v1.html", source = "docs/V1.md" },
+  { title = "Pre-release v1 gate", path = "v1.html", source = "docs/V1.md" },
+  { title = "API guide", path = "api.html", source = "docs/API.md" },
+  { title = "Conformance", path = "conformance.html", source = "docs/CONFORMANCE.md" },
+  { title = "Deployment and key rotation", path = "deployment.html", source = "docs/DEPLOYMENT.md" },
+  { title = "Migration", path = "migration.html", source = "docs/MIGRATION.md" },
   { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
   { title = "Testing", path = "testing.html", source = "docs/TESTING.md" },
   { title = "Security review", path = "security-review.html", source = "docs/SECURITY_REVIEW.md" },
@@ -41,3 +46,56 @@ unused_exports = "error"
   "assert_ok_pattern",
   "thrown_away_error",
 ]
+# Preserve the stricter core package's established lint policy for physically
+# relocated HTTP/3/QPACK implementation and state-model tests.
+"src/http3/internal/native/**" = [
+  "label_possible",
+  "prefer_guard_clause",
+]
+"src/http3/internal/qpack/**" = [
+  "label_possible",
+  "prefer_guard_clause",
+]
+"test/native/**" = [
+  "assert_ok_pattern",
+  "label_possible",
+  "prefer_guard_clause",
+]
+# The optional diagnostic executable fails fast at a single finite test-only
+# boundary and is invoked externally by BeamTrace after warm-up.
+"test/diagnostics/http3_diagnostic.gleam" = [
+  "assert_ok_pattern",
+  "label_possible",
+  "thrown_away_error",
+  "unused_exports",
+]
+# These actors deliberately terminate, retry, or discard best-effort cleanup
+# results at a single supervised process boundary. Glinter cannot model that
+# message-loop ownership, while exhaustive runtime tests cover each boundary.
+"src/http3/internal/native/client_worker.gleam" = [
+  "assert_ok_pattern",
+  "deep_nesting",
+  "discarded_result",
+  "thrown_away_error",
+]
+"src/http3/internal/native/server_worker.gleam" = [
+  "assert_ok_pattern",
+  "deep_nesting",
+  "discarded_result",
+  "thrown_away_error",
+]
+# Socket teardown is explicitly best-effort after protocol close has begun.
+"src/http3/internal/native/client_connection.gleam" = [
+  "discarded_result",
+  "thrown_away_error",
+  "unused_exports",
+]
+"src/http3/internal/native/server_connection.gleam" = [
+  "thrown_away_error",
+  "unused_exports",
+]
+"src/http3/internal/native/server.gleam" = [
+  "thrown_away_error",
+  "unused_exports",
+]
+"src/http3/internal/native/session.gleam" = ["error_context_lost"]

@@ -36,8 +36,33 @@ imply a tag, a hosted release, or publication to Hex.
 - Fixed benchmark, 32-connection load, and 160,000-stream soak workloads with
   body verification, bounded cleanup, process/mailbox convergence,
   environment metadata, and retained native-core raw results.
-- A completed public v1 contract, architecture, testing record, and
-  pre-publication security review.
+- A pre-release conformance matrix with explicit open findings, API,
+  deployment/key-rotation, migration, and support guides.
+- Compiler-derived semantic API snapshots for both packages and an audit that
+  rejects raw codec, HTTP/3 adapter, BBR, backend-string, and native-handle
+  leakage.
+- A deterministic `gleam_quic` Hex-archive gate that validates the Hex
+  checksum and declared file set, rejects tests, build output, interop peers,
+  private keys, and HTTP/3/QPACK modules, and canonicalizes nondeterministic
+  dependency ordering and tar attributes before proving byte identity.
+- A finite external 0-RTT replay guard with opaque fingerprint/retention input,
+  atomic caller-store decisions, and fail-closed 1-RTT fallback on rejection,
+  callback error, exit, or timeout.
+- End-to-end `Telemetry` limit wiring for client/server qlog writers, with one
+  bounded active write, configurable waiting capacity, and drop/error/queue
+  counters.
+- End-to-end stream, frame, Datagram, QPACK, and accept-waiter limit wiring,
+  including finite FIFO accept capacity and live transport/SETTINGS values.
+- A generic `gleam_quic` public client/server API with opaque connections and
+  streams, finite configuration, typed failures, redacted negotiated
+  diagnostics, encrypted restart-safe tickets, and direct real-UDP coverage.
+- P-256 key exchange with direct and HelloRetryRequest paths, plus public
+  disabled/optional/required mTLS, one-call client credentials, redacted
+  verified-client fingerprints, resumed reauthentication, and safe 0-RTT
+  fallback.
+- An optional external BeamTrace diagnostic runner with fixed non-secret actor
+  labels, warm-up-before-root scenarios, strict qlog redaction, clock-domain
+  validation, finite cleanup checks, and review-before-sharing artifacts.
 
 ### Changed
 
@@ -47,8 +72,13 @@ imply a tag, a hosted release, or publication to Hex.
 - Restricted production Erlang FFI to opaque wrapping, UDP/time, runtime
   cryptography/X.509, and qlog file I/O; all wire protocols and state machines
   are Gleam code.
-- Completed and requalified every roadmap phase on the native backend while
-  keeping publication, tags, releases, and the metadata version separate.
+- Reopened the former v1-complete decision and made the open architecture,
+  TLS, conformance, qlog, performance, security, interop, and packaging gates
+  explicit.
+- Hid raw QUIC wire modules and transitional HTTP/3 adapters from the
+  `gleam_quic` package interface.
+- Moved HTTP/3 sessions, QPACK, Capsules, workers, and their 102 direct tests
+  into `http3`; the `gleam_quic` archive now contains transport-only source.
 - Aligned the runtime matrix with Gleam 1.18's supported OTP 28/29 range and
   verified both root and native suites at the lower bound.
 - Expanded `mise run check` with native-core checks, compiler-interface
@@ -61,10 +91,50 @@ imply a tag, a hosted release, or publication to Hex.
   compatible-version information.
 - Drained bursty handshake UDP input without command-path polling latency.
 - Bounded terminal stream state and isolated qlog files per connection.
+- Preserved valid coalesced HTTP/3 frames across QUIC read boundaries while
+  retaining a finite parser buffer and enforcing each frame payload limit.
 - Preserved resumption across Retry while correctly rejecting early data and
   waiting for 1-RTT before a request when no viable early key exists.
 - Accepted peer zero-length source connection IDs and order-independent reset
   tokens required by independent QUIC implementations.
+- Removed the non-functional public BBR option; only implemented NewReno and
+  CUBIC remain.
+- Replaced 10 ms UDP polling with active-once delivery and protocol-deadline
+  timers, including finite relay batches and credit.
+- Coalesced duplicate `PATH_CHALLENGE` values and bounded pending responses to
+  prevent the reported response-amplification queue attack.
+- Replaced backend-formatted failure strings with typed resolution, socket,
+  TLS, QUIC, HTTP/3, timeout, close, limit, and overload failures.
+- Bounded client and server request/response/Datagram event queues by count as
+  well as bytes using amortized O(1) FIFO operations.
+- Added atomic certificate and operational-key reload, current/previous key
+  rings, and encrypted versioned ticket import/export across restarts.
+- Preserved an actual wire-level 0-RTT send for single-address connections while
+  retaining authenticated candidate selection for dual-stack racing.
+- Replaced per-turn all-connection send polling with a finite dirty-connection
+  set; protocol timer expiry still advances every live connection.
+- Wired authenticated Retry and reusable `NEW_TOKEN` issuance into the generic
+  listener, added an independently rotated address-token key ring, and made
+  ticket snapshots include the token before returning so restart 0-RTT is
+  deterministic.
+- Replaced three interchangeable operational-ring arguments in the generic
+  server API with one validated, named `OperationalKeys` bundle that rejects
+  cross-purpose key reuse.
+- Reissued `NEW_TOKEN` to established generic QUIC and HTTP/3 peers after an
+  address-token key reload, allowing operators to retire the previous key
+  generation without forcing a Retry on refreshed clients.
+- Rejected mismatched certificate/private-key pairs during endpoint
+  configuration instead of deferring the failure to a network handshake.
+- Rejected client credentials whose leaf certificate is not valid for client
+  authentication before opening a socket.
+- Kept qlog device-writer failure isolated from transport work, retained
+  bounded drop/error counters, and made teardown idempotent after failure.
+- Removed raw Hex-archive checksum drift caused by unstable dependency order
+  in consecutive Gleam exports; the checked release input now has a stable
+  canonical checksum without changing package metadata semantics.
+- Made repeated server-side connection close calls report `AlreadyClosed` as
+  soon as the first call enters closing or draining, instead of depending on
+  packet-flush timing.
 
 ## 0.1.0 - 2026-08-23
 

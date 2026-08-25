@@ -5,7 +5,10 @@
 
 import gleam/bit_array
 import gleam/bool
+import gleam/option.{None}
+import gleam/result
 import gleam/string
+import http3/failure as runtime_failure
 import http3/internal/client_stream_backend
 import http3/internal/server_backend
 import http3/internal/transport_backend
@@ -23,10 +26,16 @@ pub opaque type Stream {
 
 /// An opaque TLS session-resumption ticket.
 ///
-/// Tickets contain key material. This API exposes neither their fields nor a
-/// serialization operation; retain them only as long as resumption requires.
+/// Tickets contain key material. This API exposes no fields or plaintext
+/// serialization. Persistence is available only as caller-key authenticated,
+/// versioned ciphertext through `export_resumption_ticket`.
 pub opaque type ResumptionTicket {
   ResumptionTicket(handle: client_stream_backend.ResumptionTicketHandle)
+}
+
+/// A validated 256-bit key for authenticated ticket persistence.
+pub opaque type TicketStorageKey {
+  TicketStorageKey(handle: transport_backend.TicketStorageKey)
 }
 
 /// RFC 9218 stream priority.
@@ -43,12 +52,13 @@ pub opaque type Qlog {
 pub type ConfigurationError {
   InvalidUrgency(Int)
   InvalidQlogDirectory
+  InvalidTicketStorageKey
 }
 
 /// A typed advanced transport failure.
 pub type Error {
-  ConnectionClosed
-  Timeout
+  /// A typed runtime failure with no backend-formatted or secret text.
+  Failure(runtime_failure.Failure)
   DatagramsNotNegotiated
   DatagramNotAssociated
   DatagramTooLarge(maximum: Int)
@@ -59,7 +69,7 @@ pub type Error {
   MigrationUnavailable
   NotConnected
   InvalidDatagram
-  BackendFailure(String)
+  InvalidResumptionTicket
 }
 
 /// Negotiated and configured capabilities for a live transport.
@@ -80,11 +90,18 @@ pub type EarlyDataStatus {
   Rejected
 }
 
+/// Outcome of a caller-supplied TLS resumption ticket.
+pub type ResumptionStatus {
+  ResumptionNotAttempted
+  ResumptionPending
+  Resumed
+  FullHandshake
+}
+
 /// A supported live congestion-control algorithm.
 pub type CongestionControl {
   NewReno
   Cubic
-  Bbr
 }
 
 /// QUIC wire version initially attempted by a client.
@@ -121,6 +138,15 @@ pub type ConnectionStats {
   )
 }
 
+/// Health of bounded asynchronous diagnostic output.
+pub type TelemetryStats {
+  TelemetryStats(
+    qlog_dropped_events: Int,
+    qlog_write_errors: Int,
+    qlog_queued_events: Int,
+  )
+}
+
 /// Construct an RFC 9218 priority. Urgency ranges from zero through seven.
 pub fn priority(
   urgency urgency: Int,
@@ -146,7 +172,9 @@ pub fn is_incremental(priority: Priority) -> Bool {
 /// Configure qlog output in a non-empty directory path.
 ///
 /// qlog is disabled unless this explicit value is attached to a client or
-/// server configuration. Trace files can contain sensitive metadata.
+/// server configuration. Trace files can contain sensitive metadata. Output
+/// is diagnostic JSON-SEQ pinned to qlog main schema 14 and QUIC/HTTP3 events
+/// revision 13; these revisions are Internet-Drafts, not protocol guarantees.
 pub fn qlog(directory: String) -> Result(Qlog, ConfigurationError) {
   use <- bool.guard(
     when: string.is_empty(directory)
@@ -160,6 +188,38 @@ pub fn qlog(directory: String) -> Result(Qlog, ConfigurationError) {
 /// Return the configured qlog directory.
 pub fn qlog_directory(qlog: Qlog) -> String {
   qlog.directory
+}
+
+/// Validate a caller-managed ticket storage key.
+///
+/// Key bytes can be supplied once but cannot be read back through the API.
+pub fn ticket_storage_key(
+  bytes: BitArray,
+) -> Result(TicketStorageKey, ConfigurationError) {
+  transport_backend.ticket_storage_key(bytes)
+  |> result.map(TicketStorageKey)
+  |> result.replace_error(InvalidTicketStorageKey)
+}
+
+/// Export all origin-bound ticket state as versioned authenticated ciphertext.
+pub fn export_resumption_ticket(
+  ticket ticket: ResumptionTicket,
+  key key: TicketStorageKey,
+) -> Result(BitArray, Error) {
+  let ResumptionTicket(handle) = ticket
+  let TicketStorageKey(key_handle) = key
+  transport_backend.export_resumption_ticket(handle, key_handle) |> map_failure
+}
+
+/// Authenticate and restore a versioned encrypted resumption ticket.
+pub fn import_resumption_ticket(
+  bytes bytes: BitArray,
+  key key: TicketStorageKey,
+) -> Result(ResumptionTicket, Error) {
+  let TicketStorageKey(key_handle) = key
+  transport_backend.import_resumption_ticket(bytes, key_handle)
+  |> result.map(ResumptionTicket)
+  |> map_failure
 }
 
 /// Return live client-connection capabilities.
@@ -262,6 +322,15 @@ pub fn early_data_status(
   |> map_early_data_status
 }
 
+/// Return whether a supplied ticket resumed TLS or safely fell back.
+pub fn resumption_status(
+  connection: Connection,
+) -> Result(ResumptionStatus, Error) {
+  let Connection(handle) = connection
+  transport_backend.client_resumption_status(handle)
+  |> map_resumption_status
+}
+
 /// Return the 0-RTT state associated with a client or server stream.
 pub fn stream_early_data_status(
   stream: Stream,
@@ -300,7 +369,6 @@ pub fn set_congestion_control(
   let code = case algorithm {
     NewReno -> 1
     Cubic -> 2
-    Bbr -> 3
   }
   transport_backend.set_congestion_control(handle, code) |> map_failure
 }
@@ -409,6 +477,28 @@ pub fn stream_connection_stats(
   map_connection_stats(result)
 }
 
+/// Snapshot diagnostic health for a reusable client connection.
+///
+/// All values are zero when qlog is disabled. No peer identifiers, paths,
+/// headers, payloads, certificate material, or secrets are returned.
+pub fn telemetry_stats(
+  connection: Connection,
+) -> Result(TelemetryStats, Error) {
+  let Connection(handle) = connection
+  transport_backend.telemetry_stats(handle) |> map_telemetry_stats
+}
+
+/// Snapshot diagnostic health for a client or server request stream.
+pub fn stream_telemetry_stats(stream: Stream) -> Result(TelemetryStats, Error) {
+  let result = case stream {
+    ClientStream(handle) ->
+      transport_backend.client_stream_telemetry_stats(handle)
+    ServerStream(handle) ->
+      transport_backend.server_stream_telemetry_stats(handle)
+  }
+  map_telemetry_stats(result)
+}
+
 fn map_capabilities(
   result: Result(transport_backend.RawCapabilities, transport_backend.Failure),
 ) -> Result(Capabilities, Error) {
@@ -478,6 +568,16 @@ fn map_connection_stats(
   }
 }
 
+fn map_telemetry_stats(
+  result: Result(transport_backend.RawTelemetryStats, transport_backend.Failure),
+) -> Result(TelemetryStats, Error) {
+  case result {
+    Ok(#(dropped, errors, queued)) ->
+      Ok(TelemetryStats(dropped, errors, queued))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
 fn map_early_data_status(
   result: Result(Int, transport_backend.Failure),
 ) -> Result(EarlyDataStatus, Error) {
@@ -486,7 +586,20 @@ fn map_early_data_status(
     Ok(1) -> Ok(Pending)
     Ok(2) -> Ok(Accepted)
     Ok(3) -> Ok(Rejected)
-    Ok(_) -> Error(BackendFailure("invalid early-data status"))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
+fn map_resumption_status(
+  result: Result(Int, transport_backend.Failure),
+) -> Result(ResumptionStatus, Error) {
+  case result {
+    Ok(0) -> Ok(ResumptionNotAttempted)
+    Ok(1) -> Ok(ResumptionPending)
+    Ok(2) -> Ok(Resumed)
+    Ok(3) -> Ok(FullHandshake)
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
     Error(error) -> Error(from_backend_failure(error))
   }
 }
@@ -502,8 +615,10 @@ fn map_failure(
 
 fn from_backend_failure(failure: transport_backend.Failure) -> Error {
   case failure {
-    transport_backend.ConnectionClosed -> ConnectionClosed
-    transport_backend.Timeout -> Timeout
+    transport_backend.ConnectionClosed ->
+      Failure(runtime_failure.Closed(runtime_failure.Peer, None))
+    transport_backend.Timeout ->
+      Failure(runtime_failure.Timeout(runtime_failure.Operation))
     transport_backend.DatagramsNotNegotiated -> DatagramsNotNegotiated
     transport_backend.DatagramNotAssociated -> DatagramNotAssociated
     transport_backend.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
@@ -514,6 +629,7 @@ fn from_backend_failure(failure: transport_backend.Failure) -> Error {
     transport_backend.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
     transport_backend.MigrationUnavailable -> MigrationUnavailable
     transport_backend.NotConnected -> NotConnected
-    transport_backend.BackendFailure(message) -> BackendFailure(message)
+    transport_backend.InvalidResumptionTicket -> InvalidResumptionTicket
+    transport_backend.RuntimeFailure(failure) -> Failure(failure)
   }
 }
