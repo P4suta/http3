@@ -61,22 +61,10 @@ open_dual_stack(Port) when is_integer(Port), Port >= 0, Port =< 65535 ->
         {recbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
         {sndbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
         {ip, {0, 0, 0, 0, 0, 0, 0, 0}},
-        inet6,
-        {ipv6_v6only, false}
+        inet6
+        | dual_stack_options()
     ],
-    case gen_udp:open(Port, [{recvtclass, true} | BaseOptions]) of
-        {ok, Socket} ->
-            {ok, #{socket => Socket, family => 6, ecn => true}};
-        {error, Reason} when Reason =:= einval; Reason =:= enoprotoopt ->
-            case gen_udp:open(Port, BaseOptions) of
-                {ok, Socket} ->
-                    {ok, #{socket => Socket, family => 6, ecn => false}};
-                {error, FallbackReason} ->
-                    {error, error_code(FallbackReason)}
-            end;
-        {error, Reason} ->
-            {error, error_code(Reason)}
-    end;
+    open_socket(Port, BaseOptions, {recvtclass, true}, 6);
 open_dual_stack(_Port) ->
     {error, 1}.
 
@@ -443,18 +431,51 @@ open_address(Address, Family, Port) ->
         4 -> {recvtos, true};
         6 -> {recvtclass, true}
     end,
+    open_socket(Port, BaseOptions, EcnOption, Family).
+
+-spec open_socket(inet:port_number(), [gen_udp:option()], gen_udp:option(), 4 | 6) ->
+    {ok, handle()} | {error, integer()}.
+open_socket(Port, BaseOptions, EcnOption, Family) ->
+    case runtime_supports_ecn() of
+        false -> open_socket_without_ecn(Port, BaseOptions, Family);
+        true -> open_socket_with_ecn(Port, BaseOptions, EcnOption, Family)
+    end.
+
+-spec open_socket_with_ecn(
+    inet:port_number(), [gen_udp:option()], gen_udp:option(), 4 | 6
+) -> {ok, handle()} | {error, integer()}.
+open_socket_with_ecn(Port, BaseOptions, EcnOption, Family) ->
     case gen_udp:open(Port, [EcnOption | BaseOptions]) of
         {ok, Socket} ->
             {ok, #{socket => Socket, family => Family, ecn => true}};
         {error, Reason} when Reason =:= einval; Reason =:= enoprotoopt ->
-            case gen_udp:open(Port, BaseOptions) of
-                {ok, Socket} ->
-                    {ok, #{socket => Socket, family => Family, ecn => false}};
-                {error, FallbackReason} ->
-                    {error, error_code(FallbackReason)}
-            end;
+            open_socket_without_ecn(Port, BaseOptions, Family);
         {error, Reason} ->
             {error, error_code(Reason)}
+    end.
+
+-spec open_socket_without_ecn(inet:port_number(), [gen_udp:option()], 4 | 6) ->
+    {ok, handle()} | {error, integer()}.
+open_socket_without_ecn(Port, BaseOptions, Family) ->
+    case gen_udp:open(Port, BaseOptions) of
+        {ok, Socket} ->
+            {ok, #{socket => Socket, family => Family, ecn => false}};
+        {error, Reason} ->
+            {error, error_code(Reason)}
+    end.
+
+-spec runtime_supports_ecn() -> boolean().
+runtime_supports_ecn() ->
+    case os:type() of
+        {win32, _Name} -> false;
+        _Other -> true
+    end.
+
+-spec dual_stack_options() -> [gen_udp:option()].
+dual_stack_options() ->
+    case os:type() of
+        {win32, _Name} -> [];
+        _Other -> [{ipv6_v6only, false}]
     end.
 
 -spec resolve_host(string(), 0 | 4 | 6) -> {ok, [binary()]} | {error, integer()}.
