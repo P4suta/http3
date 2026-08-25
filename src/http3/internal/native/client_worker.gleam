@@ -1387,8 +1387,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     CancelPush(identifier, reply) ->
       handle_cancel_push(worker, identifier, reply)
     Close(reply) -> {
-      process.send(reply, Ok(Closed))
       shutdown(worker, "application close")
+      process.send(reply, Ok(Closed))
       Error(Nil)
     }
     Capabilities(reply) -> {

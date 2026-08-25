@@ -5,7 +5,7 @@
 run(Port, ResumptionPort, QlogDirectory) ->
     {ok, Pem} = file:read_file("test/fixtures/ca.pem"),
     [{_, CaCertificate, _}] = public_key:pem_decode(Pem),
-    {ok, Client0} = http3@client:with_timeout(http3@client:new(), 5000),
+    {ok, Client0} = http3@client:with_timeout(http3@client:new(), 10000),
     {ok, Client1} = http3@client:with_ca_certificate(Client0, CaCertificate),
     Client2 = http3@client:with_http_datagrams(Client1),
     %% Keep this wire-level 0-RTT assertion on one resolved path. Dual-stack

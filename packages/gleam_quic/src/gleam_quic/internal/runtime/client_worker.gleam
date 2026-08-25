@@ -821,9 +821,9 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       Ok(worker)
     }
     Close(reply) -> {
-      process.send(reply, Ok(Closed))
       client_transport.close(worker.connection, 0, "application close")
       close_qlog(worker.qlog_writer)
+      process.send(reply, Ok(Closed))
       Error(Nil)
     }
   }

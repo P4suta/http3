@@ -16,8 +16,12 @@ SESSION_TICKETS = {}
 # Keep the resumed request on the wire ahead of HandshakeCompleted even when a
 # shared CI runner pauses the native client between connect and open_stream.
 SERVER_RESPONSE_DELAY_SECONDS = float(
-    os.environ.get("HTTP3_INTEROP_SERVER_RESPONSE_DELAY", "0.25")
+    os.environ.get("HTTP3_INTEROP_SERVER_RESPONSE_DELAY", "1.5")
 )
+# The intentional handshake delay increases the measured RTT and therefore
+# aioquic's mandatory 3-PTO closing period. Keep teardown bounded, but leave
+# enough headroom for the qlog trace to be finalized on shared CI runners.
+SHUTDOWN_TIMEOUT_SECONDS = 30
 REQUIRED_OBSERVATIONS = {
     "OBSERVED_HTTP_DATAGRAM",
     "OBSERVED_POST_MIGRATION_REQUEST",
@@ -201,7 +205,7 @@ async def main():
         server.close()
         await asyncio.wait_for(
             asyncio.gather(*(protocol.wait_closed() for protocol in protocols)),
-            timeout=5,
+            timeout=SHUTDOWN_TIMEOUT_SECONDS,
         )
         proxy_transport.close()
     else:
