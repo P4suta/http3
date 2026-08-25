@@ -73,11 +73,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self.http = H3Connection(self._quic, enable_webtransport=True)
         self.requests = {}
-        self.handshake_completed = False
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
-            self.handshake_completed = True
             if self._quic._version == QuicProtocolVersion.VERSION_2:
                 observe("OBSERVED_QUIC_V2")
         for http_event in self.http.handle_event(event):
@@ -89,7 +87,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
                         "ended": False,
                         "datagram": False,
                         "response_started": False,
-                        "early": not self.handshake_completed,
+                        "early": self.stream_was_received_in_zero_rtt(
+                            http_event.stream_id
+                        ),
                     },
                 )
                 request["path"] = dict(http_event.headers).get(b":path", b"")
@@ -103,7 +103,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
                         "ended": False,
                         "datagram": False,
                         "response_started": False,
-                        "early": not self.handshake_completed,
+                        "early": self.stream_was_received_in_zero_rtt(
+                            http_event.stream_id
+                        ),
                     },
                 )
                 request["ended"] = http_event.stream_ended
@@ -116,6 +118,27 @@ class AdvancedProtocol(QuicConnectionProtocol):
                 self.transmit()
                 observe("OBSERVED_HTTP_DATAGRAM")
                 self.maybe_respond(http_event.stream_id)
+
+    def stream_was_received_in_zero_rtt(self, stream_id):
+        """Prove the request stream arrived in an authenticated 0-RTT packet."""
+
+        trace = self._quic._quic_logger
+        if trace is None:
+            return False
+        for event in trace.to_dict()["events"]:
+            data = event.get("data", {})
+            if (
+                event.get("name") != "transport:packet_received"
+                or data.get("header", {}).get("packet_type") != "0RTT"
+            ):
+                continue
+            if any(
+                frame.get("frame_type") == "stream"
+                and frame.get("stream_id") == stream_id
+                for frame in data.get("frames", [])
+            ):
+                return True
+        return False
 
     def maybe_respond(self, stream_id):
         request = self.requests[stream_id]
