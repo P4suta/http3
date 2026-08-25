@@ -351,6 +351,12 @@ pub fn tick(state: State, now_ms: Int) -> Result(State, Error) {
   Ok(State(..state, connection: connection))
 }
 
+/// Return the earliest QUIC timer deadline for an event-driven runtime.
+pub fn next_deadline(state: State, now_ms: Int) -> Result(Option(Int), Error) {
+  connection_state.next_deadline(state.connection, now_ms)
+  |> map_connection_result
+}
+
 /// Apply a transport operation while preserving routing state.
 pub fn update_connection(
   state: State,

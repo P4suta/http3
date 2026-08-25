@@ -1,9 +1,11 @@
 //// Typed normalization for advanced QUIC and HTTP/3 transport controls.
 
+import gleam/option.{None}
 import gleam/result
-import gleam_quic/http3/client as native_client
-import gleam_quic/http3/server as native_server
+import http3/failure as runtime_failure
 import http3/internal/client_stream_backend
+import http3/internal/native/client as native_client
+import http3/internal/native/server as native_server
 import http3/internal/server_backend
 
 /// Primitive transport error data returned by the Erlang FFI.
@@ -22,6 +24,14 @@ pub type RawPathStats =
 pub type RawConnectionStats =
   #(Int, Int, Int, Int, Int, Int, Int, Int)
 
+/// Primitive bounded diagnostic-writer counters.
+pub type RawTelemetryStats =
+  #(Int, Int, Int)
+
+pub opaque type TicketStorageKey {
+  TicketStorageKey(native: native_client.TicketStorageKey)
+}
+
 /// A normalized advanced transport failure.
 pub type Failure {
   ConnectionClosed
@@ -35,7 +45,30 @@ pub type Failure {
   ConcurrentDatagramReceive
   MigrationUnavailable
   NotConnected
-  BackendFailure(String)
+  InvalidResumptionTicket
+  RuntimeFailure(runtime_failure.Failure)
+}
+
+pub fn ticket_storage_key(bytes: BitArray) -> Result(TicketStorageKey, Nil) {
+  native_client.ticket_storage_key(bytes)
+  |> result.map(TicketStorageKey)
+  |> result.replace_error(Nil)
+}
+
+pub fn export_resumption_ticket(
+  ticket ticket: client_stream_backend.ResumptionTicketHandle,
+  key key: TicketStorageKey,
+) -> Result(BitArray, Failure) {
+  native_client.export_resumption_ticket(ticket, key.native)
+  |> map_native_result
+}
+
+pub fn import_resumption_ticket(
+  bytes bytes: BitArray,
+  key key: TicketStorageKey,
+) -> Result(client_stream_backend.ResumptionTicketHandle, Failure) {
+  native_client.import_resumption_ticket(bytes, key.native)
+  |> map_native_result
 }
 
 pub fn client_capabilities(
@@ -138,6 +171,14 @@ pub fn client_early_data_status(
 ) -> Result(Int, Failure) {
   native_client.early_data_status(connection)
   |> result.map(early_data_code)
+  |> map_native_result
+}
+
+pub fn client_resumption_status(
+  connection: client_stream_backend.ConnectionHandle,
+) -> Result(Int, Failure) {
+  native_client.resumption_status(connection)
+  |> result.map(resumption_code)
   |> map_native_result
 }
 
@@ -268,6 +309,39 @@ pub fn server_stream_connection_stats(
   |> map_native_server_result
 }
 
+pub fn telemetry_stats(
+  connection: client_stream_backend.ConnectionHandle,
+) -> Result(RawTelemetryStats, Failure) {
+  native_client.telemetry_stats(connection)
+  |> result.map(fn(stats) {
+    let native_client.TelemetryStats(a, b, c) = stats
+    #(a, b, c)
+  })
+  |> map_native_result
+}
+
+pub fn client_stream_telemetry_stats(
+  stream: client_stream_backend.StreamHandle,
+) -> Result(RawTelemetryStats, Failure) {
+  native_client.telemetry_stats_for_stream(stream)
+  |> result.map(fn(stats) {
+    let native_client.TelemetryStats(a, b, c) = stats
+    #(a, b, c)
+  })
+  |> map_native_result
+}
+
+pub fn server_stream_telemetry_stats(
+  request: server_backend.RequestHandle,
+) -> Result(RawTelemetryStats, Failure) {
+  native_server.telemetry_stats(request)
+  |> result.map(fn(stats) {
+    let native_server.TelemetryStats(a, b, c) = stats
+    #(a, b, c)
+  })
+  |> map_native_server_result
+}
+
 pub fn normalize_error(error: RawError) -> Failure {
   case error {
     #(1, _, _) -> ConnectionClosed
@@ -280,7 +354,8 @@ pub fn normalize_error(error: RawError) -> Failure {
     #(8, _, _) -> ConcurrentDatagramReceive
     #(9, _, _) -> MigrationUnavailable
     #(10, _, _) -> NotConnected
-    #(_, _, message) -> BackendFailure(message)
+    #(_, _, _) ->
+      RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
   }
 }
 
@@ -299,7 +374,7 @@ fn map_native_server_result(
 fn map_native_error(error: native_client.Error) -> Failure {
   case error {
     native_client.ConnectionClosed -> ConnectionClosed
-    native_client.Timeout | native_client.TicketUnavailable -> Timeout
+    native_client.TimedOut(_) | native_client.TicketUnavailable -> Timeout
     native_client.DatagramsNotNegotiated -> DatagramsNotNegotiated
     native_client.DatagramNotAssociated -> DatagramNotAssociated
     native_client.DatagramTooLarge(maximum) -> DatagramTooLarge(maximum)
@@ -317,8 +392,10 @@ fn map_native_error(error: native_client.Error) -> Failure {
     | native_client.ResolutionFailed
     | native_client.TrustStoreFailed -> NotConnected
     native_client.UnsupportedCongestionControl ->
-      BackendFailure("unsupported congestion control")
-    _ -> BackendFailure("native transport operation failed")
+      RuntimeFailure(runtime_failure.Quic(runtime_failure.Local, None))
+    native_client.Failure(failure) -> RuntimeFailure(failure)
+    native_client.InvalidStoredTicket -> InvalidResumptionTicket
+    _ -> RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
   }
 }
 
@@ -334,8 +411,8 @@ fn map_native_server_error(error: native_server.Error) -> Failure {
     native_server.ConcurrentDatagramReceive -> ConcurrentDatagramReceive
     native_server.CongestionLimited -> CongestionLimited
     native_server.StreamFinished | native_server.StreamReset(_) -> UnknownStream
-    native_server.BackendFailure(message) -> BackendFailure(message)
-    _ -> BackendFailure("native server transport operation failed")
+    native_server.Failure(failure) -> RuntimeFailure(failure)
+    _ -> RuntimeFailure(runtime_failure.Http3(runtime_failure.Local, None))
   }
 }
 
@@ -345,6 +422,15 @@ fn early_data_code(status: native_client.EarlyDataStatus) -> Int {
     native_client.Pending -> 1
     native_client.Accepted -> 2
     native_client.Rejected -> 3
+  }
+}
+
+fn resumption_code(status: native_client.ResumptionStatus) -> Int {
+  case status {
+    native_client.ResumptionNotAttempted -> 0
+    native_client.ResumptionPending -> 1
+    native_client.Resumed -> 2
+    native_client.FullHandshake -> 3
   }
 }
 

@@ -4,16 +4,22 @@ import asyncio
 import os
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
+from aioquic.buffer import Buffer
 from aioquic.h3.connection import H3Connection
 from aioquic.h3.events import DataReceived, DatagramReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import HandshakeCompleted
 from aioquic.quic.logger import QuicFileLogger
-from aioquic.quic.packet import QuicProtocolVersion
+from aioquic.quic.packet import (
+    QuicPacketType,
+    QuicProtocolVersion,
+    pull_quic_header,
+)
 
 
 SESSION_TICKETS = {}
-SERVER_RESPONSE_DELAY_SECONDS = 0.05
+SHUTDOWN_TIMEOUT_SECONDS = 30
+MAXIMUM_GATED_SERVER_DATAGRAMS = 64
 REQUIRED_OBSERVATIONS = {
     "OBSERVED_HTTP_DATAGRAM",
     "OBSERVED_POST_MIGRATION_REQUEST",
@@ -22,6 +28,7 @@ REQUIRED_OBSERVATIONS = {
 }
 OBSERVATIONS = set()
 COMPLETION_EVENT = None
+ZERO_RTT_GATE = None
 
 
 def observe(name):
@@ -29,17 +36,42 @@ def observe(name):
 
     print(name, flush=True)
     OBSERVATIONS.add(name)
+    if name == "OBSERVED_0RTT_REQUEST" and ZERO_RTT_GATE is not None:
+        ZERO_RTT_GATE.release_resumed_handshake()
     if COMPLETION_EVENT is not None and REQUIRED_OBSERVATIONS <= OBSERVATIONS:
         COMPLETION_EVENT.set()
 
 
-class DelayedServerResponseProxy(asyncio.DatagramProtocol):
-    """Keep one stable origin while delaying server handshake packets."""
+def packet_headers(data):
+    """Return parseable QUIC headers from one coalesced datagram."""
+
+    headers = []
+    buffer = Buffer(data=data)
+    while not buffer.eof():
+        start = buffer.tell()
+        try:
+            header = pull_quic_header(buffer, host_cid_length=8)
+        except ValueError:
+            break
+        headers.append(header)
+        next_packet = start + header.packet_length
+        if next_packet <= start:
+            break
+        buffer.seek(next_packet)
+    return headers
+
+
+class ZeroRttGateProxy(asyncio.DatagramProtocol):
+    """Withhold resumed handshake responses until the 0-RTT request arrives."""
 
     def __init__(self, server_address):
         self.server_address = server_address
         self.transport = None
         self.client_address = None
+        self.ticket_connection_established = False
+        self.resumed_connection_started = False
+        self.zero_rtt_request_confirmed = False
+        self.pending_server_datagrams = []
 
     def connection_made(self, transport):
         self.transport = transport
@@ -48,16 +80,39 @@ class DelayedServerResponseProxy(asyncio.DatagramProtocol):
         if address == self.server_address:
             if self.client_address is None:
                 return
-            target = self.client_address
-            asyncio.get_running_loop().call_later(
-                SERVER_RESPONSE_DELAY_SECONDS,
-                self.transport.sendto,
-                data,
-                target,
-            )
+            if (
+                self.resumed_connection_started
+                and not self.zero_rtt_request_confirmed
+            ):
+                if len(self.pending_server_datagrams) < MAXIMUM_GATED_SERVER_DATAGRAMS:
+                    self.pending_server_datagrams.append(data)
+                return
+            self.transport.sendto(data, self.client_address)
         else:
+            headers = packet_headers(data)
+            packet_type_set = {header.packet_type for header in headers}
+            if not self.ticket_connection_established:
+                # Version Negotiation can replace both Initial CIDs, so do not
+                # treat a CID change as a new connection. The ticket request
+                # necessarily emits authenticated 1-RTT traffic before close.
+                if QuicPacketType.ONE_RTT in packet_type_set:
+                    self.ticket_connection_established = True
+            elif QuicPacketType.INITIAL in packet_type_set:
+                # A fresh Initial after ticket-connection 1-RTT traffic starts
+                # the resumed connection even when the OS reuses its UDP port.
+                self.resumed_connection_started = True
             self.client_address = address
             self.transport.sendto(data, self.server_address)
+
+    def release_resumed_handshake(self):
+        """Release responses only after aioquic authenticates the target stream."""
+
+        self.zero_rtt_request_confirmed = True
+        if self.transport is None or self.client_address is None:
+            return
+        for pending in self.pending_server_datagrams:
+            self.transport.sendto(pending, self.client_address)
+        self.pending_server_datagrams.clear()
 
 
 class AdvancedProtocol(QuicConnectionProtocol):
@@ -65,11 +120,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self.http = H3Connection(self._quic, enable_webtransport=True)
         self.requests = {}
-        self.handshake_completed = False
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
-            self.handshake_completed = True
             if self._quic._version == QuicProtocolVersion.VERSION_2:
                 observe("OBSERVED_QUIC_V2")
         for http_event in self.http.handle_event(event):
@@ -81,7 +134,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
                         "ended": False,
                         "datagram": False,
                         "response_started": False,
-                        "early": not self.handshake_completed,
+                        "early": self.stream_was_received_in_zero_rtt(
+                            http_event.stream_id
+                        ),
                     },
                 )
                 request["path"] = dict(http_event.headers).get(b":path", b"")
@@ -95,7 +150,9 @@ class AdvancedProtocol(QuicConnectionProtocol):
                         "ended": False,
                         "datagram": False,
                         "response_started": False,
-                        "early": not self.handshake_completed,
+                        "early": self.stream_was_received_in_zero_rtt(
+                            http_event.stream_id
+                        ),
                     },
                 )
                 request["ended"] = http_event.stream_ended
@@ -108,6 +165,27 @@ class AdvancedProtocol(QuicConnectionProtocol):
                 self.transmit()
                 observe("OBSERVED_HTTP_DATAGRAM")
                 self.maybe_respond(http_event.stream_id)
+
+    def stream_was_received_in_zero_rtt(self, stream_id):
+        """Prove the request stream arrived in an authenticated 0-RTT packet."""
+
+        trace = self._quic._quic_logger
+        if trace is None:
+            return False
+        for event in trace.to_dict()["events"]:
+            data = event.get("data", {})
+            if (
+                event.get("name") != "transport:packet_received"
+                or data.get("header", {}).get("packet_type") != "0RTT"
+            ):
+                continue
+            if any(
+                frame.get("frame_type") == "stream"
+                and frame.get("stream_id") == stream_id
+                for frame in data.get("frames", [])
+            ):
+                return True
+        return False
 
     def maybe_respond(self, stream_id):
         request = self.requests[stream_id]
@@ -155,7 +233,7 @@ class AdvancedProtocol(QuicConnectionProtocol):
 
 
 async def main():
-    global COMPLETION_EVENT
+    global COMPLETION_EVENT, ZERO_RTT_GATE
 
     COMPLETION_EVENT = asyncio.Event()
     qlog_directory = os.environ.get("HTTP3_INTEROP_QLOG")
@@ -183,8 +261,9 @@ async def main():
         ),
     )
     port = server._transport.get_extra_info("sockname")[1]
+    ZERO_RTT_GATE = ZeroRttGateProxy(("127.0.0.1", port))
     proxy_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-        lambda: DelayedServerResponseProxy(("127.0.0.1", port)),
+        lambda: ZERO_RTT_GATE,
         local_addr=("127.0.0.1", 0),
     )
     resumption_port = proxy_transport.get_extra_info("sockname")[1]
@@ -197,7 +276,7 @@ async def main():
         server.close()
         await asyncio.wait_for(
             asyncio.gather(*(protocol.wait_closed() for protocol in protocols)),
-            timeout=5,
+            timeout=SHUTDOWN_TIMEOUT_SECONDS,
         )
         proxy_transport.close()
     else:

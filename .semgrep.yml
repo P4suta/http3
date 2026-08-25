@@ -1,0 +1,46 @@
+rules:
+  - id: http3.erlang.no-dynamic-atom-or-command-execution
+    languages: [generic]
+    message: Production FFI must not create atoms from peer input or execute OS commands.
+    severity: ERROR
+    paths:
+      include:
+        - /src/*.erl
+        - /packages/gleam_quic/src/*.erl
+    pattern-regex: '(?:binary_to_atom|list_to_atom|os:cmd|open_port)[[:space:]]*\('
+
+  - id: http3.public.no-verification-bypass
+    languages: [generic]
+    message: The stable public API must not expose certificate-verification bypasses.
+    severity: ERROR
+    paths:
+      include:
+        - /src/http3.gleam
+        - /src/http3/*.gleam
+        - /packages/gleam_quic/src/gleam_quic.gleam
+        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+    pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:verify_none|disable_verification|insecure_skip_verify)'
+
+  - id: http3.public.no-secret-accessor
+    languages: [generic]
+    message: Traffic secrets and private operational keys must remain opaque.
+    severity: ERROR
+    paths:
+      include:
+        - /src/http3.gleam
+        - /src/http3/*.gleam
+        - /packages/gleam_quic/src/gleam_quic.gleam
+        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+    pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:traffic_secret|private_key_bytes|ticket_key_bytes)'
+
+  - id: http3.public.no-placeholder-error-or-bbr
+    languages: [generic]
+    message: Placeholder backend strings and unimplemented BBR are forbidden public API.
+    severity: ERROR
+    paths:
+      include:
+        - /src/http3.gleam
+        - /src/http3/*.gleam
+        - /packages/gleam_quic/src/gleam_quic.gleam
+        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+    pattern-regex: '(?:BackendFailure|\bBbr\b)'

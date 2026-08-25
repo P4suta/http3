@@ -5,11 +5,15 @@
 run(Port, ResumptionPort, QlogDirectory) ->
     {ok, Pem} = file:read_file("test/fixtures/ca.pem"),
     [{_, CaCertificate, _}] = public_key:pem_decode(Pem),
-    {ok, Client0} = http3@client:with_timeout(http3@client:new(), 5000),
+    {ok, Client0} = http3@client:with_timeout(http3@client:new(), 10000),
     {ok, Client1} = http3@client:with_ca_certificate(Client0, CaCertificate),
     Client2 = http3@client:with_http_datagrams(Client1),
+    %% Keep this wire-level 0-RTT assertion on one resolved path. Dual-stack
+    %% racing deliberately waits for an authenticated datagram before choosing
+    %% a candidate, by which time a fast peer may have completed its handshake.
+    Client3 = http3@client:with_address_family(Client2, ipv4),
     {ok, Qlog} = http3@transport:qlog(QlogDirectory),
-    Client = http3@client:with_qlog(Client2, Qlog),
+    Client = http3@client:with_qlog(Client3, Qlog),
     {ok, Connection} = http3@client:connect(Client, <<"localhost">>, Port),
     ConnectionTransport = http3@client:connection_transport(Connection),
     {ok, {capabilities, true, true, false, true}} =

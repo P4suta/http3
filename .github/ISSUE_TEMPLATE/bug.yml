@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible non-security defect in the unpublished source tree.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not report vulnerabilities here; follow SECURITY.md privately.
+  - type: input
+    id: revision
+    attributes:
+      label: Source revision
+      description: Give the exact commit or source archive identifier.
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Include operating system, Erlang/OTP, and Gleam versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include a fixed seed and redacted qlog when relevant; never include secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This report contains no private keys, tickets, traffic secrets, credentials, or private user data.
+          required: true

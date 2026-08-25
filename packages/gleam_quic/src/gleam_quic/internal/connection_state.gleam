@@ -23,7 +23,9 @@ import gleam_quic/internal/reassembler
 import gleam_quic/internal/rtt
 import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/anti_replay
+import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
+import gleam_quic/internal/tls/hello
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/internal/traffic_keys
@@ -44,6 +46,11 @@ const maximum_crypto_offset = 4_194_304
 const maximum_address_token_bytes = 4096
 
 const active_connection_id_limit = 4
+
+// A single minimum-size datagram can contain more than one hundred
+// PATH_CHALLENGE frames. Keep responses bounded even when acknowledgements
+// are withheld; duplicate challenges share one pending response.
+const maximum_pending_path_responses = 64
 
 /// Endpoint role fixes stream-ID ownership and amplification behavior.
 pub type Role {
@@ -1457,9 +1464,109 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
   }
 }
 
+/// Return the earliest protocol deadline without introducing periodic polls.
+///
+/// The owner wakes only for an ACK, recovery, validation, close, or idle
+/// deadline. Newly queued output is flushed by the command or network event
+/// that produced it; congestion-blocked output resumes on ACK or recovery.
+pub fn next_deadline(
+  state: State,
+  now_milliseconds: Int,
+) -> Result(Option(Int), Error) {
+  case now_milliseconds < state.last_activity_milliseconds, state.phase {
+    True, _ -> Error(InvalidInput)
+    False, Closed -> Ok(None)
+    False, Closing | False, Draining -> Ok(state.close_deadline_milliseconds)
+    False, Handshaking | False, Established -> {
+      use initial <- result.try(packet_space_deadline(
+        state,
+        state.initial_space,
+      ))
+      use handshake <- result.try(packet_space_deadline(
+        state,
+        state.handshake_space,
+      ))
+      use application <- result.try(packet_space_deadline(
+        state,
+        state.application_space,
+      ))
+      let deadline =
+        Some(
+          state.last_activity_milliseconds
+          + state.config.idle_timeout_milliseconds,
+        )
+        |> earlier_deadline(path_validation.deadline(state.path_validator))
+        |> earlier_deadline(initial)
+        |> earlier_deadline(handshake)
+        |> earlier_deadline(application)
+      Ok(deadline)
+    }
+  }
+}
+
 /// Return stable connection progress.
 pub fn phase(state: State) -> Phase {
   state.phase
+}
+
+/// Return whether this established client selected an offered TLS ticket.
+pub fn client_resumed(state: State) -> Bool {
+  case state.tls_endpoint {
+    ClientTlsEndpoint(client) -> engine.client_resumed(client)
+    _ -> False
+  }
+}
+
+/// Return the authenticated ALPN selection for either endpoint role.
+pub fn application_protocol(state: State) -> Option(BitArray) {
+  case state.tls_endpoint {
+    ClientTlsEndpoint(client) -> engine.client_application_protocol(client)
+    ServerTlsEndpoint(server) -> engine.server_application_protocol(server)
+    NoTlsEndpoint -> None
+  }
+}
+
+/// Return the authenticated TLS cipher selection without exposing keys.
+pub fn cipher_suite(state: State) -> Option(hello.CipherSuite) {
+  case state.tls_endpoint {
+    ClientTlsEndpoint(client) -> engine.client_cipher_suite(client)
+    ServerTlsEndpoint(server) -> engine.server_cipher_suite(server)
+    NoTlsEndpoint -> None
+  }
+}
+
+/// Return whether an established server connection selected a ticket.
+pub fn server_resumed(state: State) -> Bool {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_resumed(server)
+    _ -> False
+  }
+}
+
+/// Return the path- and signature-verified client certificate identity.
+pub fn server_client_identity(
+  state: State,
+) -> Option(authentication.VerifiedPeer) {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_client_identity(server)
+    _ -> None
+  }
+}
+
+/// Return whether replay-guarded early data was accepted by this server.
+pub fn server_early_data_accepted(state: State) -> Bool {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_early_data_accepted(server)
+    _ -> False
+  }
+}
+
+/// Return whether this server peer offered early data.
+pub fn server_early_data_attempted(state: State) -> Bool {
+  case state.tls_endpoint {
+    ServerTlsEndpoint(server) -> engine.server_early_data_attempted(server)
+    _ -> False
+  }
 }
 
 /// Return the number of transport streams still retaining live state.
@@ -1713,6 +1820,30 @@ fn current_probe_timeout(state: State) -> Result(Int, Error) {
   {
     Ok(timeout) -> Ok(timeout)
     Error(_) -> Error(PacketSpaceFailure)
+  }
+}
+
+fn packet_space_deadline(
+  state: State,
+  space: packet_space.State,
+) -> Result(Option(Int), Error) {
+  use recovery_deadline <- result.try(
+    packet_space.timer_deadline(
+      space,
+      state.estimator,
+      state.handshake_confirmed,
+      timer_granularity_milliseconds,
+    )
+    |> result.map_error(fn(_) { PacketSpaceFailure }),
+  )
+  Ok(earlier_deadline(recovery_deadline, packet_space.ack_deadline(space)))
+}
+
+fn earlier_deadline(first: Option(Int), second: Option(Int)) -> Option(Int) {
+  case first, second {
+    None, deadline | deadline, None -> deadline
+    Some(left), Some(right) if left <= right -> Some(left)
+    Some(_), Some(right) -> Some(right)
   }
 }
 
@@ -3277,8 +3408,7 @@ fn process_frame(
       update_stream_send_limit(state, identifier, limit)
     frame.MaxStreams(direction, limit) ->
       Ok(update_local_stream_limit(state, direction, limit))
-    frame.PathChallenge(challenge) ->
-      Ok(queue_application_frame(state, frame.PathResponse(challenge)))
+    frame.PathChallenge(challenge) -> queue_path_response(state, challenge)
     frame.PathResponse(response) -> receive_path_response(state, response)
     frame.ConnectionCloseTransport(error_code, _, reason)
     | frame.ConnectionCloseApplication(error_code, reason) ->
@@ -3609,6 +3739,39 @@ fn queue_application_frame(state: State, value: frame.Frame) -> State {
     ..state,
     application_queue: list.append(state.application_queue, [value]),
   )
+}
+
+fn queue_path_response(
+  state: State,
+  challenge: BitArray,
+) -> Result(State, Error) {
+  let #(already_pending, pending_count) =
+    pending_path_response_state(state.application_queue, challenge, False, 0)
+  case already_pending, pending_count >= maximum_pending_path_responses {
+    True, _ -> Ok(state)
+    False, True -> Error(ProtocolViolation)
+    False, False ->
+      Ok(queue_application_frame(state, frame.PathResponse(challenge)))
+  }
+}
+
+fn pending_path_response_state(
+  queued: List(frame.Frame),
+  challenge: BitArray,
+  found: Bool,
+  count: Int,
+) -> #(Bool, Int) {
+  case queued {
+    [] -> #(found, count)
+    [frame.PathResponse(response), ..rest] ->
+      pending_path_response_state(
+        rest,
+        challenge,
+        found || response == challenge,
+        count + 1,
+      )
+    [_, ..rest] -> pending_path_response_state(rest, challenge, found, count)
+  }
 }
 
 fn enter_draining(

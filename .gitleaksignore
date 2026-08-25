@@ -1,0 +1,8 @@
+# Public localhost-only Ed25519 fixture documented in test/fixtures/README.md.
+test/fixtures/server-key.pem:private-key:1
+
+# Public default.invalid fallback fixture documented in test/fixtures/README.md.
+test/fixtures/default-server-key.pem:private-key:1
+
+# Public mTLS client fixture documented in test/fixtures/README.md.
+test/fixtures/client-key.pem:private-key:1

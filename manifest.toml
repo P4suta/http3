@@ -25,6 +25,7 @@ packages = [
 ]
 
 [requirements]
+gleam_erlang = { version = ">= 1.3.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.3.0 and < 5.0.0" }
 gleam_quic = { path = "packages/gleam_quic" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }

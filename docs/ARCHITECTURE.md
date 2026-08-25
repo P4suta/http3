@@ -4,9 +4,12 @@
 
 `http3` is an HTTP/3-only client and server for the Erlang target. HTTP/1.1,
 HTTP/2, automatic fallback, and the JavaScript target are non-goals. The
-repository-defined v1 implementation uses the in-tree `gleam_quic` package as
-its only production transport; aioquic and quic-go are test peers, not runtime
-dependencies.
+current implementation uses the in-tree `gleam_quic` package as its only
+production transport; aioquic and quic-go are test peers, not runtime
+dependencies. The v1 decision is reopened. HTTP/3/QPACK source ownership is
+physically split and the generic public QUIC API is implemented. Migrating the
+root HTTP/3 workers off package-private QUIC/TLS primitives remains a release
+blocker.
 
 The package version is required tool metadata. Architecture and quality gates
 do not depend on a tag, hosted release, or package publication.
@@ -20,9 +23,9 @@ http3, http3/client, http3/server, http3/transport, http3/capsule
     |  opaque Client / Connection / Stream / Listener / Request values
 http3/internal request, response, event, and error adapters
     |
-gleam_quic/http3 client and server adapters
+http3-owned HTTP/3 workers, session, Capsules, and QPACK
     |
-Gleam-owned workers, HTTP/3 session, QPACK, QUIC driver, TLS, and recovery
+package-private gleam_quic QUIC driver, TLS, and recovery
     |
 narrow Erlang runtime FFI: UDP, crypto, X.509, qlog file I/O
     |
@@ -51,7 +54,8 @@ an unbounded-memory alternative:
 
 - request writes synchronously retain QUIC flow-control pressure;
 - response and request events are pulled by the consumer;
-- every unconsumed per-stream queue has a configured byte bound;
+- every unconsumed per-stream event/Datagram queue has configured byte and
+  count bounds;
 - concurrent receives are rejected rather than creating ambiguous waiters;
 - deadlines cover the whole operation, including handshake and cleanup; and
 - cancellation, close, immediate stop, and graceful stop are observable and
@@ -59,10 +63,12 @@ an unbounded-memory alternative:
 
 ## Native HTTP/3 runtime
 
-The root adapters call `gleam_quic/http3/client` and
-`gleam_quic/http3/server`. Their Gleam workers own reusable connections,
-listeners, stream registries, pull waiters, bounded queues, and operation
-deadlines. The HTTP/3 session owns:
+The HTTP/3 workers, session, Capsules, and QPACK implementation live under
+`http3/internal`. They currently call package-private QUIC transport and TLS
+primitives from `gleam_quic`; the new generic public transport API must replace
+that remaining dependency-boundary shortcut. The root-owned Gleam workers own
+reusable connections, listeners, stream registries, pull waiters, bounded
+queues, and operation deadlines. The HTTP/3 session owns:
 
 - the local and peer control streams and SETTINGS state;
 - request, response, informational, DATA, trailer, push, and GOAWAY ordering;
@@ -106,7 +112,7 @@ the following Gleam-owned components:
 - DPLPMTUD probes that keep packets below the validated path MTU without
   relying on IP fragmentation.
 
-The driver uses monotonic deadlines and bounded command polling. It drains
+The driver uses monotonic deadlines and an active-once UDP relay. It drains
 bursty handshake datagrams, retransmits after loss or corruption, validates a
 new path before moving application traffic, and discards obsolete packet
 protection keys according to the relevant packet-space and key-update rules.
@@ -119,9 +125,10 @@ code. The supported packet-protection families are AES-128-GCM,
 AES-256-GCM, and ChaCha20-Poly1305 with the corresponding QUIC header
 protection.
 
-Client authentication always validates the certificate path and the DNS or IP
-service identity. A custom CA changes trust anchors but does not disable either
-check. The normal public surface has no insecure verification switch.
+Client-side server authentication always validates the certificate path and
+the DNS or IP service identity. A custom CA changes trust anchors but does not
+disable either check. The normal public surface has no insecure verification
+switch. Client credentials and server-side mTLS policy are not implemented.
 
 Session tickets are opaque and encrypted. They bind the verified server name,
 port, ALPN, cipher, QUIC version, and the transport parameters that affect
@@ -163,6 +170,14 @@ transport experiment must connect below this boundary and pass the same
 observable behavior suite; it cannot introduce a public raw-handle escape
 hatch.
 
+The intended `gleam_quic` public API is application-protocol independent. Raw
+wire codecs are excluded from its compiler package interface. HTTP/3 session,
+QPACK, Capsule, and worker ownership has moved to `http3`, and the core Hex
+archive contains none of those modules. Generic endpoint/connection/stream
+APIs are implemented and directly tested. Root internals have not yet migrated
+to them and still reach package-private QUIC transport primitives; the
+boundary audit tracks that remaining step.
+
 ## Resource ownership and shutdown
 
 Every live resource has one owner:
@@ -171,25 +186,30 @@ Every live resource has one owner:
 - a reusable client worker owns its UDP socket and all request streams;
 - a listener worker owns the socket, accepted connections, and request
   handlers;
+- network and command turns drive only their finite set of changed connections,
+  while protocol-timer turns drive every connection;
 - each blocked call is monitored and has a fixed deadline; and
 - owner termination initiates bounded cancellation and socket cleanup.
 
-Peer-controlled lengths, counts, tables, stream windows, queues, capsules,
-datagrams, packet histories, retained keys, terminal entries, timeouts, and
-amplification credit all have explicit bounds. Cleanup tests require process
-and mailbox convergence rather than treating a returned response as sufficient.
+Known peer-controlled lengths, counts, tables, stream windows, queues,
+Capsules, Datagrams, packet histories, retained keys, terminal entries,
+timeouts, and amplification credit have explicit bounds. All role-applicable
+per-connection public limits now reach those allocations; isolated accounting
+and enforcement of the aggregate `EndpointMemory` budget remain release gates.
+Cleanup tests require process and mailbox convergence rather than treating a
+returned response as sufficient.
 
 ## Stable and experimental scope
 
-Stable v1 implements published QUIC, HTTP/3, QPACK, priority, Extended CONNECT,
-Capsules, and Datagram standards. WebSocket framing, MASQUE, and WebTransport
-are application protocols that can be built above those primitives.
+The intended stable v1 scope is published QUIC, HTTP/3, QPACK, priority,
+Extended CONNECT, Capsules, and Datagram standards. Current implementation
+coverage and open requirements are tracked per row in the conformance matrix.
 
 Internet-Drafts such as WebTransport over HTTP/3, QUIC multipath, ACK
 Frequency, reliable stream reset, extended key update, receive timestamps, and
 the evolving qlog schemas are not silently negotiated by this package. Draft
 work belongs in an explicitly named, revision-pinned experimental package.
 
-The complete implementation and evidence contract is recorded in
-[Public v1 gate](V1.md), [Testing](TESTING.md), and the
-[security review](SECURITY_REVIEW.md).
+The implementation and evidence contract is recorded in the
+[pre-release v1 gate](V1.md), [conformance matrix](CONFORMANCE.md),
+[Testing](TESTING.md), and the [security review](SECURITY_REVIEW.md).

@@ -116,6 +116,37 @@ pub fn server_policy_can_reject_early_data_without_rejecting_resumption_test() -
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn previous_ticket_key_resumes_during_bounded_rotation_window_test() -> Nil {
+  let #(_, encoded, decoded) = client_hello(False)
+  let assert Ok(cache) = anti_replay.new(10_000, 16)
+  let assert Ok(policy) =
+    resumption.server_policy_with_keys(
+      [<<0x52:256>>, ticket_key],
+      issued_at + 100,
+      100,
+      cache,
+    )
+  let assert Ok(resumption.Resumed(_)) =
+    resumption.select(
+      policy,
+      encoded,
+      <<>>,
+      decoded,
+      "example.com",
+      <<"h3">>,
+      1,
+      <<1, 2>>,
+    )
+  assert resumption.server_policy_with_keys(
+      [ticket_key, ticket_key],
+      issued_at,
+      100,
+      cache,
+    )
+    == Error(resumption.InvalidPolicy)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rejects_recognized_ticket_with_invalid_binder_test() -> Nil {
   let #(_, encoded, decoded) = client_hello(True)
   let assert Ok(cache) = anti_replay.new(10_000, 16)

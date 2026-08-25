@@ -1,6 +1,7 @@
 //// Authenticated stateless TLS tickets and origin-bound client ticket state.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/internal/crypto
@@ -20,6 +21,10 @@ const u32_modulus = 0x1_0000_0000
 const maximum_timestamp = 0x7fff_ffff_ffff_ffff
 
 const associated_data = <<"gleam_quic tls ticket", 1>>
+
+const client_export_version = 1
+
+const client_export_associated_data = <<"gleam_quic client ticket export", 1>>
 
 /// Authenticated server-side state recovered from an opaque ticket.
 pub type Claims {
@@ -336,6 +341,161 @@ pub fn maximum_early_data_size(ticket ticket: ClientTicket) -> Option(Int) {
   maximum_early_data_size_for_quic(permit_early_data: ticket.permit_early_data)
 }
 
+/// Encrypt a versioned client ticket for caller-managed persistence.
+///
+/// The stored age combines monotonic elapsed time before export with wall
+/// time after import, allowing safe process restarts without using wall time
+/// for live protocol timers.
+pub fn export_client(
+  ticket: ClientTicket,
+  storage_key: BitArray,
+  now_milliseconds: Int,
+  unix_milliseconds: Int,
+) -> Result(BitArray, Error) {
+  use Nil <- result.try(validate_ticket_key(storage_key))
+  let ClientTicket(
+    identity,
+    received_at,
+    lifetime,
+    age_add,
+    pre_shared_key,
+    algorithm,
+    cipher_suite,
+    server_name,
+    alpn,
+    quic_version,
+    remembered_transport_parameters,
+    permit_early_data,
+  ) = ticket
+  let age = now_milliseconds - received_at
+  case
+    now_milliseconds >= 0
+    && unix_milliseconds >= 0
+    && now_milliseconds >= received_at
+    && age <= lifetime * 1000
+    && age <= maximum_timestamp
+    && bit_array.bit_size(identity) % 8 == 0
+    && bit_array.byte_size(identity) > 0
+    && bit_array.byte_size(identity) <= 65_535
+  {
+    False -> Error(Expired)
+    True -> {
+      use claims <- result.try(
+        encode_claims(Claims(
+          0,
+          lifetime,
+          age_add,
+          pre_shared_key,
+          algorithm,
+          cipher_suite,
+          server_name,
+          alpn,
+          quic_version,
+          remembered_transport_parameters,
+          permit_early_data,
+        )),
+      )
+      let identity_length = bit_array.byte_size(identity)
+      let claims_length = bit_array.byte_size(claims)
+      let plaintext = <<
+        unix_milliseconds:size(64),
+        age:size(64),
+        identity_length:size(16),
+        identity:bits,
+        claims_length:size(32),
+        claims:bits,
+      >>
+      use nonce <- result.try(crypto.secure_random(12) |> map_crypto_result)
+      use protected <- result.try(
+        crypto.aes_256_gcm_encrypt(
+          storage_key,
+          nonce,
+          client_export_associated_data,
+          plaintext,
+        )
+        |> map_crypto_result,
+      )
+      Ok(<<client_export_version, nonce:bits, protected:bits>>)
+    }
+  }
+}
+
+/// Authenticate and restore caller-encrypted client ticket state.
+pub fn import_client(
+  stored: BitArray,
+  storage_key: BitArray,
+  now_milliseconds: Int,
+  unix_milliseconds: Int,
+) -> Result(ClientTicket, Error) {
+  use Nil <- result.try(validate_ticket_key(storage_key))
+  use Nil <- result.try(require_byte_aligned(stored))
+  use plaintext <- result.try(decrypt_client_export(storage_key, stored))
+  case plaintext {
+    <<exported_unix:size(64), age_at_export:size(64), rest:bits>> ->
+      restore_client(
+        exported_unix,
+        age_at_export,
+        rest,
+        now_milliseconds,
+        unix_milliseconds,
+      )
+    _ -> Error(InvalidTicket)
+  }
+}
+
+fn restore_client(
+  exported_unix: Int,
+  age_at_export: Int,
+  encoded: BitArray,
+  now_milliseconds: Int,
+  unix_milliseconds: Int,
+) -> Result(ClientTicket, Error) {
+  use <- bool.guard(
+    when: unix_milliseconds < exported_unix || now_milliseconds < 0,
+    return: Error(InvalidTimestamp),
+  )
+  use #(identity, claims_bytes) <- result.try(decode_client_export(encoded))
+  use claims <- result.try(decode_claims(claims_bytes))
+  let elapsed = unix_milliseconds - exported_unix
+  let age = age_at_export + elapsed
+  let Claims(
+    _,
+    lifetime,
+    age_add,
+    pre_shared_key,
+    algorithm,
+    cipher_suite,
+    server_name,
+    alpn,
+    quic_version,
+    remembered_transport_parameters,
+    permit_early_data,
+  ) = claims
+  use <- bool.guard(
+    when: age > lifetime * 1000 || age > maximum_timestamp,
+    return: Error(Expired),
+  )
+  Ok(ClientTicket(
+    identity,
+    now_milliseconds - age,
+    lifetime,
+    age_add,
+    pre_shared_key,
+    algorithm,
+    cipher_suite,
+    server_name,
+    alpn,
+    quic_version,
+    remembered_transport_parameters,
+    permit_early_data,
+  ))
+}
+
+/// Return only the non-secret origin binding for internal wrapper validation.
+pub fn server_name(ticket: ClientTicket) -> String {
+  ticket.server_name
+}
+
 fn encode_claims(claims: Claims) -> Result(BitArray, Error) {
   let Claims(
     issued_at,
@@ -612,6 +772,67 @@ fn decrypt_ticket(
             Error(_) -> Error(InvalidTicket)
           }
       }
+    _ -> Error(InvalidTicket)
+  }
+}
+
+fn decrypt_client_export(
+  storage_key: BitArray,
+  stored: BitArray,
+) -> Result(BitArray, Error) {
+  case stored {
+    <<version, nonce:bits-size(96), protected:bits>> ->
+      case
+        version == client_export_version && bit_array.byte_size(protected) >= 16
+      {
+        False -> Error(InvalidTicket)
+        True ->
+          crypto.aes_256_gcm_decrypt(
+            storage_key,
+            nonce,
+            client_export_associated_data,
+            protected,
+          )
+          |> result.replace_error(InvalidTicket)
+      }
+    _ -> Error(InvalidTicket)
+  }
+}
+
+fn decode_client_export(
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), Error) {
+  case bytes {
+    <<identity_length:size(16), values:bits>> -> {
+      use #(identity, claims_and_rest) <- result.try(take(
+        values,
+        identity_length,
+      ))
+      decode_client_claims(identity, claims_and_rest)
+    }
+    _ -> Error(InvalidTicket)
+  }
+}
+
+fn decode_client_claims(
+  identity: BitArray,
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), Error) {
+  case bytes {
+    <<claims_length:size(32), claims_value_and_rest:bits>> -> {
+      use #(claims, trailing) <- result.try(take(
+        claims_value_and_rest,
+        claims_length,
+      ))
+      case
+        trailing == <<>>
+        && bit_array.byte_size(identity) > 0
+        && bit_array.byte_size(identity) <= 65_535
+      {
+        True -> Ok(#(identity, claims))
+        False -> Error(InvalidTicket)
+      }
+    }
     _ -> Error(InvalidTicket)
   }
 }

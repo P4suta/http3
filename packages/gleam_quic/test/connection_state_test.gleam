@@ -664,6 +664,77 @@ pub fn validates_rebinding_and_enforces_active_migration_policy_test() -> Nil {
   assert events == [connection_state.PathValidationFailed]
 }
 
+// RFC 9000 section 21.9 and reported erratum 8875 permit load shedding when
+// excessive PATH_CHALLENGE traffic is an attack. Repeated challenges must not
+// grow the pending PATH_RESPONSE queue, and distinct challenges are bounded.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounds_and_coalesces_path_challenge_responses_test() -> Nil {
+  let duplicate = <<0, 1, 2, 3, 4, 5, 6, 7>>
+  let assert Ok(connection) = established(connection_state.Server)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      repeated_path_challenges(duplicate, 128, []),
+      packet_space.NotEct,
+      1,
+    )
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    _,
+    [frame.HandshakeDone],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  let assert Ok(connection_state.PacketPrepared(
+    _,
+    engine.OneRtt,
+    _,
+    [frame.PathResponse(response)],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  assert response == duplicate
+
+  let assert Ok(connection) = established(connection_state.Server)
+  assert connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      distinct_path_challenges(65, []),
+      packet_space.NotEct,
+      1,
+    )
+    == Error(connection_state.ProtocolViolation)
+}
+
+fn repeated_path_challenges(
+  challenge: BitArray,
+  remaining: Int,
+  frames: List(frame.Frame),
+) -> List(frame.Frame) {
+  case remaining {
+    0 -> frames
+    _ ->
+      repeated_path_challenges(challenge, remaining - 1, [
+        frame.PathChallenge(challenge),
+        ..frames
+      ])
+  }
+}
+
+fn distinct_path_challenges(
+  remaining: Int,
+  frames: List(frame.Frame),
+) -> List(frame.Frame) {
+  case remaining {
+    0 -> frames
+    value ->
+      distinct_path_challenges(value - 1, [
+        frame.PathChallenge(<<value:64>>),
+        ..frames
+      ])
+  }
+}
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rotates_peer_connection_ids_and_surfaces_local_retirement_test() -> Nil {
   let replacement = <<11, 12, 13, 14, 15, 16, 17, 18>>
@@ -929,8 +1000,10 @@ pub fn closes_idles_and_converges_deterministically_test() -> Nil {
       connection_state.default_config(connection_state.Client),
       0,
     )
+  assert connection_state.next_deadline(idle, 0) == Ok(Some(30_000))
   let assert Ok(idle) = connection_state.tick(idle, 30_000)
   assert connection_state.phase(idle) == connection_state.Closed
+  assert connection_state.next_deadline(idle, 30_000) == Ok(None)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -1116,6 +1189,7 @@ fn tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
         transport_parameter.MaxUdpPayloadSize(1200),
       ],
       trust_store: trust_store,
+      client_credential: None,
       retried: False,
       version_negotiated: False,
     ),
@@ -1132,6 +1206,7 @@ fn tls_configs() -> #(engine.ClientConfig, engine.ServerConfig) {
       signing_key: signing_key,
       signature_scheme: extension_value.Ed25519,
       alternative_credentials: [],
+      client_authentication: engine.ClientAuthenticationDisabled,
     ),
   )
 }

@@ -90,3 +90,11 @@ pub fn on_timeout(validator: Validator, now_milliseconds: Int) -> Validator {
 pub fn phase(validator: Validator) -> Phase {
   validator.phase
 }
+
+/// Return the fixed validation deadline while a challenge is outstanding.
+pub fn deadline(validator: Validator) -> Option(Int) {
+  case validator.phase {
+    Validating -> Some(validator.deadline_milliseconds)
+    Idle | Validated | Failed -> None
+  }
+}

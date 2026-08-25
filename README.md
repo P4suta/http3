@@ -12,8 +12,9 @@ project that needs those capabilities should compose them above `http3`.
 
 > [!WARNING]
 > This source tree is unpublished and has not had an independent third-party
-> security audit. Its repository-defined v1 implementation and local
-> qualification gates are complete, but it is not yet a published or supported
+> security audit. The former v1-complete decision was reopened on 2026-08-25;
+> known transport, TLS, conformance, performance, security-tooling, and package
+> distribution gates remain open. It is not a release candidate or a supported
 > production release. The version in `gleam.toml` is tool metadata, not a tag,
 > release, or publication milestone.
 
@@ -49,9 +50,8 @@ pub fn fetch() {
 Each `send` call owns and closes one HTTP/3 connection. The default total
 timeout is 30 seconds, and buffered request and response bodies are each
 limited to 8 MiB. Certificate-chain and service-identity verification are
-always enabled. Typed configuration functions can change limits, the timeout,
-the QUIC version, keepalive, qlog, or an explicit CA trust set without exposing
-backend values.
+always enabled. `http3/config` provides complete finite phase deadlines and
+resource limits; there is no unlimited queue or deadline value.
 
 For connection reuse and streaming bodies, establish a connection, open one
 or more streams, send request chunks, and pull response events:
@@ -75,8 +75,9 @@ case client.next_event(stream) {
 ```
 
 Request writes synchronously preserve QUIC flow-control pressure. Response
-events are pulled one at a time, and unconsumed data is bounded per stream.
-Cancellation and connection close are observable and idempotent.
+events are pulled one at a time, and unconsumed data is bounded by both bytes
+and event count per stream. Cancellation and connection close are observable
+and idempotent.
 
 The server requires PEM certificate and private-key bytes, owns its listener
 and connections, and pulls request heads and body events with fixed timeouts:
@@ -107,31 +108,38 @@ let assert Ok(priority) = transport.priority(1, True)
 let assert Ok(Nil) = transport.set_priority(stream_transport, priority)
 ```
 
-The typed surface covers QUIC v1/v2, compatible version negotiation, HTTP
+The current source exercises QUIC v1/v2, compatible version negotiation, HTTP
 Datagrams on Extended CONNECT, RFC 9218 priority, connection migration,
-NewReno and CUBIC, ECN, PMTU discovery, statistics, ping, opt-in qlog,
-origin-bound resumption, and actual 0-RTT. HTTP/3 informational responses,
-trailers, server push, GOAWAY, graceful drain, Capsules, and complete QPACK are
-implemented. A 0-RTT connection accepts only GET, HEAD, and OPTIONS until its
-early-data outcome is known; replay-unsafe methods are rejected locally.
+NewReno and CUBIC, ECN, PMTU discovery, statistics, ping, opt-in bounded qlog,
+origin-bound resumption, and explicit 0-RTT. HTTP/3 informational responses,
+trailers, server push, GOAWAY, graceful drain, Capsules, and QPACK have live
+paths and tests. These are implementation facts, not a complete conformance or
+release-readiness claim. A 0-RTT connection accepts only GET, HEAD, and OPTIONS
+until its early-data outcome is known; replay-unsafe methods are rejected
+locally.
 
 ## Status
 
 | Capability | Status |
 | --- | --- |
-| Repository-owned QUIC v1/v2 and TLS 1.3 core | Complete |
-| Bounded and streaming HTTP/3 client | Complete |
-| Bounded and streaming HTTP/3 server | Complete |
-| HTTP/3, QPACK, and typed extension surface | Complete |
-| Two-peer bidirectional interoperability | Complete |
-| Fault, property, fuzz, load, soak, and benchmark gates | Complete |
-| Public v1 source-tree gate | Complete as of 2026-08-24 |
+| Secure bounded/streaming HTTP/3 client and server paths | Implemented and tested |
+| Event-driven UDP and finite per-stream event/Datagram queues | Implemented and tested |
+| Typed deadlines, role-specific live limits, runtime failures, reload, and ticket persistence | Implemented and tested except aggregate `EndpointMemory`, tracked below |
+| Physical HTTP/3/QPACK package ownership | Implemented; core archive contains transport only |
+| Generic public `gleam_quic` transport API | Implemented and directly tested over real UDP; root HTTP/3 migration to it remains open |
+| Per-connection actor isolation and complete global admission budgets | Open release blocker |
+| Bounded external 0-RTT replay guard with safe 1-RTT fallback | Implemented and tested |
+| P-256 key exchange and mTLS API | Implemented and directly tested; OTP/peer credential matrix remains open |
+| Complete conformance, qlog, CUBIC, coverage, security, interop, and package gates | Open release blockers |
+| Fixed performance thresholds | Not met by the retained baseline or 2026-08-25 diagnostic rerun |
+| Public v1 source-tree gate | Reopened on 2026-08-25 |
 | Tag, hosted release, and Hex publication | Deliberately not performed |
 
 No external QUIC implementation is a production dependency. Independent
 aioquic and quic-go programs are retained only as reproducible test peers.
-APIs are exported only when they perform real protocol work and have bounded
-tests.
+HTTP/3 sessions, QPACK, Capsules, and workers are owned by `http3`. Raw
+packet/frame/TLS codecs remain private to `gleam_quic`. Compiler-derived
+semantic API snapshots for both packages are part of the local check.
 
 ## Development
 
@@ -152,14 +160,19 @@ mise run interop
 
 `mise run check` verifies formatting, warnings-as-errors builds, both test
 suites, documentation, the compiler-exported public API, source and prose
-linting, workflow syntax, spelling, shell scripts, and REUSE compliance. The
-separate commands run expensive or environment-sensitive network, fuzz,
-property, and independent-peer qualification gates. CI defines OTP 28–29 and
-Linux, macOS, and Windows build/test matrices.
+linting, workflow syntax, spelling, shell scripts, REUSE compliance, and a
+byte-reproducible, content-audited `gleam_quic` Hex archive. The separate
+commands run expensive or environment-sensitive network, fuzz, property, and
+independent-peer qualification gates. CI defines OTP 28–29 and Linux, macOS,
+and Windows build/test matrices.
 
-See [Architecture](docs/ARCHITECTURE.md), the [Public v1 gate](docs/V1.md),
-[Testing](docs/TESTING.md), the [security review](docs/SECURITY_REVIEW.md),
-[Performance](benchmarks/README.md), and the completed
+Start with the [API guide](docs/API.md). See also
+[Architecture](docs/ARCHITECTURE.md), the [pre-release v1 gate](docs/V1.md),
+the [conformance matrix](docs/CONFORMANCE.md),
+[Deployment and key rotation](docs/DEPLOYMENT.md),
+[Migration](docs/MIGRATION.md), [Testing](docs/TESTING.md), the
+[security review](docs/SECURITY_REVIEW.md), [Support](SUPPORT.md),
+[Performance](benchmarks/README.md), and the reopened
 [Roadmap](docs/ROADMAP.md).
 
 ## Security

@@ -1,13 +1,16 @@
 //// TLS 1.3 PSK offer, selection, binder, and QUIC early-data coordination.
 
 import gleam/bit_array
+import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/internal/crypto
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/extension
 import gleam_quic/internal/tls/hello
 import gleam_quic/internal/tls/pre_shared_key
+import gleam_quic/internal/tls/replay_guard
 import gleam_quic/internal/tls/session_ticket
 import gleam_quic/transport_parameter
 
@@ -24,11 +27,12 @@ pub opaque type ClientOffer {
 /// Server policy and replay state for one ClientHello evaluation.
 pub opaque type ServerPolicy {
   ServerPolicy(
-    ticket_key: BitArray,
+    ticket_keys: List(BitArray),
     now_milliseconds: Int,
     ticket_age_tolerance_milliseconds: Int,
     replay_cache: anti_replay.Cache,
     permit_early_data: Bool,
+    external_replay_guard: Option(replay_guard.Guard),
   )
 }
 
@@ -184,20 +188,35 @@ pub fn server_policy(
   ticket_age_tolerance_milliseconds ticket_age_tolerance_milliseconds: Int,
   replay_cache replay_cache: anti_replay.Cache,
 ) -> Result(ServerPolicy, Error) {
+  server_policy_with_keys(
+    ticket_keys: [ticket_key],
+    now_milliseconds: now_milliseconds,
+    ticket_age_tolerance_milliseconds: ticket_age_tolerance_milliseconds,
+    replay_cache: replay_cache,
+  )
+}
+
+/// Construct a policy accepting the current and one previous ticket key.
+pub fn server_policy_with_keys(
+  ticket_keys ticket_keys: List(BitArray),
+  now_milliseconds now_milliseconds: Int,
+  ticket_age_tolerance_milliseconds ticket_age_tolerance_milliseconds: Int,
+  replay_cache replay_cache: anti_replay.Cache,
+) -> Result(ServerPolicy, Error) {
   case
-    bit_array.bit_size(ticket_key) % 8 == 0
-    && bit_array.byte_size(ticket_key) == 32
+    valid_ticket_keys(ticket_keys)
     && now_milliseconds >= 0
     && ticket_age_tolerance_milliseconds >= 0
     && ticket_age_tolerance_milliseconds <= 600_000
   {
     True ->
       Ok(ServerPolicy(
-        ticket_key:,
+        ticket_keys:,
         now_milliseconds:,
         ticket_age_tolerance_milliseconds:,
         replay_cache:,
         permit_early_data: True,
+        external_replay_guard: None,
       ))
     False -> Error(InvalidPolicy)
   }
@@ -207,6 +226,17 @@ pub fn server_policy(
 /// QUIC Retry uses this policy because receiving Retry invalidates early data.
 pub fn reject_early_data(policy: ServerPolicy) -> ServerPolicy {
   ServerPolicy(..policy, permit_early_data: False)
+}
+
+/// Require a bounded caller-managed atomic test-and-record for early data.
+///
+/// Guard rejection, failure, or timeout rejects only 0-RTT. The authenticated
+/// PSK can still resume the connection at 1-RTT.
+pub fn with_external_replay_guard(
+  policy policy: ServerPolicy,
+  guard guard: replay_guard.Guard,
+) -> ServerPolicy {
+  ServerPolicy(..policy, external_replay_guard: Some(guard))
 }
 
 /// Select and authenticate a PSK, independently deciding early-data use.
@@ -330,13 +360,13 @@ fn select_identity(
       [binder, ..binder_rest]
     -> {
       let opened =
-        session_ticket.open(
-          ticket_key: policy.ticket_key,
-          opaque_ticket: identity,
-          now_milliseconds: policy.now_milliseconds,
-          expected_server_name:,
-          expected_alpn:,
-          expected_quic_version:,
+        open_ticket(
+          policy.ticket_keys,
+          identity,
+          policy.now_milliseconds,
+          expected_server_name,
+          expected_alpn,
+          expected_quic_version,
         )
       case opened {
         // nolint: thrown_away_error -- opaque identities can be from another key epoch.
@@ -372,6 +402,60 @@ fn select_identity(
       }
     }
     _, _ -> Error(InvalidBinder)
+  }
+}
+
+fn valid_ticket_keys(keys: List(BitArray)) -> Bool {
+  case keys {
+    [current] -> valid_ticket_key(current)
+    [current, previous] ->
+      current != previous
+      && valid_ticket_key(current)
+      && valid_ticket_key(previous)
+    _ -> False
+  }
+}
+
+fn valid_ticket_key(key: BitArray) -> Bool {
+  bit_array.bit_size(key) % 8 == 0 && bit_array.byte_size(key) == 32
+}
+
+fn open_ticket(
+  keys: List(BitArray),
+  identity: BitArray,
+  now_milliseconds: Int,
+  server_name: String,
+  alpn: BitArray,
+  quic_version: Int,
+) -> Result(session_ticket.Claims, session_ticket.Error) {
+  case keys {
+    [] -> Error(session_ticket.InvalidTicket)
+    [key, ..rest] ->
+      case
+        session_ticket.open(
+          key,
+          identity,
+          now_milliseconds,
+          server_name,
+          alpn,
+          quic_version,
+        )
+      {
+        Ok(claims) -> Ok(claims)
+        Error(error) ->
+          case rest {
+            [] -> Error(error)
+            _ ->
+              open_ticket(
+                rest,
+                identity,
+                now_milliseconds,
+                server_name,
+                alpn,
+                quic_version,
+              )
+          }
+      }
   }
 }
 
@@ -529,12 +613,44 @@ fn decide_early_data(
         |> map_replay_result,
       )
       case outcome {
-        anti_replay.Accepted(cache) -> Ok(#(True, cache))
+        anti_replay.Accepted(cache) ->
+          Ok(#(
+            external_replay_permits(policy, claims, replay_fingerprint),
+            cache,
+          ))
         anti_replay.Replayed(cache) | anti_replay.Saturated(cache) ->
           Ok(#(False, cache))
       }
     }
   }
+}
+
+fn external_replay_permits(
+  policy: ServerPolicy,
+  claims: session_ticket.Claims,
+  replay_fingerprint: BitArray,
+) -> Bool {
+  case policy.external_replay_guard {
+    None -> True
+    Some(guard) ->
+      replay_guard.permits(
+        guard,
+        replay_fingerprint,
+        ticket_valid_for_milliseconds(claims, policy.now_milliseconds),
+      )
+  }
+}
+
+fn ticket_valid_for_milliseconds(
+  claims: session_ticket.Claims,
+  now_milliseconds: Int,
+) -> Int {
+  let session_ticket.Claims(
+    issued_at_milliseconds: issued_at,
+    lifetime_seconds: lifetime,
+    ..,
+  ) = claims
+  int.max(0, issued_at + lifetime * 1000 - now_milliseconds)
 }
 
 fn require_psk_dhe_mode(

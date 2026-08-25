@@ -174,7 +174,9 @@ server_owner_cleanup(Configuration) ->
     Ref = make_ref(),
     {Creator, CreatorMonitor} = spawn_monitor(fun() ->
         case http3@server:start(Configuration) of
-            {ok, {listener, {listener, {listener, _Commands, Worker, _Timeout}}}}
+            {ok, {listener,
+                  {listener,
+                   {listener, _Commands, Worker, _Timeout, _DrainTimeout}}}}
                     when is_pid(Worker) ->
                 Parent ! {Ref, worker, Worker};
             Error ->

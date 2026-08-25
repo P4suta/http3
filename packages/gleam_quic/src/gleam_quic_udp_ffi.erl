@@ -3,19 +3,47 @@
 -on_load(init/0).
 
 -export([
+    active_datagram/2,
+    active_once/1,
     close/1,
+    continue_relay/1,
     local_endpoint/1,
     monotonic_millisecond/0,
+    unix_millisecond/0,
     open/2,
+    open_dual_stack/1,
     recv/2,
+    relay_batch/2,
     resolve/2,
+    resolve_timeout/3,
     send/5,
-    supports_ecn/1
+    start_relay/1,
+    stop_relay/1,
+    supports_ecn/1,
+    transfer_owner/2
 ]).
 
 -define(CLOCK_ORIGIN, {?MODULE, clock_origin}).
+-define(DEFAULT_SOCKET_BUFFER_BYTES, 4 * 1024 * 1024).
+-define(MAXIMUM_RESOLVED_ADDRESSES, 16).
 
--type handle() :: #{socket := gen_udp:socket(), family := 4 | 6, ecn := boolean()}.
+-type socket_family() :: 4 | 6.
+-type handle() :: #{
+    socket := gen_udp:socket(),
+    family := socket_family() | dual,
+    ecn := boolean(),
+    ipv4_socket => gen_udp:socket(),
+    ipv4_ecn => boolean()
+}.
+-type relay() :: #{
+    pid := pid(),
+    reference := reference(),
+    socket := gen_udp:socket(),
+    sockets := [gen_udp:socket()]
+}.
+
+-define(MAXIMUM_RELAY_BATCH, 64).
+-define(RELAY_STOP_TIMEOUT, 1000).
 
 -spec init() -> ok.
 init() ->
@@ -34,6 +62,12 @@ open(Address, Port)
         error -> {error, 1}
     end;
 open(_Address, _Port) ->
+    {error, 1}.
+
+-spec open_dual_stack(integer()) -> {ok, handle()} | {error, integer()}.
+open_dual_stack(Port) when is_integer(Port), Port >= 0, Port =< 65535 ->
+    open_split_dual_stack(Port);
+open_dual_stack(_Port) ->
     {error, 1}.
 
 -spec local_endpoint(handle()) ->
@@ -64,16 +98,69 @@ resolve(Host, Family)
 resolve(_Host, _Family) ->
     {error, 1}.
 
+-spec resolve_timeout(binary(), 0 | 4 | 6, integer()) ->
+    {ok, [binary()]} | {error, integer()}.
+resolve_timeout(Host, Family, Timeout)
+    when is_binary(Host), byte_size(Host) > 0, byte_size(Host) =< 253,
+         (Family =:= 0 orelse Family =:= 4 orelse Family =:= 6),
+         is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    case binary:match(Host, <<0>>) of
+        nomatch -> resolve_with_deadline(binary_to_list(Host), Family, Timeout);
+        _Match -> {error, 1}
+    end;
+resolve_timeout(_Host, _Family, _Timeout) ->
+    {error, 1}.
+
+-spec resolve_with_deadline(string(), 0 | 4 | 6, pos_integer()) ->
+    {ok, [binary()]} | {error, integer()}.
+resolve_with_deadline(Host, Family, Timeout) ->
+    Parent = self(),
+    Reference = make_ref(),
+    {Resolver, Monitor} = spawn_monitor(fun() ->
+        nil = gleam_quic_process_label_ffi:set_role(4),
+        Parent ! {Reference, resolve_host(Host, Family)}
+    end),
+    receive
+        {Reference, Result} ->
+            erlang:demonitor(Monitor, [flush]),
+            Result;
+        {'DOWN', Monitor, process, Resolver, _Reason} ->
+            {error, 8}
+    after Timeout ->
+        exit(Resolver, kill),
+        receive
+            {'DOWN', Monitor, process, Resolver, _Reason} -> ok
+        end,
+        receive
+            {Reference, _LateResult} -> ok
+        after 0 ->
+            ok
+        end,
+        {error, 2}
+    end.
+
 -spec send(handle(), binary(), integer(), binary(), integer()) ->
     {ok, nil} | {error, integer()}.
-send(#{socket := Socket, family := Family, ecn := EcnSupported}, Address,
-     Port, Payload, Ecn)
+send(Handle = #{socket := _Socket}, Address, Port, Payload, Ecn)
     when is_binary(Address), is_integer(Port), Port > 0, Port =< 65535,
          is_binary(Payload), byte_size(Payload) =< 65527,
          is_integer(Ecn), Ecn >= 0, Ecn =< 2 ->
     case decode_address(Address) of
         {ok, IpAddress, Family} ->
-            send_datagram(Socket, Family, EcnSupported, IpAddress, Port, Payload, Ecn);
+            case send_target(Handle, IpAddress, Family) of
+                {ok, Socket, SendAddress, SendFamily, EcnSupported} ->
+                    send_datagram(
+                        Socket,
+                        SendFamily,
+                        EcnSupported,
+                        SendAddress,
+                        Port,
+                        Payload,
+                        Ecn
+                    );
+                error ->
+                    {error, 1}
+            end;
         _Other ->
             {error, 1}
     end;
@@ -82,6 +169,10 @@ send(_Socket, _Address, _Port, _Payload, _Ecn) ->
 
 -spec recv(handle(), integer()) ->
     {ok, {binary(), integer(), binary(), 0..3}} | {error, integer()}.
+recv(#{socket := Socket6, ipv4_socket := Socket4}, Timeout)
+    when is_integer(Timeout), Timeout >= 0, Timeout =< 2147483647 ->
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    recv_split([Socket6, Socket4], Deadline);
 recv(#{socket := Socket}, Timeout)
     when is_integer(Timeout), Timeout >= 0, Timeout =< 2147483647 ->
     try gen_udp:recv(Socket, 0, Timeout) of
@@ -97,11 +188,129 @@ recv(#{socket := Socket}, Timeout)
 recv(_Socket, _Timeout) ->
     {error, 1}.
 
+-spec active_once(handle()) -> {ok, nil} | {error, integer()}.
+active_once(#{socket := Socket6, ipv4_socket := Socket4}) ->
+    activate_once_all([Socket6, Socket4]);
+active_once(#{socket := Socket}) ->
+    try inet:setopts(Socket, [{active, once}]) of
+        ok -> {ok, nil};
+        {error, Reason} -> {error, error_code(Reason)}
+    catch
+        _Class:_Reason -> {error, 3}
+    end;
+active_once(_Socket) ->
+    {error, 1}.
+
+-spec active_datagram(handle(), term()) ->
+    {ok, {binary(), integer(), binary(), 0..3}} | {error, integer()}.
+active_datagram(#{socket := Socket6, ipv4_socket := Socket4},
+                {udp, Socket, Address, Port, Payload})
+    when Socket =:= Socket6; Socket =:= Socket4 ->
+    receive_result(Address, Port, Payload, 0);
+active_datagram(#{socket := Socket6, ipv4_socket := Socket4},
+                {udp, Socket, Address, Port, Ancillary, Payload})
+    when Socket =:= Socket6; Socket =:= Socket4 ->
+    receive_result(Address, Port, Payload, received_ecn(Ancillary));
+active_datagram(#{socket := Socket6, ipv4_socket := Socket4},
+                {udp_error, Socket, Reason})
+    when Socket =:= Socket6; Socket =:= Socket4 ->
+    {error, error_code(Reason)};
+active_datagram(#{socket := Socket6, ipv4_socket := Socket4},
+                {udp_closed, Socket})
+    when Socket =:= Socket6; Socket =:= Socket4 ->
+    {error, 3};
+active_datagram(#{socket := Socket}, {udp, Socket, Address, Port, Payload}) ->
+    receive_result(Address, Port, Payload, 0);
+active_datagram(#{socket := Socket},
+                {udp, Socket, Address, Port, Ancillary, Payload}) ->
+    receive_result(Address, Port, Payload, received_ecn(Ancillary));
+active_datagram(#{socket := Socket}, {udp_error, Socket, Reason}) ->
+    {error, error_code(Reason)};
+active_datagram(#{socket := Socket}, {udp_closed, Socket}) ->
+    {error, 3};
+active_datagram(_Socket, _Message) ->
+    {error, 1}.
+
+-spec start_relay(handle()) -> {ok, relay()} | {error, integer()}.
+start_relay(Handle = #{socket := Socket}) ->
+    Owner = self(),
+    Reference = make_ref(),
+    Sockets = handle_sockets(Handle),
+    Relay = spawn(fun() ->
+        nil = gleam_quic_process_label_ffi:set_role(5),
+        receive
+            {start, Owner, Reference, Sockets} ->
+                Monitor = erlang:monitor(process, Owner),
+                relay_loop(Sockets, Owner, Reference, Monitor)
+        end
+    end),
+    case transfer_sockets(Sockets, Relay, []) of
+        {ok, _OwnedSockets} ->
+            Relay ! {start, Owner, Reference, Sockets},
+            {ok, #{
+                pid => Relay,
+                reference => Reference,
+                socket => Socket,
+                sockets => Sockets
+            }};
+        {error, Reason, _OwnedSockets} ->
+            exit(Relay, kill),
+            close_sockets(Sockets),
+            {error, error_code(Reason)}
+    end;
+start_relay(_Socket) ->
+    {error, 1}.
+
+-spec relay_batch(relay(), term()) ->
+    {ok, [{binary(), integer(), binary(), 0..3}]} | {error, integer()}.
+relay_batch(#{reference := Reference},
+            {gleam_quic_udp_batch, Reference, {ok, Batch}})
+    when is_list(Batch) ->
+    {ok, Batch};
+relay_batch(#{reference := Reference},
+            {gleam_quic_udp_batch, Reference, {error, Code}})
+    when is_integer(Code) ->
+    {error, Code};
+relay_batch(_Relay, _Message) ->
+    {error, 1}.
+
+-spec continue_relay(relay()) -> {ok, nil} | {error, integer()}.
+continue_relay(#{pid := Pid, reference := Reference}) ->
+    case erlang:is_process_alive(Pid) of
+        true ->
+            Pid ! {gleam_quic_udp_continue, Reference},
+            {ok, nil};
+        false ->
+            {error, 3}
+    end;
+continue_relay(_Relay) ->
+    {error, 1}.
+
+-spec stop_relay(relay()) -> {ok, nil} | {error, integer()}.
+stop_relay(#{pid := Pid, reference := Reference}) ->
+    case erlang:is_process_alive(Pid) of
+        false -> {ok, nil};
+        true ->
+            StopReference = make_ref(),
+            Pid ! {gleam_quic_udp_stop, Reference, self(), StopReference},
+            receive
+                {gleam_quic_udp_stopped, StopReference} -> {ok, nil}
+            after ?RELAY_STOP_TIMEOUT ->
+                {error, 2}
+            end
+    end;
+stop_relay(_Relay) ->
+    {error, 1}.
+
 -spec supports_ecn(term()) -> boolean().
+supports_ecn(#{ecn := Ipv6, ipv4_ecn := Ipv4}) -> Ipv6 andalso Ipv4;
 supports_ecn(#{ecn := Supported}) -> Supported;
 supports_ecn(_Socket) -> false.
 
 -spec close(term()) -> {ok, nil} | {error, integer()}.
+close(#{socket := Socket6, ipv4_socket := Socket4}) ->
+    close_sockets([Socket6, Socket4]),
+    {ok, nil};
 close(#{socket := Socket}) ->
     try gen_udp:close(Socket) of
         ok -> {ok, nil}
@@ -111,10 +320,408 @@ close(#{socket := Socket}) ->
 close(_Socket) ->
     {error, 1}.
 
+%% Transfer a passive client socket between bounded connection-attempt actors.
+%% Only the current controlling process can succeed, and the opaque handle
+%% remains unchanged.
+-spec transfer_owner(handle(), pid()) -> {ok, nil} | {error, integer()}.
+transfer_owner(#{socket := Socket6, ipv4_socket := Socket4}, Owner)
+    when is_pid(Owner) ->
+    case transfer_sockets([Socket6, Socket4], Owner, []) of
+        {ok, _Sockets} -> {ok, nil};
+        {error, Reason, _Sockets} ->
+            close_sockets([Socket6, Socket4]),
+            {error, error_code(Reason)}
+    end;
+transfer_owner(#{socket := Socket}, Owner) when is_pid(Owner) ->
+    try gen_udp:controlling_process(Socket, Owner) of
+        ok -> {ok, nil};
+        {error, Reason} -> {error, error_code(Reason)}
+    catch
+        _Class:_Reason -> {error, 3}
+    end;
+transfer_owner(_Socket, _Owner) ->
+    {error, 1}.
+
+-spec relay_loop([gen_udp:socket()], pid(), reference(), reference()) -> no_return().
+relay_loop(Sockets, Owner, Reference, Monitor) ->
+    case activate_once_all(Sockets) of
+        {ok, nil} -> relay_receive(Sockets, Owner, Reference, Monitor);
+        {error, Reason} ->
+            Owner ! {gleam_quic_udp_batch, Reference,
+                     {error, Reason}},
+            relay_wait(Sockets, Owner, Reference, Monitor)
+    end.
+
+-spec relay_receive([gen_udp:socket()], pid(), reference(), reference()) ->
+    no_return().
+relay_receive(Sockets, Owner, Reference, Monitor) ->
+    receive
+        {udp, Socket, Address, Port, Payload} ->
+            case lists:member(Socket, Sockets) of
+                true -> relay_deliver(Sockets, Owner, Reference, Monitor,
+                                      Address, Port, Payload, 0);
+                false -> relay_receive(Sockets, Owner, Reference, Monitor)
+            end;
+        {udp, Socket, Address, Port, Ancillary, Payload} ->
+            case lists:member(Socket, Sockets) of
+                true -> relay_deliver(Sockets, Owner, Reference, Monitor,
+                                      Address, Port, Payload,
+                                      received_ecn(Ancillary));
+                false -> relay_receive(Sockets, Owner, Reference, Monitor)
+            end;
+        {udp_error, Socket, Reason}
+            when Reason =:= econnreset; Reason =:= econnrefused;
+                 Reason =:= ehostunreach; Reason =:= enetunreach ->
+            %% A shared listener can receive an asynchronous ICMP error after
+            %% replying to a client which has already closed its UDP socket.
+            %% This is connection-local feedback, not a listener failure.
+            case lists:member(Socket, Sockets) of
+                true ->
+                    deactivate_sockets(Sockets),
+                    relay_loop(Sockets, Owner, Reference, Monitor);
+                false ->
+                    relay_receive(Sockets, Owner, Reference, Monitor)
+            end;
+        {udp_error, Socket, Reason} ->
+            case lists:member(Socket, Sockets) of
+                true ->
+                    deactivate_sockets(Sockets),
+                    Owner ! {gleam_quic_udp_batch, Reference,
+                             {error, error_code(Reason)}},
+                    relay_wait(Sockets, Owner, Reference, Monitor);
+                false ->
+                    relay_receive(Sockets, Owner, Reference, Monitor)
+            end;
+        {udp_closed, Socket} ->
+            case lists:member(Socket, Sockets) of
+                true ->
+                    Owner ! {gleam_quic_udp_batch, Reference, {error, 3}},
+                    close_sockets(Sockets),
+                    exit(normal);
+                false ->
+                    relay_receive(Sockets, Owner, Reference, Monitor)
+            end;
+        {gleam_quic_udp_stop, Reference, Caller, StopReference} ->
+            relay_close(Sockets, Caller, StopReference);
+        {'DOWN', Monitor, process, Owner, _Reason} ->
+            close_sockets(Sockets),
+            exit(normal)
+    end.
+
+-spec relay_deliver(
+    [gen_udp:socket()], pid(), reference(), reference(), inet:ip_address(),
+    inet:port_number(), binary(), 0..3
+) -> no_return().
+relay_deliver(Sockets, Owner, Reference, Monitor,
+              Address, Port, Payload, Ecn) ->
+    deactivate_sockets(Sockets),
+    case normalise_relay_datagram(Address, Port, Payload, Ecn) of
+        {error, Code} ->
+            Owner ! {gleam_quic_udp_batch, Reference, {error, Code}};
+        {ok, First} ->
+            {Remaining, Reversed} = drain_relay_sockets(
+                Sockets, ?MAXIMUM_RELAY_BATCH - 1, [First]
+            ),
+            Batch = drain_relay_mailbox(Sockets, Remaining, Reversed),
+            Owner ! {gleam_quic_udp_batch, Reference, {ok, Batch}}
+    end,
+    relay_wait(Sockets, Owner, Reference, Monitor).
+
+-spec relay_wait([gen_udp:socket()], pid(), reference(), reference()) ->
+    no_return().
+relay_wait(Sockets, Owner, Reference, Monitor) ->
+    receive
+        {gleam_quic_udp_continue, Reference} ->
+            relay_loop(Sockets, Owner, Reference, Monitor);
+        {gleam_quic_udp_stop, Reference, Caller, StopReference} ->
+            relay_close(Sockets, Caller, StopReference);
+        {'DOWN', Monitor, process, Owner, _Reason} ->
+            close_sockets(Sockets),
+            exit(normal)
+    end.
+
+-spec relay_close([gen_udp:socket()], pid(), reference()) -> no_return().
+relay_close(Sockets, Caller, StopReference) ->
+    close_sockets(Sockets),
+    Caller ! {gleam_quic_udp_stopped, StopReference},
+    exit(normal).
+
+-spec drain_relay_sockets(
+    [gen_udp:socket()], non_neg_integer(),
+    [{binary(), integer(), binary(), 0..3}]
+) -> {non_neg_integer(), [{binary(), integer(), binary(), 0..3}]}.
+drain_relay_sockets([], Remaining, Reversed) ->
+    {Remaining, Reversed};
+drain_relay_sockets(_Sockets, 0, Reversed) ->
+    {0, Reversed};
+drain_relay_sockets([Socket | Rest], Remaining, Reversed) ->
+    {NextRemaining, NextReversed} = drain_relay_socket(
+        Socket, Remaining, Reversed
+    ),
+    drain_relay_sockets(Rest, NextRemaining, NextReversed).
+
+-spec drain_relay_socket(
+    gen_udp:socket(), non_neg_integer(),
+    [{binary(), integer(), binary(), 0..3}]
+) -> {non_neg_integer(), [{binary(), integer(), binary(), 0..3}]}.
+drain_relay_socket(_Socket, 0, Reversed) ->
+    {0, Reversed};
+drain_relay_socket(Socket, Remaining, Reversed) ->
+    case gen_udp:recv(Socket, 0, 0) of
+        {ok, {Address, Port, Payload}} ->
+            drain_normalised(Socket, Remaining, Reversed,
+                             Address, Port, Payload, 0);
+        {ok, {Address, Port, Ancillary, Payload}} ->
+            drain_normalised(Socket, Remaining, Reversed,
+                             Address, Port, Payload, received_ecn(Ancillary));
+        {error, _Reason} ->
+            {Remaining, Reversed}
+    end.
+
+-spec drain_normalised(
+    gen_udp:socket(), pos_integer(),
+    [{binary(), integer(), binary(), 0..3}], inet:ip_address(),
+    inet:port_number(), binary(), 0..3
+) -> {non_neg_integer(), [{binary(), integer(), binary(), 0..3}]}.
+drain_normalised(Socket, Remaining, Reversed,
+                 Address, Port, Payload, Ecn) ->
+    case normalise_relay_datagram(Address, Port, Payload, Ecn) of
+        {ok, Datagram} ->
+            drain_relay_socket(Socket, Remaining - 1, [Datagram | Reversed]);
+        {error, _Code} ->
+            drain_relay_socket(Socket, Remaining - 1, Reversed)
+    end.
+
+-spec drain_relay_mailbox(
+    [gen_udp:socket()], non_neg_integer(),
+    [{binary(), integer(), binary(), 0..3}]
+) -> [{binary(), integer(), binary(), 0..3}].
+drain_relay_mailbox(_Sockets, 0, Reversed) ->
+    lists:reverse(Reversed);
+drain_relay_mailbox(Sockets, Remaining, Reversed) ->
+    receive
+        {udp, Socket, Address, Port, Payload} ->
+            drain_mailbox_datagram(
+                Sockets, Remaining, Reversed, Socket,
+                Address, Port, Payload, 0
+            );
+        {udp, Socket, Address, Port, Ancillary, Payload} ->
+            drain_mailbox_datagram(
+                Sockets, Remaining, Reversed, Socket,
+                Address, Port, Payload, received_ecn(Ancillary)
+            )
+    after 0 ->
+        lists:reverse(Reversed)
+    end.
+
+-spec drain_mailbox_datagram(
+    [gen_udp:socket()], pos_integer(),
+    [{binary(), integer(), binary(), 0..3}], gen_udp:socket(),
+    inet:ip_address(), inet:port_number(), binary(), 0..3
+) -> [{binary(), integer(), binary(), 0..3}].
+drain_mailbox_datagram(Sockets, Remaining, Reversed, Socket,
+                       Address, Port, Payload, Ecn) ->
+    case lists:member(Socket, Sockets) of
+        false -> drain_relay_mailbox(Sockets, Remaining, Reversed);
+        true ->
+            case normalise_relay_datagram(Address, Port, Payload, Ecn) of
+                {ok, Datagram} ->
+                    drain_relay_mailbox(
+                        Sockets, Remaining - 1, [Datagram | Reversed]
+                    );
+                {error, _Code} ->
+                    drain_relay_mailbox(Sockets, Remaining - 1, Reversed)
+            end
+    end.
+
+-spec normalise_relay_datagram(
+    inet:ip_address(), inet:port_number(), binary(), 0..3
+) -> {ok, {binary(), integer(), binary(), 0..3}} | {error, integer()}.
+normalise_relay_datagram(Address, Port, Payload, Ecn)
+    when is_binary(Payload) ->
+    case encode_address(Address) of
+        {ok, Bytes} -> {ok, {Bytes, Port, Payload, Ecn}};
+        error -> {error, 8}
+    end.
+
 -spec monotonic_millisecond() -> non_neg_integer().
 monotonic_millisecond() ->
     Origin = persistent_term:get(?CLOCK_ORIGIN),
     erlang:monotonic_time(millisecond) - Origin.
+
+-spec unix_millisecond() -> non_neg_integer().
+unix_millisecond() ->
+    erlang:system_time(millisecond).
+
+%% Present portable separate IPv4 and IPv6 protocol stacks as one bounded
+%% same-port logical handle. This is required on Windows and avoids depending
+%% on platform-specific IPv4-mapped IPv6 socket defaults elsewhere.
+-spec open_split_dual_stack(inet:port_number()) ->
+    {ok, handle()} | {error, integer()}.
+open_split_dual_stack(Port) ->
+    Ipv6Options = [
+        binary,
+        {active, false},
+        {reuseaddr, true},
+        {recbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
+        {sndbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
+        {ip, {0, 0, 0, 0, 0, 0, 0, 0}}
+        | family_options(6)
+    ],
+    case open_socket(Port, Ipv6Options, {recvtclass, true}, 6) of
+        {error, Reason} -> {error, Reason};
+        {ok, #{socket := Socket6, ecn := Ecn6}} ->
+            case inet:port(Socket6) of
+                {error, Reason} ->
+                    close_sockets([Socket6]),
+                    {error, error_code(Reason)};
+                {ok, BoundPort} ->
+                    open_split_ipv4(Socket6, Ecn6, BoundPort)
+            end
+    end.
+
+-spec open_split_ipv4(gen_udp:socket(), boolean(), inet:port_number()) ->
+    {ok, handle()} | {error, integer()}.
+open_split_ipv4(Socket6, Ecn6, Port) ->
+    Ipv4Options = [
+        binary,
+        {active, false},
+        {reuseaddr, true},
+        {recbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
+        {sndbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
+        {ip, {0, 0, 0, 0}}
+        | family_options(4)
+    ],
+    case open_socket(Port, Ipv4Options, {recvtos, true}, 4) of
+        {error, Reason} ->
+            close_sockets([Socket6]),
+            {error, Reason};
+        {ok, #{socket := Socket4, ecn := Ecn4}} ->
+            {ok, #{
+                socket => Socket6,
+                ipv4_socket => Socket4,
+                family => dual,
+                ecn => Ecn6,
+                ipv4_ecn => Ecn4
+            }}
+    end.
+
+-spec send_target(handle(), inet:ip_address(), socket_family()) ->
+    {ok, gen_udp:socket(), inet:ip_address(), socket_family(), boolean()} |
+    error.
+send_target(#{ipv4_socket := Socket, ipv4_ecn := Ecn}, Address, 4) ->
+    {ok, Socket, Address, 4, Ecn};
+send_target(#{socket := Socket, family := dual, ecn := Ecn}, Address, 6) ->
+    {ok, Socket, Address, 6, Ecn};
+send_target(#{socket := Socket, family := Family, ecn := Ecn},
+            Address, Family) ->
+    {ok, Socket, Address, Family, Ecn};
+send_target(_Handle, _Address, _Family) ->
+    error.
+
+-spec recv_split([gen_udp:socket()], integer()) ->
+    {ok, {binary(), integer(), binary(), 0..3}} | {error, integer()}.
+recv_split(Sockets, Deadline) ->
+    case recv_split_once(Sockets, false, none) of
+        {ok, Result} -> Result;
+        {error, Reason} -> {error, error_code(Reason)};
+        retry ->
+            Remaining = Deadline - erlang:monotonic_time(millisecond),
+            case Remaining =< 0 of
+                true -> {error, 2};
+                false ->
+                    receive after erlang:min(Remaining, 1) -> ok end,
+                    recv_split(Sockets, Deadline)
+            end
+    end.
+
+-spec recv_split_once([gen_udp:socket()], boolean(), none | inet:posix()) ->
+    {ok, {ok, {binary(), integer(), binary(), 0..3}} | {error, integer()}} |
+    {error, inet:posix()} | retry.
+recv_split_once([], true, _Error) ->
+    retry;
+recv_split_once([], false, none) ->
+    {error, closed};
+recv_split_once([], false, Reason) ->
+    {error, Reason};
+recv_split_once([Socket | Rest], SawTimeout, FirstError) ->
+    try gen_udp:recv(Socket, 0, 0) of
+        {ok, {Address, Port, Payload}} ->
+            {ok, receive_result(Address, Port, Payload, 0)};
+        {ok, {Address, Port, Ancillary, Payload}} ->
+            {ok, receive_result(
+                Address, Port, Payload, received_ecn(Ancillary)
+            )};
+        {error, timeout} ->
+            recv_split_once(Rest, true, FirstError);
+        {error, Reason} ->
+            NextError = case FirstError of
+                none -> Reason;
+                Existing -> Existing
+            end,
+            recv_split_once(Rest, SawTimeout, NextError)
+    catch
+        _Class:_Reason ->
+            recv_split_once(Rest, SawTimeout, closed)
+    end.
+
+-spec activate_once_all([gen_udp:socket()]) -> {ok, nil} | {error, integer()}.
+activate_once_all(Sockets) ->
+    activate_once_all(Sockets, []).
+
+-spec activate_once_all([gen_udp:socket()], [gen_udp:socket()]) ->
+    {ok, nil} | {error, integer()}.
+activate_once_all([], _Activated) ->
+    {ok, nil};
+activate_once_all([Socket | Rest], Activated) ->
+    try inet:setopts(Socket, [{active, once}]) of
+        ok -> activate_once_all(Rest, [Socket | Activated]);
+        {error, Reason} ->
+            deactivate_sockets(Activated),
+            {error, error_code(Reason)}
+    catch
+        _Class:_Reason ->
+            deactivate_sockets(Activated),
+            {error, 3}
+    end.
+
+-spec deactivate_sockets([gen_udp:socket()]) -> ok.
+deactivate_sockets(Sockets) ->
+    lists:foreach(fun(Socket) ->
+        try inet:setopts(Socket, [{active, false}]) of
+            _Result -> ok
+        catch
+            _Class:_Reason -> ok
+        end
+    end, Sockets).
+
+-spec handle_sockets(handle()) -> [gen_udp:socket(), ...].
+handle_sockets(#{socket := Socket6, ipv4_socket := Socket4}) ->
+    [Socket6, Socket4];
+handle_sockets(#{socket := Socket}) ->
+    [Socket].
+
+-spec transfer_sockets(
+    [gen_udp:socket()], pid(), [gen_udp:socket()]
+) -> {ok, [gen_udp:socket()]} |
+     {error, inet:posix() | not_owner, [gen_udp:socket()]}.
+transfer_sockets([], _Owner, Transferred) ->
+    {ok, lists:reverse(Transferred)};
+transfer_sockets([Socket | Rest], Owner, Transferred) ->
+    case gen_udp:controlling_process(Socket, Owner) of
+        ok -> transfer_sockets(Rest, Owner, [Socket | Transferred]);
+        {error, Reason} -> {error, Reason, Transferred}
+    end.
+
+-spec close_sockets([gen_udp:socket()]) -> ok.
+close_sockets(Sockets) ->
+    lists:foreach(fun(Socket) ->
+        try gen_udp:close(Socket) of
+            _Result -> ok
+        catch
+            _Class:_Reason -> ok
+        end
+    end, Sockets).
 
 -spec open_address(inet:ip_address(), 4 | 6, inet:port_number()) ->
     {ok, handle()} | {error, integer()}.
@@ -123,6 +730,8 @@ open_address(Address, Family, Port) ->
         binary,
         {active, false},
         {reuseaddr, true},
+        {recbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
+        {sndbuf, ?DEFAULT_SOCKET_BUFFER_BYTES},
         {ip, Address}
         | family_options(Family)
     ],
@@ -130,18 +739,48 @@ open_address(Address, Family, Port) ->
         4 -> {recvtos, true};
         6 -> {recvtclass, true}
     end,
+    open_socket(Port, BaseOptions, EcnOption, Family).
+
+-spec open_socket(
+    inet:port_number(), [gen_udp:open_option()], gen_udp:option(), 4 | 6
+) ->
+    {ok, handle()} | {error, integer()}.
+open_socket(Port, BaseOptions, EcnOption, Family) ->
+    case runtime_supports_ecn() of
+        false -> open_socket_without_ecn(Port, BaseOptions, Family);
+        true -> open_socket_with_ecn(Port, BaseOptions, EcnOption, Family)
+    end.
+
+-spec open_socket_with_ecn(
+    inet:port_number(), [gen_udp:open_option()], gen_udp:option(), 4 | 6
+) -> {ok, handle()} | {error, integer()}.
+open_socket_with_ecn(Port, BaseOptions, EcnOption, Family) ->
     case gen_udp:open(Port, [EcnOption | BaseOptions]) of
         {ok, Socket} ->
             {ok, #{socket => Socket, family => Family, ecn => true}};
         {error, Reason} when Reason =:= einval; Reason =:= enoprotoopt ->
-            case gen_udp:open(Port, BaseOptions) of
-                {ok, Socket} ->
-                    {ok, #{socket => Socket, family => Family, ecn => false}};
-                {error, FallbackReason} ->
-                    {error, error_code(FallbackReason)}
-            end;
+            open_socket_without_ecn(Port, BaseOptions, Family);
         {error, Reason} ->
             {error, error_code(Reason)}
+    end.
+
+-spec open_socket_without_ecn(
+    inet:port_number(), [gen_udp:open_option()], 4 | 6
+) ->
+    {ok, handle()} | {error, integer()}.
+open_socket_without_ecn(Port, BaseOptions, Family) ->
+    case gen_udp:open(Port, BaseOptions) of
+        {ok, Socket} ->
+            {ok, #{socket => Socket, family => Family, ecn => false}};
+        {error, Reason} ->
+            {error, error_code(Reason)}
+    end.
+
+-spec runtime_supports_ecn() -> boolean().
+runtime_supports_ecn() ->
+    case os:type() of
+        {win32, _Name} -> false;
+        _Other -> true
     end.
 
 -spec resolve_host(string(), 0 | 4 | 6) -> {ok, [binary()]} | {error, integer()}.
@@ -151,11 +790,24 @@ resolve_host(Host, 6) ->
     resolve_family(Host, inet6);
 resolve_host(Host, 0) ->
     case {inet:getaddrs(Host, inet6), inet:getaddrs(Host, inet)} of
-        {{ok, V6}, {ok, V4}} -> encode_addresses(V4 ++ V6);
+        {{ok, V6}, {ok, V4}} ->
+            encode_addresses(lists:sublist(
+                interleave_addresses(lists:uniq(V6), lists:uniq(V4)),
+                ?MAXIMUM_RESOLVED_ADDRESSES
+            ));
         {{ok, V6}, {error, _}} -> encode_addresses(V6);
         {{error, _}, {ok, V4}} -> encode_addresses(V4);
         {{error, _}, {error, Reason}} -> {error, error_code(Reason)}
     end.
+
+%% RFC 8305 starts with the first IPv6 result, then alternates address
+%% families so one long family-specific list cannot starve the other.
+-spec interleave_addresses([inet:ip6_address()], [inet:ip4_address()]) ->
+    [inet:ip_address()].
+interleave_addresses([], V4) -> V4;
+interleave_addresses(V6, []) -> V6;
+interleave_addresses([V6 | V6Rest], [V4 | V4Rest]) ->
+    [V6, V4 | interleave_addresses(V6Rest, V4Rest)].
 
 -spec resolve_family(string(), inet | inet6) ->
     {ok, [binary()]} | {error, integer()}.
@@ -168,14 +820,20 @@ resolve_family(Host, Family) ->
 -spec encode_addresses([inet:ip_address()]) ->
     {ok, [binary()]} | {error, integer()}.
 encode_addresses(Addresses) ->
-    try [Bytes || Address <- Addresses, {ok, Bytes} <- [encode_address(Address)]] of
+    %% Resolvers may return the same address more than once. Keep the first
+    %% occurrence so Happy Eyeballs never races duplicate connection candidates.
+    try [
+        Bytes
+     || Address <- lists:uniq(Addresses),
+        {ok, Bytes} <- [encode_address(Address)]
+    ] of
         [] -> {error, 6};
         Encoded -> {ok, Encoded}
     catch
         _Class:_Reason -> {error, 8}
     end.
 
--spec family_options(4 | 6) -> [gen_udp:option()].
+-spec family_options(4 | 6) -> [gen_udp:open_option()].
 family_options(4) -> [inet];
 family_options(6) -> [inet6, {ipv6_v6only, true}].
 

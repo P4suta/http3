@@ -48,7 +48,18 @@ The arguments are mode, measured trials, concurrency, requests per worker, and
 payload bytes. The harness bounds all inputs before allocating or starting
 network work.
 
-## Recorded native-core result
+## Release thresholds
+
+The reopened v1 gate requires at least 516 requests/second for `benchmark`,
+344 for `load`, and 812 for `soak` on the same recorded host. All three must
+also retain zero periodic idle polling, zero queued mailbox messages after
+cleanup, process-count convergence, and the configured memory bounds.
+
+The retained result below is exactly half those throughput thresholds and
+therefore does not pass the release gate. It remains a useful comparison
+baseline, not completion evidence.
+
+## Recorded native-core baseline
 
 The 2026-08-24 run used the repository-owned `gleam_quic` backend and the
 environment in
@@ -76,3 +87,29 @@ machine's network stack introduce uncertainty. The one-trial soak result has
 no statistical interval. Use the raw repeated trials for comparisons; do not
 treat the fastest row as a general throughput guarantee or compare it directly
 with a remote peer or the former external-backend baseline.
+
+## 2026-08-25 diagnostic rerun
+
+The reopened worktree was profiled with OTP `tprof`. Replacing an unconditional
+all-connection send scan with a per-turn dirty-connection set reduced comparable
+`session.prepare_datagram` calls from 49,874 to 23,574. Protocol timer expiry
+still drives every connection, so loss recovery, idle timeout, keepalive, and
+PMTU progress do not depend on new traffic.
+
+The raw successful rows and environment are retained in
+[`2026-08-25-diagnostic.csv`](results/2026-08-25-diagnostic.csv) and
+[`2026-08-25-environment.txt`](results/2026-08-25-environment.txt):
+
+- the five measured benchmark rows had a median of 477 requests/second and a
+  range of 285–564; only two rows exceeded 516;
+- two independent measured 32-connection load rows reached 212 and 200
+  requests/second, still below 344; and
+- every retained row converged its process count and ended with zero queued
+  mailbox messages.
+
+One separate full three-trial load invocation stopped during its first measured
+trial with bounded peer-close failures after a successful warm-up. No
+successful row was emitted for that trial, as required by the harness. The soak
+rerun was not promoted as evidence once the prerequisite benchmark/load gates
+had failed. This diagnostic set therefore does not replace the retained
+baseline and does not pass the release performance gate.

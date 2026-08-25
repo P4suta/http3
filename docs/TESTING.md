@@ -3,7 +3,7 @@
 HTTP/3 combines untrusted binary protocols, cryptographic state, asynchronous
 messages, processes, timers, and UDP sockets. Tests must make failures
 reproducible and leave the runtime in a known state. This guide applies to
-every future change, including changes made after the v1 source-tree gate.
+every change while the v1 gate remains reopened.
 
 ## Development loop
 
@@ -79,10 +79,12 @@ deterministic userspace proxy. The fixed gate covers:
 - duplicate datagrams and idempotent processing;
 - corruption followed by authenticated discard and recovery;
 - delayed datagrams and retransmission; and
+- deterministic packet loss and recovery;
+- datagram reordering without stream corruption; and
 - a constrained path MTU that still completes application requests.
 
-The normal public suite additionally covers deterministic Initial loss and
-datagram reordering. Pure models cover exhaustion, clock edges, replay,
+The normal public suite additionally covers Initial-loss and streaming-loss
+variants. Pure models cover exhaustion, clock edges, replay,
 amplification, ECN failure, migration, reset, and key lifecycle without making
 wall-clock races part of the assertion.
 
@@ -116,8 +118,8 @@ and refuses to recursively clean an unexpected path. See
 
 ### Conformance evidence
 
-Conformance is established by the native source, not by an external production
-backend:
+Conformance must be established by the native source, not by an external
+production backend:
 
 - RFC and published cryptographic/QPACK known-answer vectors;
 - strict codec and semantic negative tests;
@@ -148,9 +150,57 @@ measured streams. Each row records process count, total mailbox messages, and
 BEAM memory before and after cleanup. See [Performance](../benchmarks/README.md)
 for the methodology, uncertainty, environment, and raw results.
 
-## 2026-08-24 qualification record
+### Optional BeamTrace diagnostics
 
-The completed local record is:
+`mise run diagnose -- <scenario>` records one explicitly requested local
+diagnostic root with an externally installed BeamTrace v0.2.x executable.
+BeamTrace is not added to either package dependency graph, the runner does not
+download or upload anything, and this task is excluded from normal CI,
+release gates, and performance evidence.
+
+The harness warms code and crypto paths before the trace root, uses metadata
+mode and the `gleam-actor` preset, writes only strict-metadata qlog, and retains
+a finite artifact set when a workload or clock check fails. A clock self-check
+must confirm one node-local monotonic domain before timing or compare is
+enabled. See the [diagnostic runner](../test/diagnostics/README.md) for
+scenarios, artifact handling, redaction, and issue-sharing guidance.
+
+## Current 2026-08-25 worktree evidence
+
+The following gates pass on the current uncommitted OTP 29 worktree:
+
+- `mise run check`: 208 native-core tests, 226 public-package tests (102
+  HTTP/3/QPACK/driver tests moved with source ownership; none were dropped),
+  warnings-as-errors builds, documentation, canonical compiler API snapshots,
+  glinter, Markdown/TOML/workflow/shell/spelling lint, REUSE, Dialyzer, xref,
+  repository Semgrep rules, gitleaks, and a twice-exported, content-audited,
+  byte-reproducible `gleam_quic` Hex archive;
+- `mise run security`: the same FFI and licence checks plus OSV dependency
+  lookup and CycloneDX generation;
+- `mise run property` and `mise run fuzz`: 10,000 generated cases each plus
+  retained fuzz seeds;
+- `mise run fault`: all six fixed real-UDP duplicate, corruption, delay, MTU,
+  loss, and reordering scenarios; and
+- `mise run interop`: bidirectional aioquic 1.3.0 and quic-go 0.61.0, including
+  QUIC v1/v2 and a peer-observed wire 0-RTT request.
+
+Raw consecutive Gleam 1.18.1 exports can emit the two core dependencies in a
+different metadata order even though `contents.tar.gz` is identical. The
+`core-package` stage validates the original Hex checksum, canonicalizes that
+unordered metadata and all outer tar attributes, recomputes the Hex checksum,
+audits the actual and declared file sets, and compares two outputs byte for
+byte. Its current canonical SHA-256 is
+`5672B5C1D0650496413796D20A9B8DB69D3AC4278276B4488858DAD31C91A74D`.
+The root export still correctly refuses its development-only path dependency;
+the required temporary-registry, exact-semver, empty-consumer, OTP 28/29
+release simulation is therefore open. The current performance diagnostic also
+fails the fixed thresholds and recorded one long-load peer-close failure.
+These passing gates are strong incremental evidence, not a release-candidate
+qualification.
+
+## Superseded 2026-08-24 qualification record
+
+The former completion record reported:
 
 - `mise run check`: 278 native-core tests and 108 public-package tests, both
   warnings-as-errors builds, generated documentation, compiler public-interface
@@ -164,14 +214,22 @@ The completed local record is:
   advanced observations; and
 - benchmark, load, and 160,000-stream soak tasks with every raw row retained.
 
-The full local gate uses Linux with Erlang/OTP 29. The supported lower bound
+The full local gate used Linux with Erlang/OTP 29. The intended lower bound
 was also built and tested in the official `erlang:28-alpine` image at digest
 `sha256:17385598fb0470d8f63511f1e69eed2338bf0fad0ae1972570cd100767d01859`:
 all 108 root and 278 native tests passed after a clean dependency resolution.
 CI separately defines OTP 28–29 build/test jobs and Linux, macOS, and Windows
 smoke jobs. The workflow uses pinned actions and is checked by `actionlint`;
-hosted operating-system outcomes are a publication preflight once a hosted
-repository exists.
+hosted operating-system outcomes were not observed in this repository.
+
+This record predates the reopened findings and does not qualify the current
+worktree. It lacks the required coverage thresholds, million-case nightly
+model run, expanded deterministic faults, ngtcp2/nghttp3 and quiche peers,
+TLS/mTLS matrix, qlog schema/qvis gate, CUBIC reference differential,
+two-package release simulation, fixed performance thresholds, and
+clean-archive rerun. Dialyzer/xref, secret/static/dependency/licence scanners,
+and CycloneDX generation have since been added, but do not qualify the old
+record. See the [conformance matrix](CONFORMANCE.md).
 
 ## Timeouts
 
@@ -211,6 +269,7 @@ Run the reproducible local gate from the repository root:
 ```sh
 mise install
 mise run check
+mise run security
 mise run fault
 mise run property
 mise run fuzz
@@ -221,7 +280,12 @@ mise run load
 mise run soak
 ```
 
-The expensive network and performance tasks are intentionally separate from
-`mise run check` so a fast edit loop remains possible. A phase is complete
-only when its applicable separate gates also pass and their evidence is
-retained.
+`mise run check` includes both package builds/tests/docs/lints, canonical API
+snapshots, FFI Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and
+the deterministic core-package archive gate. `mise run security` adds the
+online OSV lookup and generates
+`build/security/http3.cdx.json` as CycloneDX evidence. Expensive fault,
+interop, and performance tasks remain separate. Passing a normal gate means an
+edit is internally consistent; it does not close the release findings. A
+phase is complete only when its applicable separate gates pass, their evidence
+is retained, and the conformance matrix is updated honestly.

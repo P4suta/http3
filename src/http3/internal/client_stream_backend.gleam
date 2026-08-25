@@ -1,11 +1,15 @@
 //// Typed boundary around the repository-owned reusable HTTP/3 client.
 
+import gleam/option.{None, Some}
 import gleam/result
-import gleam_quic/http3/client as native_client
+import gleam_quic
+import http3/config
+import http3/failure as runtime_failure
 import http3/internal/client_backend
 import http3/internal/client_request.{
   type PreparedStreamingRequest, PreparedStreamingRequest,
 }
+import http3/internal/native/client as native_client
 
 /// Opaque native connection identity.
 pub type ConnectionHandle =
@@ -32,8 +36,22 @@ pub fn connect(
   host host: String,
   port port: Int,
   ca_certificates ca_certificates: List(BitArray),
+  address_family address_family: config.AddressFamily,
+  dns_timeout_milliseconds dns_timeout_milliseconds: Int,
+  connect_timeout_milliseconds connect_timeout_milliseconds: Int,
+  handshake_timeout_milliseconds handshake_timeout_milliseconds: Int,
   timeout_milliseconds timeout_milliseconds: Int,
+  operation_timeout_milliseconds operation_timeout_milliseconds: Int,
+  idle_timeout_milliseconds idle_timeout_milliseconds: Int,
   stream_buffer_limit stream_buffer_limit: Int,
+  queue_limit queue_limit: Int,
+  telemetry_limit telemetry_limit: Int,
+  bidirectional_stream_limit bidirectional_stream_limit: Int,
+  unidirectional_stream_limit unidirectional_stream_limit: Int,
+  frame_limit frame_limit: Int,
+  datagram_limit datagram_limit: Int,
+  qpack_table_limit qpack_table_limit: Int,
+  qpack_blocked_stream_limit qpack_blocked_stream_limit: Int,
   http_datagrams http_datagrams: Bool,
   maximum_pushes maximum_pushes: Int,
   keepalive_milliseconds keepalive_milliseconds: Int,
@@ -43,9 +61,12 @@ pub fn connect(
 ) -> Result(ConnectionHandle, client_backend.Failure) {
   case resumption_tickets {
     [_, _, ..] ->
-      Error(client_backend.BackendFailure(
-        "only one native resumption ticket may be attached",
-      ))
+      Error(
+        client_backend.RuntimeFailure(runtime_failure.Limit(
+          runtime_failure.Queue,
+          1,
+        )),
+      )
     _ -> {
       use configured <- result.try(
         native_client.new(host, port) |> map_configuration_result,
@@ -55,12 +76,88 @@ pub fn connect(
           False -> native_client.QuicV1
           True -> native_client.QuicV2
         })
+      let configured =
+        native_client.with_address_family(configured, case address_family {
+          config.Ipv4 -> gleam_quic.Ipv4
+          config.Ipv6 -> gleam_quic.Ipv6
+          config.DualStack -> gleam_quic.DualStack
+        })
+      use configured <- result.try(
+        native_client.with_dns_timeout(configured, dns_timeout_milliseconds)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_connect_timeout(
+          configured,
+          connect_timeout_milliseconds,
+        )
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_handshake_timeout(
+          configured,
+          handshake_timeout_milliseconds,
+        )
+        |> map_configuration_result,
+      )
       use configured <- result.try(
         native_client.with_timeout(configured, timeout_milliseconds)
         |> map_configuration_result,
       )
       use configured <- result.try(
+        native_client.with_operation_timeout(
+          configured,
+          operation_timeout_milliseconds,
+        )
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_idle_timeout(configured, idle_timeout_milliseconds)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
         native_client.with_stream_buffer_limit(configured, stream_buffer_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_queue_limit(configured, queue_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_telemetry_limit(configured, telemetry_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_bidirectional_stream_limit(
+          configured,
+          bidirectional_stream_limit,
+        )
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_unidirectional_stream_limit(
+          configured,
+          unidirectional_stream_limit,
+        )
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_frame_limit(configured, frame_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_datagram_limit(configured, datagram_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_qpack_table_limit(configured, qpack_table_limit)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_qpack_blocked_stream_limit(
+          configured,
+          qpack_blocked_stream_limit,
+        )
         |> map_configuration_result,
       )
       use configured <- result.try(
@@ -218,22 +315,15 @@ fn configure_trust(
   }
 }
 
+// nolint: error_context_lost -- the public layer validates this configuration first.
 fn map_configuration_result(
   outcome: Result(value, native_client.ConfigurationError),
 ) -> Result(value, client_backend.Failure) {
-  result.map_error(outcome, fn(error) {
-    let detail = case error {
-      native_client.InvalidHost -> "host"
-      native_client.InvalidPort(_) -> "port"
-      native_client.InvalidTimeout -> "timeout"
-      native_client.InvalidResponseBodyLimit -> "response body limit"
-      native_client.InvalidStreamBufferLimit -> "stream buffer limit"
-      native_client.InvalidPushLimit -> "server push limit"
-      native_client.InvalidKeepalive -> "keepalive interval"
-      native_client.InvalidCaCertificate -> "CA certificate"
-      native_client.InvalidQlogDirectory -> "qlog directory"
-    }
-    client_backend.BackendFailure("invalid native client " <> detail)
+  result.map_error(outcome, fn(_error) {
+    client_backend.RuntimeFailure(runtime_failure.Http3(
+      runtime_failure.Local,
+      None,
+    ))
   })
 }
 
@@ -246,30 +336,53 @@ fn map_native_result(
 fn map_native_error(error: native_client.Error) -> client_backend.Failure {
   case error {
     native_client.InvalidRequest ->
-      client_backend.BackendFailure("invalid native request")
+      client_backend.RuntimeFailure(runtime_failure.Http3(
+        runtime_failure.Local,
+        None,
+      ))
     native_client.ResolutionFailed ->
-      client_backend.ConnectFailed("name resolution failed")
+      client_backend.RuntimeFailure(runtime_failure.Resolution)
     native_client.TrustStoreFailed ->
-      client_backend.ConnectFailed("trust store unavailable")
+      client_backend.RuntimeFailure(runtime_failure.Tls(runtime_failure.Local))
     native_client.ConnectFailed ->
-      client_backend.ConnectFailed("UDP connection unavailable")
+      client_backend.RuntimeFailure(runtime_failure.Socket(
+        runtime_failure.ConnectSocket,
+      ))
     native_client.HandshakeFailed ->
-      client_backend.ConnectFailed("TLS handshake failed")
-    native_client.TransportError(message) ->
-      client_backend.BackendFailure(message)
-    native_client.Http3Error(message) ->
-      client_backend.ProtocolError(0x101, message)
-    native_client.Timeout -> client_backend.Timeout
-    native_client.ConnectionClosed -> client_backend.ConnectionClosed
-    native_client.StreamReset(code) -> client_backend.StreamReset(code)
+      client_backend.RuntimeFailure(runtime_failure.Tls(runtime_failure.Peer))
+    native_client.Failure(failure) -> client_backend.RuntimeFailure(failure)
+    native_client.TimedOut(phase) ->
+      client_backend.RuntimeFailure(
+        runtime_failure.Timeout(timeout_phase(phase)),
+      )
+    native_client.ConnectionClosed ->
+      client_backend.RuntimeFailure(runtime_failure.Closed(
+        runtime_failure.Peer,
+        None,
+      ))
+    native_client.StreamReset(code) ->
+      client_backend.RuntimeFailure(runtime_failure.Closed(
+        runtime_failure.Peer,
+        Some(code),
+      ))
     native_client.ProtocolError ->
-      client_backend.ProtocolError(0x101, "invalid HTTP/3 response")
+      client_backend.RuntimeFailure(runtime_failure.Http3(
+        runtime_failure.Peer,
+        Some(0x101),
+      ))
     native_client.InvalidHeaderEncoding ->
-      client_backend.ProtocolError(0x109, "invalid response header encoding")
+      client_backend.RuntimeFailure(runtime_failure.Http3(
+        runtime_failure.Peer,
+        Some(0x109),
+      ))
     native_client.InvalidContentLength -> client_backend.InvalidContentLength
     native_client.ResponseBodyTooLarge(_) -> client_backend.ResponseBodyTooLarge
     native_client.ConsumerTooSlow(limit) ->
       client_backend.ConsumerTooSlow(limit)
+    native_client.OperationQueueFull(_) ->
+      client_backend.RuntimeFailure(runtime_failure.Overload(
+        runtime_failure.Queue,
+      ))
     native_client.ConcurrentReceive -> client_backend.ConcurrentReceive
     native_client.RequestAlreadyFinished ->
       client_backend.RequestAlreadyFinished
@@ -283,25 +396,69 @@ fn map_native_error(error: native_client.Error) -> client_backend.Failure {
     native_client.ResumptionOriginMismatch ->
       client_backend.ResumptionOriginMismatch
     native_client.DatagramsNotNegotiated ->
-      client_backend.BackendFailure("HTTP Datagrams were not negotiated")
+      client_backend.RuntimeFailure(runtime_failure.Http3(
+        runtime_failure.Local,
+        None,
+      ))
     native_client.DatagramNotAssociated ->
-      client_backend.BackendFailure("HTTP Datagram stream is not associated")
-    native_client.DatagramTooLarge(_) ->
-      client_backend.BackendFailure("HTTP Datagram is too large")
-    native_client.DatagramBufferExceeded(_) ->
-      client_backend.BackendFailure("HTTP Datagram buffer exceeded")
+      client_backend.RuntimeFailure(runtime_failure.Http3(
+        runtime_failure.Local,
+        None,
+      ))
+    native_client.DatagramTooLarge(maximum) ->
+      client_backend.RuntimeFailure(runtime_failure.Limit(
+        runtime_failure.Datagram,
+        maximum,
+      ))
+    native_client.DatagramBufferExceeded(maximum) ->
+      client_backend.RuntimeFailure(runtime_failure.Limit(
+        runtime_failure.Buffer,
+        maximum,
+      ))
     native_client.ConcurrentDatagramReceive ->
-      client_backend.BackendFailure("concurrent HTTP Datagram receive")
+      client_backend.RuntimeFailure(runtime_failure.Overload(
+        runtime_failure.AcceptWaiters,
+      ))
     native_client.MigrationUnavailable ->
-      client_backend.BackendFailure("active migration unavailable")
+      client_backend.RuntimeFailure(runtime_failure.Quic(
+        runtime_failure.Local,
+        None,
+      ))
     native_client.CongestionLimited ->
-      client_backend.BackendFailure("congestion limited")
+      client_backend.RuntimeFailure(runtime_failure.Overload(
+        runtime_failure.Queue,
+      ))
     native_client.UnsupportedCongestionControl ->
-      client_backend.BackendFailure("unsupported congestion control")
-    native_client.TicketUnavailable -> client_backend.Timeout
+      client_backend.RuntimeFailure(runtime_failure.Quic(
+        runtime_failure.Local,
+        None,
+      ))
+    native_client.TicketUnavailable ->
+      client_backend.RuntimeFailure(runtime_failure.Timeout(
+        runtime_failure.Operation,
+      ))
     native_client.QlogUnavailable ->
-      client_backend.BackendFailure("qlog output unavailable")
+      client_backend.RuntimeFailure(runtime_failure.Socket(
+        runtime_failure.WriteFile,
+      ))
+    native_client.InvalidStoredTicket ->
+      client_backend.RuntimeFailure(runtime_failure.Tls(runtime_failure.Local))
     native_client.VersionNegotiationFailed ->
-      client_backend.ConnectFailed("no compatible QUIC version")
+      client_backend.RuntimeFailure(runtime_failure.Quic(
+        runtime_failure.Peer,
+        None,
+      ))
+  }
+}
+
+fn timeout_phase(
+  phase: native_client.TimeoutPhase,
+) -> runtime_failure.TimeoutPhase {
+  case phase {
+    native_client.Dns -> runtime_failure.Dns
+    native_client.Connect -> runtime_failure.Connect
+    native_client.Handshake -> runtime_failure.Handshake
+    native_client.Operation -> runtime_failure.Operation
+    native_client.Total -> runtime_failure.Total
   }
 }

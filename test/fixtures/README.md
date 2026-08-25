@@ -15,3 +15,9 @@ the generation date.
 fallback credential valid only for `default.invalid`. The SNI selection test
 uses it as the listener default and succeeds only when the separately
 configured `localhost` credential is selected.
+
+`client.pem` and `client-key.pem` are a self-signed Ed25519 client-only
+credential with `clientAuth` extended key usage. The certificate is installed
+as its own explicit test trust anchor so mTLS tests do not need to retain a CA
+private key. The server-only fixture is also used to prove that the client
+certificate purpose check fails closed.

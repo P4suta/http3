@@ -16,12 +16,22 @@ pub type VantagePoint {
 /// A filesystem or output-device failure.
 pub type Error {
   InvalidDirectory
+  InvalidLimit
   OpenFailed(Int)
   WriteFailed(Int)
 }
 
+/// Bounded asynchronous writer health without trace contents.
+pub type Stats {
+  Stats(dropped_events: Int, write_errors: Int, queued_events: Int)
+}
+
 @external(erlang, "gleam_quic_qlog_ffi", "open")
-fn raw_open(directory: String, vantage_point: Int) -> Result(Pid, Int)
+fn raw_open(
+  directory: String,
+  vantage_point: Int,
+  maximum_queued_events: Int,
+) -> Result(Pid, Int)
 
 @external(erlang, "gleam_quic_qlog_ffi", "event")
 fn raw_event(
@@ -34,6 +44,9 @@ fn raw_event(
 
 @external(erlang, "gleam_quic_qlog_ffi", "close")
 fn raw_close(handle: Pid) -> Result(Nil, Int)
+
+@external(erlang, "gleam_quic_qlog_ffi", "stats")
+fn raw_stats(handle: Pid) -> Result(#(Int, Int, Int), Int)
 
 @external(erlang, "gleam_quic_qlog_ffi", "validate_directory")
 fn raw_validate_directory(directory: String) -> Result(Nil, Int)
@@ -57,15 +70,23 @@ pub fn open(
   directory: String,
   vantage_point: VantagePoint,
   now_milliseconds: Int,
+  maximum_queued_events: Int,
 ) -> Result(Writer, Error) {
   case directory == "" || now_milliseconds < 0 {
     True -> Error(InvalidDirectory)
+    False
+      if maximum_queued_events <= 0 || maximum_queued_events > 2_147_483_647
+    -> Error(InvalidLimit)
     False ->
       case
-        raw_open(directory, case vantage_point {
-          Client -> 1
-          Server -> 2
-        })
+        raw_open(
+          directory,
+          case vantage_point {
+            Client -> 1
+            Server -> 2
+          },
+          maximum_queued_events,
+        )
       {
         Ok(handle) -> Ok(Writer(handle, now_milliseconds))
         Error(error) -> Error(OpenFailed(error))
@@ -130,6 +151,15 @@ pub fn connection_closed(writer: Writer, now_milliseconds: Int) -> Nil {
 pub fn close(writer: Writer) -> Result(Nil, Error) {
   case raw_close(writer.handle) {
     Ok(Nil) -> Ok(Nil)
+    Error(error) -> Error(WriteFailed(error))
+  }
+}
+
+/// Snapshot dropped events, filesystem write errors, and currently queued
+/// events. Counters contain no peer identifiers or protocol payloads.
+pub fn stats(writer: Writer) -> Result(Stats, Error) {
+  case raw_stats(writer.handle) {
+    Ok(#(dropped, errors, queued)) -> Ok(Stats(dropped, errors, queued))
     Error(error) -> Error(WriteFailed(error))
   }
 }

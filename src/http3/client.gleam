@@ -21,22 +21,15 @@ import gleam/bit_array
 import gleam/bool
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
+import gleam/option.{None}
 import gleam/result
 import http3/capsule
+import http3/config as policy
+import http3/failure as runtime_failure
 import http3/internal/client_backend
 import http3/internal/client_request
 import http3/internal/client_stream_backend
 import http3/transport
-
-const default_timeout_milliseconds = 30_000
-
-const maximum_timeout_milliseconds = 3_600_000
-
-const default_response_body_limit = 8_388_608
-
-const default_request_body_limit = 8_388_608
-
-const default_stream_buffer_limit = 262_144
 
 const default_maximum_pushes = 16
 
@@ -62,10 +55,9 @@ fn resumption_ticket_handle(
 /// Configuration for one-shot HTTP/3 requests.
 pub opaque type Client {
   Client(
-    timeout_milliseconds: Int,
-    request_body_limit: Int,
-    response_body_limit: Int,
-    stream_buffer_limit: Int,
+    deadlines: policy.Deadlines,
+    limits: policy.Limits,
+    address_family: policy.AddressFamily,
     ca_certificates: List(BitArray),
     http_datagrams: Bool,
     maximum_pushes: Int,
@@ -180,32 +172,14 @@ pub type Error {
   /// The Extended CONNECT protocol is not a valid HTTP token.
   InvalidProtocol(String)
 
-  /// The connection or TLS handshake failed.
-  ConnectFailed(String)
-
-  /// The backend rejected the request before receiving a response.
-  RequestFailed(String)
-
-  /// The configured total request timeout expired.
-  Timeout
-
   /// The response body exceeded the configured byte limit.
   ResponseBodyTooLarge(limit: Int)
 
   /// The request body exceeded the configured byte limit.
   RequestBodyTooLarge(limit: Int)
 
-  /// The connection closed before the response completed.
-  ConnectionClosed
-
-  /// The peer reset the request stream with an HTTP/3 error code.
-  StreamReset(code: Int)
-
-  /// The peer or backend reported an HTTP/3 protocol error.
-  ProtocolError(code: Int, message: String)
-
-  /// The backend failed in an unexpected way.
-  BackendFailure(String)
+  /// A typed runtime failure with no backend-formatted or secret text.
+  Failure(runtime_failure.Failure)
 
   /// A streaming consumer did not pull data before its buffer filled.
   ConsumerTooSlow(limit: Int)
@@ -218,9 +192,6 @@ pub type Error {
 
   /// No more response events are available from this completed stream.
   StreamFinished
-
-  /// The stream was cancelled locally.
-  StreamCancelled
 
   /// The peer sent GOAWAY; new work must use another connection.
   ConnectionDraining
@@ -248,10 +219,9 @@ pub type Error {
 /// system trust store and the request host is verified.
 pub fn new() -> Client {
   Client(
-    timeout_milliseconds: default_timeout_milliseconds,
-    request_body_limit: default_request_body_limit,
-    response_body_limit: default_response_body_limit,
-    stream_buffer_limit: default_stream_buffer_limit,
+    deadlines: policy.default_deadlines(),
+    limits: policy.default_limits(),
+    address_family: policy.DualStack,
     ca_certificates: [],
     http_datagrams: False,
     maximum_pushes: default_maximum_pushes,
@@ -260,6 +230,31 @@ pub fn new() -> Client {
     qlog_directory: "",
     resumption_tickets: [],
   )
+}
+
+// nolint: unused_exports -- stable public configuration API for downstream users.
+/// Apply one validated set of finite phase deadlines atomically.
+pub fn with_deadlines(
+  client client: Client,
+  deadlines deadlines: policy.Deadlines,
+) -> Client {
+  Client(..client, deadlines: deadlines)
+}
+
+/// Apply one validated set of finite resource limits atomically.
+pub fn with_limits(
+  client client: Client,
+  limits limits: policy.Limits,
+) -> Client {
+  Client(..client, limits: limits)
+}
+
+/// Select IPv4, IPv6, or staggered dual-stack connection attempts.
+pub fn with_address_family(
+  client client: Client,
+  address_family address_family: policy.AddressFamily,
+) -> Client {
+  Client(..client, address_family: address_family)
 }
 
 /// Send periodic QUIC PING frames while waiting or reusing a connection.
@@ -331,11 +326,10 @@ pub fn with_timeout(
   client client: Client,
   milliseconds milliseconds: Int,
 ) -> Result(Client, ConfigurationError) {
-  use <- bool.guard(
-    when: milliseconds <= 0 || milliseconds > maximum_timeout_milliseconds,
-    return: Error(InvalidTimeout),
-  )
-  Ok(Client(..client, timeout_milliseconds: milliseconds))
+  case policy.uniform_deadlines(milliseconds) {
+    Ok(deadlines) -> Ok(Client(..client, deadlines: deadlines))
+    Error(_) -> Error(InvalidTimeout)
+  }
 }
 
 /// Set the maximum buffered response body size in bytes.
@@ -343,8 +337,10 @@ pub fn with_response_body_limit(
   client client: Client,
   bytes bytes: Int,
 ) -> Result(Client, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidResponseBodyLimit))
-  Ok(Client(..client, response_body_limit: bytes))
+  case policy.with_limit(client.limits, runtime_failure.ResponseBody, bytes) {
+    Ok(limits) -> Ok(Client(..client, limits: limits))
+    Error(_) -> Error(InvalidResponseBodyLimit)
+  }
 }
 
 /// Set the maximum buffered request body size in bytes.
@@ -352,8 +348,10 @@ pub fn with_request_body_limit(
   client client: Client,
   bytes bytes: Int,
 ) -> Result(Client, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidRequestBodyLimit))
-  Ok(Client(..client, request_body_limit: bytes))
+  case policy.with_limit(client.limits, runtime_failure.RequestBody, bytes) {
+    Ok(limits) -> Ok(Client(..client, limits: limits))
+    Error(_) -> Error(InvalidRequestBodyLimit)
+  }
 }
 
 /// Set the maximum unconsumed response data retained per stream.
@@ -361,8 +359,10 @@ pub fn with_stream_buffer_limit(
   client client: Client,
   bytes bytes: Int,
 ) -> Result(Client, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidStreamBufferLimit))
-  Ok(Client(..client, stream_buffer_limit: bytes))
+  case policy.with_limit(client.limits, runtime_failure.Buffer, bytes) {
+    Ok(limits) -> Ok(Client(..client, limits: limits))
+    Error(_) -> Error(InvalidStreamBufferLimit)
+  }
 }
 
 /// Add a DER-encoded CA certificate without disabling TLS verification.
@@ -394,11 +394,14 @@ pub fn send(
   request request: Request(BitArray),
 ) -> Result(Response(BitArray), Error) {
   case client_request.prepare(request) {
-    Ok(prepared) ->
-      case bit_array.byte_size(request.body) > client.request_body_limit {
-        True -> Error(RequestBodyTooLarge(client.request_body_limit))
+    Ok(prepared) -> {
+      let request_body_limit =
+        policy.limit(client.limits, runtime_failure.RequestBody)
+      case bit_array.byte_size(request.body) > request_body_limit {
+        True -> Error(RequestBodyTooLarge(request_body_limit))
         False -> send_prepared(client, prepared)
       }
+    }
     Error(error) -> Error(from_preparation_error(error))
   }
 }
@@ -411,15 +414,25 @@ fn send_prepared(
     client_backend.send(
       request,
       client.ca_certificates,
-      client.timeout_milliseconds,
-      client.response_body_limit,
+      client.address_family,
+      policy.deadline(client.deadlines, runtime_failure.Dns),
+      policy.deadline(client.deadlines, runtime_failure.Connect),
+      policy.deadline(client.deadlines, runtime_failure.Handshake),
+      policy.deadline(client.deadlines, runtime_failure.Total),
+      policy.deadline(client.deadlines, runtime_failure.Operation),
+      policy.deadline(client.deadlines, runtime_failure.Idle),
+      policy.limit(client.limits, runtime_failure.ResponseBody),
       client.quic_version == transport.QuicV2,
       client.keepalive_milliseconds,
     )
   {
     Ok(#(status, headers, body)) -> Ok(response.Response(status, headers, body))
     Error(error) ->
-      Error(from_backend_failure(error, client.response_body_limit))
+      Error(from_backend_failure(
+        error,
+        policy.limit(client.limits, runtime_failure.ResponseBody),
+        runtime_failure.Total,
+      ))
   }
 }
 
@@ -440,8 +453,22 @@ pub fn connect(
           host,
           port,
           client.ca_certificates,
-          client.timeout_milliseconds,
-          client.stream_buffer_limit,
+          client.address_family,
+          policy.deadline(client.deadlines, runtime_failure.Dns),
+          policy.deadline(client.deadlines, runtime_failure.Connect),
+          policy.deadline(client.deadlines, runtime_failure.Handshake),
+          policy.deadline(client.deadlines, runtime_failure.Total),
+          policy.deadline(client.deadlines, runtime_failure.Operation),
+          policy.deadline(client.deadlines, runtime_failure.Idle),
+          policy.limit(client.limits, runtime_failure.Buffer),
+          policy.limit(client.limits, runtime_failure.Queue),
+          policy.limit(client.limits, runtime_failure.Telemetry),
+          policy.limit(client.limits, runtime_failure.BidirectionalStreams),
+          policy.limit(client.limits, runtime_failure.UnidirectionalStreams),
+          policy.limit(client.limits, runtime_failure.Frame),
+          policy.limit(client.limits, runtime_failure.Datagram),
+          policy.limit(client.limits, runtime_failure.QpackTable),
+          policy.limit(client.limits, runtime_failure.QpackBlockedStreams),
           client.http_datagrams,
           client.maximum_pushes,
           client.keepalive_milliseconds,
@@ -452,7 +479,11 @@ pub fn connect(
       {
         Ok(handle) -> Ok(Connection(handle))
         Error(error) ->
-          Error(from_backend_failure(error, client.response_body_limit))
+          Error(from_backend_failure(
+            error,
+            policy.limit(client.limits, runtime_failure.ResponseBody),
+            runtime_failure.Handshake,
+          ))
       }
     Error(error) -> Error(from_preparation_error(error))
   }
@@ -474,7 +505,8 @@ pub fn open_stream(
     Ok(prepared) ->
       case client_stream_backend.open_stream(handle, prepared) {
         Ok(stream) -> Ok(Stream(stream))
-        Error(error) -> Error(from_backend_failure(error, 0))
+        Error(error) ->
+          Error(from_backend_failure(error, 0, runtime_failure.Operation))
       }
     Error(error) -> Error(from_preparation_error(error))
   }
@@ -500,7 +532,9 @@ pub fn open_extended_connect(
     Ok(prepared) ->
       client_stream_backend.open_stream(handle, prepared)
       |> result.map(Stream)
-      |> result.map_error(fn(error) { from_backend_failure(error, 0) })
+      |> result.map_error(fn(error) {
+        from_backend_failure(error, 0, runtime_failure.Operation)
+      })
     Error(error) -> Error(from_preparation_error(error))
   }
 }
@@ -510,7 +544,8 @@ pub fn next_push(connection: Connection) -> Result(Push, Error) {
   let Connection(handle) = connection
   case client_stream_backend.next_push(handle) {
     Ok(#(push, method, path, headers)) -> Ok(Push(push, method, path, headers))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -550,7 +585,8 @@ pub fn send_chunk(
   let Stream(handle) = stream
   case client_stream_backend.send_chunk(handle, chunk) {
     Ok(value) -> Ok(value)
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -579,7 +615,9 @@ pub fn send_trailers(
   )
   let Stream(handle) = stream
   client_stream_backend.send_trailers(handle, trailers)
-  |> result.map_error(fn(error) { from_backend_failure(error, 0) })
+  |> result.map_error(fn(error) {
+    from_backend_failure(error, 0, runtime_failure.Operation)
+  })
 }
 
 /// Finish a streaming request body.
@@ -587,7 +625,8 @@ pub fn finish(stream: Stream) -> Result(Nil, Error) {
   let Stream(handle) = stream
   case client_stream_backend.finish(handle) {
     Ok(value) -> Ok(value)
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -600,8 +639,9 @@ pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
     Ok(#(3, _, _, chunk)) -> Ok(Data(chunk))
     Ok(#(4, _, trailers, _)) -> Ok(Trailers(trailers))
     Ok(#(5, _, _, _)) -> Ok(End)
-    Ok(_) -> Error(BackendFailure("invalid streaming event"))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -613,8 +653,9 @@ pub fn next_push_event(push: Push) -> Result(ResponseEvent, Error) {
     Ok(#(3, _, _, chunk)) -> Ok(Data(chunk))
     Ok(#(4, _, trailers, _)) -> Ok(Trailers(trailers))
     Ok(#(5, _, _, _)) -> Ok(End)
-    Ok(_) -> Error(BackendFailure("invalid server push event"))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -625,8 +666,9 @@ pub fn cancel(stream: Stream) -> Result(Cancellation, Error) {
     Ok(1) -> Ok(Cancelled)
     Ok(2) -> Ok(AlreadyCancelled)
     Ok(3) -> Ok(AlreadyCompleted)
-    Ok(_) -> Error(BackendFailure("invalid cancellation status"))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -636,8 +678,9 @@ pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
     Ok(1) -> Ok(Cancelled)
     Ok(2) -> Ok(AlreadyCancelled)
     Ok(3) -> Ok(AlreadyCompleted)
-    Ok(_) -> Error(BackendFailure("invalid push cancellation status"))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -647,8 +690,9 @@ pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   case client_stream_backend.close(handle) {
     Ok(1) -> Ok(Closed)
     Ok(2) -> Ok(AlreadyClosed)
-    Ok(_) -> Error(BackendFailure("invalid close status"))
-    Error(error) -> Error(from_backend_failure(error, 0))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
   }
 }
 
@@ -669,21 +713,17 @@ fn from_preparation_error(error: client_request.Error) -> Error {
 fn from_backend_failure(
   failure: client_backend.Failure,
   response_body_limit: Int,
+  _timeout_phase: runtime_failure.TimeoutPhase,
 ) -> Error {
   case failure {
-    client_backend.ConnectFailed(message) -> ConnectFailed(message)
-    client_backend.RequestFailed(message) -> RequestFailed(message)
-    client_backend.Timeout -> Timeout
+    client_backend.RuntimeFailure(failure) -> Failure(failure)
     client_backend.ResponseBodyTooLarge ->
       ResponseBodyTooLarge(response_body_limit)
-    client_backend.ConnectionClosed -> ConnectionClosed
-    client_backend.StreamReset(code) -> StreamReset(code)
-    client_backend.ProtocolError(code, message) -> ProtocolError(code, message)
     client_backend.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
     client_backend.ConcurrentReceive -> ConcurrentReceive
     client_backend.RequestAlreadyFinished -> RequestAlreadyFinished
     client_backend.StreamFinished -> StreamFinished
-    client_backend.StreamCancelled -> StreamCancelled
+    client_backend.StreamCancelled -> Failure(runtime_failure.Cancelled)
     client_backend.ConnectionDraining -> ConnectionDraining
     client_backend.RequestRejected -> RequestRejected
     client_backend.OriginMismatch -> OriginMismatch
@@ -691,6 +731,5 @@ fn from_backend_failure(
       UnsafeEarlyDataMethod(method)
     client_backend.ResumptionOriginMismatch -> ResumptionOriginMismatch
     client_backend.InvalidContentLength -> InvalidContentLength
-    client_backend.BackendFailure(message) -> BackendFailure(message)
   }
 }

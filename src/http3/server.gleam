@@ -8,17 +8,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http3/capsule
+import http3/config as policy
+import http3/failure as runtime_failure
 import http3/internal/server_backend
 import http3/internal/server_response
 import http3/transport
-
-const default_timeout_milliseconds = 30_000
-
-const maximum_timeout_milliseconds = 3_600_000
-
-const default_body_limit = 8_388_608
-
-const default_stream_buffer_limit = 262_144
 
 const minimum_keepalive_milliseconds = 1000
 
@@ -36,21 +30,47 @@ pub opaque type Configuration {
     private_key: BitArray,
     alternative_certificates: List(#(String, BitArray, BitArray)),
     port: Int,
-    timeout_milliseconds: Int,
-    request_body_limit: Int,
-    response_body_limit: Int,
-    stream_buffer_limit: Int,
+    deadlines: policy.Deadlines,
+    limits: policy.Limits,
     http_datagrams: Bool,
     keepalive_milliseconds: Int,
-    address_family: AddressFamily,
+    address_family: policy.AddressFamily,
     qlog_directory: String,
+    allow_zero_rtt: Bool,
+    replay_guard: Option(server_backend.ReplayGuard),
+    operational_keys: Option(OperationalKeys),
   )
 }
 
-/// IP family used by the UDP listener.
-pub type AddressFamily {
-  Ipv4
-  Ipv6
+/// A validated 256-bit server key with no secret accessor.
+pub opaque type OperationalKey {
+  OperationalKey(handle: server_backend.OperationalKey)
+}
+
+/// A two-generation operational key ring.
+pub opaque type KeyRing {
+  KeyRing(handle: server_backend.KeyRing)
+}
+
+/// Domain-separated server ticket, token, and stateless-reset rings.
+pub opaque type OperationalKeys {
+  OperationalKeys(handle: server_backend.OperationalKeys)
+}
+
+/// One non-secret input to a caller-managed distributed replay check.
+pub opaque type ReplayAttempt {
+  ReplayAttempt(fingerprint: BitArray, valid_for_milliseconds: Int)
+}
+
+/// The result of an atomic external test-and-record operation.
+pub type ReplayDecision {
+  AcceptEarlyData
+  RejectEarlyData
+}
+
+/// A finite external 0-RTT replay guard.
+pub opaque type ReplayGuard {
+  ReplayGuard(handle: server_backend.ReplayGuard)
 }
 
 /// A running HTTP/3 listener.
@@ -106,16 +126,15 @@ pub type ConfigurationError {
   InvalidResponseBodyLimit
   InvalidStreamBufferLimit
   InvalidKeepalive
+  InvalidReplayGuardTimeout
+  InvalidOperationalKey
+  DuplicateOperationalKey
 }
 
 /// A server, request, or response failure.
 pub type Error {
-  StartFailed(String)
-  Timeout
-  ListenerClosed
-  ConnectionClosed
-  StreamReset(Int)
-  ProtocolError(Int, String)
+  /// A typed runtime failure with no backend-formatted or secret text.
+  Failure(runtime_failure.Failure)
   RequestBodyTooLarge(Int)
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
@@ -130,7 +149,6 @@ pub type Error {
   InvalidPath(String)
   InvalidContentLength
   InvalidBody
-  BackendFailure(String)
   CapsuleError(capsule.Error)
 
   /// The client cancelled a promised push.
@@ -159,15 +177,136 @@ pub fn new(
     private_key: private_key,
     alternative_certificates: [],
     port: 0,
-    timeout_milliseconds: default_timeout_milliseconds,
-    request_body_limit: default_body_limit,
-    response_body_limit: default_body_limit,
-    stream_buffer_limit: default_stream_buffer_limit,
+    deadlines: policy.default_deadlines(),
+    limits: policy.default_limits(),
     http_datagrams: False,
     keepalive_milliseconds: 0,
-    address_family: Ipv4,
+    address_family: policy.Ipv4,
     qlog_directory: "",
+    allow_zero_rtt: False,
+    replay_guard: None,
+    operational_keys: None,
   ))
+}
+
+/// Enable 0-RTT using this listener process's finite replay cache.
+///
+/// Disabled by default. This mode is suitable only while a single listener
+/// actor remains alive; it safely rejects early data after a restart.
+pub fn with_single_node_zero_rtt(
+  configuration: Configuration,
+) -> Configuration {
+  Configuration(..configuration, allow_zero_rtt: True, replay_guard: None)
+}
+
+/// Construct a bounded external atomic test-and-record guard.
+///
+/// The callback must store an unseen fingerprint for at least the supplied
+/// validity interval and return `AcceptEarlyData` only when that insertion was
+/// atomic and successful. `Error`, callback exit, rejection, and timeout all
+/// fall back to authenticated 1-RTT without failing the connection. The guard
+/// deadline must be from one through 10,000 milliseconds.
+pub fn replay_guard(
+  timeout_milliseconds timeout_milliseconds: Int,
+  check check: fn(ReplayAttempt) -> Result(ReplayDecision, Nil),
+) -> Result(ReplayGuard, ConfigurationError) {
+  server_backend.replay_guard(timeout_milliseconds, fn(fingerprint, valid_for) {
+    check(ReplayAttempt(fingerprint, valid_for))
+    |> result.map(fn(decision) {
+      case decision {
+        AcceptEarlyData -> True
+        RejectEarlyData -> False
+      }
+    })
+  })
+  |> result.map(ReplayGuard)
+  |> result.replace_error(InvalidReplayGuardTimeout)
+}
+
+/// Enable 0-RTT only when a caller-managed replay guard accepts the attempt.
+pub fn with_external_zero_rtt(
+  configuration configuration: Configuration,
+  guard guard: ReplayGuard,
+) -> Configuration {
+  Configuration(
+    ..configuration,
+    allow_zero_rtt: True,
+    replay_guard: Some(guard.handle),
+  )
+}
+
+/// Return the domain-separated replay fingerprint used as the storage key.
+pub fn replay_fingerprint(attempt: ReplayAttempt) -> BitArray {
+  attempt.fingerprint
+}
+
+/// Return the minimum external retention interval for this fingerprint.
+pub fn replay_valid_for_milliseconds(attempt: ReplayAttempt) -> Int {
+  attempt.valid_for_milliseconds
+}
+
+/// Validate a caller-managed 256-bit operational key.
+pub fn operational_key(
+  bytes: BitArray,
+) -> Result(OperationalKey, ConfigurationError) {
+  server_backend.operational_key(bytes)
+  |> result.map(OperationalKey)
+  |> result.replace_error(InvalidOperationalKey)
+}
+
+/// Start a ring with one current generation.
+pub fn key_ring(key: OperationalKey) -> KeyRing {
+  KeyRing(server_backend.key_ring(key.handle))
+}
+
+/// Rotate a ring atomically and retain only its former current generation.
+pub fn rotate_key_ring(
+  ring ring: KeyRing,
+  key key: OperationalKey,
+) -> Result(KeyRing, ConfigurationError) {
+  server_backend.rotate_key_ring(ring.handle, key.handle)
+  |> result.map(KeyRing)
+  |> result.replace_error(DuplicateOperationalKey)
+}
+
+/// Assemble three domain-separated rings for restart-safe operation.
+pub fn operational_keys(
+  ticket ticket: KeyRing,
+  address_token address_token: KeyRing,
+  stateless_reset stateless_reset: KeyRing,
+) -> Result(OperationalKeys, ConfigurationError) {
+  server_backend.operational_keys(
+    ticket.handle,
+    address_token.handle,
+    stateless_reset.handle,
+  )
+  |> result.map(OperationalKeys)
+  |> result.replace_error(DuplicateOperationalKey)
+}
+
+/// Attach restart-safe operational keys to a listener configuration.
+pub fn with_operational_keys(
+  configuration configuration: Configuration,
+  keys keys: OperationalKeys,
+) -> Configuration {
+  Configuration(..configuration, operational_keys: Some(keys))
+}
+
+// nolint: unused_exports -- stable public configuration API for downstream users.
+/// Apply one validated set of finite phase deadlines atomically.
+pub fn with_deadlines(
+  configuration configuration: Configuration,
+  deadlines deadlines: policy.Deadlines,
+) -> Configuration {
+  Configuration(..configuration, deadlines: deadlines)
+}
+
+/// Apply one validated set of finite resource limits atomically.
+pub fn with_limits(
+  configuration configuration: Configuration,
+  limits limits: policy.Limits,
+) -> Configuration {
+  Configuration(..configuration, limits: limits)
 }
 
 /// Add a certificate selected by an exact SNI name or `*.` wildcard.
@@ -237,7 +376,7 @@ pub fn with_http_datagrams(configuration: Configuration) -> Configuration {
 /// Select the IP family used by the UDP listener.
 pub fn with_address_family(
   configuration configuration: Configuration,
-  address_family address_family: AddressFamily,
+  address_family address_family: policy.AddressFamily,
 ) -> Configuration {
   Configuration(..configuration, address_family: address_family)
 }
@@ -245,7 +384,7 @@ pub fn with_address_family(
 // nolint: unused_exports -- stable public convenience API for downstream users.
 /// Bind the listener to the IPv6 wildcard address.
 pub fn with_ipv6(configuration: Configuration) -> Configuration {
-  with_address_family(configuration: configuration, address_family: Ipv6)
+  with_address_family(configuration: configuration, address_family: policy.Ipv6)
 }
 
 /// Enable qlog tracing for accepted connections.
@@ -276,11 +415,10 @@ pub fn with_timeout(
   configuration configuration: Configuration,
   milliseconds milliseconds: Int,
 ) -> Result(Configuration, ConfigurationError) {
-  use <- bool.guard(
-    when: milliseconds <= 0 || milliseconds > maximum_timeout_milliseconds,
-    return: Error(InvalidTimeout),
-  )
-  Ok(Configuration(..configuration, timeout_milliseconds: milliseconds))
+  case policy.uniform_deadlines(milliseconds) {
+    Ok(deadlines) -> Ok(Configuration(..configuration, deadlines: deadlines))
+    Error(_) -> Error(InvalidTimeout)
+  }
 }
 
 /// Set the maximum request body size in bytes.
@@ -288,8 +426,12 @@ pub fn with_request_body_limit(
   configuration configuration: Configuration,
   bytes bytes: Int,
 ) -> Result(Configuration, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidRequestBodyLimit))
-  Ok(Configuration(..configuration, request_body_limit: bytes))
+  case
+    policy.with_limit(configuration.limits, runtime_failure.RequestBody, bytes)
+  {
+    Ok(limits) -> Ok(Configuration(..configuration, limits: limits))
+    Error(_) -> Error(InvalidRequestBodyLimit)
+  }
 }
 
 /// Set the maximum response body size in bytes.
@@ -297,8 +439,12 @@ pub fn with_response_body_limit(
   configuration configuration: Configuration,
   bytes bytes: Int,
 ) -> Result(Configuration, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidResponseBodyLimit))
-  Ok(Configuration(..configuration, response_body_limit: bytes))
+  case
+    policy.with_limit(configuration.limits, runtime_failure.ResponseBody, bytes)
+  {
+    Ok(limits) -> Ok(Configuration(..configuration, limits: limits))
+    Error(_) -> Error(InvalidResponseBodyLimit)
+  }
 }
 
 /// Set the maximum unconsumed request data retained per stream.
@@ -306,8 +452,10 @@ pub fn with_stream_buffer_limit(
   configuration configuration: Configuration,
   bytes bytes: Int,
 ) -> Result(Configuration, ConfigurationError) {
-  use <- bool.guard(when: bytes <= 0, return: Error(InvalidStreamBufferLimit))
-  Ok(Configuration(..configuration, stream_buffer_limit: bytes))
+  case policy.with_limit(configuration.limits, runtime_failure.Buffer, bytes) {
+    Ok(limits) -> Ok(Configuration(..configuration, limits: limits))
+    Error(_) -> Error(InvalidStreamBufferLimit)
+  }
 }
 
 /// Start an HTTP/3 listener owned by the calling process.
@@ -317,14 +465,15 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     private_key,
     alternative_certificates,
     port,
-    timeout,
-    request_limit,
-    response_limit,
-    buffer_limit,
+    deadlines,
+    limits,
     http_datagrams,
     keepalive_milliseconds,
     address_family,
     qlog_directory,
+    allow_zero_rtt,
+    replay_guard,
+    operational_keys,
   ) = configuration
   case
     server_backend.start(
@@ -332,14 +481,33 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
       private_key,
       alternative_certificates,
       port,
-      timeout,
-      request_limit,
-      response_limit,
-      buffer_limit,
+      policy.deadline(deadlines, runtime_failure.Operation),
+      policy.deadline(deadlines, runtime_failure.Drain),
+      policy.deadline(deadlines, runtime_failure.Idle),
+      policy.limit(limits, runtime_failure.RequestBody),
+      policy.limit(limits, runtime_failure.ResponseBody),
+      policy.limit(limits, runtime_failure.Buffer),
+      policy.limit(limits, runtime_failure.Connections),
+      policy.limit(limits, runtime_failure.Handshakes),
+      policy.limit(limits, runtime_failure.Queue),
+      policy.limit(limits, runtime_failure.Telemetry),
+      policy.limit(limits, runtime_failure.BidirectionalStreams),
+      policy.limit(limits, runtime_failure.UnidirectionalStreams),
+      policy.limit(limits, runtime_failure.Frame),
+      policy.limit(limits, runtime_failure.Datagram),
+      policy.limit(limits, runtime_failure.QpackTable),
+      policy.limit(limits, runtime_failure.QpackBlockedStreams),
+      policy.limit(limits, runtime_failure.AcceptWaiters),
       http_datagrams,
       keepalive_milliseconds,
-      address_family == Ipv6,
+      address_family,
       qlog_directory,
+      allow_zero_rtt,
+      replay_guard,
+      case operational_keys {
+        None -> None
+        Some(keys) -> Some(keys.handle)
+      },
     )
   {
     Ok(handle) -> Ok(Listener(handle))
@@ -356,6 +524,37 @@ pub fn request_transport(request: Request) -> transport.Stream {
 pub fn port(listener: Listener) -> Result(Int, Error) {
   let Listener(handle) = listener
   map_backend(server_backend.port(handle))
+}
+
+/// Atomically replace the complete certificate set for future handshakes.
+///
+/// Build `replacement` with `new` and `with_certificate`. All non-certificate
+/// settings on it are ignored. Existing connections remain authenticated and
+/// open; a validation failure occurs before this function can be called.
+pub fn reload_certificates(
+  listener listener: Listener,
+  replacement replacement: Configuration,
+) -> Result(Nil, Error) {
+  let Listener(handle) = listener
+  server_backend.reload_certificates(
+    handle,
+    replacement.certificate,
+    replacement.private_key,
+    replacement.alternative_certificates,
+  )
+  |> map_backend
+}
+
+/// Atomically rotate ticket, address-token, and stateless-reset key rings.
+///
+/// New values use each current key while values authenticated by the single
+/// previous generation remain valid for a bounded deployment transition.
+pub fn reload_operational_keys(
+  listener listener: Listener,
+  keys keys: OperationalKeys,
+) -> Result(Nil, Error) {
+  let Listener(handle) = listener
+  server_backend.reload_operational_keys(handle, keys.handle) |> map_backend
 }
 
 /// Pull the next accepted request head.
@@ -402,7 +601,7 @@ pub fn next_event(request: Request) -> Result(RequestEvent, Error) {
     Ok(#(1, _, chunk)) -> Ok(Data(chunk))
     Ok(#(2, trailers, _)) -> Ok(Trailers(trailers))
     Ok(#(3, _, _)) -> Ok(End)
-    Ok(_) -> Error(BackendFailure("invalid request event"))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
     Error(error) -> Error(from_backend_failure(error))
   }
 }
@@ -645,7 +844,7 @@ pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   case server_backend.stop(handle) {
     Ok(1) -> Ok(Stopped)
     Ok(2) -> Ok(AlreadyStopped)
-    Ok(_) -> Error(BackendFailure("invalid stop status"))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
     Error(error) -> Error(from_backend_failure(error))
   }
 }
@@ -660,7 +859,7 @@ pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
     Ok(1) -> Ok(Drained)
     Ok(2) -> Ok(Forced)
     Ok(3) -> Ok(AlreadyDrained)
-    Ok(_) -> Error(BackendFailure("invalid drain status"))
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
     Error(error) -> Error(from_backend_failure(error))
   }
 }
@@ -684,12 +883,7 @@ fn from_response_error(error: server_response.Error) -> Error {
 
 fn from_backend_failure(failure: server_backend.Failure) -> Error {
   case failure {
-    server_backend.StartFailed(message) -> StartFailed(message)
-    server_backend.Timeout -> Timeout
-    server_backend.ListenerClosed -> ListenerClosed
-    server_backend.ConnectionClosed -> ConnectionClosed
-    server_backend.StreamReset(code) -> StreamReset(code)
-    server_backend.ProtocolError(code, message) -> ProtocolError(code, message)
+    server_backend.RuntimeFailure(failure) -> Failure(failure)
     server_backend.RequestBodyTooLarge(limit) -> RequestBodyTooLarge(limit)
     server_backend.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     server_backend.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)
@@ -701,6 +895,5 @@ fn from_backend_failure(failure: server_backend.Failure) -> Error {
     server_backend.ResponseAlreadyFinished -> ResponseAlreadyFinished
     server_backend.PushCancelled -> PushCancelled
     server_backend.InvalidContentLength -> InvalidContentLength
-    server_backend.BackendFailure(message) -> BackendFailure(message)
   }
 }

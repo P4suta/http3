@@ -38,6 +38,8 @@ pub type EncryptionLevel {
 pub type KeyShareStrategy {
   EagerKeyShare
   DeferredKeyShare
+  EagerP256KeyShare
+  DeferredP256KeyShare
 }
 
 /// Stable, role-independent handshake progress exposed to the transport core.
@@ -67,6 +69,22 @@ pub type Step(state) {
 }
 
 /// Inputs required for an authenticated client handshake.
+pub type ClientCredential {
+  ClientCredential(
+    certificate_chain: List(BitArray),
+    signing_key: authentication.SigningKey,
+    signature_scheme: extension_value.SignatureScheme,
+  )
+}
+
+/// Server policy for TLS client certificate authentication.
+pub type ClientAuthentication {
+  ClientAuthenticationDisabled
+  ClientAuthenticationOptional(authentication.TrustStore)
+  ClientAuthenticationRequired(authentication.TrustStore)
+}
+
+/// Inputs required for an authenticated client handshake.
 pub type ClientConfig {
   ClientConfig(
     version: Version,
@@ -74,6 +92,7 @@ pub type ClientConfig {
     application_protocols: List(BitArray),
     transport_parameters: List(transport_parameter.Parameter),
     trust_store: authentication.TrustStore,
+    client_credential: Option(ClientCredential),
     retried: Bool,
     version_negotiated: Bool,
   )
@@ -99,6 +118,7 @@ pub type ServerConfig {
     signing_key: authentication.SigningKey,
     signature_scheme: extension_value.SignatureScheme,
     alternative_credentials: List(ServerCredential),
+    client_authentication: ClientAuthentication,
   )
 }
 
@@ -114,6 +134,7 @@ type ClientHandshakeContext {
     early_data_accepted: Bool,
     selected_alpn: Option(BitArray),
     peer_transport_parameters: Option(List(transport_parameter.Parameter)),
+    certificate_request: Option(BitArray),
     pending_crypto: BitArray,
   )
 }
@@ -126,6 +147,7 @@ type ClientConnectedContext {
     resumption_master_secret: BitArray,
     selected_alpn: BitArray,
     peer_transport_parameters: List(transport_parameter.Parameter),
+    resumed: Bool,
     pending_crypto: BitArray,
     handshake_confirmed: Bool,
   )
@@ -170,6 +192,7 @@ type ServerHandshakeContext {
     transcript: transcript.Transcript,
     secrets: key_schedule.HandshakeSecrets,
     resumption_selection: Option(resumption.Selected),
+    client_identity: Option(authentication.VerifiedPeer),
   )
 }
 
@@ -182,6 +205,10 @@ type ServerConnectedContext {
     cipher_suite: hello.CipherSuite,
     resumption_master_secret: BitArray,
     replay_cache: Option(anti_replay.Cache),
+    resumed: Bool,
+    early_data_attempted: Bool,
+    early_data_accepted: Bool,
+    client_identity: Option(authentication.VerifiedPeer),
   )
 }
 
@@ -190,6 +217,7 @@ type ServerRetryContext {
     config: ServerConfig,
     original_client_hello: hello.ClientHello,
     selected_cipher_suite: hello.CipherSuite,
+    selected_group: extension_value.NamedGroup,
     retry_transcript: transcript.Transcript,
     resumption_policy: Option(resumption.ServerPolicy),
   )
@@ -210,6 +238,15 @@ pub opaque type Server {
     context: ServerHandshakeContext,
     pending_crypto: BitArray,
   )
+  ServerAwaitingClientCertificate(
+    context: ServerHandshakeContext,
+    pending_crypto: BitArray,
+  )
+  ServerAwaitingClientCertificateVerify(
+    context: ServerHandshakeContext,
+    peer: authentication.VerifiedPeer,
+    pending_crypto: BitArray,
+  )
   ServerConnected(ServerConnectedContext)
 }
 
@@ -226,6 +263,7 @@ pub type Error {
   MissingExtension(extension.Kind)
   NoApplicationProtocol
   FinishedMismatch
+  ClientCertificateRequired
   HandshakeFailure(handshake.Error)
   HelloFailure(hello.Error)
   ExtensionValueFailure(extension_value.Error)
@@ -288,10 +326,12 @@ fn start_client_internal(
 ) -> Result(Step(Client), Error) {
   use Nil <- result.try(validate_client_config(config))
   use key_pair <- result.try(client_key_pair(strategy))
+  let supported_groups = client_supported_groups(strategy)
   use random <- result.try(crypto.secure_random(32) |> map_crypto_result)
   use extensions <- result.try(client_extensions(
     config,
     key_pair,
+    supported_groups,
     resumption_offer,
   ))
   let client_hello =
@@ -387,8 +427,10 @@ pub fn handle_server(
       handle_client_hello(config, policy, <<pending:bits, bytes:bits>>)
     ServerAwaitingSecondClientHello(context, pending), Initial ->
       handle_second_client_hello(context, <<pending:bits, bytes:bits>>)
-    ServerAwaitingClientFinished(context, pending), Handshake ->
-      handle_client_finished(context, <<pending:bits, bytes:bits>>)
+    ServerAwaitingClientCertificate(..), Handshake
+    | ServerAwaitingClientCertificateVerify(..), Handshake
+    | ServerAwaitingClientFinished(..), Handshake
+    -> prepare_server_client_flight(server, bytes)
     ServerConnected(_), _ -> Error(UnexpectedMessage)
     _, _ -> Error(UnexpectedEncryptionLevel)
   }
@@ -404,6 +446,80 @@ pub fn client_phase(client: Client) -> Phase {
     | ClientAwaitingCertificateVerify(..)
     | ClientAwaitingFinished(..) -> AwaitingPeerFlight
     ClientConnected(_) -> Connected
+  }
+}
+
+/// Return whether the authenticated client handshake selected its offered PSK.
+pub fn client_resumed(client: Client) -> Bool {
+  case client {
+    ClientConnected(context) -> context.resumed
+    _ -> False
+  }
+}
+
+/// Return the authenticated ALPN selection without exposing TLS state.
+pub fn client_application_protocol(client: Client) -> Option(BitArray) {
+  case client {
+    ClientConnected(context) -> Some(context.selected_alpn)
+    _ -> None
+  }
+}
+
+/// Return the authenticated client cipher selection without exposing keys.
+pub fn client_cipher_suite(client: Client) -> Option(hello.CipherSuite) {
+  case client {
+    ClientConnected(context) -> Some(context.cipher_suite)
+    _ -> None
+  }
+}
+
+/// Return the authenticated server ALPN selection without exposing TLS state.
+pub fn server_application_protocol(server: Server) -> Option(BitArray) {
+  case server {
+    ServerConnected(context) -> Some(context.selected_alpn)
+    _ -> None
+  }
+}
+
+/// Return the authenticated server cipher selection without exposing keys.
+pub fn server_cipher_suite(server: Server) -> Option(hello.CipherSuite) {
+  case server {
+    ServerConnected(context) -> Some(context.cipher_suite)
+    _ -> None
+  }
+}
+
+/// Return whether the server authenticated this connection with a ticket.
+pub fn server_resumed(server: Server) -> Bool {
+  case server {
+    ServerConnected(context) -> context.resumed
+    _ -> False
+  }
+}
+
+/// Return the path- and signature-verified client identity, when requested.
+pub fn server_client_identity(
+  server: Server,
+) -> Option(authentication.VerifiedPeer) {
+  case server {
+    ServerConnected(context) -> context.client_identity
+    _ -> None
+  }
+}
+
+/// Return whether the server accepted replay-guarded early data.
+pub fn server_early_data_accepted(server: Server) -> Bool {
+  case server {
+    ServerConnected(context) -> context.early_data_accepted
+    _ -> False
+  }
+}
+
+/// Return whether the authenticated client offered early data.
+pub fn server_early_data_attempted(server: Server) -> Bool {
+  case server {
+    ServerConnected(context) -> context.early_data_attempted
+    _ -> False
   }
 }
 
@@ -496,7 +612,9 @@ pub fn server_phase(server: Server) -> Phase {
   case server {
     ServerAwaitingClientHello(_, _, _)
     | ServerAwaitingSecondClientHello(_, _) -> AwaitingPeerHello
-    ServerAwaitingClientFinished(_, _) -> AwaitingPeerFinished
+    ServerAwaitingClientCertificate(..)
+    | ServerAwaitingClientCertificateVerify(..)
+    | ServerAwaitingClientFinished(..) -> AwaitingPeerFinished
     ServerConnected(_) -> Connected
   }
 }
@@ -582,7 +700,10 @@ pub fn refresh_server_resumption_policy(
       ))
     // The ClientHello and its binder have already been consumed. Refreshing
     // after this point has no semantic effect and is safely idempotent.
-    ServerAwaitingClientFinished(..) | ServerConnected(..) -> Ok(server)
+    ServerAwaitingClientCertificate(..)
+    | ServerAwaitingClientCertificateVerify(..)
+    | ServerAwaitingClientFinished(..)
+    | ServerConnected(..) -> Ok(server)
   }
 }
 
@@ -678,19 +799,41 @@ fn client_key_pair(
   strategy: KeyShareStrategy,
 ) -> Result(Option(key_exchange.KeyPair), Error) {
   case strategy {
-    DeferredKeyShare -> Ok(None)
+    DeferredKeyShare | DeferredP256KeyShare -> Ok(None)
     EagerKeyShare -> {
       use key_pair <- result.try(
         key_exchange.generate_x25519() |> map_key_exchange_result,
       )
       Ok(Some(key_pair))
     }
+    EagerP256KeyShare -> {
+      use key_pair <- result.try(
+        key_exchange.generate_p256() |> map_key_exchange_result,
+      )
+      Ok(Some(key_pair))
+    }
+  }
+}
+
+fn client_supported_groups(
+  strategy: KeyShareStrategy,
+) -> List(extension_value.NamedGroup) {
+  case strategy {
+    EagerKeyShare | DeferredKeyShare -> [
+      extension_value.X25519,
+      extension_value.Secp256r1,
+    ]
+    EagerP256KeyShare | DeferredP256KeyShare -> [
+      extension_value.Secp256r1,
+      extension_value.X25519,
+    ]
   }
 }
 
 fn client_extensions(
   config: ClientConfig,
   key_pair: Option(key_exchange.KeyPair),
+  supported_groups: List(extension_value.NamedGroup),
   resumption_offer: Option(resumption.ClientOffer),
 ) -> Result(List(extension.Extension), Error) {
   use server_name <- result.try(
@@ -703,7 +846,7 @@ fn client_extensions(
     },
   )
   use groups <- result.try(
-    extension_value.encode_supported_groups([extension_value.X25519])
+    extension_value.encode_supported_groups(supported_groups)
     |> map_extension_value_result,
   )
   use signatures <- result.try(
@@ -763,7 +906,7 @@ fn encode_client_key_share(
     None -> []
     Some(value) -> [
       extension_value.KeyShare(
-        extension_value.X25519,
+        key_pair_named_group(value),
         key_exchange.public_key(value),
       ),
     ]
@@ -935,15 +1078,15 @@ fn accept_client_hello(
       ))
       let cipher_suite =
         selected_resumption_cipher(selection, default_cipher_suite)
-      use client_public_key <- result.try(offered_client_x25519_key(extensions))
-      case client_public_key {
-        Some(public_key) ->
+      use client_key_share <- result.try(offered_client_key_share(extensions))
+      case client_key_share {
+        Some(key_share) ->
           build_server_flight(
             config,
             server_name,
             encoded_client_hello,
             cipher_suite,
-            public_key,
+            key_share,
             selected_alpn,
             peer_parameters,
             None,
@@ -970,12 +1113,13 @@ fn issue_hello_retry_request(
   cipher_suite: hello.CipherSuite,
   resumption_policy: Option(resumption.ServerPolicy),
 ) -> Result(Step(Server), Error) {
+  use retry_group <- result.try(select_retry_group(client_hello.extensions))
   use supported_version <- result.try(
     extension_value.encode_server_supported_version(extension_value.Tls13)
     |> map_extension_value_result,
   )
   use selected_group <- result.try(
-    extension_value.encode_selected_group(extension_value.X25519)
+    extension_value.encode_selected_group(retry_group)
     |> map_extension_value_result,
   )
   let retry =
@@ -1004,6 +1148,7 @@ fn issue_hello_retry_request(
       config,
       client_hello,
       cipher_suite,
+      retry_group,
       retry_transcript,
       resumption_policy,
     )
@@ -1067,7 +1212,10 @@ fn accept_second_client_hello(
         peer_parameters,
         config.version,
       ))
-      use client_public_key <- result.try(client_x25519_key(extensions))
+      use client_key_share <- result.try(client_key_share_for_group(
+        extensions,
+        context.selected_group,
+      ))
       use selection <- result.try(select_server_resumption(
         context.resumption_policy,
         encoded_client_hello,
@@ -1090,7 +1238,7 @@ fn accept_second_client_hello(
             server_name,
             encoded_client_hello,
             context.selected_cipher_suite,
-            client_public_key,
+            client_key_share,
             selected_alpn,
             peer_parameters,
             Some(context.retry_transcript),
@@ -1355,6 +1503,18 @@ fn selection_early_data_accepted(
   }
 }
 
+fn constrain_early_data_for_client_auth(
+  config: ServerConfig,
+  selection: Option(resumption.Selected),
+) -> Option(resumption.Selected) {
+  case config.client_authentication, selection {
+    ClientAuthenticationDisabled, _ -> selection
+    _, Some(selected) ->
+      Some(resumption.Selected(..selected, early_data_accepted: False))
+    _, None -> None
+  }
+}
+
 fn server_hello_psk_extension(
   selection: Option(resumption.Selected),
 ) -> Result(List(extension.Extension), Error) {
@@ -1375,19 +1535,25 @@ fn build_server_flight(
   server_name: String,
   encoded_client_hello: BitArray,
   cipher_suite: hello.CipherSuite,
-  client_public_key: BitArray,
+  client_key_share: extension_value.KeyShare,
   selected_alpn: BitArray,
   peer_parameters: List(transport_parameter.Parameter),
   retry_transcript: Option(transcript.Transcript),
   resumption_selection: Option(resumption.Selected),
 ) -> Result(Step(Server), Error) {
+  let extension_value.KeyShare(named_group, client_public_key) =
+    client_key_share
+  let resumption_selection =
+    constrain_early_data_for_client_auth(config, resumption_selection)
+  use group <- result.try(named_group_to_key_exchange(named_group))
   use key_pair <- result.try(
-    key_exchange.generate_x25519() |> map_key_exchange_result,
+    generate_key_pair(group) |> map_key_exchange_result,
   )
   use random <- result.try(crypto.secure_random(32) |> map_crypto_result)
   use server_hello <- result.try(encode_server_hello(
     random,
     cipher_suite,
+    named_group,
     key_exchange.public_key(key_pair),
     resumption_selection,
   ))
@@ -1453,13 +1619,20 @@ fn build_server_flight(
       transcript: flight_transcript,
       secrets: secrets,
       resumption_selection:,
+      client_identity: None,
     )
-  Ok(Step(ServerAwaitingClientFinished(context, <<>>), actions))
+  let next = case config.client_authentication {
+    ClientAuthenticationDisabled -> ServerAwaitingClientFinished(context, <<>>)
+    ClientAuthenticationOptional(_) | ClientAuthenticationRequired(_) ->
+      ServerAwaitingClientCertificate(context, <<>>)
+  }
+  Ok(Step(next, actions))
 }
 
 fn encode_server_hello(
   random: BitArray,
   cipher_suite: hello.CipherSuite,
+  group: extension_value.NamedGroup,
   public_key: BitArray,
   selection: Option(resumption.Selected),
 ) -> Result(BitArray, Error) {
@@ -1469,7 +1642,7 @@ fn encode_server_hello(
   )
   use key_share <- result.try(
     extension_value.encode_server_key_share(extension_value.KeyShare(
-      extension_value.X25519,
+      group,
       public_key,
     ))
     |> map_extension_value_result,
@@ -1510,18 +1683,24 @@ fn server_handshake_messages(
       selection_early_data_accepted(selection),
     ),
   )
+  use #(certificate_request, after_request) <- result.try(
+    encode_client_certificate_request(config, after_extensions),
+  )
   case selection {
     Some(_) -> {
       use #(finished, after_finished) <- result.try(encode_server_finished(
         algorithm,
         secrets.server_handshake_traffic_secret,
-        after_extensions,
+        after_request,
       ))
-      Ok(#(<<encrypted_extensions:bits, finished:bits>>, after_finished))
+      Ok(#(
+        <<encrypted_extensions:bits, certificate_request:bits, finished:bits>>,
+        after_finished,
+      ))
     }
     None -> {
       use #(certificate, after_certificate) <- result.try(
-        encode_server_certificate(config.certificate_chain, after_extensions),
+        encode_server_certificate(config.certificate_chain, after_request),
       )
       use #(certificate_verify, after_verify) <- result.try(
         encode_server_certificate_verify(config, after_certificate),
@@ -1534,6 +1713,7 @@ fn server_handshake_messages(
       Ok(#(
         <<
           encrypted_extensions:bits,
+          certificate_request:bits,
           certificate:bits,
           certificate_verify:bits,
           finished:bits,
@@ -1582,6 +1762,31 @@ fn encode_server_encrypted_extensions(
     |> map_message_body_result,
   )
   encode_and_append(handshake.EncryptedExtensions, body, current)
+}
+
+fn encode_client_certificate_request(
+  config: ServerConfig,
+  current: transcript.Transcript,
+) -> Result(#(BitArray, transcript.Transcript), Error) {
+  case config.client_authentication {
+    ClientAuthenticationDisabled -> Ok(#(<<>>, current))
+    ClientAuthenticationOptional(_) | ClientAuthenticationRequired(_) -> {
+      use signatures <- result.try(
+        extension_value.encode_signature_schemes(supported_signature_schemes())
+        |> map_extension_value_result,
+      )
+      use body <- result.try(
+        message_body.encode_certificate_request(
+          message_body.CertificateRequest(<<>>, [
+            extension.Extension(extension.SignatureAlgorithms, signatures),
+          ]),
+          message_body.default_limits(),
+        )
+        |> map_message_body_result,
+      )
+      encode_and_append(handshake.CertificateRequest, body, current)
+    }
+  }
 }
 
 fn encode_server_certificate(
@@ -1888,14 +2093,15 @@ fn build_second_client_hello(
   cipher_suite: hello.CipherSuite,
   extensions: List(extension.Extension),
 ) -> Result(Step(Client), Error) {
-  use algorithm <- result.try(validate_hello_retry_request(
+  use #(algorithm, selected_group) <- result.try(validate_hello_retry_request(
     encoded_client_hello,
     cipher_suite,
     extensions,
   ))
   use original <- result.try(decode_client_hello_message(encoded_client_hello))
+  use group <- result.try(named_group_to_key_exchange(selected_group))
   use retry_key_pair <- result.try(
-    key_exchange.generate_x25519() |> map_key_exchange_result,
+    generate_key_pair(group) |> map_key_exchange_result,
   )
   use share <- result.try(encode_client_key_share(Some(retry_key_pair)))
   use retry_extensions <- result.try(second_client_extensions(
@@ -1943,7 +2149,7 @@ fn validate_hello_retry_request(
   encoded_client_hello: BitArray,
   cipher_suite: hello.CipherSuite,
   extensions: List(extension.Extension),
-) -> Result(crypto.HashAlgorithm, Error) {
+) -> Result(#(crypto.HashAlgorithm, extension_value.NamedGroup), Error) {
   use original <- result.try(decode_client_hello_message(encoded_client_hello))
   use algorithm <- result.try(require_supported_cipher(cipher_suite))
   use Nil <- result.try(require_server_tls13(extensions))
@@ -1965,12 +2171,21 @@ fn validate_hello_retry_request(
     extension_value.decode_client_key_shares(offered_share_data)
     |> map_extension_value_result,
   )
+  use supported_groups_data <- result.try(require_extension(
+    original.extensions,
+    extension.SupportedGroups,
+  ))
+  use supported_groups <- result.try(
+    extension_value.decode_supported_groups(supported_groups_data)
+    |> map_extension_value_result,
+  )
   case
     list.contains(original.cipher_suites, cipher_suite)
-    && selected_group == extension_value.X25519
-    && !has_x25519_share(offered_shares)
+    && supported_named_group(selected_group)
+    && list.contains(supported_groups, selected_group)
+    && !has_group_share(offered_shares, selected_group)
   {
-    True -> Ok(algorithm)
+    True -> Ok(#(algorithm, selected_group))
     False -> Error(InvalidHelloRetryRequest)
   }
 }
@@ -2041,12 +2256,13 @@ fn decode_client_hello_message(
   }
 }
 
-fn has_x25519_share(shares: List(extension_value.KeyShare)) -> Bool {
+fn has_group_share(
+  shares: List(extension_value.KeyShare),
+  selected_group: extension_value.NamedGroup,
+) -> Bool {
   list.any(shares, fn(share) {
-    case share {
-      extension_value.KeyShare(extension_value.X25519, _) -> True
-      _ -> False
-    }
+    let extension_value.KeyShare(group, _) = share
+    group == selected_group
   })
 }
 
@@ -2173,7 +2389,7 @@ fn establish_client_handshake_with_transcript(
   offer: Option(resumption.ClientOffer),
 ) -> Result(Step(Client), Error) {
   use Nil <- result.try(require_server_tls13(extensions))
-  use public_key <- result.try(server_x25519_key(extensions))
+  use public_key <- result.try(server_key_for_pair(extensions, key_pair))
   use algorithm <- result.try(require_supported_cipher(cipher_suite))
   use selected_psk <- result.try(client_selected_pre_shared_key(
     offer,
@@ -2217,6 +2433,7 @@ fn establish_client_handshake_with_transcript(
       early_data_accepted: False,
       selected_alpn: None,
       peer_transport_parameters: None,
+      certificate_request: None,
       pending_crypto: <<>>,
     )
   Ok(
@@ -2314,6 +2531,11 @@ fn process_client_message(
       handshake.Message(handshake.EncryptedExtensions, body)
     -> client_accept_encrypted_extensions(context, body)
     ClientAwaitingCertificate(context),
+      handshake.Message(handshake.CertificateRequest, body)
+    | ClientAwaitingFinished(context),
+      handshake.Message(handshake.CertificateRequest, body)
+    -> client_accept_certificate_request(context, body)
+    ClientAwaitingCertificate(context),
       handshake.Message(handshake.Certificate, body)
     -> client_accept_certificate(context, body)
     ClientAwaitingCertificateVerify(context, peer),
@@ -2322,6 +2544,68 @@ fn process_client_message(
     ClientAwaitingFinished(context), handshake.Message(handshake.Finished, body)
     -> client_accept_finished(context, body)
     _, _ -> Error(UnexpectedMessage)
+  }
+}
+
+fn client_accept_certificate_request(
+  context: ClientHandshakeContext,
+  body: BitArray,
+) -> Result(Step(Client), Error) {
+  use request <- result.try(
+    message_body.decode_certificate_request(body, message_body.default_limits())
+    |> map_message_body_result,
+  )
+  let message_body.CertificateRequest(request_context, extensions) = request
+  use signatures_data <- result.try(require_extension(
+    extensions,
+    extension.SignatureAlgorithms,
+  ))
+  use signatures <- result.try(
+    extension_value.decode_signature_schemes(signatures_data)
+    |> map_extension_value_result,
+  )
+  use Nil <- result.try(validate_client_certificate_request(
+    context,
+    request_context,
+    signatures,
+  ))
+  use encoded <- result.try(encode_message(handshake.CertificateRequest, body))
+  use next_transcript <- result.try(
+    transcript.append(context.transcript, encoded) |> map_transcript_result,
+  )
+  let next_context =
+    ClientHandshakeContext(
+      ..context,
+      transcript: next_transcript,
+      certificate_request: Some(request_context),
+    )
+  let next = case context.resumed {
+    True -> ClientAwaitingFinished(next_context)
+    False -> ClientAwaitingCertificate(next_context)
+  }
+  Ok(Step(next, []))
+}
+
+fn validate_client_certificate_request(
+  context: ClientHandshakeContext,
+  request_context: BitArray,
+  signatures: List(extension_value.SignatureScheme),
+) -> Result(Nil, Error) {
+  case
+    request_context,
+    context.certificate_request,
+    context.config.client_credential
+  {
+    <<>>, None, None -> Ok(Nil)
+    <<>>, None, Some(credential) ->
+      case list.contains(signatures, credential.signature_scheme) {
+        True -> Ok(Nil)
+        False ->
+          Error(AuthenticationFailure(
+            authentication.IncompatibleSignatureScheme,
+          ))
+      }
+    _, _, _ -> Error(InvalidConfiguration)
   }
 }
 
@@ -2526,8 +2810,11 @@ fn finish_client_handshake(
     context.secrets.master_secret,
     after_server_finished,
   ))
+  use #(client_authentication, before_client_finished) <- result.try(
+    encode_client_authentication(context, after_server_finished),
+  )
   use client_finished_hash <- result.try(
-    transcript.hash(after_server_finished) |> map_transcript_result,
+    transcript.hash(before_client_finished) |> map_transcript_result,
   )
   use client_verify_data <- result.try(
     key_schedule.finished_verify_data_from_hash(
@@ -2544,7 +2831,7 @@ fn finish_client_handshake(
   use #(client_finished, completed_transcript) <- result.try(encode_and_append(
     handshake.Finished,
     client_finished_body,
-    after_server_finished,
+    before_client_finished,
   ))
   use resumption_master_secret <- result.try(derive_resumption_master(
     context.hash_algorithm,
@@ -2576,12 +2863,85 @@ fn finish_client_handshake(
         InstallWriteKeys(OneRtt, write_keys),
         InstallReadKeys(OneRtt, read_keys),
         DiscardKeys(Initial),
-        Send(Handshake, client_finished),
+        Send(Handshake, <<client_authentication:bits, client_finished:bits>>),
         HandshakeComplete,
       ],
       early_discard,
     ),
   ))
+}
+
+fn encode_client_authentication(
+  context: ClientHandshakeContext,
+  current: transcript.Transcript,
+) -> Result(#(BitArray, transcript.Transcript), Error) {
+  case context.certificate_request, context.config.client_credential {
+    None, _ -> Ok(#(<<>>, current))
+    Some(request_context), None ->
+      encode_client_certificate([], request_context, current)
+    Some(request_context), Some(credential) -> {
+      use #(certificate, after_certificate) <- result.try(
+        encode_client_certificate(
+          credential.certificate_chain,
+          request_context,
+          current,
+        ),
+      )
+      use #(verify, after_verify) <- result.try(
+        encode_client_certificate_verify(credential, after_certificate),
+      )
+      Ok(#(<<certificate:bits, verify:bits>>, after_verify))
+    }
+  }
+}
+
+fn encode_client_certificate(
+  chain: List(BitArray),
+  request_context: BitArray,
+  current: transcript.Transcript,
+) -> Result(#(BitArray, transcript.Transcript), Error) {
+  let entries =
+    list.map(chain, fn(certificate) {
+      message_body.CertificateEntry(certificate, [])
+    })
+  use body <- result.try(
+    message_body.encode_certificate(
+      message_body.CertificateMessage(request_context, entries),
+      message_body.default_limits(),
+    )
+    |> map_message_body_result,
+  )
+  encode_and_append(handshake.Certificate, body, current)
+}
+
+fn encode_client_certificate_verify(
+  credential: ClientCredential,
+  current: transcript.Transcript,
+) -> Result(#(BitArray, transcript.Transcript), Error) {
+  use transcript_hash <- result.try(
+    transcript.hash(current) |> map_transcript_result,
+  )
+  let content =
+    message_body.certificate_verify_content(
+      message_body.Client,
+      transcript_hash,
+    )
+  use signature <- result.try(
+    authentication.sign(
+      credential.signing_key,
+      credential.signature_scheme,
+      content,
+    )
+    |> map_authentication_result,
+  )
+  use body <- result.try(
+    message_body.encode_certificate_verify(
+      message_body.CertificateVerify(credential.signature_scheme, signature),
+      message_body.default_limits(),
+    )
+    |> map_message_body_result,
+  )
+  encode_and_append(handshake.CertificateVerify, body, current)
 }
 
 fn client_connected_context(
@@ -2597,6 +2957,7 @@ fn client_connected_context(
         resumption_master_secret:,
         selected_alpn:,
         peer_transport_parameters:,
+        resumed: context.resumed,
         pending_crypto: <<>>,
         handshake_confirmed: False,
       ))
@@ -2693,23 +3054,190 @@ fn client_post_handshake_message(
   }
 }
 
-fn handle_client_finished(
-  context: ServerHandshakeContext,
+fn prepare_server_client_flight(
+  server: Server,
   bytes: BitArray,
 ) -> Result(Step(Server), Error) {
-  case handshake.decode_next(bytes, handshake.default_limits()) {
-    Ok(handshake.NeedMore) ->
-      Ok(Step(ServerAwaitingClientFinished(context, bytes), []))
-    Ok(handshake.Complete(message, <<>>)) -> {
-      let handshake.Message(message_type, body) = message
-      case message_type {
-        handshake.Finished -> verify_client_finished(context, body)
-        _ -> Error(UnexpectedMessage)
-      }
-    }
-    Ok(handshake.Complete(_, _)) -> Error(UnexpectedMessage)
-    Error(error) -> Error(HandshakeFailure(error))
+  let #(cleared, pending) = take_server_pending(server)
+  process_server_client_flight(cleared, <<pending:bits, bytes:bits>>, [])
+}
+
+fn take_server_pending(server: Server) -> #(Server, BitArray) {
+  case server {
+    ServerAwaitingClientCertificate(context, pending) -> #(
+      ServerAwaitingClientCertificate(context, <<>>),
+      pending,
+    )
+    ServerAwaitingClientCertificateVerify(context, peer, pending) -> #(
+      ServerAwaitingClientCertificateVerify(context, peer, <<>>),
+      pending,
+    )
+    ServerAwaitingClientFinished(context, pending) -> #(
+      ServerAwaitingClientFinished(context, <<>>),
+      pending,
+    )
+    _ -> #(server, <<>>)
   }
+}
+
+fn set_server_pending(server: Server, pending: BitArray) -> Server {
+  case server {
+    ServerAwaitingClientCertificate(context, _) ->
+      ServerAwaitingClientCertificate(context, pending)
+    ServerAwaitingClientCertificateVerify(context, peer, _) ->
+      ServerAwaitingClientCertificateVerify(context, peer, pending)
+    ServerAwaitingClientFinished(context, _) ->
+      ServerAwaitingClientFinished(context, pending)
+    _ -> server
+  }
+}
+
+fn process_server_client_flight(
+  server: Server,
+  bytes: BitArray,
+  actions: List(Action),
+) -> Result(Step(Server), Error) {
+  case bytes {
+    <<>> -> Ok(Step(server, actions))
+    _ ->
+      case handshake.decode_next(bytes, handshake.default_limits()) {
+        Ok(handshake.NeedMore) ->
+          Ok(Step(set_server_pending(server, bytes), actions))
+        Ok(handshake.Complete(message, rest)) -> {
+          use Step(next, new_actions) <- result.try(
+            process_server_client_message(server, message),
+          )
+          process_server_client_flight(
+            next,
+            rest,
+            list.append(actions, new_actions),
+          )
+        }
+        Error(error) -> Error(HandshakeFailure(error))
+      }
+  }
+}
+
+fn process_server_client_message(
+  server: Server,
+  message: handshake.Message,
+) -> Result(Step(Server), Error) {
+  case server, message {
+    ServerAwaitingClientCertificate(context, _),
+      handshake.Message(handshake.Certificate, body)
+    -> server_accept_client_certificate(context, body)
+    ServerAwaitingClientCertificateVerify(context, peer, _),
+      handshake.Message(handshake.CertificateVerify, body)
+    -> server_accept_client_certificate_verify(context, peer, body)
+    ServerAwaitingClientFinished(context, _),
+      handshake.Message(handshake.Finished, body)
+    -> verify_client_finished(context, body)
+    _, _ -> Error(UnexpectedMessage)
+  }
+}
+
+fn server_accept_client_certificate(
+  context: ServerHandshakeContext,
+  body: BitArray,
+) -> Result(Step(Server), Error) {
+  use certificate <- result.try(
+    message_body.decode_certificate(body, message_body.default_limits())
+    |> map_message_body_result,
+  )
+  let message_body.CertificateMessage(request_context, entries) = certificate
+  case request_context, context.config.client_authentication, entries {
+    <<>>, ClientAuthenticationRequired(_), [] ->
+      Error(ClientCertificateRequired)
+    <<>>, ClientAuthenticationOptional(_), [] -> {
+      use next_context <- result.try(append_client_handshake_message(
+        context,
+        handshake.Certificate,
+        body,
+      ))
+      Ok(Step(ServerAwaitingClientFinished(next_context, <<>>), []))
+    }
+    <<>>, ClientAuthenticationOptional(trust_store), [_, ..]
+    | <<>>, ClientAuthenticationRequired(trust_store), [_, ..]
+    -> {
+      let chain =
+        list.map(entries, fn(entry) {
+          let message_body.CertificateEntry(der, _) = entry
+          der
+        })
+      use peer <- result.try(
+        authentication.validate_client_certificate(chain, trust_store)
+        |> map_authentication_result,
+      )
+      use next_context <- result.try(append_client_handshake_message(
+        context,
+        handshake.Certificate,
+        body,
+      ))
+      Ok(
+        Step(
+          ServerAwaitingClientCertificateVerify(next_context, peer, <<>>),
+          [],
+        ),
+      )
+    }
+    _, _, _ -> Error(InvalidConfiguration)
+  }
+}
+
+fn server_accept_client_certificate_verify(
+  context: ServerHandshakeContext,
+  peer: authentication.VerifiedPeer,
+  body: BitArray,
+) -> Result(Step(Server), Error) {
+  use verify <- result.try(
+    message_body.decode_certificate_verify(body, message_body.default_limits())
+    |> map_message_body_result,
+  )
+  let message_body.CertificateVerify(scheme, signature) = verify
+  case list.contains(supported_signature_schemes(), scheme) {
+    False ->
+      Error(AuthenticationFailure(authentication.IncompatibleSignatureScheme))
+    True -> {
+      use transcript_hash <- result.try(
+        transcript.hash(context.transcript) |> map_transcript_result,
+      )
+      let content =
+        message_body.certificate_verify_content(
+          message_body.Client,
+          transcript_hash,
+        )
+      use Nil <- result.try(
+        authentication.verify(peer, scheme, content, signature)
+        |> map_authentication_result,
+      )
+      use next_context <- result.try(append_client_handshake_message(
+        context,
+        handshake.CertificateVerify,
+        body,
+      ))
+      Ok(
+        Step(
+          ServerAwaitingClientFinished(
+            ServerHandshakeContext(..next_context, client_identity: Some(peer)),
+            <<>>,
+          ),
+          [],
+        ),
+      )
+    }
+  }
+}
+
+fn append_client_handshake_message(
+  context: ServerHandshakeContext,
+  message_type: handshake.MessageType,
+  body: BitArray,
+) -> Result(ServerHandshakeContext, Error) {
+  use encoded <- result.try(encode_message(message_type, body))
+  use next_transcript <- result.try(
+    transcript.append(context.transcript, encoded) |> map_transcript_result,
+  )
+  Ok(ServerHandshakeContext(..context, transcript: next_transcript))
 }
 
 fn verify_client_finished(
@@ -2771,6 +3299,18 @@ fn complete_server_handshake(
       cipher_suite: context.cipher_suite,
       resumption_master_secret:,
       replay_cache:,
+      resumed: case context.resumption_selection {
+        Some(_) -> True
+        None -> False
+      },
+      early_data_attempted: case context.resumption_selection {
+        Some(selected) -> selected.early_data_offered
+        None -> False
+      },
+      early_data_accepted: selection_early_data_accepted(
+        context.resumption_selection,
+      ),
+      client_identity: context.client_identity,
     )
   Ok(Step(
     ServerConnected(connected_context),
@@ -2880,19 +3420,9 @@ fn require_server_signature(
   }
 }
 
-fn client_x25519_key(
+fn offered_client_key_share(
   extensions: List(extension.Extension),
-) -> Result(BitArray, Error) {
-  use offered <- result.try(offered_client_x25519_key(extensions))
-  case offered {
-    Some(key) -> Ok(key)
-    None -> Error(UnsupportedKeyShare)
-  }
-}
-
-fn offered_client_x25519_key(
-  extensions: List(extension.Extension),
-) -> Result(Option(BitArray), Error) {
+) -> Result(Option(extension_value.KeyShare), Error) {
   use groups_data <- result.try(require_extension(
     extensions,
     extension.SupportedGroups,
@@ -2901,7 +3431,7 @@ fn offered_client_x25519_key(
     extension_value.decode_supported_groups(groups_data)
     |> map_extension_value_result,
   )
-  case list.contains(groups, extension_value.X25519) {
+  case list.any(groups, supported_named_group) {
     False -> Error(UnsupportedKeyShare)
     True -> {
       use shares_data <- result.try(require_extension(
@@ -2912,23 +3442,81 @@ fn offered_client_x25519_key(
         extension_value.decode_client_key_shares(shares_data)
         |> map_extension_value_result,
       )
-      Ok(find_x25519_share(shares))
+      Ok(find_preferred_key_share(shares, groups))
     }
   }
 }
 
-fn server_x25519_key(
+fn client_key_share_for_group(
   extensions: List(extension.Extension),
+  selected_group: extension_value.NamedGroup,
+) -> Result(extension_value.KeyShare, Error) {
+  use groups_data <- result.try(require_extension(
+    extensions,
+    extension.SupportedGroups,
+  ))
+  use groups <- result.try(
+    extension_value.decode_supported_groups(groups_data)
+    |> map_extension_value_result,
+  )
+  use shares_data <- result.try(require_extension(
+    extensions,
+    extension.KeyShare,
+  ))
+  use shares <- result.try(
+    extension_value.decode_client_key_shares(shares_data)
+    |> map_extension_value_result,
+  )
+  case shares {
+    [extension_value.KeyShare(group, _) as share] ->
+      case group == selected_group && list.contains(groups, group) {
+        True -> Ok(share)
+        False -> Error(InvalidHelloRetryRequest)
+      }
+    _ -> Error(InvalidHelloRetryRequest)
+  }
+}
+
+fn select_retry_group(
+  extensions: List(extension.Extension),
+) -> Result(extension_value.NamedGroup, Error) {
+  use groups_data <- result.try(require_extension(
+    extensions,
+    extension.SupportedGroups,
+  ))
+  use groups <- result.try(
+    extension_value.decode_supported_groups(groups_data)
+    |> map_extension_value_result,
+  )
+  first_supported_group(groups)
+}
+
+fn first_supported_group(
+  groups: List(extension_value.NamedGroup),
+) -> Result(extension_value.NamedGroup, Error) {
+  case groups {
+    [] -> Error(UnsupportedKeyShare)
+    [group, ..rest] ->
+      case supported_named_group(group) {
+        True -> Ok(group)
+        False -> first_supported_group(rest)
+      }
+  }
+}
+
+fn server_key_for_pair(
+  extensions: List(extension.Extension),
+  key_pair: key_exchange.KeyPair,
 ) -> Result(BitArray, Error) {
   use encoded <- result.try(require_extension(extensions, extension.KeyShare))
   use share <- result.try(
     extension_value.decode_server_key_share(encoded)
     |> map_extension_value_result,
   )
-  case share {
-    extension_value.KeyShare(extension_value.X25519, public_key) ->
-      Ok(public_key)
-    _ -> Error(UnsupportedKeyShare)
+  let extension_value.KeyShare(group, public_key) = share
+  case group == key_pair_named_group(key_pair) {
+    True -> Ok(public_key)
+    False -> Error(UnsupportedKeyShare)
   }
 }
 
@@ -3116,13 +3704,69 @@ fn client_selected_pre_shared_key(
   }
 }
 
-fn find_x25519_share(
+fn find_preferred_key_share(
   shares: List(extension_value.KeyShare),
-) -> Option(BitArray) {
+  advertised_groups: List(extension_value.NamedGroup),
+) -> Option(extension_value.KeyShare) {
+  case
+    list.contains(advertised_groups, extension_value.X25519),
+    find_group_share(shares, extension_value.X25519)
+  {
+    True, Some(share) -> Some(share)
+    _, _ ->
+      case
+        list.contains(advertised_groups, extension_value.Secp256r1),
+        find_group_share(shares, extension_value.Secp256r1)
+      {
+        True, Some(share) -> Some(share)
+        _, _ -> None
+      }
+  }
+}
+
+fn find_group_share(
+  shares: List(extension_value.KeyShare),
+  selected_group: extension_value.NamedGroup,
+) -> Option(extension_value.KeyShare) {
   case shares {
     [] -> None
-    [extension_value.KeyShare(extension_value.X25519, key), ..] -> Some(key)
-    [_, ..rest] -> find_x25519_share(rest)
+    [extension_value.KeyShare(group, _) as share, ..rest] ->
+      case group == selected_group {
+        True -> Some(share)
+        False -> find_group_share(rest, selected_group)
+      }
+  }
+}
+
+fn supported_named_group(group: extension_value.NamedGroup) -> Bool {
+  group == extension_value.X25519 || group == extension_value.Secp256r1
+}
+
+fn key_pair_named_group(
+  key_pair: key_exchange.KeyPair,
+) -> extension_value.NamedGroup {
+  case key_exchange.group(key_pair) {
+    key_exchange.X25519 -> extension_value.X25519
+    key_exchange.Secp256r1 -> extension_value.Secp256r1
+  }
+}
+
+fn named_group_to_key_exchange(
+  group: extension_value.NamedGroup,
+) -> Result(key_exchange.Group, Error) {
+  case group {
+    extension_value.X25519 -> Ok(key_exchange.X25519)
+    extension_value.Secp256r1 -> Ok(key_exchange.Secp256r1)
+    _ -> Error(UnsupportedKeyShare)
+  }
+}
+
+fn generate_key_pair(
+  group: key_exchange.Group,
+) -> Result(key_exchange.KeyPair, key_exchange.Error) {
+  case group {
+    key_exchange.X25519 -> key_exchange.generate_x25519()
+    key_exchange.Secp256r1 -> key_exchange.generate_p256()
   }
 }
 
