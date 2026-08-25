@@ -792,7 +792,8 @@ resolve_host(Host, 0) ->
     case {inet:getaddrs(Host, inet6), inet:getaddrs(Host, inet)} of
         {{ok, V6}, {ok, V4}} ->
             encode_addresses(lists:sublist(
-                interleave_addresses(V6, V4), ?MAXIMUM_RESOLVED_ADDRESSES
+                interleave_addresses(lists:uniq(V6), lists:uniq(V4)),
+                ?MAXIMUM_RESOLVED_ADDRESSES
             ));
         {{ok, V6}, {error, _}} -> encode_addresses(V6);
         {{error, _}, {ok, V4}} -> encode_addresses(V4);
@@ -819,7 +820,13 @@ resolve_family(Host, Family) ->
 -spec encode_addresses([inet:ip_address()]) ->
     {ok, [binary()]} | {error, integer()}.
 encode_addresses(Addresses) ->
-    try [Bytes || Address <- Addresses, {ok, Bytes} <- [encode_address(Address)]] of
+    %% Resolvers may return the same address more than once. Keep the first
+    %% occurrence so Happy Eyeballs never races duplicate connection candidates.
+    try [
+        Bytes
+     || Address <- lists:uniq(Addresses),
+        {ok, Bytes} <- [encode_address(Address)]
+    ] of
         [] -> {error, 6};
         Encoded -> {ok, Encoded}
     catch

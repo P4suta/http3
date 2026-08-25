@@ -30,6 +30,9 @@ pub fn resolves_literal_addresses_without_runtime_terms_test() -> Nil {
   assert list.any(addresses, fn(address) {
     udp.address_bytes(address) == <<127, 0, 0, 1>>
   })
+  let assert Ok(localhost) = udp.resolve("localhost", udp.Ipv4)
+  let localhost_bytes = list.map(localhost, udp.address_bytes)
+  assert list.unique(localhost_bytes) == localhost_bytes
   assert udp.resolve("", udp.Any) == Error(udp.InvalidInput)
   assert udp.resolve("bad\u{0000}name", udp.Any) == Error(udp.InvalidInput)
   let assert Ok(timed) = udp.resolve_with_timeout("127.0.0.1", udp.Any, 1000)
