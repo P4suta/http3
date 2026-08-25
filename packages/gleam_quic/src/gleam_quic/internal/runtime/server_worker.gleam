@@ -1688,8 +1688,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
         }
       }
     Stop(reply) -> {
-      process.send(reply, Ok(Stopped))
       shutdown(worker, ListenerClosed)
+      process.send(reply, Ok(Stopped))
       Error(Nil)
     }
   }

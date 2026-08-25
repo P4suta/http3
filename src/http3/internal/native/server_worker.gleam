@@ -1417,8 +1417,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     FinishPushWithTrailers(identifier, headers, reply) ->
       handle_send_push_trailers(worker, identifier, headers, reply)
     Stop(reply) -> {
-      process.send(reply, Ok(Stopped))
       shutdown(worker, "application stop")
+      process.send(reply, Ok(Stopped))
       Error(Nil)
     }
     GracefulStop(reply, deadline, refine_at) ->

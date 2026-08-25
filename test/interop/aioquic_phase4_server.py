@@ -13,7 +13,11 @@ from aioquic.quic.packet import QuicProtocolVersion
 
 
 SESSION_TICKETS = {}
-SERVER_RESPONSE_DELAY_SECONDS = 0.05
+# Keep the resumed request on the wire ahead of HandshakeCompleted even when a
+# shared CI runner pauses the native client between connect and open_stream.
+SERVER_RESPONSE_DELAY_SECONDS = float(
+    os.environ.get("HTTP3_INTEROP_SERVER_RESPONSE_DELAY", "0.25")
+)
 REQUIRED_OBSERVATIONS = {
     "OBSERVED_HTTP_DATAGRAM",
     "OBSERVED_POST_MIGRATION_REQUEST",
