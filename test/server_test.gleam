@@ -157,15 +157,21 @@ pub fn certificate_reload_is_atomic_and_preserves_existing_connections_test() ->
   ) = http3_test_support.server_certificate_selection_credentials()
   let valid =
     server.new(localhost_certificate, localhost_private_key) |> should.be_ok
+  // Certificate replacement is the subject of this test. Keep address-family
+  // racing in its dedicated transport coverage so a rejected TLS handshake
+  // cannot be hidden behind a slower Happy Eyeballs candidate on CI.
+  let valid = server.with_address_family(valid, config.Ipv4)
   let listener = server.start(valid) |> should.be_ok
   let port = server.port(listener) |> should.be_ok
-  let existing =
-    client.connect(client_configuration(ca_certificate), "localhost", port)
-    |> should.be_ok
+  let ipv4_client =
+    client_configuration(ca_certificate)
+    |> client.with_address_family(config.Ipv4)
+  let existing = client.connect(ipv4_client, "localhost", port) |> should.be_ok
 
   // The replacement is fully decoded before the actor swaps one value.
   let untrusted =
     server.new(fallback_certificate, fallback_private_key) |> should.be_ok
+  let untrusted = server.with_address_family(untrusted, config.Ipv4)
   server.reload_certificates(listener, untrusted) |> should.be_ok
 
   // Existing authenticated connections retain their original TLS state.
@@ -184,17 +190,12 @@ pub fn certificate_reload_is_atomic_and_preserves_existing_connections_test() ->
   assert existing_body == <<"still-open":utf8>>
 
   // A new handshake observes the newly installed, deliberately untrusted set.
-  let rejected_configuration =
-    client_configuration(ca_certificate)
-    |> client.with_timeout(1000)
-    |> should.be_ok
-  assert client.connect(rejected_configuration, "localhost", port)
+  assert client.connect(ipv4_client, "localhost", port)
     == Error(client.Failure(failure.Tls(failure.Peer)))
 
   server.reload_certificates(listener, valid) |> should.be_ok
   let replacement =
-    client.connect(client_configuration(ca_certificate), "localhost", port)
-    |> should.be_ok
+    client.connect(ipv4_client, "localhost", port) |> should.be_ok
   let replacement_stream =
     client.open_stream(replacement, streaming_request(port, "/replacement"))
     |> should.be_ok
