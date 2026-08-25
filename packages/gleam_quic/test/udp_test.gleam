@@ -5,6 +5,9 @@ import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/udp
 
+@external(erlang, "gleam_quic_test_ffi", "inject_relay_connection_reset")
+fn inject_relay_connection_reset(relay: udp.Relay) -> Nil
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn validates_ipv4_and_ipv6_endpoints_test() -> Nil {
   let assert Ok(ipv4) = udp.ipv4(127, 0, 0, 1)
@@ -141,6 +144,30 @@ pub fn relay_waits_for_credit_before_forwarding_another_batch_test() -> Nil {
   let assert Ok(Nil) = udp.continue_relay(relay)
   let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"second">>, _)]) =
+    udp.receive_relay_batch(relay, message)
+
+  let assert Ok(Nil) = udp.stop_relay(relay)
+  let assert Ok(Nil) = udp.close(sender)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn relay_ignores_connection_local_icmp_reset_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(sender) = udp.open(ephemeral)
+  let assert Ok(receiver) = udp.open(ephemeral)
+  let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
+  let selector =
+    process.new_selector()
+    |> process.select_other(fn(value) { value })
+  let assert Ok(relay) = udp.start_relay(receiver)
+
+  inject_relay_connection_reset(relay)
+  let assert Ok(Nil) =
+    udp.send(sender, receiver_endpoint, <<"still-listening">>, ecn.NotEct)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok([udp.Datagram(_, <<"still-listening">>, _)]) =
     udp.receive_relay_batch(relay, message)
 
   let assert Ok(Nil) = udp.stop_relay(relay)

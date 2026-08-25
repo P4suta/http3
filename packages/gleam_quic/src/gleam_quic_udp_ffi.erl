@@ -319,6 +319,13 @@ relay_receive(Socket, Owner, Reference, Monitor) ->
         {udp, Socket, Address, Port, Ancillary, Payload} ->
             relay_deliver(Socket, Owner, Reference, Monitor,
                           Address, Port, Payload, received_ecn(Ancillary));
+        {udp_error, Socket, Reason}
+            when Reason =:= econnreset; Reason =:= econnrefused;
+                 Reason =:= ehostunreach; Reason =:= enetunreach ->
+            %% A shared listener can receive an asynchronous ICMP error after
+            %% replying to a client which has already closed its UDP socket.
+            %% This is connection-local feedback, not a listener failure.
+            relay_loop(Socket, Owner, Reference, Monitor);
         {udp_error, Socket, Reason} ->
             Owner ! {gleam_quic_udp_batch, Reference,
                      {error, error_code(Reason)}},

@@ -1,6 +1,12 @@
 -module(gleam_quic_test_ffi).
 
--export([fixture/1]).
+-export([fixture/1, inject_relay_connection_reset/1]).
+
+-spec inject_relay_connection_reset(term()) -> nil.
+inject_relay_connection_reset(#{pid := Pid, socket := Socket}) ->
+    Pid ! {udp_error, Socket, econnreset},
+    timer:sleep(50),
+    nil.
 
 -spec fixture(binary()) -> {ok, binary()} | {error, nil}.
 fixture(Name) when Name =:= <<"ca.pem">>;
