@@ -693,7 +693,11 @@ pub fn streaming_client_times_out_incomplete_response_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_client_applies_send_backpressure_test() -> Nil {
   http3_test_support.with_server(fn(port, ca_certificate) {
-    let configuration = client.with_timeout(client.new(), 5000) |> should.be_ok
+    // This intentionally crosses the peer's initial stream-data window. Give
+    // slower CI schedulers enough time to deliver the resulting MAX_STREAM_DATA
+    // update while keeping every operation under a finite deadline.
+    let configuration =
+      client.with_timeout(client.new(), 10_000) |> should.be_ok
     let configuration =
       client.with_stream_buffer_limit(configuration, 524_288) |> should.be_ok
     let configuration =

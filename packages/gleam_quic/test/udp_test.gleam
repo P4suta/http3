@@ -240,6 +240,8 @@ pub fn dual_stack_socket_accepts_ipv4_and_ipv6_datagrams_test() -> Nil {
   let assert Ok(ipv6_ephemeral) = udp.endpoint(ipv6_loopback, 0)
   let assert Ok(ipv4_sender) = udp.open(ipv4_ephemeral)
   let assert Ok(ipv6_sender) = udp.open(ipv6_ephemeral)
+  let assert Ok(ipv4_sender_endpoint) = udp.local_endpoint(ipv4_sender)
+  let assert Ok(ipv6_sender_endpoint) = udp.local_endpoint(ipv6_sender)
   let assert Ok(receiver) = udp.open_dual_stack(0)
   let assert Ok(local) = udp.local_endpoint(receiver)
   let #(_, port) = udp.endpoint_parts(local)
@@ -258,9 +260,55 @@ pub fn dual_stack_socket_accepts_ipv4_and_ipv6_datagrams_test() -> Nil {
     || first == <<"ipv6">>
     && second == <<"ipv4">>
   }
+  let assert Ok(Nil) =
+    udp.send(receiver, ipv4_sender_endpoint, <<"to-ipv4">>, ecn.NotEct)
+  let assert Ok(Nil) =
+    udp.send(receiver, ipv6_sender_endpoint, <<"to-ipv6">>, ecn.NotEct)
+  let assert Ok(udp.Datagram(_, <<"to-ipv4">>, _)) =
+    udp.receive(ipv4_sender, 1000)
+  let assert Ok(udp.Datagram(_, <<"to-ipv6">>, _)) =
+    udp.receive(ipv6_sender, 1000)
 
   let assert Ok(Nil) = udp.close(ipv4_sender)
   let assert Ok(Nil) = udp.close(ipv6_sender)
   let assert Ok(Nil) = udp.close(receiver)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn dual_stack_relay_batches_ipv4_and_ipv6_datagrams_test() -> Nil {
+  let assert Ok(ipv4_loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ipv6_loopback) = udp.ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+  let assert Ok(ipv4_ephemeral) = udp.endpoint(ipv4_loopback, 0)
+  let assert Ok(ipv6_ephemeral) = udp.endpoint(ipv6_loopback, 0)
+  let assert Ok(ipv4_sender) = udp.open(ipv4_ephemeral)
+  let assert Ok(ipv6_sender) = udp.open(ipv6_ephemeral)
+  let assert Ok(receiver) = udp.open_dual_stack(0)
+  let assert Ok(local) = udp.local_endpoint(receiver)
+  let #(_, port) = udp.endpoint_parts(local)
+  let assert Ok(ipv4_receiver) = udp.endpoint(ipv4_loopback, port)
+  let assert Ok(ipv6_receiver) = udp.endpoint(ipv6_loopback, port)
+  let selector =
+    process.new_selector()
+    |> process.select_other(fn(value) { value })
+
+  let assert Ok(Nil) =
+    udp.send(ipv4_sender, ipv4_receiver, <<"ipv4-relay">>, ecn.NotEct)
+  let assert Ok(Nil) =
+    udp.send(ipv6_sender, ipv6_receiver, <<"ipv6-relay">>, ecn.NotEct)
+  let assert Ok(relay) = udp.start_relay(receiver)
+  let assert Ok(message) = process.selector_receive(selector, within: 1000)
+  let assert Ok(batch) = udp.receive_relay_batch(relay, message)
+  let payloads =
+    list.map(batch, fn(datagram) {
+      let udp.Datagram(_, payload, _) = datagram
+      payload
+    })
+  assert list.contains(payloads, <<"ipv4-relay">>)
+  assert list.contains(payloads, <<"ipv6-relay">>)
+
+  let assert Ok(Nil) = udp.stop_relay(relay)
+  let assert Ok(Nil) = udp.close(ipv4_sender)
+  let assert Ok(Nil) = udp.close(ipv6_sender)
   Nil
 }

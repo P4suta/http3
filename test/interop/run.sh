@@ -230,9 +230,13 @@ run_aioquic_native_client() {
 	wait_for_field "$peer_log" "$server_process" RESUMPTION_PORT
 	resumption_port=$REPLY
 
-	run_bounded "${erlang_command[@]}" \
+	if ! run_bounded "${erlang_command[@]}" \
 		-eval '[PortText, ResumptionPortText, QlogText] = init:get_plain_arguments(), ok = http3_phase4_interop:run(list_to_integer(PortText), list_to_integer(ResumptionPortText), list_to_binary(QlogText)), halt(0).' \
-		-extra "$port" "$resumption_port" "$native_qlog"
+		-extra "$port" "$resumption_port" "$native_qlog"; then
+		echo "native aioquic client failed; peer log:" >&2
+		sed -n '1,240p' "$peer_log" >&2
+		return 1
+	fi
 	wait_for_child "$server_process" "$peer_log"
 
 	assert_log_contains "$peer_log" OBSERVED_HTTP_DATAGRAM

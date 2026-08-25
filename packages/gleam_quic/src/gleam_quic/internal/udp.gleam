@@ -241,7 +241,10 @@ pub fn open(local: Endpoint) -> Result(Socket, Error) {
   raw_open(local.address.bytes, local.port) |> map_raw_result
 }
 
-/// Bind one IPv6 socket that also accepts IPv4-mapped datagrams.
+/// Bind one logical endpoint that accepts both IPv4 and IPv6 datagrams.
+///
+/// A same-port IPv4/IPv6 socket pair is hidden behind this opaque handle so
+/// behavior does not depend on platform-specific mapped-address support.
 pub fn open_dual_stack(port: Int) -> Result(Socket, Error) {
   case port >= 0 && port <= 65_535 {
     False -> Error(InvalidInput)
@@ -305,10 +308,11 @@ pub fn receive(
   }
 }
 
-/// Arm a socket to deliver at most one datagram to its owner's mailbox.
+/// Arm each backing socket to deliver at most one datagram to its owner.
 ///
-/// The owner must call this again after consuming the delivered datagram.
-/// This keeps the endpoint mailbox bounded to one in-flight socket message.
+/// A dual-stack logical endpoint can therefore have one in-flight message per
+/// address family. Listener actors use the credited relay API below to combine
+/// both families into one bounded batch.
 pub fn activate_once(socket: Socket) -> Result(Nil, Error) {
   raw_activate_once(socket) |> map_raw_result
 }

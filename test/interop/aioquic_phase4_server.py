@@ -39,10 +39,10 @@ def observe(name):
         COMPLETION_EVENT.set()
 
 
-def packet_types(data):
-    """Return parseable QUIC packet types from one coalesced datagram."""
+def packet_headers(data):
+    """Return parseable QUIC headers from one coalesced datagram."""
 
-    types = []
+    headers = []
     buffer = Buffer(data=data)
     while not buffer.eof():
         start = buffer.tell()
@@ -50,12 +50,12 @@ def packet_types(data):
             header = pull_quic_header(buffer, host_cid_length=8)
         except ValueError:
             break
-        types.append(header.packet_type)
+        headers.append(header)
         next_packet = start + header.packet_length
         if next_packet <= start:
             break
         buffer.seek(next_packet)
-    return types
+    return headers
 
 
 class ZeroRttGateProxy(asyncio.DatagramProtocol):
@@ -64,9 +64,9 @@ class ZeroRttGateProxy(asyncio.DatagramProtocol):
     def __init__(self, server_address):
         self.server_address = server_address
         self.transport = None
-        self.first_client_address = None
         self.client_address = None
-        self.gated_client_address = None
+        self.ticket_connection_established = False
+        self.resumed_connection_started = False
         self.zero_rtt_seen = False
         self.pending_server_datagrams = []
 
@@ -77,27 +77,29 @@ class ZeroRttGateProxy(asyncio.DatagramProtocol):
         if address == self.server_address:
             if self.client_address is None:
                 return
-            if (
-                self.client_address == self.gated_client_address
-                and not self.zero_rtt_seen
-            ):
+            if self.resumed_connection_started and not self.zero_rtt_seen:
                 if len(self.pending_server_datagrams) < MAXIMUM_GATED_SERVER_DATAGRAMS:
                     self.pending_server_datagrams.append(data)
                 return
             self.transport.sendto(data, self.client_address)
         else:
-            if self.first_client_address is None:
-                self.first_client_address = address
-            elif (
-                address != self.first_client_address
-                and self.gated_client_address is None
-            ):
-                self.gated_client_address = address
+            headers = packet_headers(data)
+            packet_type_set = {header.packet_type for header in headers}
+            if not self.ticket_connection_established:
+                # Version Negotiation can replace both Initial CIDs, so do not
+                # treat a CID change as a new connection. The ticket request
+                # necessarily emits authenticated 1-RTT traffic before close.
+                if QuicPacketType.ONE_RTT in packet_type_set:
+                    self.ticket_connection_established = True
+            elif QuicPacketType.INITIAL in packet_type_set:
+                # A fresh Initial after ticket-connection 1-RTT traffic starts
+                # the resumed connection even when the OS reuses its UDP port.
+                self.resumed_connection_started = True
             self.client_address = address
             self.transport.sendto(data, self.server_address)
             if (
-                address == self.gated_client_address
-                and QuicPacketType.ZERO_RTT in packet_types(data)
+                self.resumed_connection_started
+                and QuicPacketType.ZERO_RTT in packet_type_set
             ):
                 self.zero_rtt_seen = True
                 for pending in self.pending_server_datagrams:
