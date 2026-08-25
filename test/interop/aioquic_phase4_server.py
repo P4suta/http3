@@ -28,6 +28,7 @@ REQUIRED_OBSERVATIONS = {
 }
 OBSERVATIONS = set()
 COMPLETION_EVENT = None
+ZERO_RTT_GATE = None
 
 
 def observe(name):
@@ -35,6 +36,8 @@ def observe(name):
 
     print(name, flush=True)
     OBSERVATIONS.add(name)
+    if name == "OBSERVED_0RTT_REQUEST" and ZERO_RTT_GATE is not None:
+        ZERO_RTT_GATE.release_resumed_handshake()
     if COMPLETION_EVENT is not None and REQUIRED_OBSERVATIONS <= OBSERVATIONS:
         COMPLETION_EVENT.set()
 
@@ -59,7 +62,7 @@ def packet_headers(data):
 
 
 class ZeroRttGateProxy(asyncio.DatagramProtocol):
-    """Keep one stable origin and withhold resumed handshake responses."""
+    """Withhold resumed handshake responses until the 0-RTT request arrives."""
 
     def __init__(self, server_address):
         self.server_address = server_address
@@ -67,7 +70,7 @@ class ZeroRttGateProxy(asyncio.DatagramProtocol):
         self.client_address = None
         self.ticket_connection_established = False
         self.resumed_connection_started = False
-        self.zero_rtt_seen = False
+        self.zero_rtt_request_confirmed = False
         self.pending_server_datagrams = []
 
     def connection_made(self, transport):
@@ -77,7 +80,10 @@ class ZeroRttGateProxy(asyncio.DatagramProtocol):
         if address == self.server_address:
             if self.client_address is None:
                 return
-            if self.resumed_connection_started and not self.zero_rtt_seen:
+            if (
+                self.resumed_connection_started
+                and not self.zero_rtt_request_confirmed
+            ):
                 if len(self.pending_server_datagrams) < MAXIMUM_GATED_SERVER_DATAGRAMS:
                     self.pending_server_datagrams.append(data)
                 return
@@ -97,14 +103,16 @@ class ZeroRttGateProxy(asyncio.DatagramProtocol):
                 self.resumed_connection_started = True
             self.client_address = address
             self.transport.sendto(data, self.server_address)
-            if (
-                self.resumed_connection_started
-                and QuicPacketType.ZERO_RTT in packet_type_set
-            ):
-                self.zero_rtt_seen = True
-                for pending in self.pending_server_datagrams:
-                    self.transport.sendto(pending, address)
-                self.pending_server_datagrams.clear()
+
+    def release_resumed_handshake(self):
+        """Release responses only after aioquic authenticates the target stream."""
+
+        self.zero_rtt_request_confirmed = True
+        if self.transport is None or self.client_address is None:
+            return
+        for pending in self.pending_server_datagrams:
+            self.transport.sendto(pending, self.client_address)
+        self.pending_server_datagrams.clear()
 
 
 class AdvancedProtocol(QuicConnectionProtocol):
@@ -225,7 +233,7 @@ class AdvancedProtocol(QuicConnectionProtocol):
 
 
 async def main():
-    global COMPLETION_EVENT
+    global COMPLETION_EVENT, ZERO_RTT_GATE
 
     COMPLETION_EVENT = asyncio.Event()
     qlog_directory = os.environ.get("HTTP3_INTEROP_QLOG")
@@ -253,8 +261,9 @@ async def main():
         ),
     )
     port = server._transport.get_extra_info("sockname")[1]
+    ZERO_RTT_GATE = ZeroRttGateProxy(("127.0.0.1", port))
     proxy_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-        lambda: ZeroRttGateProxy(("127.0.0.1", port)),
+        lambda: ZERO_RTT_GATE,
         local_addr=("127.0.0.1", 0),
     )
     resumption_port = proxy_transport.get_extra_info("sockname")[1]

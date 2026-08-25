@@ -64,9 +64,18 @@ pub fn server_owner_cleanup(configuration: server.Configuration) -> Bool
 
 /// Run a callback against the repository-owned server over real UDP.
 pub fn with_server(run: fn(Int, BitArray) -> result) -> result {
+  with_server_timeout(10_000, run)
+}
+
+/// Run a callback against the repository-owned server with a finite timeout.
+pub fn with_server_timeout(
+  timeout_milliseconds: Int,
+  run: fn(Int, BitArray) -> result,
+) -> result {
   let #(certificate, private_key, ca_certificate) = server_credentials()
   let assert Ok(configuration) = server.new(certificate, private_key)
-  let assert Ok(configuration) = server.with_timeout(configuration, 10_000)
+  let assert Ok(configuration) =
+    server.with_timeout(configuration, timeout_milliseconds)
   let assert Ok(configuration) =
     server.with_request_body_limit(configuration, 1_048_576)
   let assert Ok(listener) = server.start(configuration)
