@@ -5,6 +5,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import http3/client
+import http3/config
 import http3/server
 import http3/transport
 
@@ -64,16 +65,25 @@ pub fn server_owner_cleanup(configuration: server.Configuration) -> Bool
 
 /// Run a callback against the repository-owned server over real UDP.
 pub fn with_server(run: fn(Int, BitArray) -> result) -> result {
-  with_server_timeout(10_000, run)
+  with_server_configuration(10_000, config.DualStack, run)
 }
 
-/// Run a callback against the repository-owned server with a finite timeout.
-pub fn with_server_timeout(
+/// Run a callback against an IPv4 test server with a finite timeout.
+pub fn with_ipv4_server_timeout(
   timeout_milliseconds: Int,
+  run: fn(Int, BitArray) -> result,
+) -> result {
+  with_server_configuration(timeout_milliseconds, config.Ipv4, run)
+}
+
+fn with_server_configuration(
+  timeout_milliseconds: Int,
+  address_family: config.AddressFamily,
   run: fn(Int, BitArray) -> result,
 ) -> result {
   let #(certificate, private_key, ca_certificate) = server_credentials()
   let assert Ok(configuration) = server.new(certificate, private_key)
+  let configuration = server.with_address_family(configuration, address_family)
   let assert Ok(configuration) =
     server.with_timeout(configuration, timeout_milliseconds)
   let assert Ok(configuration) =

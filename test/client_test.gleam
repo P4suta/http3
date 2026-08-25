@@ -8,6 +8,7 @@ import gleam/string
 import gleam_quic/internal/tls/authentication
 import gleeunit/should
 import http3/client
+import http3/config
 import http3/failure
 import http3/transport
 import http3_test_support
@@ -692,12 +693,14 @@ pub fn streaming_client_times_out_incomplete_response_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_client_applies_send_backpressure_test() -> Nil {
-  http3_test_support.with_server_timeout(30_000, fn(port, ca_certificate) {
-    // This intentionally crosses the peer's initial stream-data window. Give
-    // slower CI schedulers enough time on both peers to deliver the resulting
-    // MAX_STREAM_DATA update while keeping every operation finitely bounded.
+  http3_test_support.with_ipv4_server_timeout(10_000, fn(port, ca_certificate) {
+    // One API call crosses the peer's initial stream-data window and forces the
+    // worker's bounded internal chunks to resume after ACK/MAX_STREAM_DATA.
     let configuration =
-      client.with_timeout(client.new(), 30_000) |> should.be_ok
+      client.with_timeout(client.new(), 10_000) |> should.be_ok
+    // Backpressure is the subject of this test; Happy Eyeballs and dual-stack
+    // listener behavior have dedicated coverage in the QUIC core suite.
+    let configuration = client.with_address_family(configuration, config.Ipv4)
     let configuration =
       client.with_stream_buffer_limit(configuration, 524_288) |> should.be_ok
     let configuration =
@@ -708,9 +711,9 @@ pub fn streaming_client_applies_send_backpressure_test() -> Nil {
       streaming_request(port, "/echo")
       |> request.set_method(http.Post)
     let stream = client.open_stream(connection, request) |> should.be_ok
-    let chunk = string.repeat("x", times: 16_384) |> bit_array.from_string
+    let chunk = string.repeat("x", times: 262_144) |> bit_array.from_string
 
-    send_chunks(stream: stream, chunk: chunk, remaining: 16)
+    client.send_chunk(stream, chunk) |> should.be_ok
     client.finish(stream) |> should.be_ok
     // nolint: assert_ok_pattern -- the response shape is the test assertion.
     let assert client.Response(200, _) =
@@ -770,19 +773,5 @@ fn receive_stream_body(stream: client.Stream, body: BitArray) -> BitArray {
       receive_stream_body(stream, bit_array.append(body, chunk))
     client.Trailers(_) -> receive_stream_body(stream, body)
     client.End -> body
-  }
-}
-
-fn send_chunks(
-  stream stream: client.Stream,
-  chunk chunk: BitArray,
-  remaining remaining: Int,
-) -> Nil {
-  case remaining {
-    0 -> Nil
-    _ -> {
-      client.send_chunk(stream, chunk) |> should.be_ok
-      send_chunks(stream: stream, chunk: chunk, remaining: remaining - 1)
-    }
   }
 }

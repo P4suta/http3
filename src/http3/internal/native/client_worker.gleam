@@ -1196,11 +1196,15 @@ fn receive_and_loop(worker: Worker, message: Dynamic) -> Nil {
         udp.monotonic_millisecond(),
       )
       let worker = Worker(..worker, connection: connection)
-      case client_connection.activate_once(connection) {
-        Ok(Nil) -> loop(worker)
-        Error(error) ->
-          terminate_with_error(worker, map_connection_error(error))
-      }
+      // ACK and MAX_STREAM_DATA input can release both congestion and stream
+      // buffer credit. Retry one bounded application chunk before driving so
+      // a pending sender cannot sleep until its operation deadline when the
+      // transport itself has no earlier timer. Dispatch first so a queued peer
+      // close keeps its authoritative terminal reason if the next drive fails.
+      worker
+      |> dispatch_connection_events
+      |> retry_pending_sends
+      |> drive_and_loop
     }
   }
 }
