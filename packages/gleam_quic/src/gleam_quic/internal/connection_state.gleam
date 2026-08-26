@@ -258,7 +258,6 @@ pub opaque type State {
     estimator: rtt.Estimator,
     congestion: CongestionState,
     pacer: pacer.State,
-    pacer_release_milliseconds: Option(Int),
     ecn: ecn.State,
     amplification: amplification.Budget,
     pmtu: pmtu.State,
@@ -417,7 +416,6 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     estimator: estimator,
     congestion: congestion,
     pacer: pacing,
-    pacer_release_milliseconds: None,
     ecn: ecn.new(),
     amplification: amplification,
     pmtu: path_mtu,
@@ -582,7 +580,6 @@ fn process_valid_retry(
           estimator: estimator,
           congestion: congestion,
           pacer: pacing,
-          pacer_release_milliseconds: None,
           ecn: ecn.new(),
           amplification: amplification,
           last_activity_milliseconds: now_milliseconds,
@@ -1471,10 +1468,18 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
 ///
 /// The owner wakes only for an ACK, recovery, validation, close, idle, or
 /// pacer-release deadline. Newly queued output is flushed by the command or
-/// network event that produced it; congestion-blocked output resumes on ACK or
-/// recovery, and pacing-limited output resumes at the release the pacer
-/// projected, when the last packet was committed, for the next path-sized
-/// datagram.
+/// network event that produced it, and congestion-blocked output resumes on an
+/// ACK or a recovery deadline.
+///
+/// The pacer-release deadline is computed on every call rather than cached when
+/// a packet was sent. It is asked for only while the send path still has output
+/// to draw -- a queued frame, or a stream whose poll would emit -- so a
+/// connection holding nothing but unacknowledged bytes arms no pacing wake. It
+/// is then when the pacer would release one path-sized datagram against the
+/// congestion window and smoothed round trip this state holds at
+/// `now_milliseconds`, so a window that shrank, or a round trip that grew,
+/// since the last send pushes the wake later instead of leaving the owner
+/// holding a release it has already passed.
 pub fn next_deadline(
   state: State,
   now_milliseconds: Int,
@@ -1846,14 +1851,71 @@ fn packet_space_deadline(
   Ok(earlier_deadline(recovery_deadline, packet_space.ack_deadline(space)))
 }
 
-/// Report a pacer release that is still ahead of the caller's clock.
+/// Report when the pacer would release this connection's next datagram.
 ///
-/// A release that has already elapsed is dropped rather than replayed, so a
-/// stale reservation can never turn into a periodic poll.
+/// The reservation the pacer returns is deliberately discarded: this asks a
+/// question about a hypothetical datagram rather than claiming budget for one.
+/// It asks about the largest datagram the path currently carries because the
+/// next datagram is never larger, while a wake armed for a smaller one would
+/// fire while the pacer still refuses that next one. `None` means no pacing
+/// wake is owed: either nothing is waiting to be sent, or the pacer would
+/// release a path-sized datagram immediately.
 fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
-  case state.pacer_release_milliseconds {
-    Some(deadline) if deadline > now_milliseconds -> Some(deadline)
-    _ -> None
+  case has_pending_output(state) {
+    False -> None
+    True ->
+      case ask_pacer(state, path_mtu(state), now_milliseconds) {
+        Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) -> Some(deadline)
+        Ok(pacer.Decision(_, pacer.SendNow)) -> None
+        // The pacer declines to answer for a datagram larger than one burst,
+        // which it could never release either, and for a clock behind its own
+        // last reservation. Neither is a release this owner can wait for.
+        Error(pacer.InvalidInput) -> None
+      }
+  }
+}
+
+/// Report whether the send path would still draw a frame from this connection.
+///
+/// These are the two sources it draws from: the per-level frame queues, and the
+/// streams in send order. A stream counts only when the very poll the send path
+/// performs would produce a frame -- a retransmission, fresh bytes, an unsent
+/// FIN, or the STREAM_DATA_BLOCKED a credit-starved stream emits. Bytes already
+/// sent and awaiting acknowledgment are not output, which is why this asks the
+/// poll rather than reading a buffered-byte count. Acknowledgements are not
+/// paced and carry their own packet-space deadlines, so they are deliberately
+/// not counted here.
+///
+/// Walking `stream_order` rather than the stream dictionary keeps the search
+/// short-circuiting and allocation-free, since it runs on every deadline query.
+fn has_pending_output(state: State) -> Bool {
+  state.initial_queue != []
+  || state.handshake_queue != []
+  || state.zero_rtt_queue != []
+  || state.application_queue != []
+  || list.any(state.stream_order, fn(identifier) {
+    case dict.get(state.streams, identifier) {
+      Ok(stream) -> stream_would_emit(stream)
+      Error(Nil) -> False
+    }
+  })
+}
+
+/// Report whether polling this stream would yield a frame to send.
+///
+/// The polled stream state is discarded: this asks the send path's own question
+/// without taking the bytes an answer would consume. One byte is offered
+/// because the question is whether anything at all is left, not how much fits.
+/// A stream the local endpoint cannot send on has nothing to contribute.
+fn stream_would_emit(stream: stream_state.State) -> Bool {
+  case stream_state.poll_send(stream, 1) {
+    Ok(stream_state.Emit(_, _)) | Ok(stream_state.SendBlocked(_, _)) -> True
+    Ok(stream_state.SendIdle(_)) -> False
+    // `WrongDirection` is the only refusal a one-byte poll can raise, and a
+    // stream the local endpoint cannot send on has nothing to wake for. A
+    // refusal for any other reason is a fault the send path reports on its
+    // next flush, so it counts as output rather than being hidden here.
+    Error(reason) -> reason != stream_state.WrongDirection
   }
 }
 
@@ -3167,18 +3229,7 @@ fn commit_valid_packet(
             False -> state.last_activity_milliseconds
           },
         )
-      // The projection has to read the pacer and congestion window this send
-      // just updated, so it runs against `sent` rather than the prior state.
-      Ok(
-        State(
-          ..sent,
-          pacer_release_milliseconds: projected_pacer_release(
-            sent,
-            datagram_bytes,
-            now_milliseconds,
-          ),
-        ),
-      )
+      Ok(sent)
     }
   }
 }
@@ -3253,48 +3304,6 @@ fn ask_pacer(
     congestion_window(state),
     smoothed,
   )
-}
-
-/// Project when the pacer would release this connection's next datagram.
-///
-/// The reserved tokens are deliberately dropped: this asks a question about a
-/// hypothetical next datagram rather than claiming budget for it. It asks about
-/// the largest datagram the path currently carries rather than the one just
-/// committed, because the next datagram is never larger than the path size,
-/// while a wake-up armed for a smaller datagram would fire while the pacer
-/// still refuses that next one -- and the owner discards a refused send without
-/// re-arming anything. `None` means no pacing wake-up is owed because the pacer
-/// would release a path-sized datagram immediately.
-fn projected_pacer_release(
-  state: State,
-  datagram_bytes: Int,
-  now_milliseconds: Int,
-) -> Option(Int) {
-  case projected_release_for(state, path_mtu(state), now_milliseconds) {
-    Ok(release) -> release
-    // The pacer declines to answer for a datagram larger than one burst, which
-    // it could never release either. Fall back to the size it has just
-    // accepted, so datagrams it can release still arm a wake-up.
-    Error(Nil) ->
-      projected_release_for(state, datagram_bytes, now_milliseconds)
-      |> result.unwrap(None)
-  }
-}
-
-/// Ask the pacer when it would release this datagram without spending budget.
-///
-/// `Ok(None)` reports an immediate release, `Error(Nil)` a datagram size the
-/// pacer declines to answer for.
-fn projected_release_for(
-  state: State,
-  datagram_bytes: Int,
-  now_milliseconds: Int,
-) -> Result(Option(Int), Nil) {
-  case ask_pacer(state, datagram_bytes, now_milliseconds) {
-    Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) -> Ok(Some(deadline))
-    Ok(pacer.Decision(_, pacer.SendNow)) -> Ok(None)
-    Error(pacer.InvalidInput) -> Error(Nil)
-  }
 }
 
 fn record_ecn_send(

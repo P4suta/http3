@@ -846,3 +846,67 @@ fn receive_client_body(
     _ -> receive_client_body(stream, status, headers, chunks)
   }
 }
+
+// The listener flushes at most `maximum_packets_per_connection_flush` (16)
+// datagrams of at most `maximum_frame_data_bytes` (1000) payload bytes per
+// connection per turn, so a 64 KiB response body needs the flush to be
+// resumed several times after the request datagram has been consumed.
+const capped_flush_body_bytes = 65_536
+
+const capped_flush_bound_milliseconds = 2000
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn capped_flush_drains_response_backlog_within_bound_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  let configuration =
+    server.with_timeout(configuration, capped_flush_bound_milliseconds)
+    |> should.be_ok
+  let configuration =
+    server.with_stream_buffer_limit(configuration, 131_072) |> should.be_ok
+  let listener = server.start(configuration) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let body = http3_test_support.repeated_bytes(capped_flush_body_bytes)
+
+  // The client sends its request and then nothing else, so the backlogged
+  // response has to be driven by the listener within the bound.
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let outbound =
+        request.new()
+        |> request.set_host("localhost")
+        |> request.set_port(port)
+        |> request.set_path("/backlog")
+        |> request.set_method(http.Get)
+        |> request.set_body(<<>>)
+      let configuration =
+        client.new()
+        |> client.with_timeout(capped_flush_bound_milliseconds)
+        |> should.be_ok
+        |> client.with_ca_certificate(ca_certificate)
+        |> should.be_ok
+        |> client.with_stream_buffer_limit(131_072)
+        |> should.be_ok
+      client.send(configuration, outbound)
+    })
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.path(incoming) == "/backlog"
+  assert server.read_body(incoming) |> should.be_ok == <<>>
+  server.respond(
+    incoming,
+    200,
+    [#("content-type", "application/octet-stream")],
+    body,
+  )
+  |> should.be_ok
+
+  let reply = http3_test_support.await_task(client_task) |> should.be_ok
+  assert reply.status == 200
+  assert list.key_find(reply.headers, "content-type")
+    == Ok("application/octet-stream")
+  assert bit_array.byte_size(reply.body) == capped_flush_body_bytes
+  assert reply.body == body
+  assert server.stop(listener) == Ok(server.Stopped)
+}

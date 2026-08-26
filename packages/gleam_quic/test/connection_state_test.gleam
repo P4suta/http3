@@ -1185,9 +1185,102 @@ pub fn arms_the_pacing_wake_for_a_datagram_larger_than_the_last_test() -> Nil {
   assert connection_state.bytes_in_flight(connection) == in_flight + 1200
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rearms_the_pacing_wake_after_the_window_shrinks_test() -> Nil {
+  // A long round trip puts the pacing release far enough ahead that a
+  // congestion event can land between the refusal and the wake.
+  let #(connection, _) = pacer_bound_connection_after(1000)
+  let #(connection, limited) = flush_datagrams(connection, 1000, 32)
+  let assert Error(connection_state.PacingLimited(early_release)) = limited
+  assert early_release > 1000
+  let assert Ok(Some(armed)) = connection_state.next_deadline(connection, 1000)
+  assert armed == early_release
+
+  // The peer acknowledges only the last of the ten packets just sent, so the
+  // seven below the reordering threshold are declared lost and the congestion
+  // window halves: the pacer now refills at half the rate the refusal assumed.
+  let window = connection_state.congestion_window(connection)
+  let assert Ok(connection) =
+    connection_state.record_datagram_received(connection, 80, 1010)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(19, 19)], None))],
+      packet_space.NotEct,
+      1010,
+    )
+  assert connection_state.congestion_window(connection) < window
+
+  // At the release the earlier refusal named, the pacer still refuses, and it
+  // names a strictly later one.
+  let #(connection, refused) = flush_datagrams(connection, early_release, 1)
+  let assert Error(connection_state.PacingLimited(release)) = refused
+  assert release > early_release
+
+  // The owner must wake at the release the pacer would honour now, not fall
+  // back to the far later recovery or idle deadline.
+  let assert Ok(Some(deadline)) =
+    connection_state.next_deadline(connection, early_release)
+  assert deadline == release
+
+  let in_flight = connection_state.bytes_in_flight(connection)
+  let #(connection, resumed) = flush_datagrams(connection, deadline, 1)
+  assert resumed == Ok(Nil)
+  assert connection_state.bytes_in_flight(connection) == in_flight + 1200
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn skips_the_pacing_wake_without_pending_output_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, stream)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(
+      connection,
+      stream,
+      <<0:size(12_000)-unit(8)>>,
+      True,
+    )
+
+  // The opening burst carries every queued byte and the FIN while spending the
+  // pacer's tokens, so the connection is left with bytes in flight and nothing
+  // a stream poll would emit. Those unacknowledged bytes are still counted as
+  // buffered, which is exactly why a byte count cannot stand in for pending
+  // output.
+  let #(connection, drained) = flush_datagrams(connection, 0, 10)
+  assert drained == Ok(Nil)
+  assert connection_state.stream_buffered_send_bytes(connection, stream)
+    == Ok(12_000)
+
+  // The pacer really is refusing at this instant: the same state with one byte
+  // queued on a second stream arms the release the pacer owes.
+  let assert Ok(#(waiting, other)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(waiting) =
+    connection_state.queue_stream(waiting, other, <<0>>, False)
+  let assert Ok(Some(release)) = connection_state.next_deadline(waiting, 0)
+  assert release > 0
+
+  // With nothing to send, no pacing wake is armed at all: the owner is left
+  // with the far later deadline the burst in flight already owes it.
+  let assert Ok(Some(deadline)) = connection_state.next_deadline(connection, 0)
+  assert deadline > release
+}
+
 /// Establish a connection whose congestion window outruns the pacer's burst,
 /// with enough stream data queued to keep every flush send-limited by pacing.
 fn pacer_bound_connection() -> #(connection_state.State, Int) {
+  pacer_bound_connection_after(100)
+}
+
+/// The same pacer-bound connection, with the opening burst acknowledged after a
+/// caller-chosen round trip so the pacing release can be placed far enough
+/// ahead to leave room for a congestion event before the wake.
+fn pacer_bound_connection_after(
+  round_trip_milliseconds: Int,
+) -> #(connection_state.State, Int) {
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(#(connection, stream)) =
     connection_state.open_stream(connection, stream_id.Bidirectional)
@@ -1208,7 +1301,11 @@ fn pacer_bound_connection() -> #(connection_state.State, Int) {
   // One round trip later the peer acknowledges the burst: the congestion
   // window grows well beyond one burst while the pacer refills at most one.
   let assert Ok(connection) =
-    connection_state.record_datagram_received(connection, 80, 100)
+    connection_state.record_datagram_received(
+      connection,
+      80,
+      round_trip_milliseconds,
+    )
   let assert Ok(connection) =
     connection_state.receive_packet(
       connection,
@@ -1216,7 +1313,7 @@ fn pacer_bound_connection() -> #(connection_state.State, Int) {
       0,
       [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(0, 9)], None))],
       packet_space.NotEct,
-      100,
+      round_trip_milliseconds,
     )
   assert connection_state.bytes_in_flight(connection) == 0
   assert connection_state.congestion_window(connection) > 13_200
