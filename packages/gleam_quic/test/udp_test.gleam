@@ -25,6 +25,7 @@ pub fn bounds_socket_receive_buffer_to_one_datagram_test() -> Nil {
   assert buffers == [expected_socket_buffer_bytes]
 
   case udp.open_dual_stack(0) {
+    // nolint: thrown_away_error -- a host without IPv6 has nothing to measure.
     Error(_) -> Nil
     Ok(dual) -> {
       let dual_buffers = socket_buffer_bytes(dual)
