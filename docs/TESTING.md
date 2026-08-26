@@ -62,10 +62,16 @@ successful function return as sufficient.
 
 ### Generated properties and parser fuzzing
 
+Each package owns the corpus for the decoders it implements, so both tasks run
+two runners: `test/native/gleam_quic_fuzz.gleam` and
+`test/native/gleam_quic_property.gleam` here, and
+`packages/gleam_quic/test/gleam_quic_fuzz.gleam` and
+`packages/gleam_quic/test/gleam_quic_property.gleam` in the core package.
+
 `mise run property` executes 10,000 deterministic generated round-trip and
-wire-codec properties. `mise run fuzz` executes 10,000 deterministic parser
-inputs plus 16 retained seeds across QUIC, transport parameters, TLS,
-HTTP/3, QPACK, and Capsule decoders.
+wire-codec properties per runner. `mise run fuzz` executes 10,000 deterministic
+parser inputs plus 16 retained seeds per runner, together covering QUIC,
+transport parameters, TLS, HTTP/3, QPACK, and Capsule decoders.
 
 These tasks are reproducible test generators, not a replacement for
 coverage-guided fuzzing under a native sanitizer. A crashing or divergent case

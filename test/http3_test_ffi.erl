@@ -1,6 +1,7 @@
 -module(http3_test_ffi).
 
 -export([
+    certificate_identity_verified/3,
     concurrent_cancellations/1,
     concurrent_accepts/1,
     concurrent_next_datagrams/2,
@@ -193,6 +194,54 @@ server_certificate_selection_credentials() ->
         PrivateKey,
         CaCertificate
     }.
+
+%% Whether the fixture certificate chain validates against the fixture
+%% authority and presents Hostname as a service identity, using only OTP's
+%% public_key. The client performs the same two steps during the handshake;
+%% asserting them here keeps the fixture honest without a test-side import of
+%% the core package's private TLS modules.
+-spec certificate_identity_verified(binary(), binary(), binary()) -> boolean().
+certificate_identity_verified(CertificatePem, CaCertificateDer, Hostname) when
+    is_binary(CertificatePem), is_binary(CaCertificateDer), is_binary(Hostname)
+->
+    Chain = [
+        Der
+     || {'Certificate', Der, not_encrypted} <- public_key:pem_decode(CertificatePem),
+        is_binary(Der),
+        Der =/= CaCertificateDer
+    ],
+    case Chain of
+        [] ->
+            false;
+        [LeafDer | _] ->
+            case public_key:pkix_path_validation(CaCertificateDer, Chain, []) of
+                {ok, _Result} ->
+                    verified_service_identity(
+                        public_key:pkix_decode_cert(LeafDer, otp),
+                        Hostname
+                    );
+                {error, _Reason} ->
+                    false
+            end
+    end.
+
+-spec verified_service_identity(tuple(), binary()) -> boolean().
+verified_service_identity(Leaf, Hostname) ->
+    Host = binary_to_list(Hostname),
+    ReferenceId =
+        case inet:parse_address(Host) of
+            {ok, Address} -> {ip, Address};
+            {error, einval} -> {dns_id, Host}
+        end,
+    NoCommonNameFallback = fun
+        (_Reference, {cn, _CommonName}) -> false;
+        (_Reference, _Presented) -> default
+    end,
+    public_key:pkix_verify_hostname(
+        Leaf,
+        [ReferenceId],
+        [{match_fun, NoCommonNameFallback}]
+    ).
 
 -spec new_signal() -> tuple().
 new_signal() ->

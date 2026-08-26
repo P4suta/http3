@@ -64,7 +64,16 @@ boundary_edges(Calls, Allowed) ->
 
 is_root_module(Module) ->
     Name = atom_to_list(Module),
-    Name =:= "http3" orelse lists:prefix("http3@", Name).
+    Name =:= "http3" orelse
+        lists:prefix("http3@", Name) orelse
+        is_root_ffi_module(Name).
+
+%% Root Erlang FFI modules (`http3_internal_transport_ffi`,
+%% `http3_process_label_ffi`, and any other `http3_*_ffi`) are root callers too:
+%% an FFI shim reaches the same package-private core modules that the Gleam
+%% import gate rejects, and it carries no `@` separator to be caught above.
+is_root_ffi_module(Name) ->
+    lists:prefix("http3_", Name) andalso lists:suffix("_ffi", Name).
 
 is_private_core_module(Module) ->
     Name = atom_to_list(Module),

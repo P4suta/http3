@@ -24,6 +24,19 @@ pub fn await_task(task: Task(value)) -> value
 @external(erlang, "http3_test_ffi", "server_credentials")
 pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
 
+/// Whether the fixture certificate chain validates against the fixture
+/// authority and presents `hostname` as a service identity.
+///
+/// The handshake performs the same path validation and identity match, so this
+/// keeps the shared fixture honest for the IP-literal case without a test-side
+/// import of the core package's private TLS modules.
+@external(erlang, "http3_test_ffi", "certificate_identity_verified")
+pub fn certificate_identity_verified(
+  certificate: BitArray,
+  ca_certificate: BitArray,
+  hostname: String,
+) -> Bool
+
 /// Read fallback and localhost credentials for the SNI selection test.
 @external(erlang, "http3_test_ffi", "server_certificate_selection_credentials")
 pub fn server_certificate_selection_credentials() -> #(

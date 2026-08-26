@@ -1,13 +1,12 @@
-//// Deterministic retained-seed corpus for every unauthenticated HTTP/3 and
-//// QPACK wire parser. The QUIC transport parsers keep their own corpus in the
-//// `gleam_quic` package.
+//// Deterministic retained-seed corpus for every unauthenticated QUIC parser.
 
 import gleam/list
 import gleam/result
-import http3/internal/native/frame as http3_frame
-import http3/internal/qpack/field_section
-import http3/internal/qpack/instruction
-import http3/internal/varint
+import gleam_quic/frame as transport_frame
+import gleam_quic/internal/tls/handshake
+import gleam_quic/packet
+import gleam_quic/transport_parameter
+import gleam_quic/varint
 
 const generator_modulus = 2_147_483_647
 
@@ -34,16 +33,23 @@ fn exercise_generated(seed: Int, remaining: Int) -> Nil {
 
 fn exercise_one(bytes: BitArray) -> Nil {
   assert observe_result(varint.decode(bytes))
-  assert observe_result(http3_frame.decode(bytes, http3_frame.default_limits()))
-  assert observe_result(field_section.decode(
+  assert observe_result(transport_frame.decode_all(
     bytes,
-    field_section.default_limits(),
+    transport_frame.default_limits(),
   ))
-  assert observe_result(instruction.decode_encoder(
+  assert observe_result(transport_parameter.decode_all(
     bytes,
-    instruction.default_limits(),
+    transport_parameter.Client,
+    transport_parameter.default_limits(),
   ))
-  assert observe_result(instruction.decode_decoder(bytes))
+  assert observe_result(transport_parameter.decode_all(
+    bytes,
+    transport_parameter.Server,
+    transport_parameter.default_limits(),
+  ))
+  assert observe_result(packet.parse_long(bytes))
+  assert observe_result(packet.parse_short(bytes, first_byte(bytes) % 21))
+  assert observe_result(handshake.decode_next(bytes, handshake.default_limits()))
 }
 
 fn retained_inputs() -> List(BitArray) {
@@ -84,6 +90,14 @@ fn generate_bytes(
 
 fn next_seed(seed: Int) -> Int {
   { seed * 48_271 + 1 } % generator_modulus
+}
+
+fn first_byte(bytes: BitArray) -> Int {
+  case bytes {
+    <<first, _:bits>> -> first
+    <<>> -> 0
+    _ -> 0
+  }
 }
 
 fn observe_result(outcome: Result(value, error)) -> Bool {

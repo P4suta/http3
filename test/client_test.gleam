@@ -5,7 +5,6 @@ import gleam/http/response
 import gleam/list
 import gleam/option.{None}
 import gleam/string
-import gleam_quic/internal/tls/authentication
 import gleeunit/should
 import http3/client
 import http3/config
@@ -17,14 +16,11 @@ import http3_test_support
 pub fn ipv6_literal_certificate_identity_is_verified_test() -> Nil {
   let #(certificate, _, ca_certificate) =
     http3_test_support.server_credentials()
-  let chain =
-    authentication.certificate_chain_from_pem(certificate) |> should.be_ok
-  let trust_store =
-    authentication.trust_store_from_der([ca_certificate]) |> should.be_ok
-  let _peer =
-    authentication.validate_server_certificate(chain, trust_store, "::1")
-    |> should.be_ok
-  Nil
+  assert http3_test_support.certificate_identity_verified(
+    certificate,
+    ca_certificate,
+    "::1",
+  )
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
