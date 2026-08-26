@@ -131,7 +131,7 @@ locally.
 | Bounded external 0-RTT replay guard with safe 1-RTT fallback | Implemented and tested |
 | P-256 key exchange and mTLS API | Implemented and directly tested; OTP/peer credential matrix remains open |
 | Complete conformance, qlog, CUBIC, coverage, security, interop, and package gates | Open release blockers |
-| Fixed performance thresholds | Not met by the retained baseline or 2026-08-25 diagnostic rerun |
+| Fixed performance thresholds | Benchmark (516) and load (344) met on the 2026-08-26 recorded host; soak (812) not rerun |
 | Public v1 source-tree gate | Reopened on 2026-08-25 |
 | Tag, hosted release, and Hex publication | Deliberately not performed |
 

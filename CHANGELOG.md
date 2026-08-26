@@ -63,6 +63,12 @@ imply a tag, a hosted release, or publication to Hex.
 - An optional external BeamTrace diagnostic runner with fixed non-secret actor
   labels, warm-up-before-root scenarios, strict qlog redaction, clock-domain
   validation, finite cleanup checks, and review-before-sharing artifacts.
+- A three-layer boundary gate (a Semgrep rule, a `boundary` verb in the public
+  API audit with the shrink-only `api/boundary.allow`, and an xref mode) that
+  fails any root import of a package-private `gleam_quic` module; the root
+  package now owns its RFC 9000 varint and stream-identifier helpers.
+- `CLAUDE.md`, a dated evidence convention under `docs/evidence/`, stub tasks
+  for the remaining qualification gates, and a nightly workflow skeleton.
 
 ### Changed
 
@@ -84,6 +90,9 @@ imply a tag, a hosted release, or publication to Hex.
 - Expanded `mise run check` with native-core checks, compiler-interface
   auditing, pinned workflow validation, shell formatting/linting, spelling,
   and REUSE compliance.
+- Core-only driver, fuzz, and property tests moved into
+  `packages/gleam_quic/test`; `mise run fuzz` and `mise run property` run both
+  packages' generators with unchanged case counts.
 
 ### Fixed
 
@@ -135,6 +144,26 @@ imply a tag, a hosted release, or publication to Hex.
 - Made repeated server-side connection close calls report `AlreadyClosed` as
   soon as the first call enters closing or draining, instead of depending on
   packet-flush timing.
+- A pacing-limited QUIC connection now derives its wake-up from the congestion
+  window and smoothed RTT current at each deadline computation and arms it only
+  while output is pending, so queued data no longer stalls until an unrelated
+  timer, PTO, or idle timeout.
+- QUIC datagrams grow with the DPLPMTUD-validated path MTU: both roles
+  advertise the RFC 9000 default `max_udp_payload_size` (65527), 1-RTT packets
+  take their frame budget from the path after the coalesced ACK and the exact
+  packet-protection overhead, DATAGRAM frames reserve room for the
+  acknowledgement they share a packet with, the pacer burst and the
+  NewReno/CUBIC `max_datagram_size` follow the path, and Initial, Handshake,
+  0-RTT, and ACK-only packets are all measured against the path.
+- QUIC UDP sockets request Don't-Fragment at open (Linux
+  `IP(V6)_MTU_DISCOVER`, macOS/FreeBSD `IP(V6)_DONTFRAG`, Windows
+  `IP_DONTFRAGMENT`); DPLPMTUD stays at the 1200-byte floor when a platform
+  refuses it, an oversized send is classified as a path black hole on every
+  send path instead of a socket failure, and peer-chosen Initial tokens are
+  bounded so no Initial exceeds the floor.
+- Test fixtures create qlog scratch directories under `TMPDIR`/`TEMP`/`TMP`
+  instead of a hard-coded `/tmp`, and the Semgrep task writes its settings and
+  log under `build/semgrep/`.
 
 ## 0.1.0 - 2026-08-23
 

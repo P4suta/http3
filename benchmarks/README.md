@@ -55,9 +55,11 @@ The reopened v1 gate requires at least 516 requests/second for `benchmark`,
 also retain zero periodic idle polling, zero queued mailbox messages after
 cleanup, process-count convergence, and the configured memory bounds.
 
-The retained result below is exactly half those throughput thresholds and
-therefore does not pass the release gate. It remains a useful comparison
-baseline, not completion evidence.
+The 2026-08-24 result below is exactly half the benchmark and load thresholds
+and does not pass the release gate; it remains a comparison baseline, not
+completion evidence. The 2026-08-26 runs recorded further down meet the
+benchmark and load thresholds on that host, but soak has not been rerun, so
+the performance gate as a whole is still open.
 
 ## Recorded native-core baseline
 
@@ -113,3 +115,41 @@ successful row was emitted for that trial, as required by the harness. The soak
 rerun was not promoted as evidence once the prerequisite benchmark/load gates
 had failed. This diagnostic set therefore does not replace the retained
 baseline and does not pass the release performance gate.
+
+## 2026-08-26 Phase 0 results
+
+Two runs were recorded on the same host on 2026-08-26: a baseline on the
+current `main` tip (`a2b5426`) and a post-Phase-0 run on
+`feat/phase0-foundation` (`589a8d4`). Both used the repository-owned
+`gleam_quic` backend. The baseline rows are in
+[`2026-08-26-phase0-baseline.csv`](results/2026-08-26-phase0-baseline.csv) with
+[`2026-08-26-phase0-baseline-environment.txt`](results/2026-08-26-phase0-baseline-environment.txt);
+the Phase 0 rows are in
+[`2026-08-26-phase0.csv`](results/2026-08-26-phase0.csv) with
+[`2026-08-26-phase0-environment.txt`](results/2026-08-26-phase0-environment.txt).
+Warm-up rows are excluded from the summaries.
+
+| Mode | Threshold | Baseline median (range) | Phase 0 median (range) |
+| --- | ---: | ---: | ---: |
+| `benchmark` | 516 | 594 (590–601) | 583 (572–599) |
+| `load` | 344 | 232 (205–233) | 423 (394–437) |
+
+On this recorded host the benchmark threshold was already met by the baseline,
+and the load threshold is met only after the Phase 0 pacing and path-MTU
+changes: the load median rises from 232 to 423 requests/second. The benchmark
+median moves down by 11 requests/second, which is inside the observed
+run-to-run spread. Every retained row returned from 48 processes to 46 and
+recorded zero total queued mailbox messages before and after.
+
+The soak threshold of 812 requests/second was not rerun for either commit, so
+the third fixed workload has no 2026-08-26 evidence and the release
+performance gate remains open. The long-load bounded peer-close failure seen
+on 2026-08-25 did not reproduce in the three measured Phase 0 load trials.
+
+These numbers are still one localhost host: the same CPU-frequency scaling,
+background load, allocator, and scheduler-placement uncertainty described
+above applies, and no row should be treated as a general throughput guarantee
+or compared directly with a remote peer.
+
+Full gate output for this run is in
+[`docs/evidence/2026-08-26-phase0.md`](../docs/evidence/2026-08-26-phase0.md).

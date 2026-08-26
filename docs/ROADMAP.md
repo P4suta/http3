@@ -22,9 +22,13 @@ Status: partial.
   physical split and generic transport API.
 
 Raw modules are hidden, physical ownership is split, the generic transport
-surface exists, and snapshot checks cover it. Root-owned HTTP/3 workers still
-need to migrate from package-private QUIC/TLS primitives to the opaque public
-connections and streams before the package boundary is complete.
+surface exists, and snapshot checks cover it. A three-layer boundary gate
+(Semgrep rule, `boundary` verb in the public API audit, and an xref mode) now
+fails any root import of a package-private `gleam_quic` module that is not in
+the shrink-only `api/boundary.allow` allowlist; that allowlist stands at 87
+entries. Root-owned HTTP/3 workers still need to migrate from package-private
+QUIC/TLS primitives to the opaque public connections and streams before the
+package boundary is complete.
 
 ## 2. Runtime isolation and bounded admission
 
@@ -81,7 +85,12 @@ Status: partial.
 - Profile actors, codecs, crypto, and queues; split oversized state/worker
   modules by responsibility.
 - Reach the fixed 516/344/812 requests-per-second benchmark/load/soak gates
-  without weakening cleanup, memory, mailbox, or idle-wakeup requirements.
+  without weakening cleanup, memory, mailbox, or idle-wakeup requirements. As
+  of 2026-08-26 the benchmark and load thresholds are met on the recorded host
+  (583 and 423 requests/second; see
+  [`docs/evidence/2026-08-26-phase0.md`](evidence/2026-08-26-phase0.md)) with
+  cleanup, mailbox, and idle-wakeup requirements unchanged; soak remains open
+  because it has not been rerun.
 
 ## 5. Qualification and distribution
 
