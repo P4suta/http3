@@ -8,6 +8,34 @@ import gleam_quic/internal/udp
 @external(erlang, "gleam_quic_test_ffi", "inject_relay_connection_reset")
 fn inject_relay_connection_reset(relay: udp.Relay) -> Nil
 
+@external(erlang, "gleam_quic_test_ffi", "socket_buffer_bytes")
+fn socket_buffer_bytes(socket: udp.Socket) -> List(Int)
+
+/// The inet user-level receive buffer sizes the binary allocated for every
+/// received datagram, so it only has to cover the largest UDP payload.
+const expected_socket_buffer_bytes = 65_536
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounds_socket_receive_buffer_to_one_datagram_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(socket) = udp.open(ephemeral)
+  let buffers = socket_buffer_bytes(socket)
+  let assert Ok(Nil) = udp.close(socket)
+  assert buffers == [expected_socket_buffer_bytes]
+
+  case udp.open_dual_stack(0) {
+    Error(_) -> Nil
+    Ok(dual) -> {
+      let dual_buffers = socket_buffer_bytes(dual)
+      let assert Ok(Nil) = udp.close(dual)
+      assert dual_buffers
+        == [expected_socket_buffer_bytes, expected_socket_buffer_bytes]
+      Nil
+    }
+  }
+}
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn validates_ipv4_and_ipv6_endpoints_test() -> Nil {
   let assert Ok(ipv4) = udp.ipv4(127, 0, 0, 1)
