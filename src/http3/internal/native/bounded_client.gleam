@@ -24,11 +24,18 @@ import http3/internal/qpack/header.{type Header, Header}
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
+
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Validated inputs for one native request.
 pub type Config {
@@ -990,7 +997,7 @@ fn client_transport_config(
     ..config,
     version: selected_version,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
-    maximum_udp_payload_size: 1200,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
     maximum_datagram_frame_size: 0,
   )
@@ -1004,7 +1011,7 @@ fn client_transport_parameters(
   [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(1200),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),

@@ -25,15 +25,18 @@ import http3/internal/qpack/header.{type Header}
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
 
-// A 1452-byte UDP payload fits a 1500-byte IPv6 path without IP
-// fragmentation. DPLPMTUD starts at 1200 and confirms every larger size.
-const maximum_datagram_frame_bytes = 1452
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Connection policy after public input validation.
 pub type Config {
@@ -1291,7 +1294,7 @@ fn client_transport_config(
   datagram_limit: Int,
 ) -> transport.Config {
   let config = transport.default_config(transport.Client)
-  let maximum_datagram = int.min(datagram_limit, maximum_datagram_frame_bytes)
+  let maximum_datagram = int.min(datagram_limit, maximum_udp_payload_size)
   transport.Config(
     ..config,
     version: selected_version,
@@ -1300,7 +1303,7 @@ fn client_transport_config(
     maximum_peer_streams_unidirectional: unidirectional_stream_limit,
     maximum_total_streams: bidirectional_stream_limit
       + unidirectional_stream_limit,
-    maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
     maximum_datagram_frame_size: case http_datagrams {
       True -> maximum_datagram
@@ -1326,7 +1329,7 @@ fn client_transport_parameters(
   let parameters = [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1341,7 +1344,7 @@ fn client_transport_parameters(
     True -> [
       transport_parameter.MaxDatagramFrameSize(int.min(
         datagram_limit,
-        maximum_datagram_frame_bytes,
+        maximum_udp_payload_size,
       )),
       ..parameters
     ]

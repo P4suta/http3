@@ -533,6 +533,14 @@ pub fn receive_datagram(connection: Connection) -> Result(BitArray, Error) {
   server_worker.receive_datagram(handle) |> result.map_error(map_error)
 }
 
+/// Return the largest QUIC Datagram payload this connection accepts right now.
+///
+/// The value is a point-in-time bound, not a fixed property of the connection:
+/// it grows as path MTU discovery confirms a larger path, drops back to the
+/// pre-validation floor when the path is reset, and shrinks while an
+/// acknowledgement is scheduled, because a Datagram is indivisible and has to
+/// leave room for the acknowledgement sharing its packet. Read it again after
+/// a `DatagramTooLarge` result rather than caching it.
 pub fn maximum_datagram_size(connection: Connection) -> Result(Int, Error) {
   let Connection(handle) = connection
   server_worker.maximum_datagram_size(handle) |> result.map_error(map_error)

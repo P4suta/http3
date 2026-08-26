@@ -36,6 +36,8 @@ const connection_id_bytes = 8
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const maximum_send_chunk_bytes = 65_536

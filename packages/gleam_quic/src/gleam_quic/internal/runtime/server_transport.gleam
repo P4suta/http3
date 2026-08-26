@@ -21,7 +21,10 @@ import gleam_quic/stream_id
 import gleam_quic/transport_parameter
 import gleam_quic/version.{type Version}
 
-const maximum_datagram_frame_bytes = 1452
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 const session_ticket_lifetime_seconds = 86_400
 
@@ -459,10 +462,10 @@ fn server_transport_config(
     maximum_stream_send_buffer: config.stream_buffer_limit,
     maximum_total_streams: config.bidirectional_stream_limit
       + config.unidirectional_stream_limit,
-    maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     maximum_datagram_frame_size: int.min(
       config.datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     ),
   )
 }
@@ -490,7 +493,7 @@ fn server_transport_parameters(
     transport_parameter.InitialSourceConnectionId(local_connection_id),
     transport_parameter.StatelessResetToken(reset_token),
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -500,7 +503,7 @@ fn server_transport_parameters(
     transport_parameter.ActiveConnectionIdLimit(4),
     transport_parameter.MaxDatagramFrameSize(int.min(
       datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     )),
   ]
   case retry_source_connection_id {

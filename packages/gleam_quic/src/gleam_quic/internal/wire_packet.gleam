@@ -12,6 +12,54 @@ import gleam_quic/packet_number
 import gleam_quic/varint
 import gleam_quic/version.{type Version}
 
+// RFC 9000 section 17.2: a version 1 connection ID is at most twenty bytes.
+const maximum_connection_id_bytes = 20
+
+// RFC 9000 section 17.1: a packet number is encoded in one to four bytes,
+// widening as it runs ahead of the largest acknowledged one.
+const maximum_packet_number_bytes = 4
+
+// RFC 9001 section 5.3: every AEAD QUIC version 1 negotiates authenticates
+// with a sixteen-byte tag appended to the protected payload.
+const authentication_tag_bytes = 16
+
+// RFC 9000 section 16: eight bytes is the widest variable-length integer
+// encoding, and therefore the most a long header's Length field can cost.
+const maximum_varint_bytes = 8
+
+/// The most `protect_short` ever adds around a packet's frame payload: the
+/// first byte, the destination connection ID, the encoded packet number, and
+/// the AEAD tag.
+///
+/// A caller that must keep a finished datagram inside a size limit budgets
+/// against this. It is an upper bound rather than the exact cost because
+/// neither the connection ID the peer issued nor the width the packet number
+/// encodes to is known before the packet is built.
+pub fn maximum_short_packet_overhead() -> Int {
+  1
+  + maximum_connection_id_bytes
+  + maximum_packet_number_bytes
+  + authentication_tag_bytes
+}
+
+/// The most `protect_long` ever adds around a 0-RTT or Handshake packet's
+/// frame payload: the first byte, the version, both connection IDs and their
+/// length bytes, the Length field at its widest, the encoded packet number,
+/// and the AEAD tag.
+///
+/// An Initial packet also carries a token, which this deliberately excludes:
+/// the only long-header packet a caller sizes payload for is 0-RTT, and an
+/// Initial is padded to the pre-validation floor by the driver instead.
+pub fn maximum_long_packet_overhead() -> Int {
+  1
+  + 4
+  + { 1 + maximum_connection_id_bytes }
+  + { 1 + maximum_connection_id_bytes }
+  + maximum_varint_bytes
+  + maximum_packet_number_bytes
+  + authentication_tag_bytes
+}
+
 /// Protected long-header semantic. Only Initial carries a token field.
 pub type LongKind {
   Initial(token: BitArray)

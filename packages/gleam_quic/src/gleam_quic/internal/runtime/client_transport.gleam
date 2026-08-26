@@ -25,13 +25,18 @@ import gleam_quic/version.{type Version}
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
 
-const maximum_datagram_frame_bytes = 1452
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Validated client transport policy.
 pub type Config {
@@ -981,10 +986,10 @@ fn client_transport_config(
     maximum_stream_send_buffer: config.stream_buffer_limit,
     maximum_total_streams: config.bidirectional_stream_limit
       + config.unidirectional_stream_limit,
-    maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     maximum_datagram_frame_size: int.min(
       config.datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     ),
   )
 }
@@ -1005,7 +1010,7 @@ fn client_transport_parameters(
   [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1017,7 +1022,7 @@ fn client_transport_parameters(
     transport_parameter.VersionInformation(selected_version, available_versions),
     transport_parameter.MaxDatagramFrameSize(int.min(
       datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     )),
   ]
 }

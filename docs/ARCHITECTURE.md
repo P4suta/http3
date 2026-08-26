@@ -109,8 +109,43 @@ the following Gleam-owned components:
   NAT rebinding, active migration, and connection-ID rotation;
 - IPv4 and IPv6 UDP operation, QUIC DATAGRAM, path statistics, and opt-in qlog;
   and
-- DPLPMTUD probes that keep packets below the validated path MTU without
-  relying on IP fragmentation.
+- DPLPMTUD probes that raise the datagram size only once a probe of that size
+  has been acknowledged, and 1-RTT packets sized from the resulting path MTU.
+
+A 1-RTT packet takes its frame budget from the validated path MTU after
+paying for the widest short header QUIC v1 allows, the AEAD tag, and any ACK
+coalesced ahead of the frame. STREAM and CRYPTO data is split to what is left.
+A QUIC DATAGRAM frame cannot be split, so it is sized when it is queued with
+the scheduled ACK already subtracted; if the ACK has grown by the time the
+packet is built, the datagram waits one packet and the ACK goes out, because
+acknowledgement delay is bounded by `max_ack_delay` while an application
+queue is not. An early datagram is sized against the wider 0-RTT long header
+instead. NEW_TOKEN and CONNECTION_CLOSE carry caller-supplied payloads and are
+neither splittable nor droppable, so both are bounded where they enter the
+connection to fit the 1200-byte floor a black hole resets the path to. Every
+1-RTT and 0-RTT packet is measured against the validated path before it is
+sent, and DPLPMTUD never raises that path above the peer's advertised
+`max_udp_payload_size`.
+
+Initial and Handshake packets are not measured. They keep the fixed frame
+budget the caller asks for -- the runtimes ask for 1000 bytes, so the
+datagrams they build land inside the 1200-byte floor every path carries, and
+the driver pads an Initial up to that floor -- but nothing in the connection
+enforces a ceiling on them. A caller asking for a larger budget, or an Initial
+whose address-validation token is added on top of its frames, would build a
+datagram larger than the floor. Enforcing the bound for these two packet spaces is
+follow-up work, tracked together with setting the socket's DF /
+`IP_MTU_DISCOVER` option so that an oversized datagram fails loudly instead of
+being fragmented on the way out. Their frame-decoding budget stays at the
+fixed default because Initial keys are derivable by any sender that can
+observe a connection ID.
+
+The pacer's burst and the congestion controllers' `max_datagram_size` both
+follow the validated path, so one path-sized datagram always fits inside a
+burst and RFC 9002's window floor of two maximum-sized datagrams stays above
+the datagram the path now carries -- a loss event cannot leave the window
+narrower than a single send. The pacing wake is armed for the datagram the
+send path would actually build rather than for a path-sized one.
 
 The driver uses monotonic deadlines and an active-once UDP relay. It drains
 bursty handshake datagrams, retransmits after loss or corruption, validates a

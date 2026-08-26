@@ -5,6 +5,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam_quic/frame
 import gleam_quic/internal/aead_usage
 import gleam_quic/internal/amplification
@@ -35,7 +36,28 @@ import gleam_quic/transport_parameter
 import gleam_quic/varint
 import gleam_quic/version.{type Version}
 
-const maximum_short_packet_overhead = 32
+// RFC 9000 section 14: every QUIC path carries a 1200-byte datagram. It is the
+// floor DPLPMTUD starts from and the datagram unit congestion control and
+// pacing are denominated in before any larger size has been validated.
+const minimum_datagram_bytes = 1200
+
+// RFC 9000 section 18.2: the default max_udp_payload_size, and the largest
+// value an endpoint may advertise for what it is willing to receive.
+const maximum_udp_payload_size = 65_527
+
+// An endpoint may advertise the full 65_527, but one IP datagram carries at
+// most 65_507 bytes of UDP payload. Keep DPLPMTUD's search below that ceiling
+// so a validated path is always a size a single UDP send can carry.
+const maximum_sendable_udp_payload = 61_440
+
+// The largest header a STREAM or CRYPTO frame writes ahead of its data: one
+// type byte plus stream identifier, offset, and length as 8-byte varints.
+const maximum_data_frame_header_bytes = 25
+
+// RFC 9002 section 7.7: the pacer releases this many datagrams back to back
+// before spacing takes over. The burst scales with the path, never below one
+// whole datagram.
+const pacer_burst_datagrams = 10
 
 const timer_granularity_milliseconds = 1
 
@@ -43,7 +65,14 @@ const maximum_crypto_buffer_bytes = 1_048_576
 
 const maximum_crypto_offset = 4_194_304
 
-const maximum_address_token_bytes = 4096
+// A NEW_TOKEN frame is reliable and indivisible: it cannot be split to fit a
+// packet and it cannot be dropped. Bound the token so the frame always fits
+// the 1200-byte floor a black hole can reset the path to.
+const maximum_address_token_bytes = 1024
+
+// The same bound for the reason phrase a caller attaches to CONNECTION_CLOSE,
+// which is reliable and indivisible for the same reasons.
+const maximum_close_reason_bytes = 1024
 
 const active_connection_id_limit = 4
 
@@ -370,7 +399,12 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
   use congestion <- result.try(create_congestion(config))
   use pacing <- result.try(create_pacer(config, now_milliseconds))
   use amplification <- result.try(create_amplification(config.role))
-  use path_mtu <- result.try(create_pmtu(config.maximum_udp_payload_size))
+  use path_mtu <- result.try(
+    create_pmtu(minimum(
+      config.maximum_udp_payload_size,
+      maximum_sendable_udp_payload,
+    )),
+  )
   Ok(State(
     config: config,
     tls_endpoint: NoTlsEndpoint,
@@ -840,6 +874,82 @@ pub fn prepare_packet(
   }
 }
 
+/// Widen a caller's pre-validation request to the frame data one datagram
+/// still carries on the validated path, after everything else this packet
+/// holds has been paid for: short-header and AEAD overhead, the `coalesced`
+/// bytes of the ACK frame already taken for this packet, and the data frame's
+/// own header.
+///
+/// Only 1-RTT packets are widened. DPLPMTUD raises the path MTU only once a
+/// probe of that size has been acknowledged, so the result is a datagram size
+/// the path has been observed to carry; Initial, Handshake, and 0-RTT packets
+/// keep the caller's pre-validation size.
+fn path_frame_data_bytes(
+  state: State,
+  level: engine.EncryptionLevel,
+  requested: Int,
+  coalesced: Int,
+) -> Int {
+  case level {
+    engine.OneRtt -> {
+      let overhead =
+        wire_packet.maximum_short_packet_overhead()
+        + coalesced
+        + maximum_data_frame_header_bytes
+      // Prefer a datagram the congestion window can release right now: a
+      // larger one is refused by `validate_send_budget` however long it
+      // waits. The caller's request stays the floor, so a window narrower
+      // than that behaves exactly as it did before the path grew.
+      let preferred =
+        maximum(
+          requested,
+          congestion_window(state) - bytes_in_flight(state) - overhead,
+        )
+      // The validated path is a hard ceiling. `pmtu` never rises above the
+      // peer's authenticated max_udp_payload_size, so a packet built to this
+      // budget is one the peer said it will receive.
+      maximum(1, minimum(preferred, path_mtu(state) - overhead))
+    }
+    _ -> requested
+  }
+}
+
+/// The encoded size of a frame already committed to the packet being built.
+fn encoded_frame_bytes(value: Option(frame.Frame)) -> Result(Int, Error) {
+  case value {
+    None -> Ok(0)
+    Some(value) ->
+      frame.encode(value)
+      |> map_frame_result
+      |> result.map(bit_array.byte_size)
+  }
+}
+
+/// The exact encoded size of one frame the send path is about to place in a
+/// packet.
+///
+/// Frames whose payload dominates their encoding are measured from that
+/// payload and the header their type writes ahead of it, so sizing a packet
+/// never encodes a large frame only to throw the bytes away. STREAM and CRYPTO
+/// data is split to the remaining budget, so the largest header either can
+/// write is the honest bound; a DATAGRAM frame is indivisible and is measured
+/// exactly. Every other frame is small enough that encoding it is the cheapest
+/// answer.
+fn outgoing_frame_bytes(value: frame.Frame) -> Result(Int, Error) {
+  case value {
+    frame.Stream(_, _, data, _) | frame.Crypto(_, data) ->
+      Ok(bit_array.byte_size(data) + maximum_data_frame_header_bytes)
+    frame.Datagram(data) -> {
+      let length = bit_array.byte_size(data)
+      use header <- result.try(
+        varint.encoded_size(length) |> result.map_error(fn(_) { InvalidInput }),
+      )
+      Ok(1 + header + length)
+    }
+    _ -> encoded_frame_bytes(Some(value))
+  }
+}
+
 /// Commit a successfully constructed datagram to recovery and path accounting.
 pub fn commit_packet(
   state: State,
@@ -979,8 +1089,8 @@ pub fn begin_path_validation(
 pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
   case state.phase {
     Established ->
-      case pmtu.start_probe(state.pmtu) {
-        Ok(#(path_mtu, size)) -> Ok(#(State(..state, pmtu: path_mtu), size))
+      case pmtu.start_probe(state.pmtu, probe_allowance(state)) {
+        Ok(#(path_mtu, size)) -> Ok(#(put_path_mtu(state, path_mtu), size))
         Error(error) -> Error(PmtuFailure(error))
       }
     _ -> Error(ConnectionUnavailable)
@@ -990,6 +1100,50 @@ pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
 /// Return the currently confirmed non-fragmenting UDP payload size.
 pub fn path_mtu(state: State) -> Int {
   pmtu.current(state.pmtu)
+}
+
+/// Store a new DPLPMTUD state and keep the congestion controller sized from
+/// the path its datagrams are built for.
+///
+/// RFC 9002 section 7.2 derives the minimum congestion window - twice
+/// `max_datagram_size` - and the initial window from the datagram size. A
+/// controller left at the pre-validation floor would reduce to a window
+/// narrower than one datagram the validated path carries, stalling both
+/// path-sized output and the DPLPMTUD probes that keep the path confirmed
+/// until the window regrew. Every confirmed size is a size the controllers
+/// accept, so the fallback below is unreachable; it exists only to keep this
+/// total.
+fn put_path_mtu(state: State, path: pmtu.State) -> State {
+  State(
+    ..state,
+    pmtu: path,
+    congestion: sized_congestion(state.congestion, pmtu.current(path)),
+  )
+}
+
+fn sized_congestion(
+  congestion: CongestionState,
+  datagram_bytes: Int,
+) -> CongestionState {
+  case congestion {
+    RenoState(controller) ->
+      new_reno.set_maximum_datagram_size(controller, datagram_bytes)
+      |> result.map(RenoState)
+      |> result.unwrap(congestion)
+    CubicState(controller) ->
+      cubic.set_maximum_datagram_size(controller, datagram_bytes)
+      |> result.map(CubicState)
+      |> result.unwrap(congestion)
+  }
+}
+
+/// The largest datagram DPLPMTUD may probe with right now. A probe the
+/// congestion window cannot release is refused by the send budget, and one
+/// that claims the whole window starves ordinary data until it is acknowledged
+/// or declared lost, so a probe takes at most three quarters of what the
+/// window still has free and the next probe interval retries the rest.
+fn probe_allowance(state: State) -> Int {
+  3 * { congestion_window(state) - bytes_in_flight(state) } / 4
 }
 
 /// Return whether DPLPMTUD has reached the authenticated path ceiling.
@@ -1020,7 +1174,7 @@ pub fn grease_quic_bit_negotiated(state: State) -> Bool {
 /// Reset the confirmed size after repeated loss of formerly working large
 /// datagrams while preserving the configured discovery ceiling.
 pub fn report_pmtu_black_hole(state: State) -> State {
-  State(..state, pmtu: pmtu.black_hole_detected(state.pmtu))
+  put_path_mtu(state, pmtu.black_hole_detected(state.pmtu))
 }
 
 /// Encode and protect one 1-RTT short-header packet. The returned connection
@@ -1124,7 +1278,8 @@ pub fn receive_protected_short_packet(
     plaintext,
   ) = decoded
   use frames <- result.try(
-    frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
+    frame.decode_all(plaintext, short_packet_frame_limits(plaintext))
+    |> map_frame_result,
   )
   use state <- result.try(receive_packet(
     state,
@@ -1263,15 +1418,57 @@ pub fn stream_buffered_send_bytes(
 /// Return the largest raw QUIC DATAGRAM payload fitting both the peer's frame
 /// limit and the currently confirmed path MTU. HTTP/3 callers must additionally
 /// subtract their quarter-stream ID.
+///
+/// This is a point-in-time bound, not a stable property of the connection. It
+/// rises as DPLPMTUD confirms a larger path and falls when the path is reset
+/// to the pre-validation floor, and it also shrinks while an acknowledgement
+/// is scheduled, because a DATAGRAM frame cannot be split and has to leave
+/// room for the ACK sharing its packet -- down to half the path when the
+/// retained ranges are at their most fragmented. A caller that queues against
+/// a remembered value can therefore be answered with `DatagramTooLarge`; the
+/// correct response is to read this again and resize, not to treat the
+/// earlier value as authoritative.
 pub fn maximum_datagram_data_size(state: State) -> Result(Int, Error) {
   case state.peer_maximum_datagram_frame_size {
     0 -> Error(DatagramNotNegotiated)
-    limit -> {
-      let path_frame_limit = path_mtu(state) - maximum_short_packet_overhead
-      let frame_limit = minimum(limit, path_frame_limit)
+    _ -> {
+      let frame_limit = datagram_frame_limit(state)
       datagram_payload_for_frame_limit(frame_limit, frame_limit - 2)
     }
   }
+}
+
+/// The largest QUIC DATAGRAM frame this connection may queue right now.
+///
+/// A DATAGRAM frame cannot be split (RFC 9221 section 3), so everything else
+/// the packet carrying it holds has to be paid for before the frame is built.
+/// An established connection writes a short header and coalesces the
+/// acknowledgement it owes ahead of the frame; an early datagram rides a 0-RTT
+/// long header, which is wider and never carries an acknowledgement (RFC 9000
+/// section 17.2.3).
+fn datagram_frame_limit(state: State) -> Int {
+  let overhead = case state.phase {
+    Established ->
+      wire_packet.maximum_short_packet_overhead()
+      + coalesced_ack_reservation(state)
+    _ -> wire_packet.maximum_long_packet_overhead()
+  }
+  minimum(state.peer_maximum_datagram_frame_size, path_mtu(state) - overhead)
+}
+
+/// The bytes a 1-RTT packet keeps free for the acknowledgement it is about to
+/// coalesce, and zero when none is scheduled.
+///
+/// A heavily fragmented range set can want more of the path than the frame
+/// sharing the packet would have left, so the reservation is capped at half of
+/// it. Past that the two simply do not share a packet: the send path measures
+/// the finished acknowledgement, gives it the packet, and the frame follows in
+/// the next one.
+fn coalesced_ack_reservation(state: State) -> Int {
+  minimum(
+    packet_space.scheduled_ack_bytes(state.application_space),
+    path_mtu(state) / 2,
+  )
 }
 
 /// Queue a negotiated QUIC DATAGRAM without allowing an oversized frame into
@@ -1281,11 +1478,7 @@ pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
     frame.encode(frame.Datagram(data)) |> map_frame_result,
   )
   let frame_size = bit_array.byte_size(encoded)
-  let frame_limit =
-    minimum(
-      state.peer_maximum_datagram_frame_size,
-      path_mtu(state) - maximum_short_packet_overhead,
-    )
+  let frame_limit = datagram_frame_limit(state)
   case state.peer_maximum_datagram_frame_size, state.phase {
     0, _ -> Error(DatagramNotNegotiated)
     _, _ if frame_size > frame_limit -> Error(DatagramTooLarge(frame_limit))
@@ -1480,6 +1673,14 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
 /// `now_milliseconds`, so a window that shrank, or a round trip that grew,
 /// since the last send pushes the wake later instead of leaving the owner
 /// holding a release it has already passed.
+///
+/// Sizing that datagram re-derives the acknowledgement this connection owes
+/// and walks the streams the send path would draw from, so one wakeup costs
+/// O(open streams + retained ACK ranges). Both are bounded by limits this
+/// endpoint sets and the peer cannot raise -- `maximum_total_streams` and the
+/// peer stream limits it advertises, and `maximum_ack_ranges` -- so the work
+/// per wakeup has a fixed ceiling and is not worth memoising against state
+/// that changes on every packet.
 pub fn next_deadline(
   state: State,
   now_milliseconds: Int,
@@ -1655,8 +1856,8 @@ fn validate_config(
     && config.maximum_stream_receive_buffer >= 0
     && config.maximum_stream_send_buffer >= 0
     && config.maximum_total_streams > 0
-    && config.maximum_udp_payload_size >= 1200
-    && config.maximum_udp_payload_size <= 65_527
+    && config.maximum_udp_payload_size >= minimum_datagram_bytes
+    && config.maximum_udp_payload_size <= maximum_udp_payload_size
     && config.maximum_datagram_frame_size >= 0
     && config.idle_timeout_milliseconds > 0
     && config.draining_timeout_milliseconds > 0
@@ -1725,12 +1926,12 @@ fn create_rtt() -> Result(rtt.Estimator, Error) {
 fn create_congestion(config: Config) -> Result(CongestionState, Error) {
   case config.congestion_algorithm {
     NewReno ->
-      case new_reno.new(1200) {
+      case new_reno.new(minimum_datagram_bytes) {
         Ok(state) -> Ok(RenoState(state))
         Error(_) -> Error(InvalidConfiguration)
       }
     Cubic ->
-      case cubic.new(1200) {
+      case cubic.new(minimum_datagram_bytes) {
         Ok(state) -> Ok(CubicState(state))
         Error(_) -> Error(InvalidConfiguration)
       }
@@ -1738,7 +1939,7 @@ fn create_congestion(config: Config) -> Result(CongestionState, Error) {
 }
 
 fn create_pacer(_config: Config, now: Int) -> Result(pacer.State, Error) {
-  case pacer.new(10 * 1200, now) {
+  case pacer.new(pacer_burst_datagrams * minimum_datagram_bytes, now) {
     Ok(state) -> Ok(state)
     Error(_) -> Error(InvalidConfiguration)
   }
@@ -1854,17 +2055,19 @@ fn packet_space_deadline(
 /// Report when the pacer would release this connection's next datagram.
 ///
 /// The reservation the pacer returns is deliberately discarded: this asks a
-/// question about a hypothetical datagram rather than claiming budget for one.
-/// It asks about the largest datagram the path currently carries because the
-/// next datagram is never larger, while a wake armed for a smaller one would
-/// fire while the pacer still refuses that next one. `None` means no pacing
-/// wake is owed: either nothing is waiting to be sent, or the pacer would
-/// release a path-sized datagram immediately.
+/// question about the datagram the send path would build rather than claiming
+/// budget for one. The size it asks about is an upper bound on that datagram
+/// rather than the whole path: the send path commits the datagram it actually
+/// built, so a wake armed for a path-sized one would sleep through the instant
+/// a small write became sendable, while a wake armed for less than the send
+/// path builds would fire while the pacer still refuses it. `None` means no
+/// pacing wake is owed: either nothing is waiting to be sent, or the pacer
+/// would release that datagram immediately.
 fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
   case has_pending_output(state) {
     False -> None
     True ->
-      case ask_pacer(state, path_mtu(state), now_milliseconds) {
+      case ask_pacer(state, pending_datagram_bytes(state), now_milliseconds) {
         Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) -> Some(deadline)
         Ok(pacer.Decision(_, pacer.SendNow)) -> None
         // The pacer declines to answer for a datagram larger than one burst,
@@ -1873,6 +2076,67 @@ fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
         Error(pacer.InvalidInput) -> None
       }
   }
+}
+
+/// An upper bound on the datagram the send path would build from the output
+/// waiting right now.
+///
+/// One packet carries at most the acknowledgement this connection owes and one
+/// frame drawn from a queue or a stream, so the bound is the largest of those
+/// candidates plus what packet protection costs - and never more than the path
+/// itself, which is the ceiling every datagram is built to.
+fn pending_datagram_bytes(state: State) -> Int {
+  let frame_bytes =
+    [
+      state.initial_queue,
+      state.handshake_queue,
+      state.zero_rtt_queue,
+      state.application_queue,
+    ]
+    |> list.fold(pending_stream_bytes(state), fn(largest, queue) {
+      maximum(largest, queue_head_bytes(queue))
+    })
+  minimum(
+    path_mtu(state),
+    frame_bytes
+      + coalesced_ack_reservation(state)
+      + wire_packet.maximum_short_packet_overhead(),
+  )
+}
+
+/// The size of the frame at the head of one queue, which is the only frame the
+/// send path draws from it. A frame whose encoding fails is charged the whole
+/// pre-validation floor rather than being counted as free.
+fn queue_head_bytes(queue: List(frame.Frame)) -> Int {
+  case queue {
+    [] -> 0
+    [value, ..] ->
+      outgoing_frame_bytes(value) |> result.unwrap(minimum_datagram_bytes)
+  }
+}
+
+/// The most stream data one packet could draw: the bytes the widest sendable
+/// stream still retains, plus the header a STREAM frame writes ahead of them.
+///
+/// Retained bytes include those already sent and awaiting acknowledgement, so
+/// this over-states rather than under-states what the poll would emit, which
+/// is the side a pacing wake has to err on.
+fn pending_stream_bytes(state: State) -> Int {
+  list.fold(state.stream_order, 0, fn(largest, identifier) {
+    case dict.get(state.streams, identifier) {
+      Error(Nil) -> largest
+      Ok(stream) ->
+        case stream_would_emit(stream) {
+          False -> largest
+          True ->
+            maximum(
+              largest,
+              stream_state.buffered_send_bytes(stream)
+                + maximum_data_frame_header_bytes,
+            )
+        }
+    }
+  })
 }
 
 /// Report whether the send path would still draw a frame from this connection.
@@ -2260,6 +2524,10 @@ fn process_long_plaintext(
   codepoint: packet_space.ReceivedCodepoint,
   now_milliseconds: Int,
 ) -> Result(LongPacketReceipt, Error) {
+  // Long-header packets keep the fixed default budget. Initial keys are
+  // derivable from a connection ID any off-path sender can observe, so this
+  // decode is unauthenticated work; what this endpoint advertises as
+  // max_udp_payload_size must not widen it.
   use frames <- result.try(
     frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
   )
@@ -2711,9 +2979,10 @@ fn apply_peer_parameter(
       case pmtu.set_peer_maximum(state.pmtu, size) {
         Error(_) -> Error(ProtocolViolation)
         Ok(path_mtu) ->
-          Ok(
-            State(..state, peer_maximum_udp_payload_size: size, pmtu: path_mtu),
-          )
+          Ok(put_path_mtu(
+            State(..state, peer_maximum_udp_payload_size: size),
+            path_mtu,
+          ))
       }
     transport_parameter.MaxDatagramFrameSize(size) ->
       Ok(State(..state, peer_maximum_datagram_frame_size: size))
@@ -2737,17 +3006,17 @@ fn prepare_sendable_packet(
     True, _ -> Error(SpaceUnavailable)
     False, False -> Error(MissingWriteKeys(level))
     False, True -> {
-      use #(state, acknowledgement) <- result.try(take_due_ack(
+      use #(acked, acknowledgement) <- result.try(take_due_ack(
         state,
         level,
         now_milliseconds,
       ))
-      use #(state, outgoing) <- result.try(take_outgoing_frame(
-        state,
+      use #(state, frames) <- result.try(fill_path_sized_packet(
+        acked,
         level,
         maximum_frame_data_bytes,
+        acknowledgement,
       ))
-      let frames = combine_optional_frames(acknowledgement, outgoing)
       case frames {
         [] -> Ok(NoPacket(state))
         _ ->
@@ -2759,6 +3028,93 @@ fn prepare_sendable_packet(
           ))
       }
     }
+  }
+}
+
+/// Fill one packet with the acknowledgement it owes and the next frame the
+/// send path draws, keeping the finished datagram inside the validated path.
+///
+/// STREAM and CRYPTO data is split to whatever the acknowledgement leaves, so
+/// it always fits. A QUIC DATAGRAM frame is indivisible (RFC 9221 section 3)
+/// and is sized at queue time with the acknowledgement already subtracted, so
+/// it normally fits too - but the retained ranges can grow between those two
+/// moments. When the two no longer fit together the frame yields, not the
+/// acknowledgement: it stays at the head of its queue and rides the next
+/// packet, while the acknowledgement goes out now. RFC 9000 section 13.2.1
+/// bounds acknowledgement delay by max_ack_delay, and an application holding a
+/// full queue must not be able to defer one past that.
+///
+/// A frame that overflows the path with no acknowledgement beside it is one
+/// the path shrank underneath, since a black hole or a validated path change
+/// resets DPLPMTUD to the 1200-byte floor. An unreliable DATAGRAM is dropped
+/// there rather than sent past the path (RFC 9221 section 5).
+fn fill_path_sized_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  requested: Int,
+  acknowledgement: Option(frame.Frame),
+) -> Result(#(State, List(frame.Frame)), Error) {
+  use coalesced <- result.try(encoded_frame_bytes(acknowledgement))
+  let budget = path_frame_data_bytes(state, level, requested, coalesced)
+  use #(next, outgoing) <- result.try(take_outgoing_frame(state, level, budget))
+  use overflows <- result.try(overflows_path(state, level, coalesced, outgoing))
+  case overflows, acknowledgement {
+    False, _ -> Ok(#(next, combine_optional_frames(acknowledgement, outgoing)))
+    True, Some(value) -> Ok(#(state, [value]))
+    True, None -> Ok(#(next, keep_deliverable_frame(outgoing)))
+  }
+}
+
+/// Keep a frame the shrunken path can no longer carry only when dropping it
+/// would break the connection.
+///
+/// A DATAGRAM is unreliable by definition and RFC 9221 section 5 lets one be
+/// dropped, so it is. Every other frame the send path draws is reliable and is
+/// still emitted. That is safe because none of them can be oversized here: a
+/// STREAM or CRYPTO frame was split to the budget, and the two frames whose
+/// payload a caller supplies - NEW_TOKEN and CONNECTION_CLOSE - are bounded
+/// where they enter the connection so that both fit the 1200-byte floor a
+/// black hole resets the path to.
+fn keep_deliverable_frame(outgoing: Option(frame.Frame)) -> List(frame.Frame) {
+  case outgoing {
+    None | Some(frame.Datagram(_)) -> []
+    Some(value) -> [value]
+  }
+}
+
+/// Whether the frames chosen for one packet would put the finished datagram
+/// past the path once packet protection is paid for.
+///
+/// Initial and Handshake packets are not measured. They carry the fixed frame
+/// budget their caller asked for, which the runtimes keep well inside the
+/// 1200-byte floor every path carries, and the driver pads an Initial up to
+/// that floor; a caller asking for more would build a larger datagram than the
+/// floor, and capping that is follow-up work alongside the socket's DF option.
+/// A 0-RTT packet is measured against the long header it rides, which is wider
+/// than the short header a 1-RTT packet writes.
+fn overflows_path(
+  state: State,
+  level: engine.EncryptionLevel,
+  coalesced: Int,
+  outgoing: Option(frame.Frame),
+) -> Result(Bool, Error) {
+  case packet_protection_overhead(level), outgoing {
+    Some(overhead), Some(value) -> {
+      use bytes <- result.try(outgoing_frame_bytes(value))
+      Ok(coalesced + bytes + overhead > path_mtu(state))
+    }
+    _, _ -> Ok(False)
+  }
+}
+
+/// What protecting one packet at this level costs around its frames, and
+/// `None` for the two levels whose packets carry the caller's fixed request
+/// and are therefore never measured against the path.
+fn packet_protection_overhead(level: engine.EncryptionLevel) -> Option(Int) {
+  case level {
+    engine.OneRtt -> Some(wire_packet.maximum_short_packet_overhead())
+    engine.ZeroRtt -> Some(wire_packet.maximum_long_packet_overhead())
+    engine.Initial | engine.Handshake -> None
   }
 }
 
@@ -3291,19 +3647,36 @@ fn reserve_pacing(
 }
 
 /// Ask the pacer to release one datagram against the current window and RTT.
+/// The burst scales with the path so one path-sized datagram - including the
+/// DPLPMTUD probe that proves the path - always fits inside a single burst.
 fn ask_pacer(
   state: State,
   datagram_bytes: Int,
   now_milliseconds: Int,
 ) -> Result(pacer.Decision, pacer.Error) {
   let rtt.Snapshot(_, smoothed, _, _) = rtt.snapshot(state.estimator)
-  pacer.reserve(
+  use pacing <- result.try(pacer.resize_burst(
     state.pacer,
+    pacer_burst_bytes(state),
+  ))
+  pacer.reserve(
+    pacing,
     datagram_bytes,
     now_milliseconds,
     congestion_window(state),
     smoothed,
   )
+}
+
+/// Ten datagrams of the largest size the path is confirmed - or is being
+/// probed - to carry.
+fn pacer_burst_bytes(state: State) -> Int {
+  let confirmed = path_mtu(state)
+  let largest = case pmtu.outstanding_probe(state.pmtu) {
+    Some(probe) -> maximum(confirmed, probe)
+    None -> confirmed
+  }
+  pacer_burst_datagrams * largest
 }
 
 fn record_ecn_send(
@@ -3940,10 +4313,9 @@ fn receive_path_response(
       {
         Ok(validator) ->
           Ok(
-            State(
-              ..state,
-              path_validator: validator,
-              pmtu: pmtu.reset_path(state.pmtu),
+            put_path_mtu(
+              State(..state, path_validator: validator),
+              pmtu.reset_path(state.pmtu),
             )
             |> add_event(PathValidated),
           )
@@ -4450,7 +4822,7 @@ fn acknowledge_pmtu_packet(
   case pmtu.outstanding_probe(state.pmtu), packet_is_pmtu_probe(packet) {
     Some(size), True if size == packet.sent_bytes ->
       case pmtu.probe_acked(state.pmtu, size) {
-        Ok(path_mtu) -> Ok(State(..state, pmtu: path_mtu))
+        Ok(path_mtu) -> Ok(put_path_mtu(state, path_mtu))
         Error(error) -> Error(PmtuFailure(error))
       }
     _, _ -> Ok(state)
@@ -4468,14 +4840,15 @@ fn acknowledged_smaller_than_probe(
   }
 }
 
+/// Whether a sent packet has the exact shape `driver` gives a DPLPMTUD probe:
+/// a PING padded out to the size under test and nothing else. A PTO probe
+/// carries retransmitted frames alongside its PING, so it keeps its ordinary
+/// congestion response even when its size happens to match.
 fn packet_is_pmtu_probe(packet: packet_space.SentPacket) -> Bool {
-  list.any(packet.frames, fn(value) { value == frame.Ping })
-  && list.any(packet.frames, fn(value) {
-    case value {
-      frame.Padding(_) -> True
-      _ -> False
-    }
-  })
+  case packet.frames {
+    [frame.Ping, frame.Padding(_)] -> True
+    _ -> False
+  }
 }
 
 fn acknowledge_congestion_packet(
@@ -4595,11 +4968,10 @@ fn apply_lost_packets(
         True -> State(..state, retransmissions: state.retransmissions + 1)
         False -> state
       }
-      use state <- result.try(lose_congestion_packet(
-        state,
-        packet,
-        now_milliseconds,
-      ))
+      use state <- result.try(case outstanding_pmtu_probe(state, packet) {
+        True -> abandon_pmtu_probe(state, packet)
+        False -> lose_congestion_packet(state, packet, now_milliseconds)
+      })
       use state <- result.try(lose_pmtu_packet(
         state,
         packet,
@@ -4625,10 +4997,36 @@ fn lose_pmtu_packet(
   case pmtu.outstanding_probe(state.pmtu), packet_is_pmtu_probe(packet) {
     Some(size), True if size == packet.sent_bytes ->
       case pmtu.probe_lost(state.pmtu, size, smaller_packet_acknowledged) {
-        Ok(path_mtu) -> Ok(State(..state, pmtu: path_mtu))
+        Ok(path_mtu) -> Ok(put_path_mtu(state, path_mtu))
         Error(error) -> Error(PmtuFailure(error))
       }
     _, _ -> Ok(state)
+  }
+}
+
+/// Whether this lost packet is exactly the DPLPMTUD probe currently under
+/// test. RFC 9002 section 3: a probe is deliberately larger than the confirmed
+/// path, so losing one is not evidence of congestion.
+fn outstanding_pmtu_probe(
+  state: State,
+  packet: packet_space.SentPacket,
+) -> Bool {
+  case pmtu.outstanding_probe(state.pmtu) {
+    Some(size) -> size == packet.sent_bytes && packet_is_pmtu_probe(packet)
+    None -> False
+  }
+}
+
+/// Retire a lost probe's bytes without a congestion response.
+fn abandon_pmtu_probe(
+  state: State,
+  packet: packet_space.SentPacket,
+) -> Result(State, Error) {
+  case packet.in_flight {
+    False -> Ok(state)
+    True ->
+      abandon_early_congestion(state.congestion, packet.sent_bytes)
+      |> result.map(fn(congestion) { State(..state, congestion: congestion) })
   }
 }
 
@@ -4835,7 +5233,10 @@ fn close_valid(
         State(
           ..queue_application_frame(
             state,
-            frame.ConnectionCloseApplication(application_error_code, reason),
+            frame.ConnectionCloseApplication(
+              application_error_code,
+              bounded_reason(reason),
+            ),
           ),
           phase: Closing,
           close_deadline_milliseconds: Some(
@@ -5004,9 +5405,15 @@ fn switch_congestion_algorithm(
     True -> Ok(state)
     False -> {
       let in_flight = bytes_in_flight(state)
+      // The replacement controller starts on the path this connection is
+      // actually sending on. Sizing it from the configured
+      // max_udp_payload_size instead would hand a live connection an initial
+      // window of ten datagrams it has never been able to send, and would
+      // leave RFC 9002 section 7.2's window floor above every real datagram.
+      let datagram_bytes = path_mtu(state)
       let next = case algorithm {
         NewReno ->
-          case new_reno.new(state.config.maximum_udp_payload_size) {
+          case new_reno.new(datagram_bytes) {
             Error(_) -> Error(InvalidConfiguration)
             Ok(controller) ->
               new_reno.on_packet_sent(controller, in_flight, in_flight > 0)
@@ -5014,7 +5421,7 @@ fn switch_congestion_algorithm(
               |> result.map_error(fn(_) { InvalidInput })
           }
         Cubic ->
-          case cubic.new(state.config.maximum_udp_payload_size) {
+          case cubic.new(datagram_bytes) {
             Error(_) -> Error(InvalidConfiguration)
             Ok(controller) ->
               cubic.on_packet_sent(controller, in_flight, in_flight > 0)
@@ -5034,8 +5441,76 @@ fn switch_congestion_algorithm(
   }
 }
 
+/// Frame-decoding limits for one decrypted 1-RTT packet.
+///
+/// `frame.decode_all` charges PADDING one unit per byte, so a path-sized
+/// packet - a DPLPMTUD probe above all - exhausts the 4096-unit default long
+/// before its frames are decoded. The budget therefore grows to the packet's
+/// own length, which is the tightest bound that still admits a full-size
+/// packet: no frame encodes in less than one byte, so the peer can never buy
+/// more decoding work than the bytes it authenticated, and the datagram size
+/// is itself bounded by the max_udp_payload_size this endpoint advertised.
+///
+/// This applies to 1-RTT packets alone. They are protected by keys only a
+/// completed handshake yields, so the sender is an authenticated peer rather
+/// than anyone who can observe a connection ID.
+fn short_packet_frame_limits(plaintext: BitArray) -> frame.Limits {
+  let defaults = frame.default_limits()
+  frame.Limits(
+    ..defaults,
+    max_frames: maximum(defaults.max_frames, bit_array.byte_size(plaintext)),
+  )
+}
+
+/// Truncate a caller's reason phrase to what CONNECTION_CLOSE can carry on the
+/// smallest path this connection can fall back to.
+///
+/// The frame is reliable and indivisible: it cannot be split to fit a packet
+/// and it cannot be dropped, so the phrase is bounded here rather than
+/// producing an oversized datagram once a black hole resets the path to the
+/// 1200-byte floor. Truncation walks graphemes so what survives is still valid
+/// UTF-8.
+fn bounded_reason(reason: String) -> String {
+  case string.byte_size(reason) <= maximum_close_reason_bytes {
+    True -> reason
+    False ->
+      take_reason_graphemes(
+        string.to_graphemes(reason),
+        maximum_close_reason_bytes,
+        "",
+      )
+  }
+}
+
+fn take_reason_graphemes(
+  graphemes: List(String),
+  remaining: Int,
+  taken: String,
+) -> String {
+  case graphemes {
+    [] -> taken
+    [grapheme, ..rest] ->
+      case string.byte_size(grapheme) > remaining {
+        True -> taken
+        False ->
+          take_reason_graphemes(
+            rest,
+            remaining - string.byte_size(grapheme),
+            taken <> grapheme,
+          )
+      }
+  }
+}
+
 fn minimum(left: Int, right: Int) -> Int {
   case left < right {
+    True -> left
+    False -> right
+  }
+}
+
+fn maximum(left: Int, right: Int) -> Int {
+  case left > right {
     True -> left
     False -> right
   }
