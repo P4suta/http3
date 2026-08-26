@@ -6,6 +6,16 @@
 //// admitted connection is owned by its own supervised
 //// `connection_worker` actor, which the listener spawns, monitors, and
 //// forwards routed datagram batches to.
+////
+//// A connection actor outlives neither its transport nor this listener. When
+//// one ends it sends `Released` and exits, and the listener drops its route,
+//// its connection ID, every alias for it, its place in the accept queue, and
+//// the admission slot it held. The monitor `Down` for the same actor runs the
+//// identical release, so whichever of the two arrives first does the work and
+//// the second finds no route and does nothing. Dropping the identifier and
+//// its aliases in that same step is what keeps a datagram naming a released
+//// connection from reaching a dead actor: it resolves to no route at all, so
+//// a long header takes the unknown-route path and a short header is dropped.
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -792,7 +802,33 @@ fn handle_notice(
   worker: Worker,
   notice: connection_worker.ConnectionToListener,
 ) -> Worker {
-  let connection_worker.Established(identifier) = notice
+  case notice {
+    connection_worker.Established(identifier) ->
+      handle_established(worker, identifier)
+    connection_worker.Released(identifier, pid) ->
+      release_reported_connection(worker, identifier, pid)
+  }
+}
+
+/// Free a connection the actor itself reported as ended, before its monitor
+/// `Down` arrives. The identifier has to still be the one this process routes,
+/// so a notice that outlived its route -- or names a connection already
+/// replaced -- releases nothing.
+fn release_reported_connection(
+  worker: Worker,
+  identifier: BitArray,
+  pid: Pid,
+) -> Worker {
+  case dict.get(worker.routes, pid) == Ok(identifier) {
+    False -> worker
+    True -> release_connection_pid(worker, pid)
+  }
+}
+
+/// Take one connection whose handshake completed off the handshake budget and
+/// hand it to an accept waiter or the accept queue. A connection already
+/// established, or already released, is left alone.
+fn handle_established(worker: Worker, identifier: BitArray) -> Worker {
   case dict.get(worker.connections, identifier) {
     Error(_) -> worker
     Ok(Entry(established: True, ..)) -> worker
@@ -844,6 +880,8 @@ fn enqueue_connection(
   }
 }
 
+/// Free a connection whose actor the monitor reports as gone. An actor that
+/// reported `Released` first has no route left, so this finds nothing to do.
 fn release_connection(worker: Worker, down: process.Down) -> Worker {
   case down {
     process.ProcessDown(_, pid, _) -> release_connection_pid(worker, pid)
@@ -851,6 +889,10 @@ fn release_connection(worker: Worker, down: process.Down) -> Worker {
   }
 }
 
+/// Drop everything the listener held for one connection actor: its route, its
+/// connection ID, every alias pointing at that ID, its place in the accept
+/// queue, and the admission slot it occupied. Releasing a process that owns no
+/// route is a no-op, which is what makes the two release paths idempotent.
 fn release_connection_pid(worker: Worker, pid: Pid) -> Worker {
   case dict.get(worker.routes, pid) {
     Error(_) -> worker

@@ -4,7 +4,7 @@
 //// stalled connection cannot delay unrelated connections on the same listener.
 
 import gleam/bit_array
-import gleam/erlang/process
+import gleam/erlang/process.{type Pid}
 import gleam/result
 import gleam_quic
 import gleam_quic/client
@@ -17,11 +17,20 @@ import gleeunit/should
 @external(erlang, "gleam_quic_test_ffi", "fixture")
 fn fixture(name: String) -> Result(BitArray, Nil)
 
-@external(erlang, "gleam_quic_test_ffi", "processes_labelled")
-fn processes_labelled(label: String) -> Int
+/// Count only the connection actors one listener owns, so actors left over
+/// from any other listener cannot decide this test.
+@external(erlang, "gleam_quic_test_ffi", "processes_labelled_under")
+fn processes_labelled_under(label: String, parent: Pid) -> Int
+
+/// The process behind one opaque public handle, found by its fixed role label.
+@external(erlang, "gleam_quic_test_ffi", "labelled_pid")
+fn labelled_pid(handle: handle, label: String) -> Result(Pid, Nil)
 
 /// The fixed diagnostic label every per-connection actor must carry.
 const connection_label = "gleam_quic.connection"
+
+/// The fixed diagnostic label the owning listener actor carries.
+const listener_label = "gleam_quic.listener"
 
 /// Every wait in this module is bounded; exceeding a bound is a failure.
 const settle_bound_milliseconds = 2000
@@ -63,6 +72,7 @@ pub fn listener_owns_one_labelled_actor_per_accepted_connection_test() -> Nil {
     |> server.start
     |> should.be_ok
   let port = server.port(listener) |> should.be_ok
+  let listener_actor = labelled_pid(listener, listener_label) |> should.be_ok
 
   let first = connect(port, ca_certificate)
   let first_peer = server.accept(listener) |> should.be_ok
@@ -72,7 +82,8 @@ pub fn listener_owns_one_labelled_actor_per_accepted_connection_test() -> Nil {
   let third_peer = server.accept(listener) |> should.be_ok
 
   // One supervised actor per accepted connection, and nothing else.
-  let accepted = settled_label_count(3, settle_bound_milliseconds)
+  let accepted =
+    settled_label_count(listener_actor, 3, settle_bound_milliseconds)
 
   let _first_closed = client.close(first)
   let _second_closed = client.close(second)
@@ -83,7 +94,8 @@ pub fn listener_owns_one_labelled_actor_per_accepted_connection_test() -> Nil {
   let stopped = server.stop(listener)
 
   // Stopping the listener terminates every connection actor it owned.
-  let drained = settled_label_count(0, settle_bound_milliseconds)
+  let drained =
+    settled_label_count(listener_actor, 0, settle_bound_milliseconds)
 
   assert accepted == 3
   assert stopped == Ok(server.Stopped)
@@ -321,17 +333,25 @@ fn flood(stream: client.Stream, chunk: BitArray, remaining: Int) -> Nil {
   }
 }
 
-fn settled_label_count(expected: Int, bound_milliseconds: Int) -> Int {
-  poll_label_count(expected, udp.monotonic_millisecond() + bound_milliseconds)
+fn settled_label_count(
+  listener_actor: Pid,
+  expected: Int,
+  bound_milliseconds: Int,
+) -> Int {
+  poll_label_count(
+    listener_actor,
+    expected,
+    udp.monotonic_millisecond() + bound_milliseconds,
+  )
 }
 
-fn poll_label_count(expected: Int, deadline: Int) -> Int {
-  let count = processes_labelled(connection_label)
+fn poll_label_count(listener_actor: Pid, expected: Int, deadline: Int) -> Int {
+  let count = processes_labelled_under(connection_label, listener_actor)
   case count == expected || udp.monotonic_millisecond() >= deadline {
     True -> count
     False -> {
       process.sleep(20)
-      poll_label_count(expected, deadline)
+      poll_label_count(listener_actor, expected, deadline)
     }
   }
 }

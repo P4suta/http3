@@ -3,8 +3,9 @@
 -export([
     fixture/1,
     inject_relay_connection_reset/1,
+    labelled_pid/2,
     linux_platform/0,
-    processes_labelled/1,
+    processes_labelled_under/2,
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1
 ]).
@@ -23,11 +24,46 @@ inject_relay_connection_reset(#{pid := Pid, socket := Socket}) ->
     timer:sleep(50),
     nil.
 
-%% Count the live processes carrying one fixed `proc_lib:set_label/1` label,
-%% so topology tests can pin how many actors of a role exist right now.
--spec processes_labelled(binary()) -> integer().
-processes_labelled(Label) ->
-    length([Pid || Pid <- erlang:processes(), proc_lib:get_label(Pid) =:= Label]).
+%% Count the live processes that carry one fixed `proc_lib:set_label/1` label
+%% and were spawned by one owning actor, so topology tests can pin how many
+%% actors of a role one endpoint owns right now without counting the leftovers
+%% of any other endpoint.
+-spec processes_labelled_under(binary(), pid()) -> integer().
+processes_labelled_under(Label, Parent) ->
+    length([Pid || Pid <- erlang:processes(),
+                   proc_lib:get_label(Pid) =:= Label,
+                   parent_of(Pid) =:= Parent]).
+
+-spec parent_of(pid()) -> pid() | undefined.
+parent_of(Pid) ->
+    case erlang:process_info(Pid, parent) of
+        {parent, Parent} when is_pid(Parent) -> Parent;
+        _Other -> undefined
+    end.
+
+%% Find the process behind one opaque public handle by its fixed role label, so
+%% a lifecycle test can watch exactly the actor that handle names.
+-spec labelled_pid(term(), binary()) -> {ok, pid()} | {error, nil}.
+labelled_pid(Handle, Label) ->
+    case labelled_pids(Handle, Label) of
+        [Pid | _Rest] -> {ok, Pid};
+        [] -> {error, nil}
+    end.
+
+-spec labelled_pids(term(), binary()) -> [pid()].
+labelled_pids(Pid, Label) when is_pid(Pid) ->
+    case proc_lib:get_label(Pid) =:= Label of
+        true -> [Pid];
+        false -> []
+    end;
+labelled_pids(Tuple, Label) when is_tuple(Tuple) ->
+    labelled_pids(tuple_to_list(Tuple), Label);
+labelled_pids(Map, Label) when is_map(Map) ->
+    labelled_pids(maps:to_list(Map), Label);
+labelled_pids([Head | Tail], Label) ->
+    labelled_pids(Head, Label) ++ labelled_pids(Tail, Label);
+labelled_pids(_Other, _Label) ->
+    [].
 
 %% Report the inet user-level receive buffer (`buffer`) of every socket behind
 %% a production UDP handle, so tests can pin the per-datagram allocation size.

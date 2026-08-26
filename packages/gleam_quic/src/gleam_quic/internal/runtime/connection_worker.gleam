@@ -9,6 +9,24 @@
 ////
 //// Sends go straight to the listener-owned socket with `udp.send`, which any
 //// process may call, so an outbound datagram never needs a listener hop.
+////
+//// The actor's life ends with its transport. Once the phase reaches `Closed`
+//// -- a local close finished draining, the idle timeout expired, or the peer
+//// vanished and the idle timeout expired for it -- the transport arms no
+//// further deadline and owes no further output. `shutdown` runs then: the
+//// listener is told the connection is `Released`, every waiter still parked
+//// on it is failed with the typed closed error (`ConnectionClosed`, so its
+//// owner reads a closed connection rather than a protocol failure), the qlog
+//// writer is closed, and the loop returns so the process exits normally. A
+//// connection that fails ends the same way, with the failure as the waiters'
+//// error. The listener frees the connection ID, its aliases, and the
+//// admission slot on that notice or on the monitor `Down`, whichever it sees
+//// first.
+////
+//// Every wait in the loop is bounded, so no phase can strand the process even
+//// if no timer announces it: `next_worker_deadline` always yields a deadline,
+//// falling back to `maximum_park_milliseconds` when neither the transport nor
+//// a waiter arms one.
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -49,6 +67,11 @@ const pmtu_probe_interval_milliseconds = 50
 const ticket_age_tolerance_milliseconds = 10_000
 
 const worker_reply_grace_milliseconds = 100
+
+// The longest this actor parks when neither the transport nor any waiter arms
+// a deadline of its own. The loop then still re-examines its phase this often,
+// which is what gives every wait here a fixed upper bound.
+const maximum_park_milliseconds = 1000
 
 /// One accepted generic QUIC connection, addressed by its own actor.
 pub opaque type Connection {
@@ -117,6 +140,11 @@ pub type ListenerToConnection {
 pub type ConnectionToListener {
   /// The handshake completed, so this connection can be accepted.
   Established(identifier: BitArray)
+  /// The connection ended, so the listener owns its identifiers again. The
+  /// actor sends this immediately before it exits, so the listener frees the
+  /// route, its aliases, and the admission slot without waiting for the
+  /// monitor `Down` -- and frees them exactly once whichever arrives first.
+  Released(identifier: BitArray, worker: Pid)
 }
 
 /// Everything one connection actor owns from the moment it is spawned.
@@ -549,15 +577,34 @@ fn initialise(bootstrap: Bootstrap, ready: Subject(Connection)) -> Nil {
   ))
 }
 
+/// One turn of this actor's life: drain what arrived, expire what timed out,
+/// then either end -- on a failure, or on a transport that reached `Closed` --
+/// drive the work the turn made pending, or park until the next message or
+/// deadline.
 fn loop(worker: Worker) -> Nil {
   let worker = when_live(worker, dispatch_all_events)
   let now = udp.monotonic_millisecond()
   let worker = when_live(worker, expire_waiters(_, now))
   let worker = when_live(worker, retry_pending_sends)
-  case worker.failure, worker.dirty {
-    Some(error), _ -> shutdown(worker, error)
-    None, True -> drive_and_loop(worker)
-    None, False -> wait_for_work(worker, now)
+  case worker.failure, transport_closed(worker), worker.dirty {
+    Some(error), _, _ -> shutdown(worker, error)
+    // A closed transport owes nothing further and can never reopen, so the
+    // actor releases what it owns and exits rather than staying resident.
+    None, True, _ -> shutdown(worker, ConnectionClosed)
+    None, False, True -> drive_and_loop(worker)
+    None, False, False -> wait_for_work(worker, now)
+  }
+}
+
+/// Whether the transport phase reached `Closed`, after a local close drained,
+/// after the idle timeout expired, or after the peer vanished.
+fn transport_closed(worker: Worker) -> Bool {
+  case server_transport.phase(worker.peer.connection) {
+    transport.Closed -> True
+    transport.Closing
+    | transport.Draining
+    | transport.Handshaking
+    | transport.Established -> False
   }
 }
 
@@ -568,19 +615,19 @@ fn when_live(worker: Worker, step: fn(Worker) -> Worker) -> Worker {
   }
 }
 
+// Park until the next message or the next deadline, whichever comes first.
+// The deadline is never absent, so this wait is always bounded: a phase change
+// no timer announced is still noticed within one `maximum_park_milliseconds`.
 // nolint: thrown_away_error -- a failed step is connection teardown here.
 fn wait_for_work(worker: Worker, now: Int) -> Nil {
   case next_worker_deadline(worker, now) {
     Error(_) -> shutdown(worker, ConnectionClosed)
     Ok(deadline) -> {
-      let received = case deadline {
-        None -> Ok(process.selector_receive_forever(worker.selector))
-        Some(value) ->
-          process.selector_receive(
-            worker.selector,
-            within: int.max(0, value - now),
-          )
-      }
+      let received =
+        process.selector_receive(
+          worker.selector,
+          within: int.max(0, deadline - now),
+        )
       case received {
         Ok(ListenerExited) -> shutdown(worker, ListenerClosed)
         Ok(ReceivedCommand(command)) ->
@@ -618,12 +665,21 @@ fn tick_and_flush(worker: Worker) -> Worker {
   let worker = Worker(..worker, dirty: False)
   case server_transport.tick(worker.peer.connection, now) {
     Error(_) -> fail_connection(worker, QuicFailure)
-    Ok(connection) ->
-      put_peer(worker, PeerState(..worker.peer, connection: connection))
-      |> when_live(maybe_queue_new_token(_, now))
-      |> when_live(maybe_issue_session_ticket(_, now))
-      |> when_live(maybe_probe(_, now))
-      |> when_live(flush_connection(_, now, maximum_packets_per_flush))
+    Ok(connection) -> {
+      let worker =
+        put_peer(worker, PeerState(..worker.peer, connection: connection))
+      // A connection the tick just closed sends nothing more; the loop turns
+      // that phase into an orderly exit.
+      case transport_closed(worker) {
+        True -> worker
+        False ->
+          worker
+          |> when_live(maybe_queue_new_token(_, now))
+          |> when_live(maybe_issue_session_ticket(_, now))
+          |> when_live(maybe_probe(_, now))
+          |> when_live(flush_connection(_, now, maximum_packets_per_flush))
+      }
+    }
   }
 }
 
@@ -1684,10 +1740,11 @@ fn expire_stream_waiters(
   }
 }
 
-fn next_worker_deadline(
-  worker: Worker,
-  now: Int,
-) -> Result(Option(Int), Error) {
+/// The next moment this actor has to wake: the earliest of the transport's own
+/// deadline, the PMTU probe, and every waiter's expiry. A transport that arms
+/// no deadline at all still gets one here, so `Ok(None)` -- the unbounded park
+/// -- is not representable and every wait in this loop stays bounded.
+fn next_worker_deadline(worker: Worker, now: Int) -> Result(Int, Error) {
   let peer = worker.peer
   use protocol <- result.try(
     server_transport.next_deadline(peer.connection, now)
@@ -1699,7 +1756,8 @@ fn next_worker_deadline(
     |> earlier_deadline(positive_deadline(peer.next_pmtu_probe_milliseconds))
     |> earlier_deadline(stream_waiter_deadline(peer.stream_waiter))
     |> earlier_deadline(datagram_waiter_deadline(peer.datagram_waiter))
-    |> stream_deadlines(dict.values(peer.streams)),
+    |> stream_deadlines(dict.values(peer.streams))
+    |> option.unwrap(now + maximum_park_milliseconds),
   )
 }
 
@@ -1747,7 +1805,14 @@ fn fail_peer_waiters(peer: PeerState, error: Error) -> Nil {
   })
 }
 
+/// End this actor and release everything it owns. The listener hears
+/// `Released` first, so the connection ID, its aliases, the accept-queue slot,
+/// and the admission slot are freed without waiting for the monitor `Down`;
+/// then every waiter still parked on this connection is failed with `error`
+/// and the qlog writer is closed. Returning ends the loop, so the process
+/// exits normally.
 fn shutdown(worker: Worker, error: Error) -> Nil {
+  process.send(worker.notices, Released(worker.identifier, process.self()))
   fail_peer_waiters(worker.peer, error)
   close_qlog(worker.peer.qlog_writer)
 }

@@ -288,15 +288,41 @@ Every live resource has one owner:
 
 The listener spawns each connection actor unlinked and monitors it. The actor
 reports its completed handshake back to the listener, which then hands it to an
-accept waiter or to the bounded accept queue. When an actor exits -- because it
-closed, failed, or was refused by the accept queue -- its `Down` frees its
-connection IDs and aliases and releases its admission count; the actor itself
-fails its own pending waiters first. Each actor monitors the listener in turn,
-so a listener that stops takes every connection it owned with it. Connection
-actors send on the listener-owned socket directly, so no outbound datagram
-needs a listener hop; the listener forwards each routed inbound batch to the
-owning actor. The server never issues additional local connection IDs, so
-routing tracks exactly one identifier per connection plus the pre-Retry alias.
+accept waiter or to the bounded accept queue.
+
+A connection actor ends the moment its transport phase reaches `Closed` -- when
+a local close finished draining, when the idle timeout expired, or when the peer
+vanished and the idle timeout expired for it. A closed transport owes no further
+output and arms no further deadline, so the actor releases everything it owns
+instead of staying resident for the listener's lifetime: it fails every pending
+waiter with the typed closed error, closes its qlog writer, tells the listener
+it is released, and exits. The typed error is what its owner sees, so a waiter
+on a connection that ended reads a closed connection rather than a protocol
+failure.
+
+The actor's own wait is bounded whatever the phase. Its loop parks until the
+earliest of the transport deadline, the PMTU probe, and every waiter's expiry,
+and when none of those arms a deadline it still parks for a bounded interval
+rather than indefinitely, so a phase no timer announced is noticed within that
+interval.
+
+Releasing one connection frees its connection ID, its aliases, and its admission
+count, and drops it from the accept queue. The listener performs that release on
+the actor's `Released` notice and on the monitor `Down` for the same actor,
+whichever arrives first; the second finds no route left for that process and
+does nothing, so the release is idempotent, and a notice whose identifier is no
+longer the one that process routes releases nothing. Because the identifier and
+its aliases are dropped in the same step as the route, a datagram naming a
+released connection ID resolves to no route at all: a long header takes the
+unknown-route path and a short header is dropped, and neither reaches a dead
+actor.
+
+Each actor monitors the listener in turn, so a listener that stops takes every
+connection it owned with it. Connection actors send on the listener-owned socket
+directly, so no outbound datagram needs a listener hop; the listener forwards
+each routed inbound batch to the owning actor. The server never issues
+additional local connection IDs, so routing tracks exactly one identifier per
+connection plus the pre-Retry alias.
 
 Known peer-controlled lengths, counts, tables, stream windows, queues,
 Capsules, Datagrams, packet histories, retained keys, terminal entries,
