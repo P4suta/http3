@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/string
 import gleam_quic/internal/qlog
 import gleeunit/should
 
@@ -10,6 +11,17 @@ fn file_contains(directory: String, text: String) -> Bool
 
 @external(erlang, "qlog_test_ffi", "fail_device_writer")
 fn fail_device_writer(writer: qlog.Writer) -> Result(Nil, Nil)
+
+@external(erlang, "qlog_test_ffi", "with_tmpdir_override")
+fn with_tmpdir_override(run: fn(String) -> value) -> value
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn scratch_directory_follows_temporary_directory_environment_test() -> Nil {
+  with_tmpdir_override(fn(temporary_root) {
+    let directory = with_directory(fn(directory) { directory })
+    assert string.starts_with(directory, temporary_root <> "/")
+  })
+}
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn async_writer_is_bounded_and_revision_pinned_test() -> Nil {

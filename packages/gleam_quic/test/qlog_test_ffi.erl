@@ -1,6 +1,11 @@
 -module(qlog_test_ffi).
 
--export([fail_device_writer/1, file_contains/2, with_directory/1]).
+-export([
+    fail_device_writer/1,
+    file_contains/2,
+    with_directory/1,
+    with_tmpdir_override/1
+]).
 
 -spec fail_device_writer(tuple()) -> {ok, nil} | {error, nil}.
 fail_device_writer({writer, Admission, _Epoch}) when is_pid(Admission) ->
@@ -38,14 +43,58 @@ is_device_writer(Pid) ->
         _ -> false
     end.
 
+%% Runs Fun with the path of a uniquely named scratch directory and deletes
+%% that directory afterwards, whether or not Fun created it.
 -spec with_directory(fun((binary()) -> term())) -> term().
 with_directory(Fun) when is_function(Fun, 1) ->
-    Suffix = integer_to_list(erlang:unique_integer([positive, monotonic])),
-    Directory = filename:join("/tmp", "gleam-quic-qlog-test-" ++ Suffix),
+    Directory = unique_scratch_path("gleam-quic-qlog-test-"),
     try Fun(list_to_binary(Directory))
     after
         _ = file:del_dir_r(Directory)
     end.
+
+%% Points TMPDIR at a fresh scratch directory for the duration of Fun, then
+%% restores the previous value and deletes the directory.
+-spec with_tmpdir_override(fun((binary()) -> term())) -> term().
+with_tmpdir_override(Fun) when is_function(Fun, 1) ->
+    Root = unique_scratch_path("gleam-quic-tmpdir-test-"),
+    ok = filelib:ensure_path(Root),
+    Previous = os:getenv("TMPDIR"),
+    true = os:putenv("TMPDIR", Root),
+    try Fun(list_to_binary(Root))
+    after
+        restore_environment("TMPDIR", Previous),
+        _ = file:del_dir_r(Root)
+    end.
+
+%% Returns a unique, not-yet-created path under the OS temporary directory.
+-spec unique_scratch_path(string()) -> string().
+unique_scratch_path(Prefix) ->
+    Suffix = integer_to_list(erlang:unique_integer([positive, monotonic])),
+    filename:join(temporary_root(), Prefix ++ Suffix).
+
+%% First non-empty of TMPDIR, TEMP, and TMP, falling back to "/tmp", so the
+%% fixtures also work where /tmp is read-only or absent, such as on Windows.
+-spec temporary_root() -> string().
+temporary_root() ->
+    first_environment_value(["TMPDIR", "TEMP", "TMP"], "/tmp").
+
+-spec first_environment_value([string()], string()) -> string().
+first_environment_value([], Default) ->
+    Default;
+first_environment_value([Name | Rest], Default) ->
+    case os:getenv(Name) of
+        [_ | _] = Value -> Value;
+        _ -> first_environment_value(Rest, Default)
+    end.
+
+-spec restore_environment(string(), string() | false) -> ok.
+restore_environment(Name, false) ->
+    _ = os:unsetenv(Name),
+    ok;
+restore_environment(Name, Value) ->
+    _ = os:putenv(Name, Value),
+    ok.
 
 -spec file_contains(binary(), binary()) -> boolean().
 file_contains(Directory, Text)

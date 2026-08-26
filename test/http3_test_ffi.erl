@@ -23,7 +23,8 @@
     with_lossy_proxy/3,
     with_mtu_limited_proxy/3,
     with_qlog_directory/1,
-    with_reordering_proxy/3
+    with_reordering_proxy/3,
+    with_tmpdir_override/1
 ]).
 
 -define(FIXTURE_TIMEOUT, 2000).
@@ -33,10 +34,11 @@
 pause_milliseconds(Milliseconds) ->
     timer:sleep(Milliseconds).
 
+%% Runs Fun with the path of a uniquely named scratch directory, reports how
+%% many qlog traces were written there, and deletes the directory afterwards.
 -spec with_qlog_directory(fun((binary()) -> term())) -> term().
 with_qlog_directory(Fun) when is_function(Fun, 1) ->
-    Suffix = integer_to_list(erlang:unique_integer([positive, monotonic])),
-    Directory = filename:join("/tmp", "http3-qlog-test-" ++ Suffix),
+    Directory = unique_scratch_path("http3-qlog-test-"),
     try
         Result = Fun(list_to_binary(Directory)),
         Files = filelib:wildcard(filename:join(Directory, "*.qlog")),
@@ -44,6 +46,49 @@ with_qlog_directory(Fun) when is_function(Fun, 1) ->
     after
         _ = file:del_dir_r(Directory)
     end.
+
+%% Points TMPDIR at a fresh scratch directory for the duration of Fun, then
+%% restores the previous value and deletes the directory.
+-spec with_tmpdir_override(fun((binary()) -> term())) -> term().
+with_tmpdir_override(Fun) when is_function(Fun, 1) ->
+    Root = unique_scratch_path("http3-tmpdir-test-"),
+    ok = filelib:ensure_path(Root),
+    Previous = os:getenv("TMPDIR"),
+    true = os:putenv("TMPDIR", Root),
+    try Fun(list_to_binary(Root))
+    after
+        restore_environment("TMPDIR", Previous),
+        _ = file:del_dir_r(Root)
+    end.
+
+%% Returns a unique, not-yet-created path under the OS temporary directory.
+-spec unique_scratch_path(string()) -> string().
+unique_scratch_path(Prefix) ->
+    Suffix = integer_to_list(erlang:unique_integer([positive, monotonic])),
+    filename:join(temporary_root(), Prefix ++ Suffix).
+
+%% First non-empty of TMPDIR, TEMP, and TMP, falling back to "/tmp", so the
+%% fixtures also work where /tmp is read-only or absent, such as on Windows.
+-spec temporary_root() -> string().
+temporary_root() ->
+    first_environment_value(["TMPDIR", "TEMP", "TMP"], "/tmp").
+
+-spec first_environment_value([string()], string()) -> string().
+first_environment_value([], Default) ->
+    Default;
+first_environment_value([Name | Rest], Default) ->
+    case os:getenv(Name) of
+        [_ | _] = Value -> Value;
+        _ -> first_environment_value(Rest, Default)
+    end.
+
+-spec restore_environment(string(), string() | false) -> ok.
+restore_environment(Name, false) ->
+    _ = os:unsetenv(Name),
+    ok;
+restore_environment(Name, Value) ->
+    _ = os:putenv(Name, Value),
+    ok.
 
 -spec qlog_event_count(binary(), binary()) -> non_neg_integer().
 qlog_event_count(Directory, EventName)

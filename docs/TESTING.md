@@ -262,6 +262,11 @@ Shutdown and cancellation paths are idempotent. Tests use OS-assigned loopback
 ports, do not depend on execution order, and do not leave mailbox messages,
 qlogs, Python bytecode, or temporary peer artifacts in the working tree.
 
+Scratch directories are created under the first non-empty of the `TMPDIR`,
+`TEMP`, and `TMP` environment variables, falling back to `/tmp`, so fixtures
+still run where `/tmp` is read-only or absent, and each fixture deletes the
+uniquely named subdirectory it created.
+
 ## Local completion commands
 
 Run the reproducible local gate from the repository root:
