@@ -1,0 +1,292 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  model:
+    name: State model shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run randomized state model
+        run: mise run model -- --shard "${{ matrix.shard }}" --shards 8
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate model (shard ${{ matrix.shard }}) failed"
+
+      - name: Upload model evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-model-shard-${{ matrix.shard }}
+          path: build/model/
+          if-no-files-found: ignore
+
+  coverage-full:
+    name: Whole-repository coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run full coverage
+        run: mise run coverage-full
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate coverage-full failed"
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-coverage-full
+          path: build/coverage/
+          if-no-files-found: ignore
+
+  interop-matrix:
+    name: Interop ${{ matrix.peer }} on OTP ${{ matrix.otp }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        peer:
+          - aioquic
+          - quicgo
+        otp:
+          - "28"
+          - "29"
+    env:
+      MISE_ERLANG_VERSION: ${{ matrix.otp }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Install hash-locked interoperability peers
+        run: mise run interop-setup
+
+      - name: Run peer gate
+        run: mise run "interop-${{ matrix.peer }}"
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate interop-${{ matrix.peer }} on OTP ${{ matrix.otp }} failed"
+
+      - name: Upload interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-interop-${{ matrix.peer }}-otp-${{ matrix.otp }}
+          path: build/interop/
+          if-no-files-found: ignore
+
+  faults-netem:
+    name: Network fault injection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run deterministic fault gate
+        run: mise run fault
+
+      - name: Run hostile-peer gate
+        run: mise run hostile-peer
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate faults-netem failed"
+
+      - name: Upload fault evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-faults-netem
+          path: build/fault/
+          if-no-files-found: ignore
+
+  soak:
+    name: Sustained soak (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run soak workload
+        id: soak
+        continue-on-error: true
+        run: mise run soak
+
+      - name: Annotate failure
+        if: steps.soak.outcome == 'failure'
+        run: echo "::error::nightly gate soak failed (informational, hosted timing is not evidence)"
+
+      - name: Upload soak evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-soak
+          path: benchmarks/results/
+          if-no-files-found: ignore
+
+  qlog-cddl:
+    name: qlog schema validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Validate emitted qlog traces
+        run: mise run qlog-validate
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate qlog-cddl failed"
+
+      - name: Upload qlog evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-qlog-cddl
+          path: build/qlog/
+          if-no-files-found: ignore
+
+  errata-drift:
+    name: Requirement and errata drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Audit requirement coverage
+        run: mise run requirements-audit
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate errata-drift failed"
+
+      - name: Upload requirement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-errata-drift
+          path: build/requirements/
+          if-no-files-found: ignore
+
+  release-sim:
+    name: Release simulation on OTP ${{ matrix.otp }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        otp:
+          - "28"
+          - "29"
+    env:
+      MISE_ERLANG_VERSION: ${{ matrix.otp }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Simulate the two-package release
+        run: mise run release-sim
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly gate release-sim on OTP ${{ matrix.otp }} failed"
+
+      - name: Upload release simulation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-release-sim-otp-${{ matrix.otp }}
+          path: build/release-sim/
+          if-no-files-found: ignore

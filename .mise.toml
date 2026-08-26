@@ -189,6 +189,46 @@ run = [
   "gitleaks dir . --redact --no-banner",
 ]
 
+[tasks.coverage]
+description = "Report line and branch coverage for changed source (not implemented yet)"
+run = "bash -c 'echo \"coverage: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.coverage-full]
+description = "Report whole-repository coverage against the release thresholds (not implemented yet)"
+run = "bash -c 'echo \"coverage-full: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.model]
+description = "Run the long randomized protocol state-model search (not implemented yet)"
+run = "bash -c 'echo \"model: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.hostile-peer]
+description = "Run the adversarial peer and resource-exhaustion gate (not implemented yet)"
+run = "bash -c 'echo \"hostile-peer: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.credential-matrix]
+description = "Run the TLS and mTLS credential and rejection matrix (not implemented yet)"
+run = "bash -c 'echo \"credential-matrix: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.release-sim]
+description = "Simulate a two-package release into a temporary registry (not implemented yet)"
+run = "bash -c 'echo \"release-sim: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.release-candidate]
+description = "Run every gate required to qualify a release candidate (not implemented yet)"
+run = "bash -c 'echo \"release-candidate: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.requirements-audit]
+description = "Audit RFC requirements and errata coverage for drift (not implemented yet)"
+run = "bash -c 'echo \"requirements-audit: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.qlog-validate]
+description = "Validate emitted qlog traces against the published schema (not implemented yet)"
+run = "bash -c 'echo \"qlog-validate: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
+[tasks.examples]
+description = "Build and run the documented public API examples (not implemented yet)"
+run = "bash -c 'echo \"examples: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+
 [tasks.check]
 description = "Run every required local verification"
 run = [

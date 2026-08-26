@@ -306,3 +306,14 @@ interop, and performance tasks remain separate. Passing a normal gate means an
 edit is internally consistent; it does not close the release findings. A
 phase is complete only when its applicable separate gates pass, their evidence
 is retained, and the conformance matrix is updated honestly.
+
+Ten Phase 5 gates are declared but not implemented: `mise run coverage`,
+`coverage-full`, `model`, `hostile-peer`, `credential-matrix`, `release-sim`,
+`release-candidate`, `requirements-audit`, `qlog-validate`, and `examples`
+each exit non-zero naming the task, and none of them is part of
+`mise run check`, so the pull-request gate stays green and honest.
+`.github/workflows/nightly.yml` already schedules the long gates — state-model
+shards, full coverage, the peer and OTP interop matrix, network fault
+injection, an informational soak, qlog schema validation, requirement drift,
+and the release simulation — and starts producing dated
+[evidence files](evidence/README.md) as each task is implemented.
