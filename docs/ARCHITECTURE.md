@@ -275,18 +275,37 @@ Every live resource has one owner:
 
 - a one-shot client owns and closes its connection;
 - a reusable client worker owns its UDP socket and all request streams;
-- a listener worker owns the socket, accepted connections, and request
-  handlers;
-- network and command turns drive only their finite set of changed connections,
-  while protocol-timer turns drive every connection;
+- a listener worker owns the socket, the connection-ID routing table, the
+  admission counters, and the accept queue;
+- one supervised connection actor per accepted connection owns that
+  connection's transport state, streams, waiters, qlog writer, and keepalive
+  and path-MTU deadlines;
+- network and command turns drive only the connection they belong to, and each
+  connection arms its own protocol timer, so a stalled connection can only
+  delay itself;
 - each blocked call is monitored and has a fixed deadline; and
 - owner termination initiates bounded cancellation and socket cleanup.
 
+The listener spawns each connection actor unlinked and monitors it. The actor
+reports its completed handshake back to the listener, which then hands it to an
+accept waiter or to the bounded accept queue. When an actor exits -- because it
+closed, failed, or was refused by the accept queue -- its `Down` frees its
+connection IDs and aliases and releases its admission count; the actor itself
+fails its own pending waiters first. Each actor monitors the listener in turn,
+so a listener that stops takes every connection it owned with it. Connection
+actors send on the listener-owned socket directly, so no outbound datagram
+needs a listener hop; the listener forwards each routed inbound batch to the
+owning actor. The server never issues additional local connection IDs, so
+routing tracks exactly one identifier per connection plus the pre-Retry alias.
+
 Known peer-controlled lengths, counts, tables, stream windows, queues,
 Capsules, Datagrams, packet histories, retained keys, terminal entries,
-timeouts, and amplification credit have explicit bounds. All role-applicable
-per-connection public limits now reach those allocations; isolated accounting
-and enforcement of the aggregate `EndpointMemory` budget remain release gates.
+timeouts, and amplification credit have explicit bounds. The one queue still
+without an explicit bound is a connection actor's own mailbox of forwarded
+inbound batches; credit and drop accounting for that hand-off remains a release
+gate. All role-applicable per-connection public limits now reach those
+allocations; isolated accounting and enforcement of the aggregate
+`EndpointMemory` budget remain release gates.
 Cleanup tests require process and mailbox convergence rather than treating a
 returned response as sufficient.
 

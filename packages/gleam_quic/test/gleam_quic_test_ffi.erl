@@ -4,6 +4,7 @@
     fixture/1,
     inject_relay_connection_reset/1,
     linux_platform/0,
+    processes_labelled/1,
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1
 ]).
@@ -21,6 +22,12 @@ inject_relay_connection_reset(#{pid := Pid, socket := Socket}) ->
     Pid ! {udp_error, Socket, econnreset},
     timer:sleep(50),
     nil.
+
+%% Count the live processes carrying one fixed `proc_lib:set_label/1` label,
+%% so topology tests can pin how many actors of a role exist right now.
+-spec processes_labelled(binary()) -> integer().
+processes_labelled(Label) ->
+    length([Pid || Pid <- erlang:processes(), proc_lib:get_label(Pid) =:= Label]).
 
 %% Report the inet user-level receive buffer (`buffer`) of every socket behind
 %% a production UDP handle, so tests can pin the per-datagram allocation size.

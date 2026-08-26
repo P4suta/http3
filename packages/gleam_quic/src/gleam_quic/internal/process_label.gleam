@@ -8,6 +8,7 @@
 pub type Role {
   Client
   Listener
+  Connection
   ConnectCandidate
   DnsResolver
   UdpRelay
@@ -25,6 +26,7 @@ pub fn name(role: Role) -> String {
   case role {
     Client -> "gleam_quic.client"
     Listener -> "gleam_quic.listener"
+    Connection -> "gleam_quic.connection"
     ConnectCandidate -> "gleam_quic.connect_candidate"
     DnsResolver -> "gleam_quic.dns_resolver"
     UdpRelay -> "gleam_quic.udp_relay"
@@ -38,6 +40,7 @@ pub fn all() -> List(Role) {
   [
     Client,
     Listener,
+    Connection,
     ConnectCandidate,
     DnsResolver,
     UdpRelay,
@@ -59,6 +62,7 @@ fn role_code(role: Role) -> Int {
     UdpRelay -> 5
     ReplayGuard -> 6
     QlogWriter -> 7
+    Connection -> 8
   }
 }
 
