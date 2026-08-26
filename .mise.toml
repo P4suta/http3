@@ -157,6 +157,7 @@ run = [
   "gleam export package-interface --out build/http3-package-interface.json",
   "cd packages/gleam_quic && gleam export package-interface --out build/gleam-quic-package-interface.json",
   "escript test/http3_public_api_audit.escript build/http3-package-interface.json packages/gleam_quic/build/gleam-quic-package-interface.json api/http3.snapshot api/gleam_quic.snapshot",
+  "escript test/http3_public_api_audit.escript boundary src test api/boundary.allow",
 ]
 
 [tasks.api-update]
@@ -195,6 +196,7 @@ run = [
   "gleam export package-interface --out build/http3-package-interface.json",
   "cd packages/gleam_quic && gleam export package-interface --out build/gleam-quic-package-interface.json",
   "escript test/http3_public_api_audit.escript build/http3-package-interface.json packages/gleam_quic/build/gleam-quic-package-interface.json api/http3.snapshot api/gleam_quic.snapshot",
+  "escript test/http3_public_api_audit.escript boundary src test api/boundary.allow",
   "gleam run -m glinter",
   "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#packages/gleam_quic/build/**\"",
   "taplo fmt --check",

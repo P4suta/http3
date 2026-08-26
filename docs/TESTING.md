@@ -289,8 +289,9 @@ mise run soak
 ```
 
 `mise run check` includes both package builds/tests/docs/lints, canonical API
-snapshots, FFI Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and
-the deterministic core-package archive gate. The Semgrep task keeps its
+snapshots, the three-layer package-private import boundary gate, FFI
+Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and the
+deterministic core-package archive gate. The Semgrep task keeps its
 settings file and log under the gitignored `build/semgrep/` rather than `/tmp`,
 so the gate also runs where `/tmp` is read-only or absent.
 `mise run security` adds the online OSV lookup and generates

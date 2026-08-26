@@ -263,7 +263,11 @@ QPACK, Capsule, and worker ownership has moved to `http3`, and the core Hex
 archive contains none of those modules. Generic endpoint/connection/stream
 APIs are implemented and directly tested. Root internals have not yet migrated
 to them and still reach package-private QUIC transport primitives; the
-boundary audit tracks that remaining step.
+boundary audit tracks that remaining step. That audit runs as three layers
+(a Semgrep rule over the already-clean files, an import scan of `src` and
+`test`, and a compiled-module xref) and allowlists the remaining root
+internals in the shrink-only `api/boundary.allow` until the migration
+completes.
 
 ## Resource ownership and shutdown
 
