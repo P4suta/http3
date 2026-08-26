@@ -2,9 +2,9 @@
 
 import gleam/bit_array
 import gleam_quic/frame as transport_frame
-import gleam_quic/varint
 import http3/internal/native/frame as http3_frame
 import http3/internal/qpack/integer as qpack_integer
+import http3/internal/varint
 
 const generator_modulus = 2_147_483_647
 

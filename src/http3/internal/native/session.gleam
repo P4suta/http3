@@ -13,7 +13,6 @@ import gleam_quic/internal/packet_space
 import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/stream_id
-import gleam_quic/varint
 import http3/internal/native/connection_state as http3_state
 import http3/internal/native/datagram
 import http3/internal/native/drain
@@ -23,6 +22,7 @@ import http3/internal/native/stream_registry
 import http3/internal/qpack/header.{type Header}
 import http3/internal/qpack/instruction
 import http3/internal/qpack/instruction_stream
+import http3/internal/varint
 
 const maximum_stream_read_bytes = 65_536
 

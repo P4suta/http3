@@ -5,12 +5,12 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
 import http3/internal/qpack/dynamic_table
 import http3/internal/qpack/field_section
 import http3/internal/qpack/header.{type Header, Header}
 import http3/internal/qpack/instruction
 import http3/internal/qpack/static_table
+import http3/internal/varint
 
 type Outstanding {
   Outstanding(references: List(Int), required_insert_count: Int)

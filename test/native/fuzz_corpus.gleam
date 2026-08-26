@@ -6,10 +6,10 @@ import gleam_quic/frame as transport_frame
 import gleam_quic/internal/tls/handshake
 import gleam_quic/packet
 import gleam_quic/transport_parameter
-import gleam_quic/varint
 import http3/internal/native/frame as http3_frame
 import http3/internal/qpack/field_section
 import http3/internal/qpack/instruction
+import http3/internal/varint
 
 const generator_modulus = 2_147_483_647
 

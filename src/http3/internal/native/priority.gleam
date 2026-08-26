@@ -6,8 +6,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam_quic/varint
 import http3/internal/native/frame
+import http3/internal/varint
 
 const request_update_type = 0xf0700
 

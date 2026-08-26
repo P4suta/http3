@@ -6,7 +6,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic/stream_id
-import gleam_quic/varint
 import http3/internal/native/capsule
 import http3/internal/native/control
 import http3/internal/native/datagram
@@ -22,6 +21,7 @@ import http3/internal/qpack/decoder
 import http3/internal/qpack/encoder
 import http3/internal/qpack/header.{type Header}
 import http3/internal/qpack/instruction
+import http3/internal/varint
 
 /// Role of this endpoint.
 pub type Role {

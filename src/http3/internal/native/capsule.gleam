@@ -2,7 +2,7 @@
 
 import gleam/bit_array
 import gleam/result
-import gleam_quic/varint
+import http3/internal/varint
 
 /// One known or extension capsule. Unknown types remain available to the
 /// negotiated HTTP extension that owns the data stream.

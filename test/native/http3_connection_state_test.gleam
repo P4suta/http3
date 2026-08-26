@@ -1,6 +1,5 @@
 import gleam/list
 import gleam/option.{Some}
-import gleam_quic/varint
 import http3/internal/native/capsule
 import http3/internal/native/connection_state
 import http3/internal/native/datagram
@@ -9,6 +8,7 @@ import http3/internal/native/frame
 import http3/internal/native/message_stream
 import http3/internal/qpack/header.{type Header, Header}
 import http3/internal/qpack/instruction
+import http3/internal/varint
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bootstraps_unique_critical_streams_with_settings_first_test() -> Nil {
