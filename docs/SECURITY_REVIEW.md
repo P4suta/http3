@@ -314,7 +314,29 @@ reviewers must account for:
 - application-level replay and authorization policy for 0-RTT;
 - secure storage and rotation of certificate private keys and qlog files;
 - operating-system trust-store quality, entropy, clock, UDP buffer, firewall,
-  and PMTU behavior;
+  and PMTU behavior. QUIC sockets set Don't-Fragment at open on Linux, macOS,
+  FreeBSD, and Windows, and path MTU discovery stays pinned to the 1200-byte
+  floor on any platform or configuration where the kernel refuses that option,
+  so a fragmenting path costs throughput rather than correctness. A refused
+  oversized send returns the path to the floor and the datagram is retransmitted
+  there, but a host whose outgoing device cannot carry the 1200-byte minimum
+  QUIC datagram at all is below what any recovery can reach: every send is
+  refused, the path is already at the floor, and such a connection makes no
+  progress until its idle timeout expires rather than failing at the first
+  send. Loopback cannot fragment, so the fragmentation behavior of real paths
+  is exercised only by deployment testing;
+- a peer-chosen address-validation token cannot make this client build a
+  datagram no path is known to carry: an authenticated Retry whose token is too
+  wide for an Initial that still fits the 1200-byte floor fails the connection
+  attempt with a typed local error rather than stalling to the idle timeout,
+  and the width is checked only after the Retry integrity tag verifies so that
+  a forged Retry still cannot end a connection. A cached or newly issued
+  NEW_TOKEN that wide is dropped and the connection proceeds without it. The
+  861-byte ceiling is this stack's own worst-case Initial budget rather than a
+  wire limit, so the failure is reported as local and never recorded as a peer
+  protocol violation; an interoperability report of a server issuing wider
+  tokens is a reason to tighten the budget's assumptions, not to blame the
+  peer;
 - capacity limits appropriate to the deployment rather than relying only on
   library defaults;
 - UDP source spoofing and volumetric denial of service outside one endpoint's

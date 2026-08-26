@@ -45,14 +45,26 @@ const minimum_datagram_bytes = 1200
 // value an endpoint may advertise for what it is willing to receive.
 const maximum_udp_payload_size = 65_527
 
-// An endpoint may advertise the full 65_527, but one IP datagram carries at
-// most 65_507 bytes of UDP payload. Keep DPLPMTUD's search below that ceiling
-// so a validated path is always a size a single UDP send can carry.
+// A conservative ceiling for DPLPMTUD's search. One IP datagram carries at
+// most 65_507 bytes of UDP payload, and a datagram that size leaves the host
+// no room for IP options or for the per-datagram overhead a socket adds, so
+// the search stops at 60 kilobytes instead. Every size it can validate is
+// then one a single UDP send is known to accept.
 const maximum_sendable_udp_payload = 61_440
 
 // The largest header a STREAM or CRYPTO frame writes ahead of its data: one
 // type byte plus stream identifier, offset, and length as 8-byte varints.
 const maximum_data_frame_header_bytes = 25
+
+// RFC 9000 section 16: eight bytes is the widest variable-length integer
+// encoding, and therefore the most any length or count field can cost.
+const maximum_varint_bytes = 8
+
+// What one Initial packet must be able to carry beyond its own protection: a
+// CRYPTO frame header, the acknowledgement the space owes, and enough of the
+// first flight for the handshake to advance on every packet. Reserving it is
+// what turns "the address-validation token has to fit" into a token width.
+const minimum_initial_payload_bytes = 256
 
 // RFC 9002 section 7.7: the pacer releases this many datagrams back to back
 // before spacing takes over. The burst scales with the path, never below one
@@ -157,6 +169,7 @@ pub type Config {
     grease_quic_bit: Bool,
     idle_timeout_milliseconds: Int,
     draining_timeout_milliseconds: Int,
+    path_dont_fragment: Bool,
   )
 }
 
@@ -264,6 +277,7 @@ pub opaque type State {
     initial_crypto_send_offset: Int,
     handshake_crypto_send_offset: Int,
     application_crypto_send_offset: Int,
+    initial_token_bytes: Int,
     initial_queue: List(frame.Frame),
     handshake_queue: List(frame.Frame),
     zero_rtt_queue: List(frame.Frame),
@@ -360,7 +374,65 @@ pub fn default_config(role: Role) -> Config {
     grease_quic_bit: True,
     idle_timeout_milliseconds: 30_000,
     draining_timeout_milliseconds: 3000,
+    // Fail closed: a caller that has not looked at its socket gets the
+    // 1200-byte floor every path carries. Every runtime construction site
+    // passes `udp.dont_fragment` for the socket it actually sends on, so only
+    // a connection built outside them keeps this default.
+    path_dont_fragment: False,
   )
+}
+
+/// The largest datagram DPLPMTUD may ever confirm for this connection.
+///
+/// RFC 8899 section 3 reads an acknowledged probe as proof the path carries
+/// that size only when the probe could not have been fragmented. A socket the
+/// kernel refused the Don't-Fragment option to can have an oversized probe
+/// fragmented locally, delivered, and acknowledged, which would raise the path
+/// to a permanently fragmenting size. Without that option the ceiling is the
+/// 1200-byte floor every path carries, so discovery starts complete and the
+/// connection never sends a datagram it has not been told fits.
+fn discovery_ceiling(config: Config) -> Int {
+  case config.path_dont_fragment {
+    False -> minimum_datagram_bytes
+    True ->
+      minimum(config.maximum_udp_payload_size, maximum_sendable_udp_payload)
+  }
+}
+
+/// The widest address-validation token an Initial packet may repeat.
+///
+/// A client repeats its token in every Initial it sends (RFC 9000 section
+/// 8.1.2), and every Initial has to fit the 1200-byte floor of RFC 9000
+/// section 14.1, because that is the only size a path is known to carry before
+/// DPLPMTUD has confirmed more. An Initial payload is budgeted as the path
+/// minus `initial_packet_overhead`, so a token past this width would leave no
+/// payload to budget and build a datagram over the floor. `driver` checks both
+/// doors a token comes through - a cached one at start-up and a Retry's -
+/// against this, which is what lets the send path treat that budget as a real
+/// ceiling.
+///
+/// This is a conservative internal ceiling, not a wire limit: RFC 9000 places
+/// no upper bound on a token, and the width is computed by charging every
+/// header field its widest encoding - twenty-byte connection IDs and 8-byte
+/// varints throughout - so a token a little past it would often still have fit
+/// the real header this connection writes.
+pub fn maximum_initial_token_bytes() -> Int {
+  minimum_datagram_bytes
+  - initial_packet_overhead(0)
+  - minimum_initial_payload_bytes
+}
+
+/// The most protecting an Initial packet ever adds around its frame payload:
+/// everything a 0-RTT or Handshake packet pays, plus the Token Length field at
+/// its widest and the `token_bytes` of the token itself.
+///
+/// RFC 9000 section 17.2.2 gives only Initial a token, and a client that was
+/// issued a large address-validation token carries it in every Initial it
+/// sends, so a caller budgeting an Initial payload has to pay for it too.
+fn initial_packet_overhead(token_bytes: Int) -> Int {
+  wire_packet.maximum_long_packet_overhead()
+  + maximum_varint_bytes
+  + token_bytes
 }
 
 /// Initialize all independently bounded packet, stream, and path state.
@@ -399,12 +471,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
   use congestion <- result.try(create_congestion(config))
   use pacing <- result.try(create_pacer(config, now_milliseconds))
   use amplification <- result.try(create_amplification(config.role))
-  use path_mtu <- result.try(
-    create_pmtu(minimum(
-      config.maximum_udp_payload_size,
-      maximum_sendable_udp_payload,
-    )),
-  )
+  use path_mtu <- result.try(create_pmtu(discovery_ceiling(config)))
   Ok(State(
     config: config,
     tls_endpoint: NoTlsEndpoint,
@@ -426,6 +493,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     initial_crypto_send_offset: 0,
     handshake_crypto_send_offset: 0,
     application_crypto_send_offset: 0,
+    initial_token_bytes: 0,
     initial_queue: [],
     handshake_queue: [],
     zero_rtt_queue: [],
@@ -880,38 +948,40 @@ pub fn prepare_packet(
 /// bytes of the ACK frame already taken for this packet, and the data frame's
 /// own header.
 ///
-/// Only 1-RTT packets are widened. DPLPMTUD raises the path MTU only once a
-/// probe of that size has been acknowledged, so the result is a datagram size
-/// the path has been observed to carry; Initial, Handshake, and 0-RTT packets
-/// keep the caller's pre-validation size.
+/// Only 1-RTT and 0-RTT packets are widened. DPLPMTUD raises the path MTU only
+/// once a probe of that size has been acknowledged, so the result is a
+/// datagram size the path has been observed to carry. Initial and Handshake
+/// packets keep the caller's pre-validation request, but every level is capped
+/// by the path: a caller asking for more than the path carries would otherwise
+/// build an oversized datagram at that level.
 fn path_frame_data_bytes(
   state: State,
   level: engine.EncryptionLevel,
   requested: Int,
   coalesced: Int,
 ) -> Int {
-  case level {
-    engine.OneRtt -> {
-      let overhead =
-        wire_packet.maximum_short_packet_overhead()
-        + coalesced
-        + maximum_data_frame_header_bytes
-      // Prefer a datagram the congestion window can release right now: a
-      // larger one is refused by `validate_send_budget` however long it
-      // waits. The caller's request stays the floor, so a window narrower
-      // than that behaves exactly as it did before the path grew.
-      let preferred =
-        maximum(
-          requested,
-          congestion_window(state) - bytes_in_flight(state) - overhead,
-        )
-      // The validated path is a hard ceiling. `pmtu` never rises above the
-      // peer's authenticated max_udp_payload_size, so a packet built to this
-      // budget is one the peer said it will receive.
-      maximum(1, minimum(preferred, path_mtu(state) - overhead))
-    }
+  let overhead =
+    packet_protection_overhead(state, level)
+    + coalesced
+    + maximum_data_frame_header_bytes
+  let preferred = case level {
+    // Prefer a datagram the congestion window can release right now: a
+    // larger one is refused by `validate_send_budget` however long it
+    // waits. The caller's request stays the floor, so a window narrower
+    // than that behaves exactly as it did before the path grew.
+    engine.OneRtt | engine.ZeroRtt ->
+      maximum(
+        requested,
+        congestion_window(state) - bytes_in_flight(state) - overhead,
+      )
     _ -> requested
   }
+  // The validated path is a hard ceiling. `pmtu` never rises above the peer's
+  // authenticated max_udp_payload_size, so a packet built to this budget is
+  // one the peer said it will receive. Only a coalesced acknowledgement can
+  // drive this below one byte, and a packet in that state gives its frame up
+  // to the acknowledgement in `fill_path_sized_packet` rather than sending it.
+  maximum(1, minimum(preferred, path_mtu(state) - overhead))
 }
 
 /// The encoded size of a frame already committed to the packet being built.
@@ -1149,6 +1219,19 @@ fn probe_allowance(state: State) -> Int {
 /// Return whether DPLPMTUD has reached the authenticated path ceiling.
 pub fn pmtu_discovery_complete(state: State) -> Bool {
   pmtu.discovery_complete(state.pmtu)
+}
+
+/// Record the width of the address-validation token this endpoint writes into
+/// every Initial packet, so an Initial payload is budgeted with it paid for.
+///
+/// The caller owns keeping this equal to the token it actually writes, and
+/// owns bounding it: `driver` accepts no token wide enough to push an Initial
+/// packet's protection past the 1200-byte floor.
+pub fn set_initial_token_bytes(state: State, bytes: Int) -> State {
+  case bytes >= 0 {
+    False -> state
+    True -> State(..state, initial_token_bytes: bytes)
+  }
 }
 
 /// Return the next application packet number for exact-size runtime probes.
@@ -3048,13 +3131,23 @@ fn prepare_sendable_packet(
 /// the path shrank underneath, since a black hole or a validated path change
 /// resets DPLPMTUD to the 1200-byte floor. An unreliable DATAGRAM is dropped
 /// there rather than sent past the path (RFC 9221 section 5).
+///
+/// Dropping the frame for the acknowledgement is safe at every level because
+/// the acknowledgement was already shrunk to what this level's protection
+/// leaves of the path, and protection at every level fits inside the floor:
+/// the widest is an Initial's, whose token `driver` bounds precisely so that
+/// it does.
 fn fill_path_sized_packet(
   state: State,
   level: engine.EncryptionLevel,
   requested: Int,
   acknowledgement: Option(frame.Frame),
 ) -> Result(#(State, List(frame.Frame)), Error) {
-  use coalesced <- result.try(encoded_frame_bytes(acknowledgement))
+  use #(acknowledgement, coalesced) <- result.try(path_sized_acknowledgement(
+    state,
+    level,
+    acknowledgement,
+  ))
   let budget = path_frame_data_bytes(state, level, requested, coalesced)
   use #(next, outgoing) <- result.try(take_outgoing_frame(state, level, budget))
   use overflows <- result.try(overflows_path(state, level, coalesced, outgoing))
@@ -3063,6 +3156,111 @@ fn fill_path_sized_packet(
     True, Some(value) -> Ok(#(state, [value]))
     True, None -> Ok(#(next, keep_deliverable_frame(outgoing)))
   }
+}
+
+/// Shrink the acknowledgement owed to what one packet on this path carries,
+/// and report the bytes it encodes to.
+///
+/// A retained range set of a few hundred widely scattered ranges encodes past
+/// the 1200-byte floor on its own, and an ACK-only packet has no other frame
+/// to yield to it. RFC 9000 section 13.2.4 lets an acknowledgement carry a
+/// subset of the retained ranges, so the oldest are dropped and stay retained
+/// for a later packet; the largest received packet number always goes out.
+///
+/// An acknowledgement that already fits is returned untouched, which is every
+/// acknowledgement on a healthy path: only a receive pattern scattered enough
+/// to make most gaps four-byte varints reaches the second encode.
+fn path_sized_acknowledgement(
+  state: State,
+  level: engine.EncryptionLevel,
+  acknowledgement: Option(frame.Frame),
+) -> Result(#(Option(frame.Frame), Int), Error) {
+  use bytes <- result.try(encoded_frame_bytes(acknowledgement))
+  let allowance = path_mtu(state) - packet_protection_overhead(state, level)
+  case acknowledgement {
+    Some(frame.Ack(value)) if bytes > allowance ->
+      case ack_ranges_within(value, allowance) {
+        [] -> Ok(#(None, 0))
+        ranges -> {
+          let shrunk = Some(frame.Ack(frame.Acknowledgement(..value, ranges:)))
+          use bytes <- result.try(encoded_frame_bytes(shrunk))
+          Ok(#(shrunk, bytes))
+        }
+      }
+    _ -> Ok(#(acknowledgement, bytes))
+  }
+}
+
+/// Return the leading retained ranges whose acknowledgement encodes within
+/// `allowance` bytes.
+///
+/// RFC 9000 section 13.2.4 lets an acknowledgement carry fewer ranges than the
+/// receiver retains: the ranges it omits stay retained and ride a later
+/// acknowledgement. The newest ranges are the ones that matter for loss
+/// detection, so the oldest are the ones dropped.
+///
+/// The first range is always kept: the peer learns the largest packet number
+/// received from it, and at any allowance a packet can hold it fits.
+fn ack_ranges_within(
+  acknowledgement: frame.Acknowledgement,
+  allowance: Int,
+) -> List(frame.AckRange) {
+  let frame.Acknowledgement(delay, ranges, counts) = acknowledgement
+  case ranges {
+    [] -> []
+    [frame.AckRange(smallest, largest) as first, ..additional] -> {
+      // The Range Count field is charged at the width the full retained set
+      // encodes to. Dropping ranges can only narrow it, so a prefix chosen
+      // against this bound never encodes wider than the bound allowed.
+      let fixed =
+        1
+        + varint_bytes(largest)
+        + varint_bytes(delay)
+        + varint_bytes(list.length(additional))
+        + varint_bytes(largest - smallest)
+        + ecn_counts_bytes(counts)
+      [first, ..ack_ranges_taken(additional, smallest, allowance - fixed, [])]
+    }
+  }
+}
+
+/// Walk the ranges beyond the first in encoder order, keeping each while its
+/// gap and length varints still fit the bytes left.
+fn ack_ranges_taken(
+  ranges: List(frame.AckRange),
+  previous_smallest: Int,
+  remaining: Int,
+  kept: List(frame.AckRange),
+) -> List(frame.AckRange) {
+  case ranges {
+    [] -> list.reverse(kept)
+    [frame.AckRange(smallest, largest) as range, ..rest] -> {
+      let cost =
+        varint_bytes(previous_smallest - largest - 2)
+        + varint_bytes(largest - smallest)
+      case cost <= remaining {
+        False -> list.reverse(kept)
+        True ->
+          ack_ranges_taken(rest, smallest, remaining - cost, [range, ..kept])
+      }
+    }
+  }
+}
+
+/// The three counts an ACK_ECN frame appends, or nothing when the space this
+/// acknowledgement came from has seen no marked packet.
+fn ecn_counts_bytes(counts: Option(frame.EcnCounts)) -> Int {
+  case counts {
+    None -> 0
+    Some(frame.EcnCounts(ect0, ect1, ce)) ->
+      varint_bytes(ect0) + varint_bytes(ect1) + varint_bytes(ce)
+  }
+}
+
+/// The encoded width of one variable-length integer, charging the widest
+/// encoding for a value no varint can hold.
+fn varint_bytes(value: Int) -> Int {
+  varint.encoded_size(value) |> result.unwrap(maximum_varint_bytes)
 }
 
 /// Keep a frame the shrunken path can no longer carry only when dropping it
@@ -3085,36 +3283,41 @@ fn keep_deliverable_frame(outgoing: Option(frame.Frame)) -> List(frame.Frame) {
 /// Whether the frames chosen for one packet would put the finished datagram
 /// past the path once packet protection is paid for.
 ///
-/// Initial and Handshake packets are not measured. They carry the fixed frame
-/// budget their caller asked for, which the runtimes keep well inside the
-/// 1200-byte floor every path carries, and the driver pads an Initial up to
-/// that floor; a caller asking for more would build a larger datagram than the
-/// floor, and capping that is follow-up work alongside the socket's DF option.
-/// A 0-RTT packet is measured against the long header it rides, which is wider
-/// than the short header a 1-RTT packet writes.
+/// Every level is measured, and a packet carrying no drawn frame at all is
+/// measured too: an acknowledgement large enough to outgrow the path on its
+/// own has no other frame beside it to yield.
 fn overflows_path(
   state: State,
   level: engine.EncryptionLevel,
   coalesced: Int,
   outgoing: Option(frame.Frame),
 ) -> Result(Bool, Error) {
-  case packet_protection_overhead(level), outgoing {
-    Some(overhead), Some(value) -> {
-      use bytes <- result.try(outgoing_frame_bytes(value))
-      Ok(coalesced + bytes + overhead > path_mtu(state))
-    }
-    _, _ -> Ok(False)
-  }
+  use bytes <- result.try(case outgoing {
+    None -> Ok(0)
+    Some(value) -> outgoing_frame_bytes(value)
+  })
+  let overhead = packet_protection_overhead(state, level)
+  Ok(coalesced + bytes + overhead > path_mtu(state))
 }
 
-/// What protecting one packet at this level costs around its frames, and
-/// `None` for the two levels whose packets carry the caller's fixed request
-/// and are therefore never measured against the path.
-fn packet_protection_overhead(level: engine.EncryptionLevel) -> Option(Int) {
+/// What protecting one packet at this level costs around its frames.
+///
+/// A 1-RTT packet writes a short header; 0-RTT and Handshake write a long one.
+/// An Initial writes a long header plus the address-validation token this
+/// endpoint sends, which is why the token width is carried on the connection.
+///
+/// This is always smaller than the 1200-byte floor, and therefore smaller than
+/// any path: `driver` refuses a token - cached or Retry-issued - wide enough
+/// to break that, so every level always has payload left to budget.
+fn packet_protection_overhead(
+  state: State,
+  level: engine.EncryptionLevel,
+) -> Int {
   case level {
-    engine.OneRtt -> Some(wire_packet.maximum_short_packet_overhead())
-    engine.ZeroRtt -> Some(wire_packet.maximum_long_packet_overhead())
-    engine.Initial | engine.Handshake -> None
+    engine.OneRtt -> wire_packet.maximum_short_packet_overhead()
+    engine.ZeroRtt | engine.Handshake ->
+      wire_packet.maximum_long_packet_overhead()
+    engine.Initial -> initial_packet_overhead(state.initial_token_bytes)
   }
 }
 
@@ -3874,7 +4077,15 @@ fn process_frame(
       Ok(enter_draining(state, error_code, reason, now_milliseconds))
     frame.HandshakeDone -> receive_handshake_done(state)
     frame.Datagram(data) -> receive_datagram(state, data)
-    frame.NewToken(token) -> Ok(add_event(state, NewTokenReceived(token)))
+    // RFC 9000 section 8.1.3 leaves it to the client whether to keep a token
+    // for a later connection. One too wide for an Initial to repeat inside the
+    // 1200-byte floor is never usable, so it is dropped here rather than
+    // stored and refused at the start of the next connection.
+    frame.NewToken(token) ->
+      case bit_array.byte_size(token) <= maximum_initial_token_bytes() {
+        False -> Ok(state)
+        True -> Ok(add_event(state, NewTokenReceived(token)))
+      }
     frame.NewConnectionId(sequence, retire_prior_to, identifier, reset_token) ->
       receive_new_connection_id(
         state,

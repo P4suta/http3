@@ -272,6 +272,7 @@ fn transfer_candidate(
     | Error(udp.AddressInUse)
     | Error(udp.AddressUnavailable)
     | Error(udp.EcnUnavailable)
+    | Error(udp.MessageTooLarge)
     | Error(udp.SocketFailure) -> {
       discard_established(established)
       process.send(completion, Error(SocketUnavailable))
@@ -421,7 +422,11 @@ fn establish_on_socket_version(
   use original_destination_connection_id <- result.try(random_connection_id())
   use local_connection_id <- result.try(random_connection_id())
   let transport_config =
-    client_transport_config(selected_version, config.idle_timeout_milliseconds)
+    client_transport_config(
+      selected_version,
+      config.idle_timeout_milliseconds,
+      udp.dont_fragment(socket),
+    )
   let tls_config =
     engine.ClientConfig(
       version: selected_version,
@@ -602,20 +607,50 @@ fn flush_driver(
           Ok(state)
         Error(error) -> Error(QuicTransportFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(socket, peer, driver.prepared_bytes(prepared), ecn.NotEct)
-            |> map_udp_send,
+        Ok(Some(prepared)) ->
+          send_prepared_handshake(
+            state,
+            prepared,
+            socket,
+            peer,
+            now,
+            remaining_packets,
           )
-          use state <- result.try(
-            driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              QuicTransportFailed("commit", error)
-            }),
-          )
-          flush_driver(state, socket, peer, now, remaining_packets - 1)
-        }
       }
+  }
+}
+
+/// Send one prepared handshake datagram and continue the flush.
+///
+/// The socket sets Don't-Fragment, so a datagram an outgoing device cannot
+/// carry whole is refused rather than split. That is a path measurement, not a
+/// broken socket: it is dropped uncommitted, its frames stay queued, and the
+/// path returns to the 1200-byte floor.
+fn send_prepared_handshake(
+  state: driver.State,
+  prepared: driver.PreparedDatagram,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(driver.State, Error) {
+  case
+    udp.classify_send(udp.send(
+      socket,
+      peer,
+      driver.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall -> Ok(driver.report_pmtu_black_hole(state))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use state <- result.try(
+        driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { QuicTransportFailed("commit", error) }),
+      )
+      flush_driver(state, socket, peer, now, remaining_packets - 1)
+    }
   }
 }
 
@@ -839,20 +874,48 @@ fn flush_session(
         ))) -> Ok(state)
         Error(error) -> Error(Http3OperationFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(socket, peer, session.prepared_bytes(prepared), ecn.NotEct)
-            |> map_udp_send,
+        Ok(Some(prepared)) ->
+          send_prepared_session(
+            state,
+            prepared,
+            socket,
+            peer,
+            now,
+            remaining_packets,
           )
-          use state <- result.try(
-            session.commit_datagram(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              Http3OperationFailed("commit", error)
-            }),
-          )
-          flush_session(state, socket, peer, now, remaining_packets - 1)
-        }
       }
+  }
+}
+
+/// Send one prepared HTTP/3 datagram and continue the flush.
+///
+/// The same path measurement as the handshake flush: a refused datagram is
+/// dropped uncommitted, its frames go out again inside the floor.
+fn send_prepared_session(
+  state: session.State,
+  prepared: session.PreparedDatagram,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(session.State, Error) {
+  case
+    udp.classify_send(udp.send(
+      socket,
+      peer,
+      session.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall -> Ok(session.report_pmtu_black_hole(state))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use state <- result.try(
+        session.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { Http3OperationFailed("commit", error) }),
+      )
+      flush_session(state, socket, peer, now, remaining_packets - 1)
+    }
   }
 }
 
@@ -991,11 +1054,13 @@ fn decode_headers(
 fn client_transport_config(
   selected_version: Version,
   idle_timeout_milliseconds: Int,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let config = transport.default_config(transport.Client)
   transport.Config(
     ..config,
     version: selected_version,
+    path_dont_fragment: dont_fragment,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
     maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
@@ -1079,13 +1144,6 @@ fn discard_or_fail_driver(
 
 fn discard_driver_error(error: driver.Error) -> Bool {
   driver.discardable_receive_error(error)
-}
-
-fn map_udp_send(value: Result(Nil, udp.Error)) -> Result(Nil, Error) {
-  case value {
-    Ok(Nil) -> Ok(Nil)
-    Error(_) -> Error(SocketUnavailable)
-  }
 }
 
 fn same_endpoint(left: udp.Endpoint, right: udp.Endpoint) -> Bool {

@@ -728,6 +728,7 @@ fn initialise(
           unidirectional_stream_limit,
           stream_buffer_limit,
           datagram_limit,
+          udp.dont_fragment(socket),
         )
       let listener =
         Listener(commands, process.self(), operation_timeout_milliseconds)
@@ -1389,15 +1390,31 @@ fn send_pmtu_probe(
       )
     Ok(Some(prepared)) ->
       case
-        udp.send(
+        udp.classify_send(udp.send(
           worker.socket,
           candidate_send_endpoint(peer),
           server_transport.prepared_bytes(prepared),
           ecn.NotEct,
-        )
+        ))
       {
-        Error(_) -> worker
-        Ok(Nil) ->
+        // Don't-Fragment is set, so a probe the local interface cannot carry
+        // whole is refused rather than split. The probe is dropped
+        // uncommitted and the path returns to the floor.
+        udp.PathTooSmall ->
+          put_peer(
+            worker,
+            identifier,
+            PeerState(
+              ..peer,
+              connection: server_transport.report_pmtu_black_hole(
+                peer.connection,
+              ),
+              next_pmtu_probe_milliseconds: now
+                + pmtu_probe_interval_milliseconds,
+            ),
+          )
+        udp.SocketLost -> worker
+        udp.Delivered ->
           case server_transport.commit_datagram(prepared, ecn.NotEct, now) {
             Error(_) -> worker
             Ok(connection) ->
@@ -1449,9 +1466,34 @@ fn flush_connection(
           case candidate_send_allowed(peer, bit_array.byte_size(bytes)) {
             False -> worker
             True ->
-              case udp.send(worker.socket, destination, bytes, ecn.NotEct) {
-                Error(_) -> fail_connection(worker, identifier, QuicFailure)
-                Ok(Nil) ->
+              case
+                udp.classify_send(udp.send(
+                  worker.socket,
+                  destination,
+                  bytes,
+                  ecn.NotEct,
+                ))
+              {
+                // The socket sets Don't-Fragment, so an outgoing device
+                // narrower than the path DPLPMTUD confirmed refuses the
+                // datagram instead of splitting it. That is a path
+                // measurement, not a broken socket: the datagram is dropped
+                // uncommitted, its frames are still owed and are retransmitted
+                // by recovery, and the path returns to the 1200-byte floor.
+                udp.PathTooSmall ->
+                  put_peer(
+                    worker,
+                    identifier,
+                    PeerState(
+                      ..peer,
+                      connection: server_transport.report_pmtu_black_hole(
+                        peer.connection,
+                      ),
+                    ),
+                  )
+                udp.SocketLost ->
+                  fail_connection(worker, identifier, QuicFailure)
+                udp.Delivered ->
                   case
                     server_transport.commit_datagram(prepared, ecn.NotEct, now)
                   {

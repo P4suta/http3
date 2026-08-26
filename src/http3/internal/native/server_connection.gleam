@@ -48,6 +48,7 @@ pub type Config {
     datagram_limit: Int,
     qpack_table_limit: Int,
     qpack_blocked_stream_limit: Int,
+    path_dont_fragment: Bool,
   )
 }
 
@@ -179,6 +180,7 @@ pub fn accept_initial(
         config.bidirectional_stream_limit,
         config.unidirectional_stream_limit,
         config.datagram_limit,
+        config.path_dont_fragment,
       ),
       tls,
       case retry_source_connection_id {
@@ -668,6 +670,25 @@ pub fn path_validation_in_progress(state: State) -> Bool {
   }
 }
 
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram this connection believed the path carried.
+///
+/// A handshaking connection reports it too. DPLPMTUD only probes once a
+/// connection is established, but a path that shrank underneath one is a fact
+/// about the path, and swallowing it here would leave the refusal classified
+/// as nothing at all.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  case state.protocol {
+    Handshaking(quic) ->
+      State(..state, protocol: Handshaking(driver.report_pmtu_black_hole(quic)))
+    Established(http3) ->
+      State(
+        ..state,
+        protocol: Established(session.report_pmtu_black_hole(http3)),
+      )
+  }
+}
+
 /// Prepare one exact-size DPLPMTUD probe on an established path.
 pub fn prepare_pmtu_probe(
   state: State,
@@ -815,12 +836,14 @@ fn server_transport_config(
   bidirectional_stream_limit: Int,
   unidirectional_stream_limit: Int,
   datagram_limit: Int,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let config = transport.default_config(transport.Server)
   let maximum_datagram = int.min(datagram_limit, maximum_udp_payload_size)
   transport.Config(
     ..config,
     version: protocol_version,
+    path_dont_fragment: dont_fragment,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
     maximum_stream_final_size: int.max(
       config.maximum_stream_final_size,

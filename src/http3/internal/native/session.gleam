@@ -636,6 +636,16 @@ pub fn prepare_pmtu_probe(
   }
 }
 
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram this connection believed the path carried.
+///
+/// The socket sets Don't-Fragment, so the kernel will not split an oversized
+/// datagram: refusing it is a path measurement (RFC 8899 section 4.3), not a
+/// socket failure.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(..state, quic: driver.report_pmtu_black_hole(state.quic))
+}
+
 /// Bytes for one UDP send operation.
 pub fn prepared_bytes(prepared: PreparedDatagram) -> BitArray {
   driver.prepared_bytes(prepared.prepared)

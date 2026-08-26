@@ -336,18 +336,31 @@ pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
     Ok(None) -> Ok(state)
     Ok(Some(prepared)) -> {
       let bytes = connection.prepared_bytes(prepared)
-      use Nil <- result.try(
-        udp.send(
+      case
+        udp.classify_send(udp.send(
           state.socket,
           connection.peer(state.connection),
           bytes,
           ecn.NotEct,
-        )
-        |> result.replace_error(SocketUnavailable),
-      )
-      connection.commit_datagram(prepared, ecn.NotEct, now)
-      |> result.map(fn(next) { State(..state, connection: next) })
-      |> result.map_error(QuicFailure)
+        ))
+      {
+        // The socket sets Don't-Fragment, so the kernel refuses a probe the
+        // local interface cannot carry whole. That is the probe's answer,
+        // not a broken socket: the probe is dropped uncommitted and the path
+        // returns to the floor.
+        udp.PathTooSmall ->
+          Ok(
+            State(
+              ..state,
+              connection: connection.report_pmtu_black_hole(state.connection),
+            ),
+          )
+        udp.SocketLost -> Error(SocketUnavailable)
+        udp.Delivered ->
+          connection.commit_datagram(prepared, ecn.NotEct, now)
+          |> result.map(fn(next) { State(..state, connection: next) })
+          |> result.map_error(QuicFailure)
+      }
     }
   }
 }
@@ -774,7 +787,11 @@ fn establish_version(
   )
   use quic <- result.try(
     driver.start_client_with_token(
-      client_transport_config(config, selected_version),
+      client_transport_config(
+        config,
+        selected_version,
+        udp.dont_fragment(socket),
+      ),
       tls,
       original_destination_connection_id,
       local_connection_id,
@@ -928,23 +945,47 @@ fn flush(
           Ok(state)
         Error(error) -> Error(QuicFailure(error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(
-              state.socket,
-              connection.peer(state.connection),
-              connection.prepared_bytes(prepared),
-              ecn.NotEct,
-            )
-            |> result.replace_error(SocketUnavailable),
-          )
-          use next <- result.try(
-            connection.commit_datagram(prepared, ecn.NotEct, now)
-            |> result.map_error(QuicFailure),
-          )
-          flush(State(..state, connection: next), now, remaining_packets - 1)
-        }
+        Ok(Some(prepared)) ->
+          send_prepared(state, prepared, now, remaining_packets)
       }
+  }
+}
+
+/// Send one prepared datagram, then commit it and continue the flush.
+///
+/// A datagram the local stack refuses as too large is the path shrinking
+/// underneath a size DPLPMTUD had confirmed: the socket sets Don't-Fragment,
+/// so the kernel will not split it. It is dropped uncommitted, recovery
+/// retransmits its frames, and the next datagram is built for the floor.
+fn send_prepared(
+  state: State,
+  prepared: connection.PreparedDatagram,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(State, Error) {
+  case
+    udp.classify_send(udp.send(
+      state.socket,
+      connection.peer(state.connection),
+      connection.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall ->
+      Ok(
+        State(
+          ..state,
+          connection: connection.report_pmtu_black_hole(state.connection),
+        ),
+      )
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use next <- result.try(
+        connection.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(QuicFailure),
+      )
+      flush(State(..state, connection: next), now, remaining_packets - 1)
+    }
   }
 }
 
@@ -973,11 +1014,13 @@ fn process_received_datagram(
 fn client_transport_config(
   config: Config,
   selected: Version,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let defaults = transport.default_config(transport.Client)
   transport.Config(
     ..defaults,
     version: selected,
+    path_dont_fragment: dont_fragment,
     congestion_algorithm: config.congestion_control,
     idle_timeout_milliseconds: config.idle_timeout_milliseconds,
     maximum_peer_streams_bidirectional: config.bidirectional_stream_limit,

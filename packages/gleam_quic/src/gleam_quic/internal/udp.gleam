@@ -44,6 +44,11 @@ pub type Datagram {
 }
 
 /// Validation, OS, timeout, ownership, or capability failure.
+///
+/// `MessageTooLarge` is the local stack refusing a datagram it cannot send
+/// whole: with Don't-Fragment set the kernel will not split it. It is a path
+/// measurement a DPLPMTUD search owns, not a broken socket, so it is named
+/// apart from `SocketFailure`.
 pub type Error {
   InvalidInput
   Timeout
@@ -52,7 +57,48 @@ pub type Error {
   AddressInUse
   AddressUnavailable
   EcnUnavailable
+  MessageTooLarge
   SocketFailure
+}
+
+/// What one attempted datagram send means for the connection that issued it.
+///
+/// Every send path in this stack - each endpoint flush and each DPLPMTUD
+/// probe - has to make the same three-way decision, and getting it wrong in
+/// one place is a live connection torn down for a path measurement. Deciding
+/// it here keeps the mapping in one auditable place.
+pub type SendOutcome {
+  /// The local stack accepted the datagram; commit it.
+  Delivered
+  /// The path underneath is smaller than the datagram. The caller drops the
+  /// datagram uncommitted, reports a PMTU black hole so the path returns to
+  /// the 1200-byte floor, and keeps the connection alive: the frames stay
+  /// queued and go out on the next flush.
+  PathTooSmall
+  /// The socket cannot be used any further; fail the connection.
+  SocketLost
+}
+
+/// Classify the result of one `send`.
+///
+/// `MessageTooLarge` is EMSGSIZE: with Don't-Fragment set the kernel refuses
+/// to split a datagram the outgoing path cannot carry whole, so it is the
+/// path's answer to a size, not a broken socket. Every other error is fatal
+/// for the socket - a closed, unowned, or failed socket cannot be recovered
+/// by shrinking the path.
+pub fn classify_send(outcome: Result(Nil, Error)) -> SendOutcome {
+  case outcome {
+    Ok(Nil) -> Delivered
+    Error(MessageTooLarge) -> PathTooSmall
+    Error(InvalidInput)
+    | Error(Timeout)
+    | Error(Closed)
+    | Error(PermissionDenied)
+    | Error(AddressInUse)
+    | Error(AddressUnavailable)
+    | Error(EcnUnavailable)
+    | Error(SocketFailure) -> SocketLost
+  }
 }
 
 @external(erlang, "gleam_quic_udp_ffi", "open")
@@ -115,6 +161,9 @@ fn raw_stop_relay(relay: Relay) -> Result(Nil, Int)
 
 @external(erlang, "gleam_quic_udp_ffi", "supports_ecn")
 fn raw_supports_ecn(socket: Socket) -> Bool
+
+@external(erlang, "gleam_quic_udp_ffi", "dont_fragment_active")
+fn raw_dont_fragment(socket: Socket) -> Bool
 
 @external(erlang, "gleam_quic_udp_ffi", "close")
 fn raw_close(socket: Socket) -> Result(Nil, Int)
@@ -263,6 +312,18 @@ pub fn local_endpoint(socket: Socket) -> Result(Endpoint, Error) {
 /// Report whether this socket can receive and transmit ECN markings.
 pub fn supports_ecn(socket: Socket) -> Bool {
   raw_supports_ecn(socket)
+}
+
+/// Report whether the kernel sets Don't-Fragment on every datagram this socket
+/// sends.
+///
+/// RFC 8899 section 3 reads an acknowledged probe as proof the path carries
+/// that size only when the datagram could not have been fragmented on the way,
+/// so a caller that is told `False` must keep path MTU discovery at the
+/// 1200-byte floor RFC 9000 section 14 guarantees. A platform that does not
+/// expose the option still opens sockets; it only loses discovery.
+pub fn dont_fragment(socket: Socket) -> Bool {
+  raw_dont_fragment(socket)
 }
 
 /// Send exactly one UDP datagram to a non-zero peer port.
@@ -467,6 +528,7 @@ fn map_raw_result(value: Result(value, Int)) -> Result(value, Error) {
     Error(5) -> Error(AddressInUse)
     Error(6) -> Error(AddressUnavailable)
     Error(7) -> Error(EcnUnavailable)
+    Error(9) -> Error(MessageTooLarge)
     Error(_) -> Error(SocketFailure)
   }
 }

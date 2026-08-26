@@ -32,6 +32,10 @@ const retry_source_connection_id = <<21, 22, 23, 24, 25, 26, 27, 28>>
 
 const maximum_handshake_rounds = 64
 
+/// RFC 9000 section 14.1: the datagram size every path carries, and the size
+/// DPLPMTUD falls back to when a larger one turns out not to be sendable.
+const minimum_datagram_bytes = 1200
+
 const receive_timeout_milliseconds = 1000
 
 type Peers {
@@ -145,7 +149,7 @@ pub fn prepares_and_commits_exact_size_live_pmtu_probe_test() -> Nil {
   let assert Ok(server_tls) = engine.start_server(server_tls_config)
   let assert Ok(client) =
     driver.start_client(
-      connection_state.default_config(connection_state.Client),
+      dont_fragment_config(connection_state.Client),
       client_tls,
       original_destination_connection_id,
       client_connection_id,
@@ -690,6 +694,182 @@ pub fn configured_http3_frame_limit_rejects_oversized_peer_settings_test() -> Ni
         frame_parser.FrameFailure(frame.PayloadLimitExceeded(8)),
       ),
     )
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_handshake_frames_when_the_socket_refuses_a_datagram_test() -> Nil {
+  // `client_connection.flush_driver` hands each prepared handshake datagram
+  // to the socket. A socket that answers `udp.MessageTooLarge` has refused a
+  // datagram it cannot send whole, which is a path measurement rather than a
+  // broken socket: the datagram is never committed, so the frames it carried
+  // are still queued, and the path returns to the 1200-byte floor.
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      dont_fragment_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      dont_fragment_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(Some(refused)) = driver.prepare_datagram(client, 1000, 1)
+  assert bit_array.byte_size(driver.prepared_bytes(refused))
+    == minimum_datagram_bytes
+  let assert Ok(client) = driver_after_refused_send(client)
+  assert connection_state.path_mtu(driver.connection(client))
+    == minimum_datagram_bytes
+
+  // The ClientHello was never committed, so the handshake still completes.
+  let assert Ok(Peers(client, server, _)) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+  assert driver.phase(client) == connection_state.Established
+  assert driver.phase(server) == connection_state.Established
+  assert connection_state.path_mtu(driver.connection(client))
+    == minimum_datagram_bytes
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_request_data_when_the_socket_refuses_a_datagram_test() -> Nil {
+  // The same step over the state `client_connection.flush` holds once the
+  // connection is established and DPLPMTUD has confirmed a wider path.
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      dont_fragment_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      dont_fragment_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(Peers(client, server, now_ms)) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+  let assert Ok(client) =
+    session.start(client, http3_state.default_config(http3_state.Client), False)
+  let assert Ok(server) =
+    session.start(server, http3_state.default_config(http3_state.Server), False)
+
+  // Confirm a path wider than the floor, the way a live connection does.
+  let assert Ok(Some(probe)) = session.prepare_pmtu_probe(client, now_ms)
+  let probe_bytes = session.prepared_bytes(probe)
+  assert bit_array.byte_size(probe_bytes) > minimum_datagram_bytes
+  let assert Ok(client) = session.commit_datagram(probe, ecn.NotEct, now_ms)
+  let assert Ok(server) =
+    session.receive_datagram(
+      server,
+      probe_bytes,
+      packet_space.NotEct,
+      now_ms + 1,
+    )
+  let assert Ok(SessionPeers(client, server, now_ms)) =
+    drive_sessions(SessionPeers(client, server, now_ms + 30), 4)
+  assert session.path_mtu(client) > minimum_datagram_bytes
+
+  let assert Ok(#(client, request_id)) =
+    session.open_request(client, large_request_headers(), False)
+  let assert Ok(client) =
+    session.send_data(client, request_id, <<0:size(3000)-unit(8)>>)
+
+  // The flush builds a datagram for the confirmed path and the socket refuses
+  // it. The prepared datagram is dropped uncommitted.
+  let assert Ok(Some(refused)) = session.prepare_datagram(client, 1000, now_ms)
+  assert bit_array.byte_size(session.prepared_bytes(refused))
+    > minimum_datagram_bytes
+  let assert Ok(client) = session_after_refused_send(client)
+
+  assert session.phase(client) == connection_state.Established
+  assert session.path_mtu(client) == minimum_datagram_bytes
+
+  // The request body is still owed and still arrives, inside the floor.
+  let assert Ok(SessionPeers(client, server, _)) =
+    drive_sessions(SessionPeers(client, server, now_ms), 32)
+  let #(_, server_events) = session.take_events(server)
+  assert has_request_headers(server_events, request_id)
+  assert received_data_bytes(server_events, request_id) == 3000
+  assert session.phase(client) == connection_state.Established
+  assert session.path_mtu(client) == minimum_datagram_bytes
+}
+
+/// Request headers for a body larger than one floor-sized datagram carries.
+fn large_request_headers() -> List(Header) {
+  [
+    Header(<<":method">>, <<"POST">>, False),
+    Header(<<":scheme">>, <<"https">>, False),
+    Header(<<":authority">>, <<"localhost">>, False),
+    Header(<<":path">>, <<"/native">>, False),
+    Header(<<"content-length">>, <<"3000">>, False),
+  ]
+}
+
+/// Total DATA payload bytes one stream delivered.
+fn received_data_bytes(events: List(session.Event), stream_id: Int) -> Int {
+  list.fold(events, 0, fn(total, event) {
+    case event {
+      session.Http3Event(http3_state.Data(identifier, bytes))
+        if identifier == stream_id
+      -> total + bit_array.byte_size(bytes)
+      _ -> total
+    }
+  })
+}
+
+/// The step `client_connection.send_prepared_handshake` takes for one refused
+/// send.
+///
+/// The classification is the part under test: only `udp.PathTooSmall` keeps
+/// the connection. Were EMSGSIZE folded back into a socket failure - which is
+/// what the root client used to do - the flush would return
+/// `SocketUnavailable` and this returns `Error(Nil)` in its place, so the test
+/// fails instead of quietly asserting an unreachable state.
+fn driver_after_refused_send(state: driver.State) -> Result(driver.State, Nil) {
+  case udp.classify_send(Error(udp.MessageTooLarge)) {
+    udp.PathTooSmall -> Ok(driver.report_pmtu_black_hole(state))
+    udp.Delivered | udp.SocketLost -> Error(Nil)
+  }
+}
+
+/// The same step for `client_connection.send_prepared`, which flushes the
+/// established HTTP/3 session rather than the handshake.
+fn session_after_refused_send(
+  state: session.State,
+) -> Result(session.State, Nil) {
+  case udp.classify_send(Error(udp.MessageTooLarge)) {
+    udp.PathTooSmall -> Ok(session.report_pmtu_black_hole(state))
+    udp.Delivered | udp.SocketLost -> Error(Nil)
+  }
+}
+
+/// A configuration for a socket that carries the Don't-Fragment option, which
+/// is what lets DPLPMTUD search above the 1200-byte floor. The fail-closed
+/// default is pinned in the core package instead.
+fn dont_fragment_config(
+  role: connection_state.Role,
+) -> connection_state.Config {
+  connection_state.Config(
+    ..connection_state.default_config(role),
+    path_dont_fragment: True,
+  )
 }
 
 fn drive_handshake(peers: Peers, rounds: Int) -> Result(Peers, driver.Error) {

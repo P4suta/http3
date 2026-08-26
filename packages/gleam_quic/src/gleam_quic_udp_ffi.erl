@@ -7,6 +7,7 @@
     active_once/1,
     close/1,
     continue_relay/1,
+    dont_fragment_active/1,
     local_endpoint/1,
     monotonic_millisecond/0,
     unix_millisecond/0,
@@ -23,6 +24,46 @@
     transfer_owner/2
 ]).
 
+%% Raw socket options that make the kernel set the Don't-Fragment bit on every
+%% datagram a socket sends. RFC 8899 section 3 reads an acknowledged DPLPMTUD
+%% probe as proof the path carries that size only when the probe could not have
+%% been fragmented on the way, and RFC 9000 section 14.2 requires the same of
+%% QUIC, so every QUIC socket asks for this at open.
+%%
+%% Each constant is the value of the C header macro named beside it; Erlang's
+%% inet raw options take the numbers rather than the names.
+
+%% <netinet/in.h> IPPROTO_IP and IPPROTO_IPV6, the option levels.
+-define(IPPROTO_IP, 0).
+-define(IPPROTO_IPV6, 41).
+
+%% Linux <linux/in.h> IP_MTU_DISCOVER and <linux/in6.h> IPV6_MTU_DISCOVER,
+%% which carry a path-MTU-discovery policy rather than a boolean.
+%% IP_PMTUDISC_PROBE sets Don't-Fragment and ignores the kernel's cached path
+%% MTU, which is exactly what a DPLPMTUD search wants; IP_PMTUDISC_DO also sets
+%% Don't-Fragment but clamps sends to the cached MTU, and is the fallback when
+%% a kernel refuses PROBE.
+-define(LINUX_IP_MTU_DISCOVER, 10).
+-define(LINUX_IPV6_MTU_DISCOVER, 23).
+-define(LINUX_PMTUDISC_DO, 2).
+-define(LINUX_PMTUDISC_PROBE, 3).
+
+%% Darwin <netinet/in.h> IP_DONTFRAG and <netinet6/in6.h> IPV6_DONTFRAG,
+%% boolean integers.
+-define(DARWIN_IP_DONTFRAG, 28).
+-define(DARWIN_IPV6_DONTFRAG, 62).
+
+%% FreeBSD <netinet/in.h> IP_DONTFRAG and <netinet6/in6.h> IPV6_DONTFRAG,
+%% boolean integers. FreeBSD numbers IP_DONTFRAG differently from Darwin.
+-define(FREEBSD_IP_DONTFRAG, 67).
+-define(FREEBSD_IPV6_DONTFRAG, 62).
+
+%% Windows <ws2ipdef.h> IP_DONTFRAGMENT and IPV6_DONTFRAG, boolean integers.
+%% Windows may not accept these through inet raw options at all, which the
+%% caller handles the same way as any other refusal.
+-define(WINDOWS_IP_DONTFRAGMENT, 14).
+-define(WINDOWS_IPV6_DONTFRAG, 14).
+
 -define(CLOCK_ORIGIN, {?MODULE, clock_origin}).
 -define(DEFAULT_SOCKET_BUFFER_BYTES, 4 * 1024 * 1024).
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
@@ -32,6 +73,7 @@
     socket := gen_udp:socket(),
     family := socket_family() | dual,
     ecn := boolean(),
+    dont_fragment := boolean(),
     ipv4_socket => gen_udp:socket(),
     ipv4_ecn => boolean()
 }.
@@ -302,6 +344,15 @@ stop_relay(#{pid := Pid, reference := Reference}) ->
 stop_relay(_Relay) ->
     {error, 1}.
 
+%% Report whether every socket behind this handle sets Don't-Fragment on the
+%% datagrams it sends. Path MTU discovery may only raise the confirmed size
+%% above the 1200-byte floor when it does.
+-spec dont_fragment_active(term()) -> boolean().
+dont_fragment_active(#{dont_fragment := Active}) ->
+    Active;
+dont_fragment_active(_Handle) ->
+    false.
+
 -spec supports_ecn(term()) -> boolean().
 supports_ecn(#{ecn := Ipv6, ipv4_ecn := Ipv4}) -> Ipv6 andalso Ipv4;
 supports_ecn(#{ecn := Supported}) -> Supported;
@@ -570,19 +621,21 @@ open_split_dual_stack(Port) ->
     ],
     case open_socket(Port, Ipv6Options, {recvtclass, true}, 6) of
         {error, Reason} -> {error, Reason};
-        {ok, #{socket := Socket6, ecn := Ecn6}} ->
+        {ok, #{socket := Socket6, ecn := Ecn6, dont_fragment := Df6}} ->
             case inet:port(Socket6) of
                 {error, Reason} ->
                     close_sockets([Socket6]),
                     {error, error_code(Reason)};
                 {ok, BoundPort} ->
-                    open_split_ipv4(Socket6, Ecn6, BoundPort)
+                    open_split_ipv4(Socket6, Ecn6, Df6, BoundPort)
             end
     end.
 
--spec open_split_ipv4(gen_udp:socket(), boolean(), inet:port_number()) ->
+-spec open_split_ipv4(
+    gen_udp:socket(), boolean(), boolean(), inet:port_number()
+) ->
     {ok, handle()} | {error, integer()}.
-open_split_ipv4(Socket6, Ecn6, Port) ->
+open_split_ipv4(Socket6, Ecn6, Df6, Port) ->
     Ipv4Options = [
         binary,
         {active, false},
@@ -596,13 +649,14 @@ open_split_ipv4(Socket6, Ecn6, Port) ->
         {error, Reason} ->
             close_sockets([Socket6]),
             {error, Reason};
-        {ok, #{socket := Socket4, ecn := Ecn4}} ->
+        {ok, #{socket := Socket4, ecn := Ecn4, dont_fragment := Df4}} ->
             {ok, #{
                 socket => Socket6,
                 ipv4_socket => Socket4,
                 family => dual,
                 ecn => Ecn6,
-                ipv4_ecn => Ecn4
+                ipv4_ecn => Ecn4,
+                dont_fragment => Df6 andalso Df4
             }}
     end.
 
@@ -757,7 +811,12 @@ open_socket(Port, BaseOptions, EcnOption, Family) ->
 open_socket_with_ecn(Port, BaseOptions, EcnOption, Family) ->
     case gen_udp:open(Port, [EcnOption | BaseOptions]) of
         {ok, Socket} ->
-            {ok, #{socket => Socket, family => Family, ecn => true}};
+            {ok, #{
+                socket => Socket,
+                family => Family,
+                ecn => true,
+                dont_fragment => set_dont_fragment(Socket, Family)
+            }};
         {error, Reason} when Reason =:= einval; Reason =:= enoprotoopt ->
             open_socket_without_ecn(Port, BaseOptions, Family);
         {error, Reason} ->
@@ -771,10 +830,77 @@ open_socket_with_ecn(Port, BaseOptions, EcnOption, Family) ->
 open_socket_without_ecn(Port, BaseOptions, Family) ->
     case gen_udp:open(Port, BaseOptions) of
         {ok, Socket} ->
-            {ok, #{socket => Socket, family => Family, ecn => false}};
+            {ok, #{
+                socket => Socket,
+                family => Family,
+                ecn => false,
+                dont_fragment => set_dont_fragment(Socket, Family)
+            }};
         {error, Reason} ->
             {error, error_code(Reason)}
     end.
+
+%% Ask the kernel to set the Don't-Fragment bit on every datagram this socket
+%% sends and report whether it agreed.
+%%
+%% A platform that does not expose the option through inet raw options leaves
+%% the socket usable: the caller is told Don't-Fragment is inactive and keeps
+%% path discovery at the 1200-byte floor every path carries, rather than
+%% failing to open a socket at all.
+-spec set_dont_fragment(gen_udp:socket(), socket_family()) -> boolean().
+set_dont_fragment(Socket, Family) ->
+    apply_dont_fragment(Socket, dont_fragment_options(os:type(), Family)).
+
+-spec apply_dont_fragment(gen_udp:socket(), [gen_udp:option()]) -> boolean().
+apply_dont_fragment(_Socket, []) ->
+    false;
+apply_dont_fragment(Socket, [Option | Rest]) ->
+    try inet:setopts(Socket, [Option]) of
+        ok -> true;
+        {error, _Reason} -> apply_dont_fragment(Socket, Rest)
+    catch
+        _Class:_Reason -> apply_dont_fragment(Socket, Rest)
+    end.
+
+%% The socket options that set Don't-Fragment on this platform, most preferred
+%% first, and none for a platform whose option this runtime cannot express.
+-spec dont_fragment_options(term(), socket_family()) -> [gen_udp:option()].
+dont_fragment_options({unix, linux}, 4) ->
+    [
+        raw_integer_option(
+            ?IPPROTO_IP, ?LINUX_IP_MTU_DISCOVER, ?LINUX_PMTUDISC_PROBE
+        ),
+        raw_integer_option(
+            ?IPPROTO_IP, ?LINUX_IP_MTU_DISCOVER, ?LINUX_PMTUDISC_DO
+        )
+    ];
+dont_fragment_options({unix, linux}, 6) ->
+    [
+        raw_integer_option(
+            ?IPPROTO_IPV6, ?LINUX_IPV6_MTU_DISCOVER, ?LINUX_PMTUDISC_PROBE
+        ),
+        raw_integer_option(
+            ?IPPROTO_IPV6, ?LINUX_IPV6_MTU_DISCOVER, ?LINUX_PMTUDISC_DO
+        )
+    ];
+dont_fragment_options({unix, darwin}, 4) ->
+    [raw_integer_option(?IPPROTO_IP, ?DARWIN_IP_DONTFRAG, 1)];
+dont_fragment_options({unix, darwin}, 6) ->
+    [raw_integer_option(?IPPROTO_IPV6, ?DARWIN_IPV6_DONTFRAG, 1)];
+dont_fragment_options({unix, freebsd}, 4) ->
+    [raw_integer_option(?IPPROTO_IP, ?FREEBSD_IP_DONTFRAG, 1)];
+dont_fragment_options({unix, freebsd}, 6) ->
+    [raw_integer_option(?IPPROTO_IPV6, ?FREEBSD_IPV6_DONTFRAG, 1)];
+dont_fragment_options({win32, _Name}, 4) ->
+    [raw_integer_option(?IPPROTO_IP, ?WINDOWS_IP_DONTFRAGMENT, 1)];
+dont_fragment_options({win32, _Name}, 6) ->
+    [raw_integer_option(?IPPROTO_IPV6, ?WINDOWS_IPV6_DONTFRAG, 1)];
+dont_fragment_options(_Platform, _Family) ->
+    [].
+
+-spec raw_integer_option(integer(), integer(), integer()) -> gen_udp:option().
+raw_integer_option(Level, Option, Value) ->
+    {raw, Level, Option, <<Value:32/native>>}.
 
 -spec runtime_supports_ecn() -> boolean().
 runtime_supports_ecn() ->
@@ -908,7 +1034,12 @@ encode_address({A, B, C, D, E, F, G, H}) ->
 encode_address(_Address) ->
     error.
 
--spec error_code(term()) -> 2..8.
+%% Map one POSIX reason onto the small integer the Gleam side decodes. Code 8
+%% is the catch-all, so a reason that needs its own name takes the next number
+%% above it: 9 is emsgsize, which a Don't-Fragment socket returns for a
+%% datagram larger than the local interface carries whole and which the path
+%% MTU search owns rather than the socket.
+-spec error_code(term()) -> 2..9.
 error_code(timeout) -> 2;
 error_code(closed) -> 3;
 error_code(not_owner) -> 3;
@@ -918,4 +1049,5 @@ error_code(eaddrinuse) -> 5;
 error_code(eaddrnotavail) -> 6;
 error_code(enoprotoopt) -> 7;
 error_code(eafnosupport) -> 6;
+error_code(emsgsize) -> 9;
 error_code(_Reason) -> 8.

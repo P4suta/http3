@@ -20,8 +20,6 @@ const minimum_initial_datagram_bytes = 1200
 
 const maximum_padding_adjustments = 8
 
-const maximum_initial_token_bytes = 4096
-
 /// Stable endpoint role.
 pub type Role {
   Client
@@ -64,6 +62,17 @@ pub type Error {
   VersionNegotiationReceived(List(Version))
   PacketFailure(packet.Error)
   ConnectionFailure(connection_state.Error)
+  /// An authenticated Retry carried an address-validation token wider than
+  /// `budget_bytes`, the widest one this endpoint can repeat in an Initial
+  /// that still fits the 1200-byte floor.
+  ///
+  /// This is a local limit, not a peer fault: RFC 9000 places no upper bound
+  /// on a Retry token, and the budget is computed by charging every Initial
+  /// header field its widest encoding, so a token a little past it might well
+  /// have fitted the header this connection actually writes. It is reported
+  /// apart from `ConnectionFailure` so a log or qlog never attributes it to
+  /// the server as a protocol violation.
+  RetryTokenTooLarge(token_bytes: Int, budget_bytes: Int)
 }
 
 /// Return whether a receive failure occurred before packet authentication and
@@ -118,7 +127,14 @@ pub fn start_client_with_token(
 ) -> Result(State, Error) {
   use _ <- result.try(validate_connection_id(original_destination_connection_id))
   use _ <- result.try(validate_connection_id(local_connection_id))
-  use _ <- result.try(validate_initial_token(initial_token))
+  // A cached token only saves a round trip. One this endpoint cannot repeat
+  // inside an Initial that still fits the 1200-byte floor is dropped and the
+  // connection starts without it; the server is free to answer with a Retry
+  // carrying a token of its own choosing.
+  let initial_token = case carryable_initial_token(initial_token) {
+    True -> initial_token
+    False -> <<>>
+  }
   use connection <- result.try(
     connection_state.new(config, now_ms) |> map_connection_result,
   )
@@ -133,17 +149,42 @@ pub fn start_client_with_token(
     connection_state.attach_client_tls(connection, tls)
     |> map_connection_result,
   )
-  Ok(State(
-    Client,
-    config.version,
-    connection,
-    local_connection_id,
-    original_destination_connection_id,
-    original_destination_connection_id,
+  Ok(record_initial_token(
+    State(
+      Client,
+      config.version,
+      connection,
+      local_connection_id,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      <<>>,
+      False,
+      False,
+    ),
     initial_token,
-    False,
-    False,
   ))
+}
+
+/// Record the address-validation token every Initial this endpoint sends will
+/// carry, on the driver that writes it and on the connection that budgets an
+/// Initial payload around it.
+///
+/// The two have to move together. `protect_long` writes `initial_token` into
+/// every Initial, and `connection_state` subtracts its width from what one
+/// Initial may carry, so a token recorded in only one of them builds a
+/// datagram past the 1200-byte floor - which is exactly what a server-chosen
+/// Retry token would have done. Every change of `initial_token` goes through
+/// here; both constructors start from the empty token a fresh connection
+/// already budgets for.
+fn record_initial_token(state: State, token: BitArray) -> State {
+  State(
+    ..state,
+    initial_token: token,
+    connection: connection_state.set_initial_token_bytes(
+      state.connection,
+      bit_array.byte_size(token),
+    ),
+  )
 }
 
 /// Start a server for one accepted client Initial packet.
@@ -265,6 +306,21 @@ pub fn prepare_pmtu_probe(
       )
     }
   }
+}
+
+/// Reset the confirmed path size to the 1200-byte floor and clear any
+/// outstanding probe.
+///
+/// A datagram the local stack refuses as too large is exactly the signal RFC
+/// 8899 section 4.3 calls a black hole: with Don't-Fragment set the kernel
+/// will not split it, so the size this connection believed the path carried is
+/// not a size it can send at all. Recovering is a path measurement, not a
+/// socket failure, so the connection keeps running from the floor.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(
+    ..state,
+    connection: connection_state.report_pmtu_black_hole(state.connection),
+  )
 }
 
 /// Bytes to pass to one UDP send operation.
@@ -786,6 +842,7 @@ fn receive_retry(
     False -> Ok(state)
     True -> {
       use retry_without_tag <- result.try(split_retry_tag(datagram))
+      let carryable_token = carryable_initial_token(token)
       case
         retry_integrity.verify(
           state.version,
@@ -796,6 +853,18 @@ fn receive_retry(
       {
         // nolint: thrown_away_error -- RFC 9000 requires silent Retry discard.
         Error(_) -> Ok(state)
+        // The Retry is authenticated and the server picked a token no Initial
+        // can repeat inside the 1200-byte floor. Dropping the token would get
+        // the next Initial rejected and sending it would build a datagram no
+        // path is known to carry, so the attempt ends here with a typed
+        // failure instead of stalling until the idle timeout. The check is
+        // deliberately after the integrity tag: a forged Retry must not be
+        // able to end a connection.
+        Ok(Nil) if !carryable_token ->
+          Error(RetryTokenTooLarge(
+            bit_array.byte_size(token),
+            connection_state.maximum_initial_token_bytes(),
+          ))
         Ok(Nil) -> {
           use connection <- result.try(
             connection_state.process_retry(state.connection, source, now_ms)
@@ -808,16 +877,16 @@ fn receive_retry(
             )
             |> map_connection_result,
           )
-          Ok(
+          Ok(record_initial_token(
             State(
               ..state,
               connection: connection,
               peer_connection_id: source,
-              initial_token: token,
               server_packet_received: True,
               retry_received: True,
             ),
-          )
+            token,
+          ))
         }
       }
     }
@@ -900,14 +969,17 @@ fn validate_initial_peer_connection_id(value: BitArray) -> Result(Nil, Error) {
   }
 }
 
-fn validate_initial_token(value: BitArray) -> Result(Nil, Error) {
-  case
-    bit_array.bit_size(value) % 8 == 0
-    && bit_array.byte_size(value) <= maximum_initial_token_bytes
-  {
-    True -> Ok(Nil)
-    False -> Error(InvalidInput)
-  }
+/// Whether a token is whole bytes and narrow enough to ride an Initial that
+/// still fits the 1200-byte floor, which is the only size every path carries
+/// before DPLPMTUD has confirmed more.
+///
+/// `connection_state.maximum_initial_token_bytes` owns the width: it is the
+/// same budget the send path subtracts from an Initial's payload, so checking
+/// every token against it here is what makes that budget a real ceiling.
+fn carryable_initial_token(value: BitArray) -> Bool {
+  bit_array.bit_size(value) % 8 == 0
+  && bit_array.byte_size(value)
+  <= connection_state.maximum_initial_token_bytes()
 }
 
 fn map_connection_result(

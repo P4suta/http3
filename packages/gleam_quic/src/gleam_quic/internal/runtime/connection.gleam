@@ -355,6 +355,12 @@ pub fn pmtu_discovery_complete(state: State) -> Bool {
   transport.pmtu_discovery_complete(driver.connection(state.quic))
 }
 
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram the connection believed the path carried.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(..state, quic: driver.report_pmtu_black_hole(state.quic))
+}
+
 /// Prepare one exact-size DPLPMTUD probe.
 pub fn prepare_pmtu_probe(
   state: State,

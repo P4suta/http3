@@ -110,7 +110,8 @@ the following Gleam-owned components:
 - IPv4 and IPv6 UDP operation, QUIC DATAGRAM, path statistics, and opt-in qlog;
   and
 - DPLPMTUD probes that raise the datagram size only once a probe of that size
-  has been acknowledged, and 1-RTT packets sized from the resulting path MTU.
+  has been acknowledged over a socket that sets Don't-Fragment, and packets at
+  every level sized from the resulting path MTU.
 
 A 1-RTT packet takes its frame budget from the validated path MTU after
 paying for the widest short header QUIC v1 allows, the AEAD tag, and any ACK
@@ -120,25 +121,76 @@ the scheduled ACK already subtracted; if the ACK has grown by the time the
 packet is built, the datagram waits one packet and the ACK goes out, because
 acknowledgement delay is bounded by `max_ack_delay` while an application
 queue is not. An early datagram is sized against the wider 0-RTT long header
-instead. NEW_TOKEN and CONNECTION_CLOSE carry caller-supplied payloads and are
-neither splittable nor droppable, so both are bounded where they enter the
-connection to fit the 1200-byte floor a black hole resets the path to. Every
-1-RTT and 0-RTT packet is measured against the validated path before it is
-sent, and DPLPMTUD never raises that path above the peer's advertised
-`max_udp_payload_size`.
+instead, and a 0-RTT packet is budgeted from the floor rather than from the
+caller's request. NEW_TOKEN and CONNECTION_CLOSE carry caller-supplied payloads
+and are neither splittable nor droppable, so both are bounded where they enter
+the connection to fit the 1200-byte floor a black hole resets the path to.
 
-Initial and Handshake packets are not measured. They keep the fixed frame
-budget the caller asks for -- the runtimes ask for 1000 bytes, so the
-datagrams they build land inside the 1200-byte floor every path carries, and
-the driver pads an Initial up to that floor -- but nothing in the connection
-enforces a ceiling on them. A caller asking for a larger budget, or an Initial
-whose address-validation token is added on top of its frames, would build a
-datagram larger than the floor. Enforcing the bound for these two packet spaces is
-follow-up work, tracked together with setting the socket's DF /
-`IP_MTU_DISCOVER` option so that an oversized datagram fails loudly instead of
-being fragmented on the way out. Their frame-decoding budget stays at the
-fixed default because Initial keys are derivable by any sender that can
+Every packet at every level is measured against the path before it is sent, so
+no datagram this endpoint builds exceeds the smaller of the validated path MTU
+and the peer's advertised `max_udp_payload_size`. Initial and Handshake
+packets are budgeted against the long header they ride, an Initial paying for
+its address-validation token as well, and the caller's requested frame budget
+is a ceiling rather than the size. That bound holds only while every level's
+protection is itself smaller than the floor, so the one part of it a peer
+chooses -- the address-validation token, which a client repeats in every
+Initial -- is bounded where it enters the connection.
+`connection_state.maximum_initial_token_bytes` is that width: the floor, minus
+what protecting an Initial costs around its frames, minus the payload one
+Initial keeps in reserve. It works out to 861 bytes, and that number is a
+conservative internal ceiling, not a wire limit -- RFC 9000 places no upper
+bound on a token, and the budget charges every Initial header field its widest
+encoding (twenty-byte connection IDs and 8-byte varints throughout), so a token
+somewhat past it would often still have fitted the header a given connection
+writes.
+
+A token past that width never reaches the send path. A cached NEW_TOKEN that
+wide is ignored and the connection is attempted without it, because a token is
+only an optimization and the server may still answer with a Retry; a NEW_TOKEN
+that wide arriving on a live connection is not stored; and an authenticated
+Retry carrying one ends the attempt with `driver.RetryTokenTooLarge`, since the
+client can neither drop that token nor repeat it. That error is reported apart
+from a connection failure precisely because the limit is local: the server
+violated nothing, so neither a log nor a qlog attributes the outcome to it. The
+width is checked only after the Retry integrity tag verifies, so a forged Retry
+is still discarded silently and cannot end a connection.
+
+A packet carrying nothing but an acknowledgement is measured too: a widely
+scattered retained range set encodes past the floor on its own, and RFC 9000
+section 13.2.4 lets the oldest ranges stay retained for a later packet while
+the newest go out now. The Initial and Handshake frame-decoding budget stays at
+the fixed default because Initial keys are derivable by any sender that can
 observe a connection ID.
+
+Every QUIC UDP socket asks the kernel for Don't-Fragment at open --
+`IP_MTU_DISCOVER`/`IPV6_MTU_DISCOVER` set to `PMTUDISC_PROBE` on Linux,
+`IP_DONTFRAG`/`IPV6_DONTFRAG` on macOS and FreeBSD,
+`IP_DONTFRAGMENT`/`IPV6_DONTFRAG` on Windows. A platform that refuses the
+option still opens the socket; it reports Don't-Fragment inactive, and the
+connection is configured so DPLPMTUD stays at the 1200-byte floor rather than
+reading an acknowledged probe that the kernel could have fragmented as proof
+the path carries that size (RFC 8899 section 3). Every runtime passes the
+answer for the socket it actually sends on -- both core runtimes, the two
+native clients, and the native server -- and `default_config` fails closed with
+Don't-Fragment absent, so a connection built without that answer stays on the
+floor instead of assuming a capability it has not checked.
+
+With the option active the kernel refuses an oversized send with `EMSGSIZE`.
+Every send that carries connection data routes its result through one shared
+classifier, `udp.classify_send`, which is the only place the three-way decision
+-- committed, path measurement, dead socket -- is made. Eleven call sites use
+it: seven flush paths (the core client and server, the native client's
+handshake and HTTP/3 flushes, the happy-eyeballs client's two, and the native
+server's) and four probe paths (a client and a server probe in each runtime).
+`EMSGSIZE` is classified as a path measurement: the datagram is dropped
+uncommitted, the frames it held are still owed and are retransmitted by
+recovery, and the path returns to the floor. It is never a socket failure, so
+an outgoing device narrower than the path DPLPMTUD confirmed costs a round trip
+rather than the connection; every other send error is fatal for the socket,
+because a closed, unowned, or broken socket cannot be recovered by shrinking
+the path. The remaining sends are the listener's stateless Retry and Version
+Negotiation replies and the server's shutdown CONNECTION_CLOSE, which are far
+below the floor and have no path state to return.
 
 The pacer's burst and the congestion controllers' `max_datagram_size` both
 follow the validated path, so one path-sized datagram always fits inside a

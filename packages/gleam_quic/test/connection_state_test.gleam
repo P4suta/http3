@@ -969,6 +969,41 @@ pub fn queues_negotiated_datagrams_and_reports_tokens_distinctly_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn ignores_a_new_token_no_initial_can_repeat_test() -> Nil {
+  // A NEW_TOKEN is only worth keeping if a later connection can repeat it in
+  // an Initial that still fits the 1200-byte floor. The server chooses the
+  // width, so one past that budget is dropped on arrival rather than stored
+  // and refused at the start of the next connection.
+  let budget = connection_state.maximum_initial_token_bytes()
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.NewToken(<<0:size(budget + 1)-unit(8)>>)],
+      packet_space.NotEct,
+      1,
+    )
+  let #(connection, events) = connection_state.take_events(connection)
+  assert events == []
+
+  // The widest token an Initial can still repeat is kept.
+  let usable = <<0:size(budget)-unit(8)>>
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.NewToken(usable)],
+      packet_space.NotEct,
+      2,
+    )
+  let #(_, events) = connection_state.take_events(connection)
+  assert events == [connection_state.NewTokenReceived(usable)]
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn only_established_servers_can_queue_bounded_new_tokens_test() -> Nil {
   let assert Ok(server) = established(connection_state.Server)
   let assert Ok(server) =
@@ -1528,6 +1563,239 @@ pub fn keeps_a_coalesced_ack_inside_the_validated_path_test() -> Nil {
     )
   assert bytes <= connection_state.path_mtu(filled)
   assert bytes >= connection_state.path_mtu(filled) - 8
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_the_path_at_the_floor_by_default_test() -> Nil {
+  // The default configuration says nothing about the socket it will be sent
+  // on, so it assumes the Don't-Fragment option is absent and stays on the
+  // 1200-byte floor. Every runtime passes the option its socket actually got;
+  // a connection built without that answer never grows a path it cannot prove.
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Client),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.HandshakeComplete,
+    ])
+  let #(connection, _) = connection_state.take_events(connection)
+  assert connection_state.path_mtu(connection) == 1200
+
+  let floored = case connection_state.start_pmtu_probe(connection) {
+    // nolint: thrown_away_error -- refusing to probe is one correct answer.
+    Error(_) -> connection
+    Ok(#(probing, size)) -> acknowledges_probe(probing, size)
+  }
+  assert connection_state.path_mtu(floored) == 1200
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_the_path_at_the_floor_without_dont_fragment_test() -> Nil {
+  // A socket the kernel would not give the Don't-Fragment option to can have
+  // an oversized probe fragmented locally, delivered, and acknowledged. RFC
+  // 8899 section 3 lets an acknowledged probe raise the path only when it
+  // could not have been fragmented, so a connection told the flag is inactive
+  // stays on the 1200-byte floor however large a probe the peer acknowledges.
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.Config(
+        ..connection_state.default_config(connection_state.Client),
+        path_dont_fragment: False,
+      ),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.HandshakeComplete,
+    ])
+  let #(connection, _) = connection_state.take_events(connection)
+  assert connection_state.path_mtu(connection) == 1200
+
+  // Either no probe is scheduled at all, or one is scheduled and its
+  // acknowledgement proves nothing. Both leave the path on the floor.
+  let floored = case connection_state.start_pmtu_probe(connection) {
+    // nolint: thrown_away_error -- refusing to probe is one correct answer.
+    Error(_) -> connection
+    Ok(#(probing, size)) -> acknowledges_probe(probing, size)
+  }
+  assert connection_state.path_mtu(floored) == 1200
+}
+
+/// Commit one padded `size`-byte probe and have the peer acknowledge it.
+fn acknowledges_probe(
+  connection: connection_state.State,
+  size: Int,
+) -> connection_state.State {
+  let number = connection_state.next_application_packet_number(connection)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      number,
+      [frame.Ping, frame.Padding(1)],
+      size,
+      ecn.NotEct,
+      10,
+    )
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [
+        frame.Ack(frame.Acknowledgement(
+          0,
+          [frame.AckRange(number, number)],
+          None,
+        )),
+      ],
+      packet_space.NotEct,
+      20,
+    )
+  connection
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_a_handshake_packet_inside_the_smallest_path_test() -> Nil {
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Client),
+      0,
+    )
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.Handshake, keys),
+      engine.Send(engine.Handshake, <<0:size(1500)-unit(8)>>),
+    ])
+
+  // Nothing has been validated above the 1200-byte floor every path carries,
+  // and RFC 9000 section 14.1 lets no datagram exceed it before it has.
+  assert connection_state.path_mtu(connection) == 1200
+
+  // The caller asks for the whole flight in one packet. A long-header packet
+  // is built from the same queue as every other level, so the budget has to be
+  // measured against the path rather than trusted.
+  let assert Ok(connection_state.PacketPrepared(prepared, _, number, frames)) =
+    connection_state.prepare_packet(connection, engine.Handshake, 65_000, 1)
+  let assert Ok(packet) =
+    connection_state.protect_long_packet(
+      prepared,
+      wire_packet.Handshake,
+      maximum_destination_connection_id,
+      maximum_destination_connection_id,
+      number,
+      frames,
+    )
+  assert bit_array.byte_size(packet) <= connection_state.path_mtu(prepared)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_an_acknowledgement_only_packet_inside_the_smallest_path_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  assert connection_state.path_mtu(connection) == 1200
+
+  // A peer that drops every other block of packet numbers keeps the full
+  // retained range set alive, and a widely scattered set makes every gap
+  // varint four bytes. The acknowledgement alone then outgrows the floor,
+  // and an ACK-only packet carries no other frame for the send path to
+  // measure it beside.
+  let connection = receives_scattered_packets(connection, 256)
+  let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
+    connection_state.prepare_packet(connection, engine.OneRtt, 1000, 40)
+  let assert [frame.Ack(frame.Acknowledgement(_, ranges, _))] = frames
+
+  // RFC 9000 section 13.2.4 lets an acknowledgement carry a subset of the
+  // ranges its sender retains. All 256 do not fit the floor, so the oldest
+  // stay retained for a later packet while the newest - the ones the peer's
+  // loss detection needs - go out now, largest received packet number first.
+  assert list.length(ranges) < 256
+  assert list.length(ranges) > 200
+  let assert [frame.AckRange(_, largest), ..] = ranges
+  assert largest == 256 * 1_048_576
+  assert protected_datagram_bytes(
+      prepared,
+      maximum_destination_connection_id,
+      widest_packet_number,
+      frames,
+    )
+    <= connection_state.path_mtu(prepared)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn keeps_an_initial_packet_with_a_token_inside_the_smallest_path_test() -> Nil {
+  // A server-issued address-validation token rides in every Initial its
+  // client sends (RFC 9000 section 8.1.2), on top of the long header and the
+  // AEAD tag. It is the one part of a packet's overhead the peer chooses, so
+  // it is the part a budget computed without it under-counts by.
+  let token = <<0:size(700)-unit(8)>>
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Client),
+      0,
+    )
+  let assert Ok(connection) =
+    connection_state.install_initial_keys(
+      connection,
+      initial_destination_connection_id,
+    )
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.Send(engine.Initial, <<0:size(1500)-unit(8)>>),
+    ])
+  let connection =
+    connection_state.set_initial_token_bytes(
+      connection,
+      bit_array.byte_size(token),
+    )
+  assert connection_state.path_mtu(connection) == 1200
+
+  let assert Ok(connection_state.PacketPrepared(prepared, _, number, frames)) =
+    connection_state.prepare_packet(connection, engine.Initial, 1000, 1)
+  let assert Ok(packet) =
+    connection_state.protect_long_packet(
+      prepared,
+      wire_packet.Initial(token),
+      maximum_destination_connection_id,
+      maximum_destination_connection_id,
+      number,
+      frames,
+    )
+
+  // The handshake still advances: the token narrows the payload rather than
+  // silencing the packet.
+  let assert Some(_) = crypto_data(frames)
+  assert bit_array.byte_size(packet) <= connection_state.path_mtu(prepared)
+}
+
+/// Receive `count` ack-eliciting packets spaced far enough apart that every
+/// retained range encodes its gap as a four-byte varint.
+fn receives_scattered_packets(
+  connection: connection_state.State,
+  count: Int,
+) -> connection_state.State {
+  list.index_fold(list.repeat(Nil, count), connection, fn(connection, _, index) {
+    let assert Ok(connection) =
+      connection_state.receive_packet(
+        connection,
+        engine.OneRtt,
+        { index + 1 } * 1_048_576,
+        [frame.Ping],
+        packet_space.NotEct,
+        30,
+      )
+    connection
+  })
 }
 
 /// Protect one 1-RTT packet and report the size of the datagram that goes on
@@ -2191,11 +2459,21 @@ fn pacer_bound_connection_after(
   #(connection, stream)
 }
 
+/// One established connection on a socket that carries the Don't-Fragment
+/// option, which is what lets DPLPMTUD search above the 1200-byte floor. The
+/// fail-closed default is pinned by
+/// `keeps_the_path_at_the_floor_by_default_test` instead.
 fn established(
   role: connection_state.Role,
 ) -> Result(connection_state.State, connection_state.Error) {
   let assert Ok(connection) =
-    connection_state.new(connection_state.default_config(role), 0)
+    connection_state.new(
+      connection_state.Config(
+        ..connection_state.default_config(role),
+        path_dont_fragment: True,
+      ),
+      0,
+    )
   let assert Ok(keys) = test_keys()
   let assert Ok(connection) =
     connection_state.apply_tls_actions(connection, [

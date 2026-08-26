@@ -46,6 +46,7 @@ pub type Config {
     unidirectional_stream_limit: Int,
     stream_buffer_limit: Int,
     datagram_limit: Int,
+    path_dont_fragment: Bool,
   )
 }
 
@@ -392,6 +393,15 @@ pub fn pmtu_discovery_complete(state: State) -> Bool {
   connection.pmtu_discovery_complete(state.connection)
 }
 
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram this connection believed the path carried.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(
+    ..state,
+    connection: connection.report_pmtu_black_hole(state.connection),
+  )
+}
+
 pub fn prepare_pmtu_probe(
   state: State,
   now: Int,
@@ -454,6 +464,7 @@ fn server_transport_config(
   transport.Config(
     ..defaults,
     version: version,
+    path_dont_fragment: config.path_dont_fragment,
     congestion_algorithm: config.congestion_control,
     idle_timeout_milliseconds: config.idle_timeout_milliseconds,
     maximum_peer_streams_bidirectional: config.bidirectional_stream_limit,
