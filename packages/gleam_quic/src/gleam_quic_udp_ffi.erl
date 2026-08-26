@@ -9,6 +9,7 @@
     continue_relay/1,
     dont_fragment_active/1,
     local_endpoint/1,
+    maximum_relay_batch/0,
     monotonic_millisecond/0,
     unix_millisecond/0,
     open/2,
@@ -302,6 +303,15 @@ start_relay(Handle = #{socket := Socket}) ->
     end;
 start_relay(_Socket) ->
     {error, 1}.
+
+%% The most datagrams one relay batch can carry. The listener derives its
+%% per-connection delivery window from this: the whole batch is routed in a
+%% single step and no acknowledgement can widen a window part way through it,
+%% so a window narrower than a batch sheds part of a burst that a healthy
+%% connection is keeping up with.
+-spec maximum_relay_batch() -> integer().
+maximum_relay_batch() ->
+    ?MAXIMUM_RELAY_BATCH.
 
 -spec relay_batch(relay(), term()) ->
     {ok, [{binary(), integer(), binary(), 0..3}]} | {error, integer()}.

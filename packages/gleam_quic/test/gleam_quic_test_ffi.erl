@@ -7,10 +7,12 @@
     linux_platform/0,
     mailbox_deliveries/1,
     mailbox_length/1,
+    maximum_relay_batch/0,
     processes_labelled_under/2,
     routed_connection_id/1,
     socket_buffer_bytes/1,
-    socket_dont_fragment_values/1
+    socket_dont_fragment_values/1,
+    traced_routed_connection_id/2
 ]).
 
 %% IPPROTO_IP / IP_MTU_DISCOVER and IPPROTO_IPV6 / IPV6_MTU_DISCOVER, the
@@ -43,6 +45,13 @@ parent_of(Pid) ->
         {parent, Parent} when is_pid(Parent) -> Parent;
         _Other -> undefined
     end.
+
+%% The relay's maximum batch, read straight from the transport FFI, so a test
+%% pins the listener's delivery window against the value the relay actually
+%% uses rather than against a copy of it.
+-spec maximum_relay_batch() -> integer().
+maximum_relay_batch() ->
+    gleam_quic_udp_ffi:maximum_relay_batch().
 
 %% Report the number of messages waiting in one connection actor's mailbox, so
 %% a credit test can pin that a flooded connection actor never accumulates an
@@ -125,6 +134,43 @@ first_routed_id([Head | Tail]) ->
     end;
 first_routed_id(_Other) ->
     {error, nil}.
+
+%% Report the connection ID the listener routes to one actor by watching what
+%% that actor receives rather than what is left waiting in its mailbox. A
+%% connection whose owner keeps reading drains its mailbox as fast as the
+%% listener fills it, so a mailbox poll is a race that a healthy connection
+%% usually wins; a receive trace sees every routed datagram exactly once,
+%% whether or not the actor has already taken it off the mailbox. The wait is
+%% bounded by the caller and the trace is always turned off again.
+-spec traced_routed_connection_id(pid(), integer()) ->
+    {ok, binary()} | {error, nil}.
+traced_routed_connection_id(Pid, BoundMilliseconds) when is_pid(Pid) ->
+    erlang:trace(Pid, true, ['receive']),
+    Deadline = erlang:monotonic_time(millisecond) + BoundMilliseconds,
+    try
+        await_traced_id(Pid, Deadline)
+    after
+        erlang:trace(Pid, false, ['receive'])
+    end;
+traced_routed_connection_id(_Other, _BoundMilliseconds) ->
+    {error, nil}.
+
+-spec await_traced_id(pid(), integer()) -> {ok, binary()} | {error, nil}.
+await_traced_id(Pid, Deadline) ->
+    case Deadline - erlang:monotonic_time(millisecond) of
+        Remaining when Remaining =< 0 ->
+            {error, nil};
+        Remaining ->
+            receive
+                {trace, Pid, 'receive', Message} ->
+                    case first_routed_id(Message) of
+                        {ok, Id} -> {ok, Id};
+                        {error, nil} -> await_traced_id(Pid, Deadline)
+                    end
+            after Remaining ->
+                {error, nil}
+            end
+    end.
 
 %% Find the process behind one opaque public handle by its fixed role label, so
 %% a lifecycle test can watch exactly the actor that handle names.

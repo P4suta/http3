@@ -327,10 +327,43 @@ connection plus the pre-Retry alias.
 That inbound hand-off is credit bounded per connection. The listener groups one
 relay batch by connection ID and sends one message per connection per batch,
 carrying only as many datagrams as that connection's remaining window admits:
-32 datagrams and 64 KiB, held as a small record beside the route. Both halves
+192 datagrams and 256 KiB, held as a small record beside the route. Both halves
 bind, and the byte half is what bounds delivered memory, because the listener
 sockets impose no packet-size cap and a peer can spoof multi-kilobyte
-datagrams that the datagram half alone would admit 32 of.
+datagrams that the datagram half alone would admit 192 of.
+
+The window is sized against the relay batch, which is what makes it safe for a
+healthy connection as well as bounding a flooding one. The relay hands the
+listener a whole batch of up to 64 datagrams in one message, the listener
+routes that batch in a single step, and it can route the next batch before the
+consumption acknowledgement for the previous one is handled -- no
+acknowledgement widens a window part way through a batch. Two whole relay
+batches is therefore the floor: a connection that is merely one acknowledgement
+behind has to absorb two full batches back to back without losing anything. The
+datagram half ships a third batch of slack above that floor, so an ordinary
+datagram of the peer's own -- an acknowledgement, a probe -- arriving inside
+the same unrefilled window cannot eat into it; that slack costs no memory,
+because the byte half is what bounds bytes. The byte half holds two full
+batches of 2 KiB datagrams, and 2 KiB is above the Ethernet MTU and well above
+the 1200-byte floor RFC 9000 section 14 guarantees, so at the sizes a
+conventional path delivers it too carries slack: 218 datagrams at that floor,
+174 at the Ethernet MTU, against the 128 the floor requires.
+
+What the byte half costs is worth stating in full, because it is the number
+that bounds memory: 256 KiB of delivered-but-unconsumed bytes per connection,
+and 256 MiB across the default 1024-connection admission limit, where the
+narrower 64 KiB window it replaces totalled 64 MiB. That aggregate is four
+times the 64 MiB `EndpointMemory` value `config.default_limits` carries, and
+nothing enforces it today: endpoint-wide memory accounting and admission
+budgets are open work (PRE-003 and PRE-004), and this window is one of the
+inputs that accounting has to charge for when it lands. Reaching the aggregate
+also takes 1024 connections flooded at once whose owners have all stalled,
+because a connection that keeps up holds a full window only momentarily. The
+byte half is still far narrower than two batches of the largest datagram the
+transport can carry: those would be 7.5 MiB per connection, while the listener
+socket's whole receive buffer is 4 MiB, so a burst that large cannot even be
+queued for the relay. Datagrams above 2 KiB are still delivered -- the byte
+half simply becomes the half that bounds them.
 
 No configured `Limits` resource fits that window, so both halves are fixed
 constants in the listener actor. `Queue` counts accepted work, `Buffer` counts
@@ -365,6 +398,21 @@ one message per datagram, raises only that connection's drop counter, and --
 once the flood stops -- leaves the connection able to complete a bounded round
 trip. With the window removed, the same flood put 26,978 datagrams and 176 MB
 in one connection actor's mailbox.
+
+The floor is pinned in the same suite, twice. One test reads the shipped window
+out of the listener and the batch size out of the relay and holds the first to
+at least two of the second, so it binds the numbers production actually uses
+rather than copies of them. The other is behavioural: a connection whose owner
+keeps reading takes two whole relay batches sent back to back with no flow
+control in the way, and `server.dropped_datagrams` stays at zero. That test
+also runs a flow-controlled transfer first, which is what leaves the connection
+caught up and exposes the identifier the listener routes to it; the transfer's
+own drop count is read separately, but it is a sanity check on real traffic
+rather than part of the floor, because a connection's receive buffer holds its
+peer to well under one relay batch in flight. Raising that buffer above the
+byte half would not exercise the floor either -- a peer allowed more bytes in
+flight than the window admits is outrunning the delivery window by
+construction, and the drops would be correct.
 
 Known peer-controlled lengths, counts, tables, stream windows, queues,
 Capsules, Datagrams, packet histories, retained keys, terminal entries,

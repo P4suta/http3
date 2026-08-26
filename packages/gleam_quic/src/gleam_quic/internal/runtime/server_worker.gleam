@@ -98,7 +98,17 @@ const worker_reply_grace_milliseconds = 100
 // exactly what it took off that mailbox. Both halves bind, and the byte half
 // is what bounds delivered memory: the listener sockets impose no packet-size
 // cap, so a peer can spoof multi-kilobyte datagrams that the datagram half
-// alone would admit 32 of.
+// alone would admit 192 of.
+//
+// The window is sized against the relay batch, which is what keeps it safe
+// for a healthy connection as well as binding on a flooding one. The relay
+// hands the listener a whole batch in one message, the listener routes that
+// batch in a single step, and it can route the next batch before the
+// `Consumed` for the previous one is handled, so no acknowledgement can widen
+// a window part way through a batch. A window narrower than two batches would
+// therefore shed part of a burst a perfectly healthy connection is keeping up
+// with: lost throughput for loss recovery to repair, rather than a flooding
+// peer held to its share.
 //
 // No configured `Limits` resource fits this window. `Queue` counts accepted
 // work, `Buffer` counts stream bytes, and `Datagram` bounds RFC 9221
@@ -106,10 +116,58 @@ const worker_reply_grace_milliseconds = 100
 // UDP delivery window in front of it -- and, being application tunable, it
 // must not be able to widen a denial-of-service bound. Both halves are
 // therefore fixed constants, documented in the architecture notes.
-const datagram_credit = 32
 
-/// 64 KiB, the byte half of the same window.
-const byte_credit = 65_536
+/// The datagram half: three whole relay batches, 3 * 64, three times the batch
+/// size `gleam_quic_udp_ffi:maximum_relay_batch/0` reports.
+///
+/// Two batches is the floor, and it is the floor the credit suite pins: the
+/// listener can route a second batch before the first batch's `Consumed` is
+/// handled, so a connection that is merely one acknowledgement behind has to
+/// absorb two full batches back to back. The third batch is slack above that
+/// floor, so an ordinary datagram of the peer's own -- an acknowledgement, a
+/// probe -- arriving inside the same unrefilled window cannot eat into it.
+///
+/// The slack is free in memory terms: the byte half below is unchanged, and
+/// the byte half is what bounds delivered memory. Widening the datagram half
+/// admits more small datagrams per window, never more bytes.
+const datagram_credit = 192
+
+/// The byte half: two whole relay batches at 2 KiB a datagram, 2 * 64 * 2048.
+/// 2 KiB is above the 1500-byte Ethernet MTU and well above the 1200-byte
+/// floor RFC 9000 section 14 guarantees, so at the sizes a conventional path
+/// actually delivers this half carries slack of its own above the two-batch
+/// floor: 218 datagrams at that 1200-byte floor, 174 at the Ethernet MTU,
+/// both beyond the 128 the floor requires.
+///
+/// What that costs, stated plainly: 256 KiB of delivered-but-unconsumed
+/// memory per connection, and 256 MiB across the default 1024-connection
+/// admission limit, where the narrower 64 KiB window this replaces totalled
+/// 64 MiB. That aggregate is four times the 64 MiB `EndpointMemory` value
+/// `config.default_limits` carries, and nothing enforces it today: endpoint
+/// wide memory accounting and admission budgets are open work (see PRE-003
+/// and PRE-004 in the conformance notes), and this window is one of the
+/// inputs that accounting has to charge for when it lands. Reaching the
+/// aggregate also takes 1024 connections flooded at once whose owners have
+/// all stalled, because a connection that keeps up holds a full window only
+/// momentarily.
+///
+/// The byte half is deliberately narrower than two batches of the largest
+/// datagram the transport can carry, and the socket receive buffer is what
+/// justifies the smaller bound: two batches of the largest datagram this
+/// implementation will ever send -- 2 * 64 * 61_440 -- would be 7.5 MiB per
+/// connection, while the listener socket's whole receive buffer is 4 MiB, so
+/// a burst that large cannot even be queued for the relay. Datagrams larger
+/// than 2 KiB are still delivered -- the byte half simply becomes what bounds
+/// them, which is what keeps a peer spoofing 8 KiB datagrams from putting
+/// 1.5 MiB in one actor's mailbox.
+const byte_credit = 262_144
+
+/// The delivery window this listener ships, as `#(datagrams, bytes)`.
+/// Published so the public credit suite pins the shipped window against the
+/// relay's own batch size rather than against a copy of these two numbers.
+pub fn delivery_window() -> #(Int, Int) {
+  #(datagram_credit, byte_credit)
+}
 
 /// Running owner-bound listener.
 pub opaque type Listener {
