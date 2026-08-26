@@ -24,7 +24,9 @@
     with_mtu_limited_proxy/3,
     with_qlog_directory/1,
     with_reordering_proxy/3,
-    with_tmpdir_override/1
+    with_temp_override/1,
+    with_tmpdir_override/1,
+    write_probe_file/1
 ]).
 
 -define(FIXTURE_TIMEOUT, 2000).
@@ -48,18 +50,48 @@ with_qlog_directory(Fun) when is_function(Fun, 1) ->
     end.
 
 %% Points TMPDIR at a fresh scratch directory for the duration of Fun, then
-%% restores the previous value and deletes the directory.
+%% restores the previous environment and deletes the directory.
 -spec with_tmpdir_override(fun((binary()) -> term())) -> term().
 with_tmpdir_override(Fun) when is_function(Fun, 1) ->
-    Root = unique_scratch_path("http3-tmpdir-test-"),
+    with_environment_override("TMPDIR", "http3-tmpdir-test-", Fun).
+
+%% Unsets TMPDIR and points TEMP at a fresh scratch directory, exercising the
+%% documented TEMP fallback of temporary_root/0.
+-spec with_temp_override(fun((binary()) -> term())) -> term().
+with_temp_override(Fun) when is_function(Fun, 1) ->
+    with_environment_override("TEMP", "http3-temp-test-", Fun).
+
+%% Mutates the process-global environment, so it relies on gleeunit running
+%% test modules sequentially; every variable it touches is restored afterwards.
+-spec with_environment_override(
+    string(), string(), fun((binary()) -> term())
+) -> term().
+with_environment_override(Name, Prefix, Fun) ->
+    Root = unique_scratch_path(Prefix),
     ok = filelib:ensure_path(Root),
-    Previous = os:getenv("TMPDIR"),
-    true = os:putenv("TMPDIR", Root),
+    Previous = [
+        {Candidate, os:getenv(Candidate)}
+     || Candidate <- ["TMPDIR", "TEMP", "TMP"]
+    ],
+    lists:foreach(fun({Candidate, _}) -> os:unsetenv(Candidate) end, Previous),
+    true = os:putenv(Name, Root),
     try Fun(list_to_binary(Root))
     after
-        restore_environment("TMPDIR", Previous),
+        lists:foreach(
+            fun({Candidate, Value}) -> restore_environment(Candidate, Value) end,
+            Previous
+        ),
         _ = file:del_dir_r(Root)
     end.
+
+%% Creates Directory, writes one file inside it, and reports whether that file
+%% exists, proving the fixture root is writable.
+-spec write_probe_file(binary()) -> boolean().
+write_probe_file(Directory) when is_binary(Directory) ->
+    Path = filename:join(binary_to_list(Directory), "probe.txt"),
+    ok =:= filelib:ensure_dir(Path)
+        andalso ok =:= file:write_file(Path, <<"probe">>)
+        andalso filelib:is_regular(Path).
 
 %% Returns a unique, not-yet-created path under the OS temporary directory.
 -spec unique_scratch_path(string()) -> string().

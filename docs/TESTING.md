@@ -262,10 +262,13 @@ Shutdown and cancellation paths are idempotent. Tests use OS-assigned loopback
 ports, do not depend on execution order, and do not leave mailbox messages,
 qlogs, Python bytecode, or temporary peer artifacts in the working tree.
 
-Scratch directories are created under the first non-empty of the `TMPDIR`,
-`TEMP`, and `TMP` environment variables, falling back to `/tmp`, so fixtures
-still run where `/tmp` is read-only or absent, and each fixture deletes the
-uniquely named subdirectory it created.
+The Erlang qlog fixtures in `test/http3_test_ffi.erl` and
+`packages/gleam_quic/test/qlog_test_ffi.erl` create their scratch directories
+under the first non-empty of the `TMPDIR`, `TEMP`, and `TMP` environment
+variables, falling back to `/tmp`, so they still run where `/tmp` is read-only
+or absent, and each fixture deletes the uniquely named subdirectory it created.
+The shell runners `test/interop/run.sh` and `test/diagnostics/run.sh` honour
+only `${TMPDIR:-/tmp}`.
 
 ## Local completion commands
 
@@ -287,8 +290,10 @@ mise run soak
 
 `mise run check` includes both package builds/tests/docs/lints, canonical API
 snapshots, FFI Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and
-the deterministic core-package archive gate. `mise run security` adds the
-online OSV lookup and generates
+the deterministic core-package archive gate. The Semgrep task keeps its
+settings file and log under the gitignored `build/semgrep/` rather than `/tmp`,
+so the gate also runs where `/tmp` is read-only or absent.
+`mise run security` adds the online OSV lookup and generates
 `build/security/http3.cdx.json` as CycloneDX evidence. Expensive fault,
 interop, and performance tasks remain separate. Passing a normal gate means an
 edit is internally consistent; it does not close the release findings. A

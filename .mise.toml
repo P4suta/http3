@@ -124,7 +124,10 @@ run = "gitleaks dir . --redact --no-banner"
 
 [tasks.semgrep]
 description = "Run repository-owned FFI and public-boundary security rules"
-run = "SEMGREP_SETTINGS_FILE=/tmp/http3-semgrep-settings.yml SEMGREP_LOG_FILE=/tmp/http3-semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/gleam_quic/src"
+run = [
+  "mkdir -p build/semgrep",
+  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/gleam_quic/src",
+]
 
 [tasks.sbom]
 description = "Generate the release-input CycloneDX SBOM"
