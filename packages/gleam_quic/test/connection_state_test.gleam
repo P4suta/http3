@@ -1136,6 +1136,93 @@ pub fn owns_tls_handshake_and_post_handshake_ticket_end_to_end_test() -> Nil {
   assert contains_session_ticket(events)
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn wakes_a_pacing_limited_connection_at_the_release_time_test() -> Nil {
+  let #(connection, stream) = pacer_bound_connection()
+
+  // Sending resumes until the pacer, not the congestion window, refuses.
+  let #(connection, limited) = flush_datagrams(connection, 100, 32)
+  let assert Error(connection_state.PacingLimited(release)) = limited
+  assert release > 100
+  let assert Ok(buffered) =
+    connection_state.stream_buffered_send_bytes(connection, stream)
+  assert buffered > 0
+
+  // The owner must wake itself exactly when the pacer releases the next
+  // packet, not at the far later idle or probe timeout.
+  let assert Ok(Some(deadline)) =
+    connection_state.next_deadline(connection, 100)
+  assert deadline == release
+
+  // The wake is only worth arming if flushing at it actually sends.
+  let in_flight = connection_state.bytes_in_flight(connection)
+  let #(connection, resumed) = flush_datagrams(connection, deadline, 1)
+  assert resumed == Ok(Nil)
+  assert connection_state.bytes_in_flight(connection) == in_flight + 1200
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn arms_the_pacing_wake_for_a_datagram_larger_than_the_last_test() -> Nil {
+  let #(connection, _) = pacer_bound_connection()
+  let #(connection, limited) = flush_datagrams(connection, 100, 32)
+  let assert Error(connection_state.PacingLimited(release)) = limited
+
+  // A short datagram spends less than the pacer refills, so the wake it arms
+  // has to cover the next full-sized datagram rather than its own size.
+  let #(connection, short) = flush_sized_datagrams(connection, 300, release, 1)
+  assert short == Ok(Nil)
+  let #(_, refused) = flush_datagrams(connection, release, 1)
+  let assert Error(connection_state.PacingLimited(full_release)) = refused
+  assert full_release > release
+
+  let assert Ok(Some(deadline)) =
+    connection_state.next_deadline(connection, release)
+  assert deadline == full_release
+
+  let in_flight = connection_state.bytes_in_flight(connection)
+  let #(connection, resumed) = flush_datagrams(connection, deadline, 1)
+  assert resumed == Ok(Nil)
+  assert connection_state.bytes_in_flight(connection) == in_flight + 1200
+}
+
+/// Establish a connection whose congestion window outruns the pacer's burst,
+/// with enough stream data queued to keep every flush send-limited by pacing.
+fn pacer_bound_connection() -> #(connection_state.State, Int) {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, stream)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(
+      connection,
+      stream,
+      <<0:size(64_000)-unit(8)>>,
+      False,
+    )
+
+  // The initial burst and the initial congestion window are both ten
+  // full-sized datagrams, so time zero releases exactly ten packets.
+  let #(connection, opening_burst) = flush_datagrams(connection, 0, 10)
+  assert opening_burst == Ok(Nil)
+  assert connection_state.bytes_in_flight(connection) == 12_000
+
+  // One round trip later the peer acknowledges the burst: the congestion
+  // window grows well beyond one burst while the pacer refills at most one.
+  let assert Ok(connection) =
+    connection_state.record_datagram_received(connection, 80, 100)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(0, 9)], None))],
+      packet_space.NotEct,
+      100,
+    )
+  assert connection_state.bytes_in_flight(connection) == 0
+  assert connection_state.congestion_window(connection) > 13_200
+  #(connection, stream)
+}
+
 fn established(
   role: connection_state.Role,
 ) -> Result(connection_state.State, connection_state.Error) {
@@ -1246,5 +1333,64 @@ fn contains_max_streams(
       if value_direction == direction && value == maximum
     -> True
     [_, ..rest] -> contains_max_streams(rest, direction, maximum)
+  }
+}
+
+fn flush_datagrams(
+  connection: connection_state.State,
+  now_milliseconds: Int,
+  budget: Int,
+) -> #(connection_state.State, Result(Nil, connection_state.Error)) {
+  flush_sized_datagrams(connection, 1200, now_milliseconds, budget)
+}
+
+fn flush_sized_datagrams(
+  connection: connection_state.State,
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+  budget: Int,
+) -> #(connection_state.State, Result(Nil, connection_state.Error)) {
+  case budget <= 0 {
+    True -> #(connection, Ok(Nil))
+    False ->
+      case
+        connection_state.prepare_packet(
+          connection,
+          engine.OneRtt,
+          datagram_bytes,
+          now_milliseconds,
+        )
+      {
+        Ok(connection_state.PacketPrepared(prepared, _, number, frames)) ->
+          case
+            connection_state.validate_send_budget(
+              prepared,
+              frames,
+              datagram_bytes,
+              now_milliseconds,
+            )
+          {
+            Error(reason) -> #(connection, Error(reason))
+            Ok(Nil) -> {
+              let assert Ok(sent) =
+                connection_state.commit_packet(
+                  prepared,
+                  engine.OneRtt,
+                  number,
+                  frames,
+                  datagram_bytes,
+                  ecn.Ect0,
+                  now_milliseconds,
+                )
+              flush_sized_datagrams(
+                sent,
+                datagram_bytes,
+                now_milliseconds,
+                budget - 1,
+              )
+            }
+          }
+        _ -> #(connection, Ok(Nil))
+      }
   }
 }

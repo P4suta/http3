@@ -258,6 +258,7 @@ pub opaque type State {
     estimator: rtt.Estimator,
     congestion: CongestionState,
     pacer: pacer.State,
+    pacer_release_milliseconds: Option(Int),
     ecn: ecn.State,
     amplification: amplification.Budget,
     pmtu: pmtu.State,
@@ -416,6 +417,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     estimator: estimator,
     congestion: congestion,
     pacer: pacing,
+    pacer_release_milliseconds: None,
     ecn: ecn.new(),
     amplification: amplification,
     pmtu: path_mtu,
@@ -580,6 +582,7 @@ fn process_valid_retry(
           estimator: estimator,
           congestion: congestion,
           pacer: pacing,
+          pacer_release_milliseconds: None,
           ecn: ecn.new(),
           amplification: amplification,
           last_activity_milliseconds: now_milliseconds,
@@ -1466,9 +1469,12 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
 
 /// Return the earliest protocol deadline without introducing periodic polls.
 ///
-/// The owner wakes only for an ACK, recovery, validation, close, or idle
-/// deadline. Newly queued output is flushed by the command or network event
-/// that produced it; congestion-blocked output resumes on ACK or recovery.
+/// The owner wakes only for an ACK, recovery, validation, close, idle, or
+/// pacer-release deadline. Newly queued output is flushed by the command or
+/// network event that produced it; congestion-blocked output resumes on ACK or
+/// recovery, and pacing-limited output resumes at the release the pacer
+/// projected, when the last packet was committed, for the next path-sized
+/// datagram.
 pub fn next_deadline(
   state: State,
   now_milliseconds: Int,
@@ -1499,6 +1505,7 @@ pub fn next_deadline(
         |> earlier_deadline(initial)
         |> earlier_deadline(handshake)
         |> earlier_deadline(application)
+        |> earlier_deadline(pending_pacer_release(state, now_milliseconds))
       Ok(deadline)
     }
   }
@@ -1837,6 +1844,17 @@ fn packet_space_deadline(
     |> result.map_error(fn(_) { PacketSpaceFailure }),
   )
   Ok(earlier_deadline(recovery_deadline, packet_space.ack_deadline(space)))
+}
+
+/// Report a pacer release that is still ahead of the caller's clock.
+///
+/// A release that has already elapsed is dropped rather than replayed, so a
+/// stale reservation can never turn into a periodic poll.
+fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
+  case state.pacer_release_milliseconds {
+    Some(deadline) if deadline > now_milliseconds -> Some(deadline)
+    _ -> None
+  }
 }
 
 fn earlier_deadline(first: Option(Int), second: Option(Int)) -> Option(Int) {
@@ -3130,7 +3148,7 @@ fn commit_valid_packet(
     Ok(#(space, _)) -> {
       use ecn_state <- result.try(record_ecn_send(state.ecn, codepoint))
       let state = put_packet_space(state, level, space)
-      let state =
+      let sent =
         State(
           ..state,
           congestion: congestion,
@@ -3149,7 +3167,18 @@ fn commit_valid_packet(
             False -> state.last_activity_milliseconds
           },
         )
-      Ok(state)
+      // The projection has to read the pacer and congestion window this send
+      // just updated, so it runs against `sent` rather than the prior state.
+      Ok(
+        State(
+          ..sent,
+          pacer_release_milliseconds: projected_pacer_release(
+            sent,
+            datagram_bytes,
+            now_milliseconds,
+          ),
+        ),
+      )
     }
   }
 }
@@ -3200,23 +3229,71 @@ fn reserve_pacing(
 ) -> Result(pacer.State, Error) {
   case in_flight {
     False -> Ok(state.pacer)
-    True -> {
-      let rtt.Snapshot(_, smoothed, _, _) = rtt.snapshot(state.estimator)
-      case
-        pacer.reserve(
-          state.pacer,
-          datagram_bytes,
-          now_milliseconds,
-          congestion_window(state),
-          smoothed,
-        )
-      {
+    True ->
+      case ask_pacer(state, datagram_bytes, now_milliseconds) {
         Error(_) -> Error(InvalidInput)
         Ok(pacer.Decision(updated, pacer.SendNow)) -> Ok(updated)
         Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) ->
           Error(PacingLimited(deadline))
       }
-    }
+  }
+}
+
+/// Ask the pacer to release one datagram against the current window and RTT.
+fn ask_pacer(
+  state: State,
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(pacer.Decision, pacer.Error) {
+  let rtt.Snapshot(_, smoothed, _, _) = rtt.snapshot(state.estimator)
+  pacer.reserve(
+    state.pacer,
+    datagram_bytes,
+    now_milliseconds,
+    congestion_window(state),
+    smoothed,
+  )
+}
+
+/// Project when the pacer would release this connection's next datagram.
+///
+/// The reserved tokens are deliberately dropped: this asks a question about a
+/// hypothetical next datagram rather than claiming budget for it. It asks about
+/// the largest datagram the path currently carries rather than the one just
+/// committed, because the next datagram is never larger than the path size,
+/// while a wake-up armed for a smaller datagram would fire while the pacer
+/// still refuses that next one -- and the owner discards a refused send without
+/// re-arming anything. `None` means no pacing wake-up is owed because the pacer
+/// would release a path-sized datagram immediately.
+fn projected_pacer_release(
+  state: State,
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Option(Int) {
+  case projected_release_for(state, path_mtu(state), now_milliseconds) {
+    Ok(release) -> release
+    // The pacer declines to answer for a datagram larger than one burst, which
+    // it could never release either. Fall back to the size it has just
+    // accepted, so datagrams it can release still arm a wake-up.
+    Error(Nil) ->
+      projected_release_for(state, datagram_bytes, now_milliseconds)
+      |> result.unwrap(None)
+  }
+}
+
+/// Ask the pacer when it would release this datagram without spending budget.
+///
+/// `Ok(None)` reports an immediate release, `Error(Nil)` a datagram size the
+/// pacer declines to answer for.
+fn projected_release_for(
+  state: State,
+  datagram_bytes: Int,
+  now_milliseconds: Int,
+) -> Result(Option(Int), Nil) {
+  case ask_pacer(state, datagram_bytes, now_milliseconds) {
+    Ok(pacer.Decision(_, pacer.WaitUntil(deadline))) -> Ok(Some(deadline))
+    Ok(pacer.Decision(_, pacer.SendNow)) -> Ok(None)
+    Error(pacer.InvalidInput) -> Error(Nil)
   }
 }
 
