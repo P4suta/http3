@@ -16,6 +16,35 @@
 //// its aliases in that same step is what keeps a datagram naming a released
 //// connection from reaching a dead actor: it resolves to no route at all, so
 //// a long header takes the unknown-route path and a short header is dropped.
+////
+//// The inbound path is credit bounded end to end, in four stages, so no peer
+//// can grow any mailbox on it without bound:
+////
+////   1. relay to listener: the socket relay holds one batch of receive credit
+////      and delivers nothing more until `udp.continue_relay` returns it. The
+////      listener returns that credit as soon as it has decoded a batch, before
+////      it routes it, so the listener itself never blocks and never queues.
+////   2. listener to connection: each route carries the window in its `Entry`
+////      -- `datagram_credit` datagrams and `byte_credit` bytes. A batch is
+////      grouped by connection ID and each connection is sent exactly one
+////      message carrying only what its remaining window admits; the rest is
+////      dropped and counted for that connection alone. Every such message
+////      costs the window at least one datagram, so the mailbox is bounded in
+////      messages too, by the window's datagrams plus the single drop report
+////      the listener sends only when nothing else is outstanding.
+////   3. connection to owner: the connection actor answers each delivered
+////      message with `Consumed`, reporting what it took off its mailbox, and
+////      the listener refills that connection's window by exactly that much.
+////      A connection whose actor stalls therefore stops being sent to rather
+////      than accumulating a backlog.
+////   4. owner to connection: the owner's own commands are the only other
+////      source of messages for that actor, and an owner is one process issuing
+////      one bounded call at a time.
+////
+//// Stage 2 is what makes a stalled connection structurally unable to delay
+//// another: a flooded actor's mailbox is bounded by its window plus its
+//// owner's commands, and the drop is protocol correct because QUIC recovers a
+//// dropped datagram exactly as it recovers one the network lost.
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -63,6 +92,25 @@ const new_token_lifetime_milliseconds = 86_400_000
 
 const worker_reply_grace_milliseconds = 100
 
+// The listener-to-connection delivery window (stage 2 above): one connection
+// may hold at most this many routed datagrams, and this many routed bytes, in
+// its actor's mailbox at once, and its `Consumed` acknowledgement refills
+// exactly what it took off that mailbox. Both halves bind, and the byte half
+// is what bounds delivered memory: the listener sockets impose no packet-size
+// cap, so a peer can spoof multi-kilobyte datagrams that the datagram half
+// alone would admit 32 of.
+//
+// No configured `Limits` resource fits this window. `Queue` counts accepted
+// work, `Buffer` counts stream bytes, and `Datagram` bounds RFC 9221
+// DATAGRAM-frame queueing inside an established connection rather than the
+// UDP delivery window in front of it -- and, being application tunable, it
+// must not be able to widen a denial-of-service bound. Both halves are
+// therefore fixed constants, documented in the architecture notes.
+const datagram_credit = 32
+
+/// 64 KiB, the byte half of the same window.
+const byte_credit = 65_536
+
 /// Running owner-bound listener.
 pub opaque type Listener {
   Listener(commands: Subject(Command), worker: Pid, timeout_milliseconds: Int)
@@ -105,9 +153,22 @@ type ConnectionWaiter {
   ConnectionWaiter(reply: Subject(Result(Connection, Error)), deadline: Int)
 }
 
-/// One admitted connection and the actor that owns it.
+/// One admitted connection, the actor that owns it, and the delivery window
+/// the listener still holds open for it. `datagram_credit` and `byte_credit`
+/// are what the next message to this connection may carry; `dropped` counts
+/// the datagrams already dropped for it that its actor has not been told
+/// about yet; `outstanding` counts the messages already sent to it that it has
+/// not acknowledged, which is what keeps the mailbox bounded in messages as
+/// well as in datagrams and bytes.
 type Entry {
-  Entry(connection: Connection, established: Bool)
+  Entry(
+    connection: Connection,
+    established: Bool,
+    datagram_credit: Int,
+    byte_credit: Int,
+    dropped: Int,
+    outstanding: Int,
+  )
 }
 
 type Worker {
@@ -449,24 +510,168 @@ fn network_step(worker: Worker, message: Dynamic) -> Nil {
 fn route_batch(worker: Worker, datagrams: List(udp.Datagram)) -> Worker {
   let #(worker, routed) = route_datagrams(worker, datagrams, dict.new())
   deliver_routed(worker, dict.to_list(routed))
-  worker
 }
 
+/// Send one message per connection per batch, carrying only what that
+/// connection's remaining credit admits. Everything beyond the window is
+/// dropped and counted for that connection alone, which is what keeps one
+/// flooded connection from growing its actor's mailbox -- or delaying any
+/// other connection -- without bound. QUIC is loss tolerant, so a dropped
+/// datagram is recovered exactly like one the network lost.
 fn deliver_routed(
   worker: Worker,
   routed: List(#(BitArray, List(connection_worker.ListenerToConnection))),
-) -> Nil {
+) -> Worker {
   case routed {
-    [] -> Nil
-    [#(identifier, deliveries), ..rest] -> {
-      case dict.get(worker.connections, identifier) {
-        Ok(entry) ->
-          connection_worker.deliver(entry.connection, list.reverse(deliveries))
-        Error(_) -> Nil
+    [] -> worker
+    [#(identifier, deliveries), ..rest] ->
+      deliver_routed(
+        deliver_credited(worker, identifier, list.reverse(deliveries)),
+        rest,
+      )
+  }
+}
+
+fn deliver_credited(
+  worker: Worker,
+  identifier: BitArray,
+  deliveries: List(connection_worker.ListenerToConnection),
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let admission =
+        take_within_credit(
+          deliveries,
+          entry.datagram_credit,
+          entry.byte_credit,
+          Admission([], 0, 0, 0),
+        )
+      let pending = entry.dropped + admission.dropped
+      case admission.deliveries {
+        // The window is shut, so this connection is sent nothing at all and
+        // its drops wait for the message that reopens it.
+        [] -> put_entry(worker, identifier, Entry(..entry, dropped: pending))
+        admitted -> {
+          connection_worker.deliver(entry.connection, admitted, pending)
+          put_entry(
+            worker,
+            identifier,
+            Entry(
+              ..entry,
+              datagram_credit: entry.datagram_credit - admission.datagrams,
+              byte_credit: entry.byte_credit - admission.bytes,
+              dropped: 0,
+              outstanding: entry.outstanding + 1,
+            ),
+          )
+        }
       }
-      deliver_routed(worker, rest)
     }
   }
+}
+
+/// One connection's share of a batch, split against its window: the datagrams
+/// the window admits, what carrying them costs the window, and how many
+/// datagrams were dropped because they did not fit.
+type Admission {
+  Admission(
+    deliveries: List(connection_worker.ListenerToConnection),
+    datagrams: Int,
+    bytes: Int,
+    dropped: Int,
+  )
+}
+
+/// Split one connection's share of a batch against its remaining window. Both
+/// halves of the window bind: a datagram is admitted only while it fits under
+/// the datagram count and the byte total alike.
+fn take_within_credit(
+  deliveries: List(connection_worker.ListenerToConnection),
+  remaining_datagrams: Int,
+  remaining_bytes: Int,
+  admission: Admission,
+) -> Admission {
+  case deliveries {
+    [] -> Admission(..admission, deliveries: list.reverse(admission.deliveries))
+    [connection_worker.RoutedDatagram(_, datagram, _) as delivery, ..rest] -> {
+      let size = bit_array.byte_size(datagram)
+      let next = case
+        admission.datagrams + 1 <= remaining_datagrams
+        && admission.bytes + size <= remaining_bytes
+      {
+        True ->
+          Admission(
+            ..admission,
+            deliveries: [delivery, ..admission.deliveries],
+            datagrams: admission.datagrams + 1,
+            bytes: admission.bytes + size,
+          )
+        False -> Admission(..admission, dropped: admission.dropped + 1)
+      }
+      take_within_credit(rest, remaining_datagrams, remaining_bytes, next)
+    }
+  }
+}
+
+/// Refill one connection's window by exactly what its actor reported taking
+/// off its mailbox, never above the fixed window, and release the one message
+/// that acknowledgement accounts for.
+///
+/// A credited message already carries the drops taken for this connection, so
+/// the only drops left to report are those taken while the window was shut. A
+/// single empty message reports them once the actor has acknowledged
+/// everything else the listener sent it: it costs the window nothing, it keeps
+/// the counter converging even if no further datagram ever names this
+/// connection, and sending it only when nothing else is outstanding is what
+/// keeps the mailbox bounded in messages -- at most one message per datagram
+/// of the window, plus that one report.
+fn refill_credit(
+  worker: Worker,
+  identifier: BitArray,
+  datagrams: Int,
+  bytes: Int,
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let refilled =
+        Entry(
+          ..entry,
+          datagram_credit: int.min(
+            datagram_credit,
+            entry.datagram_credit + int.max(0, datagrams),
+          ),
+          byte_credit: int.min(
+            byte_credit,
+            entry.byte_credit + int.max(0, bytes),
+          ),
+          outstanding: int.max(0, entry.outstanding - 1),
+        )
+      case
+        refilled.dropped > 0
+        && refilled.datagram_credit > 0
+        && refilled.outstanding == 0
+      {
+        False -> put_entry(worker, identifier, refilled)
+        True -> {
+          connection_worker.deliver(refilled.connection, [], refilled.dropped)
+          put_entry(
+            worker,
+            identifier,
+            Entry(..refilled, dropped: 0, outstanding: 1),
+          )
+        }
+      }
+    }
+  }
+}
+
+fn put_entry(worker: Worker, identifier: BitArray, entry: Entry) -> Worker {
+  Worker(
+    ..worker,
+    connections: dict.insert(worker.connections, identifier, entry),
+  )
 }
 
 type Routed =
@@ -777,7 +982,7 @@ fn spawn_connection(
                 connections: dict.insert(
                   worker.connections,
                   local_connection_id,
-                  Entry(handle, False),
+                  Entry(handle, False, datagram_credit, byte_credit, 0, 0),
                 ),
                 routes: dict.insert(worker.routes, pid, local_connection_id),
                 handshaking: worker.handshaking + 1,
@@ -805,6 +1010,8 @@ fn handle_notice(
   case notice {
     connection_worker.Established(identifier) ->
       handle_established(worker, identifier)
+    connection_worker.Consumed(identifier, datagrams, bytes) ->
+      refill_credit(worker, identifier, datagrams, bytes)
     connection_worker.Released(identifier, pid) ->
       release_reported_connection(worker, identifier, pid)
   }

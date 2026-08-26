@@ -324,14 +324,55 @@ each routed inbound batch to the owning actor. The server never issues
 additional local connection IDs, so routing tracks exactly one identifier per
 connection plus the pre-Retry alias.
 
+That inbound hand-off is credit bounded per connection. The listener groups one
+relay batch by connection ID and sends one message per connection per batch,
+carrying only as many datagrams as that connection's remaining window admits:
+32 datagrams and 64 KiB, held as a small record beside the route. Both halves
+bind, and the byte half is what bounds delivered memory, because the listener
+sockets impose no packet-size cap and a peer can spoof multi-kilobyte
+datagrams that the datagram half alone would admit 32 of.
+
+No configured `Limits` resource fits that window, so both halves are fixed
+constants in the listener actor. `Queue` counts accepted work, `Buffer` counts
+stream bytes, and `Datagram` -- the closest-sounding candidate -- bounds RFC
+9221 DATAGRAM-frame queueing inside an established connection rather than the
+UDP delivery window in front of it; it is also application tunable, and a
+denial-of-service bound must not be something an application can widen.
+
+The connection actor answers each delivered message with the datagram and byte
+count it consumed, and the listener refills that connection's window by exactly
+that much, never above the fixed window. Because every message the listener
+sends costs the window at least one datagram, the mailbox is bounded in
+messages as well: at most one message per datagram of the window, plus the one
+empty message that reports drops taken while the window was shut, which the
+listener sends only once the actor has acknowledged everything else it was
+sent. Whatever a batch carries beyond the window is dropped and counted for
+that connection alone, and
+`server.dropped_datagrams` publishes the count through the connection
+diagnostics path. That counter is deliberately server-only: a client owns its
+own socket and connection with no listener in front of it, so it has no
+credited delivery path and no drops to report. Dropping is protocol correct --
+QUIC recovers a dropped datagram exactly as it recovers one the network lost --
+and it is what makes a stalled connection structurally unable to delay another:
+its actor's mailbox is bounded by the window plus its own owner's commands, and
+the relay's one-batch credit is still returned immediately after every batch, so
+the listener itself never blocks and never queues.
+
+The public suite pins both halves over real UDP. A spoofing peer that floods
+one connection's ID leaves that actor's mailbox inside the window in datagrams
+and in bytes, leaves one batch's admitted share in a single message rather than
+one message per datagram, raises only that connection's drop counter, and --
+once the flood stops -- leaves the connection able to complete a bounded round
+trip. With the window removed, the same flood put 26,978 datagrams and 176 MB
+in one connection actor's mailbox.
+
 Known peer-controlled lengths, counts, tables, stream windows, queues,
 Capsules, Datagrams, packet histories, retained keys, terminal entries,
-timeouts, and amplification credit have explicit bounds. The one queue still
-without an explicit bound is a connection actor's own mailbox of forwarded
-inbound batches; credit and drop accounting for that hand-off remains a release
-gate. All role-applicable per-connection public limits now reach those
-allocations; isolated accounting and enforcement of the aggregate
-`EndpointMemory` budget remain release gates.
+timeouts, and amplification credit have explicit bounds, including a connection
+actor's own mailbox of forwarded inbound batches, which the listener's
+per-connection delivery window bounds. All role-applicable per-connection public
+limits now reach those allocations; isolated accounting and enforcement of the
+aggregate `EndpointMemory` budget remain release gates.
 Cleanup tests require process and mailbox convergence rather than treating a
 returned response as sufficient.
 

@@ -140,6 +140,10 @@ pub type ListenerToConnection {
 pub type ConnectionToListener {
   /// The handshake completed, so this connection can be accepted.
   Established(identifier: BitArray)
+  /// One delivered batch was consumed, so the listener may refill this
+  /// connection's delivery credit by exactly what the actor took off its
+  /// mailbox. Without it the window never reopens and delivery stalls.
+  Consumed(identifier: BitArray, datagrams: Int, bytes: Int)
   /// The connection ended, so the listener owns its identifiers again. The
   /// actor sends this immediately before it exits, so the listener frees the
   /// route, its aliases, and the admission slot without waiting for the
@@ -173,7 +177,10 @@ pub type Bootstrap {
 }
 
 type Command {
-  Deliver(deliveries: List(ListenerToConnection))
+  /// One credited batch from the listener, plus the datagrams it had to drop
+  /// for this connection since the last batch. An empty batch carries only
+  /// that drop count.
+  Deliver(deliveries: List(ListenerToConnection), dropped: Int)
   ReloadedKeys(ticket_keys: List(BitArray), address_token_key: BitArray)
   Terminate
   Open(direction: stream_id.Direction, reply: Subject(Result(Int, Error)))
@@ -201,7 +208,9 @@ type Command {
     reply: Subject(Result(Nil, Error)),
   )
   PathStats(reply: Subject(Result(transport.PathSnapshot, Error)))
-  ConnectionStats(reply: Subject(Result(runtime_connection.Stats, Error)))
+  ConnectionStats(
+    reply: Subject(Result(#(runtime_connection.Stats, Int), Error)),
+  )
   TelemetryStats(reply: Subject(Result(qlog.Stats, Error)))
   Phase(reply: Subject(Result(transport.Phase, Error)))
   ClientIdentity(reply: Subject(Result(Option(BitArray), Error)))
@@ -305,6 +314,7 @@ type Worker {
     commands: Subject(Command),
     selector: process.Selector(LoopMessage),
     peer: PeerState,
+    dropped_datagrams: Int,
     dirty: Bool,
     failure: Option(Error),
     established_reported: Bool,
@@ -342,12 +352,15 @@ pub fn worker_pid(connection: Connection) -> Pid {
   connection.worker
 }
 
-/// Hand one routed batch of inbound datagrams to the owning connection.
+/// Hand one credited batch of inbound datagrams to the owning connection,
+/// together with the datagrams the listener had to drop for it since the last
+/// batch because its delivery window was full.
 pub fn deliver(
   connection: Connection,
   deliveries: List(ListenerToConnection),
+  dropped: Int,
 ) -> Nil {
-  process.send(connection.commands, Deliver(deliveries))
+  process.send(connection.commands, Deliver(deliveries, dropped))
 }
 
 /// Install rotated ticket and address-token keys on a live connection.
@@ -479,9 +492,12 @@ pub fn path_stats(
   call(connection, PathStats)
 }
 
+/// Snapshot the runtime counters of one connection together with the number of
+/// inbound datagrams the listener dropped for it, so the public diagnostics
+/// path can publish both from one call.
 pub fn connection_stats(
   connection: Connection,
-) -> Result(runtime_connection.Stats, Error) {
+) -> Result(#(runtime_connection.Stats, Int), Error) {
   call(connection, ConnectionStats)
 }
 
@@ -561,6 +577,7 @@ fn initialise(bootstrap: Bootstrap, ready: Subject(Connection)) -> Nil {
     commands,
     selector,
     peer,
+    0,
     True,
     None,
     False,
@@ -680,6 +697,41 @@ fn tick_and_flush(worker: Worker) -> Worker {
           |> when_live(flush_connection(_, now, maximum_packets_per_flush))
       }
     }
+  }
+}
+
+/// Apply one credited batch and acknowledge it, so the listener refills this
+/// connection's delivery window by exactly what left the mailbox. The drops
+/// the listener reports alongside the batch are recorded first: they are
+/// already gone, and QUIC recovers them like any other loss.
+fn consume_deliveries(
+  worker: Worker,
+  deliveries: List(ListenerToConnection),
+  dropped: Int,
+) -> Worker {
+  let #(datagrams, bytes) = delivered_cost(deliveries, 0, 0)
+  let worker =
+    Worker(
+      ..worker,
+      dropped_datagrams: worker.dropped_datagrams + int.max(0, dropped),
+    )
+  let worker = receive_deliveries(worker, deliveries)
+  process.send(worker.notices, Consumed(worker.identifier, datagrams, bytes))
+  worker
+}
+
+/// What one delivered batch cost the listener's window for this connection:
+/// the datagrams it carried and their total size. The listener refills exactly
+/// this much, so the two sides can never drift apart.
+fn delivered_cost(
+  deliveries: List(ListenerToConnection),
+  datagrams: Int,
+  bytes: Int,
+) -> #(Int, Int) {
+  case deliveries {
+    [] -> #(datagrams, bytes)
+    [RoutedDatagram(_, datagram, _), ..rest] ->
+      delivered_cost(rest, datagrams + 1, bytes + bit_array.byte_size(datagram))
   }
 }
 
@@ -1098,7 +1150,8 @@ fn report_established(worker: Worker) -> Worker {
 
 fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
   case command {
-    Deliver(deliveries) -> Ok(receive_deliveries(worker, deliveries))
+    Deliver(deliveries, dropped) ->
+      Ok(consume_deliveries(worker, deliveries, dropped))
     ReloadedKeys(ticket_keys, address_token_key) ->
       Ok(
         Worker(
@@ -1144,7 +1197,7 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       })
     ConnectionStats(reply) ->
       with_peer_reply(worker, reply, fn(peer) {
-        Ok(server_transport.stats(peer.connection))
+        Ok(#(server_transport.stats(peer.connection), worker.dropped_datagrams))
       })
     TelemetryStats(reply) -> handle_telemetry_stats(worker, reply)
     Phase(reply) ->

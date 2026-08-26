@@ -584,8 +584,29 @@ pub fn connection_stats(
   let Connection(handle) = connection
   connection_worker.connection_stats(handle)
   |> result.map(fn(stats) {
-    let runtime_connection.Stats(a, b, c, d, e, f, g, h) = stats
+    let #(runtime_connection.Stats(a, b, c, d, e, f, g, h), _dropped) = stats
     diagnostics.ConnectionStats(a, b, c, d, e, f, g, h)
+  })
+  |> result.map_error(map_error)
+}
+
+/// Count the inbound datagrams the listener dropped for this connection
+/// because its bounded delivery window was full.
+///
+/// The listener hands each connection only as many routed datagrams as that
+/// connection's window admits, so one flooded connection can neither grow its
+/// own actor's mailbox nor delay any other connection. QUIC is loss tolerant,
+/// so a datagram dropped here is recovered exactly like one the network lost.
+///
+/// This counter is deliberately server-only: a client owns its own socket and
+/// its own connection, with no listener in front of it to route, credit, or
+/// drop for it, so there is no client counterpart to report.
+pub fn dropped_datagrams(connection: Connection) -> Result(Int, Error) {
+  let Connection(handle) = connection
+  connection_worker.connection_stats(handle)
+  |> result.map(fn(stats) {
+    let #(_counters, dropped) = stats
+    dropped
   })
   |> result.map_error(map_error)
 }

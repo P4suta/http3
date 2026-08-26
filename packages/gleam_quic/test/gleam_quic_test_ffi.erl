@@ -5,7 +5,10 @@
     inject_relay_connection_reset/1,
     labelled_pid/2,
     linux_platform/0,
+    mailbox_deliveries/1,
+    mailbox_length/1,
     processes_labelled_under/2,
+    routed_connection_id/1,
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1
 ]).
@@ -40,6 +43,88 @@ parent_of(Pid) ->
         {parent, Parent} when is_pid(Parent) -> Parent;
         _Other -> undefined
     end.
+
+%% Report the number of messages waiting in one connection actor's mailbox, so
+%% a credit test can pin that a flooded connection actor never accumulates an
+%% unbounded backlog of routed inbound batches. A dead process reports
+%% `{error, nil}`.
+-spec mailbox_length(pid()) -> {ok, integer()} | {error, nil}.
+mailbox_length(Pid) when is_pid(Pid) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, Length} -> {ok, Length};
+        undefined -> {error, nil}
+    end;
+mailbox_length(_Other) ->
+    {error, nil}.
+
+%% Report one connection actor's mailbox as the credit window sees it: how
+%% many messages are waiting, and for each message that carries routed inbound
+%% datagrams, how many datagrams it carries and how many bytes they total.
+%% Both halves of the listener's delivery window are then observable from a
+%% test: the outstanding datagrams and bytes summed over the whole mailbox can
+%% never exceed the window, and one message per relay batch -- rather than one
+%% message per datagram -- shows up as a single message carrying many
+%% datagrams. Read in one `process_info/2` call so the two views cannot drift.
+-spec mailbox_deliveries(pid()) ->
+    {ok, {integer(), [{integer(), integer()}]}} | {error, nil}.
+mailbox_deliveries(Pid) when is_pid(Pid) ->
+    case erlang:process_info(Pid, messages) of
+        {messages, Messages} ->
+            {ok, {length(Messages), delivery_sizes(Messages, [])}};
+        undefined -> {error, nil}
+    end;
+mailbox_deliveries(_Other) ->
+    {error, nil}.
+
+-spec delivery_sizes([term()], [{integer(), integer()}]) ->
+    [{integer(), integer()}].
+delivery_sizes([], Sizes) ->
+    lists:reverse(Sizes);
+delivery_sizes([Message | Rest], Sizes) ->
+    case routed_size(Message, 0, 0) of
+        {0, 0} -> delivery_sizes(Rest, Sizes);
+        Size -> delivery_sizes(Rest, [Size | Sizes])
+    end.
+
+%% Sum the routed datagrams nested anywhere inside one mailbox message, so the
+%% seam does not depend on how a delivery command or its subject tag is shaped.
+-spec routed_size(term(), integer(), integer()) -> {integer(), integer()}.
+routed_size({routed_datagram, _Peer, Payload, _Marking}, Count, Bytes)
+        when is_binary(Payload) ->
+    {Count + 1, Bytes + byte_size(Payload)};
+routed_size(Tuple, Count, Bytes) when is_tuple(Tuple) ->
+    routed_size(tuple_to_list(Tuple), Count, Bytes);
+routed_size([Head | Tail], Count, Bytes) ->
+    {NextCount, NextBytes} = routed_size(Head, Count, Bytes),
+    routed_size(Tail, NextCount, NextBytes);
+routed_size(_Other, Count, Bytes) ->
+    {Count, Bytes}.
+
+%% Report the destination connection ID carried by one short-header datagram
+%% the listener has already routed to this actor, read straight off the wire
+%% bytes waiting in its mailbox.
+-spec routed_connection_id(pid()) -> {ok, binary()} | {error, nil}.
+routed_connection_id(Pid) when is_pid(Pid) ->
+    case erlang:process_info(Pid, messages) of
+        {messages, Messages} -> first_routed_id(Messages);
+        undefined -> {error, nil}
+    end;
+routed_connection_id(_Other) ->
+    {error, nil}.
+
+-spec first_routed_id(term()) -> {ok, binary()} | {error, nil}.
+first_routed_id({routed_datagram, _Peer, <<First, Id:8/binary, _/binary>>,
+                 _Marking}) when First < 128 ->
+    {ok, Id};
+first_routed_id(Tuple) when is_tuple(Tuple) ->
+    first_routed_id(tuple_to_list(Tuple));
+first_routed_id([Head | Tail]) ->
+    case first_routed_id(Head) of
+        {ok, Id} -> {ok, Id};
+        {error, nil} -> first_routed_id(Tail)
+    end;
+first_routed_id(_Other) ->
+    {error, nil}.
 
 %% Find the process behind one opaque public handle by its fixed role label, so
 %% a lifecycle test can watch exactly the actor that handle names.
