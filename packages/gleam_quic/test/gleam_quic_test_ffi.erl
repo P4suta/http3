@@ -215,7 +215,7 @@ start_server_send_trace(Pid) when is_pid(Pid) ->
 
 -spec stop_server_send_trace(pid()) -> binary().
 stop_server_send_trace(Pid) when is_pid(Pid) ->
-    _ = erlang:trace(Pid, false, [call]),
+    disable_process_trace(Pid),
     await_trace_delivery(Pid),
     _ = erlang:trace_pattern(
           {?SERVER_TRANSPORT, send, 4}, false, [local]),
@@ -223,6 +223,14 @@ stop_server_send_trace(Pid) when is_pid(Pid) ->
           {?SERVER_TRANSPORT, buffered_send_bytes, 2}, false, [local]),
     Errors = collect_server_send_errors(Pid, []),
     list_to_binary(io_lib:format("~p", [lists:reverse(Errors)])).
+
+-spec disable_process_trace(pid()) -> ok.
+disable_process_trace(Pid) ->
+    try erlang:trace(Pid, false, [call]) of
+        _Matched -> ok
+    catch
+        error:badarg -> ok
+    end.
 
 -spec await_trace_delivery(pid()) -> ok.
 await_trace_delivery(Pid) ->
