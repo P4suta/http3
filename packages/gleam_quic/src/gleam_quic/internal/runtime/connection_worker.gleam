@@ -1164,7 +1164,11 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
                   case
                     server_transport.commit_datagram(prepared, ecn.NotEct, now)
                   {
-                    Error(_) -> fail_connection(worker, QuicFailureAt(908))
+                    Error(error) ->
+                      fail_connection(
+                        worker,
+                        QuicFailureAt(commit_failure_stage(error)),
+                      )
                     Ok(connection) -> {
                       case peer.qlog_writer {
                         Some(writer) ->
@@ -1191,6 +1195,35 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
           }
         }
       }
+  }
+}
+
+fn commit_failure_stage(error: server_transport.Error) -> Int {
+  case error {
+    server_transport.DriverFailure(driver.InvalidInput) -> 90_801
+    server_transport.DriverFailure(driver.ConnectionFailure(
+      transport.ConnectionUnavailable,
+    )) -> 90_802
+    server_transport.DriverFailure(driver.ConnectionFailure(
+      transport.SpaceUnavailable,
+    )) -> 90_803
+    server_transport.DriverFailure(driver.ConnectionFailure(transport.MissingWriteKeys(
+      _,
+    ))) -> 90_804
+    server_transport.DriverFailure(driver.ConnectionFailure(
+      transport.PacketSpaceFailure,
+    )) -> 90_805
+    server_transport.DriverFailure(driver.ConnectionFailure(
+      transport.CongestionLimited,
+    )) -> 90_806
+    server_transport.DriverFailure(driver.ConnectionFailure(transport.PacingLimited(
+      _,
+    ))) -> 90_807
+    server_transport.DriverFailure(driver.ConnectionFailure(
+      transport.AmplificationLimited,
+    )) -> 90_808
+    server_transport.DriverFailure(driver.ConnectionFailure(_)) -> 90_809
+    _ -> 90_810
   }
 }
 
