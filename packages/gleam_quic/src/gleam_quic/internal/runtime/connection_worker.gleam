@@ -298,8 +298,9 @@ type PendingSend {
     /// `Buffer` ceiling holds is waiting on its own peer to acknowledge what
     /// is already buffered, while a send the grant holds was never going to be
     /// funded until the endpoint has room, whether or not a refusal has landed
-    /// yet. It is recomputed on every park and cleared whenever the send makes
-    /// progress, so it always names why this send is waiting now.
+    /// yet. It is recomputed on every advance and carried across a partial
+    /// send: taking the funded prefix does not change what bounds the bytes
+    /// still waiting, so it always names why this send is waiting now.
     held_by_grant: Bool,
   )
 }
@@ -1642,7 +1643,7 @@ fn advance_send(
                               pending.finish,
                               pending.reply,
                               pending.deadline,
-                              False,
+                              budget.grant_bound(admission),
                             )),
                           ),
                         ),

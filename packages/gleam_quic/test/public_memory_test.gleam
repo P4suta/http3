@@ -82,25 +82,8 @@ fn connection_handle(
   connection: server.Connection,
 ) -> Result(connection_worker.Connection, Nil)
 
-/// Capture failed transport transitions without exposing them through public
-/// errors or ordinary logs.
-@external(erlang, "gleam_quic_test_ffi", "start_server_transport_trace")
-fn start_server_transport_trace(actor: Pid) -> Pid
-
-@external(erlang, "gleam_quic_test_ffi", "start_client_transport_trace")
-fn start_client_transport_trace(actor: Pid) -> Pid
-
-@external(erlang, "gleam_quic_test_ffi", "stop_server_transport_trace")
-fn stop_server_transport_trace(actor: Pid, tracer: Pid) -> String
-
-@external(erlang, "gleam_quic_test_ffi", "stop_client_transport_trace")
-fn stop_client_transport_trace(actor: Pid, tracer: Pid) -> String
-
 /// The fixed diagnostic label every per-connection actor must carry.
 const connection_label = "gleam_quic.connection"
-
-/// The fixed diagnostic label for the client peer actor.
-const client_label = "gleam_quic.client"
 
 /// The accounting quantum: the ledger's own step, and the working set the
 /// listener charges to admit one connection.
@@ -360,9 +343,6 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   let stalled = admitted(listener, port, ca_certificate, deadlines, limits)
   let healthy = admitted(listener, port, ca_certificate, deadlines, limits)
   let stalled_actor = labelled_pid(stalled.peer, connection_label)
-  let client_actor = labelled_pid(stalled.connection, client_label)
-  let stalled_actor_pid = stalled_actor |> should.be_ok
-  let client_actor_pid = client_actor |> should.be_ok
 
   // One quantum offered to the stalled peer, inside the window this endpoint
   // advertised and inside the room it was granted, so it has to arrive whole
@@ -373,18 +353,14 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // The budget is then spent by the connections whose owners never read, and
   // the stalled connection is pressed up against the room it was granted.
   let filled = flood_pairs(loaded)
-  let server_tracer = start_server_transport_trace(stalled_actor_pid)
-  let client_tracer = start_client_transport_trace(client_actor_pid)
   let pressed = press(stalled)
 
   // Anything further the server offers that peer has to be held in memory the
-  // endpoint has refused to fund, so the offer parks and ends on its own
-  // deadline as a transient overload rather than as a bare operation timeout.
+  // endpoint has refused to fund. The funded prefix is sent first and the
+  // remainder parks, so that partial progress must retain the grant as its
+  // binding cause and end on its own deadline as a transient overload rather
+  // than as a bare operation timeout.
   let blocked = send_until_refused(outgoing, blocked_send_quanta)
-  let server_trace =
-    stop_server_transport_trace(stalled_actor_pid, server_tracer)
-  let client_trace =
-    stop_client_transport_trace(client_actor_pid, client_tracer)
 
   // Backpressure, not truncation: the connection that could not be funded is
   // still there -- a write was held back, not a connection destroyed -- what
@@ -405,12 +381,8 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   assert pressed == True
   // Red until the budget exists: today the server keeps growing its send
   // buffer for a peer that never reads until the exchange fails outright.
-  assert #(blocked, server_trace, client_trace)
-    == #(
-      Error(server.Failure(failure.Overload(failure.EndpointMemory))),
-      server_trace,
-      client_trace,
-    )
+  assert blocked
+    == Error(server.Failure(failure.Overload(failure.EndpointMemory)))
   assert alive == True
   assert delivered >= quantum_bytes
   assert retained == True
