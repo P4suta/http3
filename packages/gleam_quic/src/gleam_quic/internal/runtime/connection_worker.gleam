@@ -46,6 +46,7 @@ import gleam_quic/internal/qlog
 import gleam_quic/internal/runtime/budget
 import gleam_quic/internal/runtime/connection as runtime_connection
 import gleam_quic/internal/runtime/server_transport
+import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/anti_replay
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/hello
@@ -126,6 +127,7 @@ pub type Error {
   EndpointMemoryExceeded
   QlogUnavailable
   QuicFailure
+  StreamQueueFailure(stream_state.Error)
 }
 
 /// A message the listener sends to a connection actor it owns.
@@ -2499,6 +2501,8 @@ fn map_transport_error(error: server_transport.Error) -> Error {
         driver.ConnectionFailure(transport.UnknownStream(_)) -> StreamClosed
         driver.ConnectionFailure(transport.ConnectionUnavailable) ->
           ConnectionClosed
+        driver.ConnectionFailure(transport.StreamQueueFailure(error)) ->
+          StreamQueueFailure(error)
         _ -> QuicFailure
       }
   }

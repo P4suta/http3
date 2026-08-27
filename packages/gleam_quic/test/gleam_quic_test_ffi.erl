@@ -13,6 +13,7 @@
     routed_connection_id/1,
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1,
+    stream_handle/1,
     traced_routed_connection_id/2
 ]).
 
@@ -181,6 +182,14 @@ await_traced_id(Pid, Deadline) ->
 connection_handle(Handle) when is_tuple(Handle), tuple_size(Handle) =:= 2 ->
     {ok, element(2, Handle)};
 connection_handle(_Other) ->
+    {error, nil}.
+
+%% Unwrap one opaque public stream for a test that needs the internal failure
+%% before the public taxonomy deliberately normalises it.
+-spec stream_handle(term()) -> {ok, term()} | {error, nil}.
+stream_handle(Handle) when is_tuple(Handle), tuple_size(Handle) =:= 2 ->
+    {ok, element(2, Handle)};
+stream_handle(_Other) ->
     {error, nil}.
 
 %% Find the process behind one opaque public handle by its fixed role label, so

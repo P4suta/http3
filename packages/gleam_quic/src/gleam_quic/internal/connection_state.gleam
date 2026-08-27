@@ -333,6 +333,7 @@ pub type Error {
   PacketSpaceFailure
   FlowControlFailure
   StreamFailure
+  StreamQueueFailure(stream_state.Error)
   UnknownStream(Int)
   StreamLimitFailure
   ProtocolViolation
@@ -1471,7 +1472,7 @@ pub fn queue_stream(
     Error(_) -> Error(UnknownStream(identifier))
     Ok(stream) ->
       case stream_state.queue_send(stream, data, fin) {
-        Error(_) -> Error(StreamFailure)
+        Error(error) -> Error(StreamQueueFailure(error))
         Ok(updated) ->
           Ok(
             State(

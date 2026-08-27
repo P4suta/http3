@@ -889,7 +889,9 @@ fn map_error(error: connection_worker.Error) -> Error {
     connection_worker.DatagramQueueExceeded(maximum)
     | connection_worker.DatagramTooLarge(maximum) ->
       Failure(failure.Limit(failure.Datagram, maximum))
-    connection_worker.DatagramsNotNegotiated | connection_worker.QuicFailure ->
+    connection_worker.DatagramsNotNegotiated
+    | connection_worker.QuicFailure
+    | connection_worker.StreamQueueFailure(_) ->
       Failure(failure.Quic(failure.Peer, None))
     connection_worker.CongestionLimited ->
       Failure(failure.Overload(failure.Queue))
