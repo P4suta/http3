@@ -158,6 +158,13 @@ HTTP/3 sessions, QPACK, Capsules, and workers are owned by `http3`. Raw
 packet/frame/TLS codecs remain private to `gleam_quic`. Compiler-derived
 semantic API snapshots for both packages are part of the local check.
 
+Git-SHA-pinned MixGleam/Burrito consumers can use the committed `mix.exs`
+descriptors to build `http3` and the nested `gleam_quic` package as separate
+OTP applications. Because MixGleam 0.6.2 compiles every source tree present in
+a package checkout, production consumers must stage or retain only `src/` and
+the package descriptors before compilation; `mise run mix-package` exercises
+that runtime-only layout without publishing an artifact.
+
 ## Development
 
 The supported runtime range is Erlang/OTP 28 and 29, matching

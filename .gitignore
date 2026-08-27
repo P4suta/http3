@@ -1,4 +1,6 @@
 build/
+_build/
+deps/
 *.beam
 erl_crash.dump
 .DS_Store

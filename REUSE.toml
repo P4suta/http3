@@ -13,6 +13,7 @@ path = [
   "_typos.toml",
   "*.md",
   "*.toml",
+  "mix.lock",
   "LICENSE",
   "api/**",
   "benchmarks/**",

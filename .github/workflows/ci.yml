@@ -56,6 +56,11 @@ jobs:
         with:
           version: 2026.8.10
 
+      - name: Install exact MixGleam archive
+        run: |
+          mix local.hex 2.5.1 --force
+          mix archive.install hex mix_gleam 0.6.2 --force
+
       - name: Run all checks
         run: mise run check
 
