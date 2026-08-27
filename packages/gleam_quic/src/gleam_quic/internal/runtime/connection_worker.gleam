@@ -127,6 +127,7 @@ pub type Error {
   EndpointMemoryExceeded
   QlogUnavailable
   QuicFailure
+  QuicFailureAt(Int)
   StreamQueueFailure(stream_state.Error)
 }
 
@@ -766,7 +767,7 @@ fn tick_and_flush(worker: Worker) -> Worker {
   let now = udp.monotonic_millisecond()
   let worker = Worker(..worker, dirty: False)
   case server_transport.tick(worker.peer.connection, now) {
-    Error(_) -> fail_connection(worker, QuicFailure)
+    Error(_) -> fail_connection(worker, QuicFailureAt(901))
     Ok(connection) -> {
       let worker =
         put_peer(worker, PeerState(..worker.peer, connection: connection))
@@ -852,7 +853,7 @@ fn receive_one_datagram(
   let peer_state = worker.peer
   let now = udp.monotonic_millisecond()
   case replay_policy(worker, now) {
-    Error(_) -> fail_connection(worker, QuicFailure)
+    Error(_) -> fail_connection(worker, QuicFailureAt(902))
     Ok(policy) ->
       case
         server_transport.receive_datagram(
@@ -866,9 +867,9 @@ fn receive_one_datagram(
         Error(server_transport.DriverFailure(error)) ->
           case driver.discardable_receive_error(error) {
             True -> worker
-            False -> fail_connection(worker, QuicFailure)
+            False -> fail_connection(worker, QuicFailureAt(903))
           }
-        Error(_) -> fail_connection(worker, QuicFailure)
+        Error(_) -> fail_connection(worker, QuicFailureAt(904))
         Ok(connection) -> {
           case peer_state.qlog_writer {
             Some(writer) ->
@@ -1017,7 +1018,7 @@ fn maybe_issue_session_ticket(worker: Worker, now: Int) -> Worker {
   case
     server_transport.issue_session_ticket_if_ready(worker.peer.connection, now)
   {
-    Error(_) -> fail_connection(worker, QuicFailure)
+    Error(_) -> fail_connection(worker, QuicFailureAt(905))
     Ok(connection) ->
       put_peer(worker, PeerState(..worker.peer, connection: connection))
   }
@@ -1127,7 +1128,7 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
             transport.CongestionLimited,
           )))
         | Ok(None) -> worker
-        Error(_) -> fail_connection(worker, QuicFailure)
+        Error(_) -> fail_connection(worker, QuicFailureAt(906))
         Ok(Some(prepared)) -> {
           let bytes = server_transport.prepared_bytes(prepared)
           let destination = candidate_send_endpoint(peer)
@@ -1158,12 +1159,12 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
                       ),
                     ),
                   )
-                udp.SocketLost -> fail_connection(worker, QuicFailure)
+                udp.SocketLost -> fail_connection(worker, QuicFailureAt(907))
                 udp.Delivered ->
                   case
                     server_transport.commit_datagram(prepared, ecn.NotEct, now)
                   {
-                    Error(_) -> fail_connection(worker, QuicFailure)
+                    Error(_) -> fail_connection(worker, QuicFailureAt(908))
                     Ok(connection) -> {
                       case peer.qlog_writer {
                         Some(writer) ->
