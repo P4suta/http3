@@ -1,8 +1,9 @@
 //// Typed normalization around the Erlang HTTP/3 client FFI.
 
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic
+import http3/address
 import http3/config
 import http3/failure as runtime_failure
 import http3/internal/client_request.{type PreparedRequest, PreparedRequest}
@@ -41,6 +42,7 @@ pub fn is_valid_ca_certificate(certificate: BitArray) -> Bool {
 /// Execute one prepared request through the backend adapter.
 pub fn send(
   request request: PreparedRequest,
+  connect_address connect_address: Option(address.Address),
   ca_certificates ca_certificates: List(BitArray),
   address_family address_family: config.AddressFamily,
   dns_timeout_milliseconds dns_timeout_milliseconds: Int,
@@ -68,6 +70,11 @@ pub fn send(
       client,
       native_address_family(address_family),
     )
+  let client = case connect_address {
+    None -> client
+    Some(address) ->
+      native_client.with_connect_address(client, address.to_bytes(address))
+  }
   use client <- result.try(
     native_client.with_dns_timeout(client, dns_timeout_milliseconds)
     |> result.map_error(from_native_configuration_error),

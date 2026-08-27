@@ -55,6 +55,7 @@ pub opaque type Client {
     hostname: String,
     port: Int,
     address_family: AddressFamily,
+    connect_address: Option(BitArray),
     dns_timeout_milliseconds: Int,
     connect_timeout_milliseconds: Int,
     handshake_timeout_milliseconds: Int,
@@ -282,6 +283,7 @@ pub fn new(
         hostname,
         port,
         DualStack,
+        None,
         5000,
         10_000,
         10_000,
@@ -315,6 +317,12 @@ pub fn with_address_family(
   address_family: AddressFamily,
 ) -> Client {
   Client(..client, address_family: address_family)
+}
+
+/// Select one already-validated UDP dial address without changing the TLS
+/// server name. Invalid byte lengths are rejected later by the bounded core.
+pub fn with_connect_address(client: Client, address: BitArray) -> Client {
+  Client(..client, connect_address: Some(address))
 }
 
 /// Set the finite DNS-resolution timeout.
@@ -611,12 +619,14 @@ pub fn send(
       hostname: client.hostname,
       port: client.port,
       address_family: client.address_family,
+      connect_address: client.connect_address,
       dns_timeout_milliseconds: client.dns_timeout_milliseconds,
       connect_timeout_milliseconds: client.connect_timeout_milliseconds,
       handshake_timeout_milliseconds: client.handshake_timeout_milliseconds,
       timeout_milliseconds: client.timeout_milliseconds,
       operation_timeout_milliseconds: client.operation_timeout_milliseconds,
       idle_timeout_milliseconds: client.idle_timeout_milliseconds,
+      maximum_request_body_bytes: bit_array.byte_size(body),
       maximum_response_body_bytes: client.response_body_limit,
       trust_store: trust_store,
       quic_version: case client.quic_version {

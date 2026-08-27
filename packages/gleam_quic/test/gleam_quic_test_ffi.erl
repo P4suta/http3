@@ -1,6 +1,7 @@
 -module(gleam_quic_test_ffi).
 
 -export([
+    connection_handle/1,
     fixture/1,
     inject_relay_connection_reset/1,
     labelled_pid/2,
@@ -171,6 +172,16 @@ await_traced_id(Pid, Deadline) ->
                 {error, nil}
             end
     end.
+
+%% Unwrap the connection actor handle inside one opaque public connection, so a
+%% test can ask that actor for state no public API publishes. The public handle
+%% is a single-field wrapper around the actor handle, so the actor handle is its
+%% one payload; anything else is not a connection and is reported as such.
+-spec connection_handle(term()) -> {ok, term()} | {error, nil}.
+connection_handle(Handle) when is_tuple(Handle), tuple_size(Handle) =:= 2 ->
+    {ok, element(2, Handle)};
+connection_handle(_Other) ->
+    {error, nil}.
 
 %% Find the process behind one opaque public handle by its fixed role label, so
 %% a lifecycle test can watch exactly the actor that handle names.

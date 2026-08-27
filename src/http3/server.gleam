@@ -7,6 +7,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http3/address
 import http3/capsule
 import http3/config as policy
 import http3/failure as runtime_failure
@@ -30,6 +31,7 @@ pub opaque type Configuration {
     private_key: BitArray,
     alternative_certificates: List(#(String, BitArray, BitArray)),
     port: Int,
+    bind_address: Option(address.Address),
     deadlines: policy.Deadlines,
     limits: policy.Limits,
     http_datagrams: Bool,
@@ -85,6 +87,8 @@ pub opaque type Request {
     method: http.Method,
     path: String,
     protocol: Option(String),
+    scheme: String,
+    authority: String,
     headers: List(#(String, String)),
   )
 }
@@ -177,6 +181,7 @@ pub fn new(
     private_key: private_key,
     alternative_certificates: [],
     port: 0,
+    bind_address: None,
     deadlines: policy.default_deadlines(),
     limits: policy.default_limits(),
     http_datagrams: False,
@@ -410,6 +415,18 @@ pub fn with_port(
   Ok(Configuration(..configuration, port: port))
 }
 
+/// Bind the UDP listener to one exact IPv4 or IPv6 address.
+///
+/// The port remains controlled by `with_port`; zero requests an
+/// operating-system-assigned port. This setting takes precedence over the
+/// wildcard selected by `with_address_family`.
+pub fn with_bind_address(
+  configuration configuration: Configuration,
+  bind_address bind_address: address.Address,
+) -> Configuration {
+  Configuration(..configuration, bind_address: Some(bind_address))
+}
+
 /// Set the total timeout for accept, request, and response operations.
 pub fn with_timeout(
   configuration configuration: Configuration,
@@ -465,6 +482,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     private_key,
     alternative_certificates,
     port,
+    bind_address,
     deadlines,
     limits,
     http_datagrams,
@@ -481,6 +499,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
       private_key,
       alternative_certificates,
       port,
+      option.map(bind_address, address.to_bytes),
       policy.deadline(deadlines, runtime_failure.Operation),
       policy.deadline(deadlines, runtime_failure.Drain),
       policy.deadline(deadlines, runtime_failure.Idle),
@@ -561,7 +580,7 @@ pub fn reload_operational_keys(
 pub fn accept(listener: Listener) -> Result(Request, Error) {
   let Listener(handle) = listener
   case server_backend.accept(handle) {
-    Ok(#(request_handle, method, path, protocol, headers)) -> {
+    Ok(#(request_handle, method, path, protocol, scheme, authority, headers)) -> {
       let method = case http.parse_method(method) {
         Ok(method) -> method
         Error(parse_error) -> {
@@ -569,7 +588,15 @@ pub fn accept(listener: Listener) -> Result(Request, Error) {
           http.Other(method)
         }
       }
-      Ok(Request(request_handle, method, path, protocol, headers))
+      Ok(Request(
+        request_handle,
+        method,
+        path,
+        protocol,
+        scheme,
+        authority,
+        headers,
+      ))
     }
     Error(error) -> Error(from_backend_failure(error))
   }
@@ -588,6 +615,37 @@ pub fn path(request: Request) -> String {
 /// Return the negotiated Extended CONNECT protocol, if present.
 pub fn protocol(request: Request) -> Option(String) {
   request.protocol
+}
+
+/// Return the validated request `:scheme` pseudo-header.
+pub fn scheme(request: Request) -> String {
+  request.scheme
+}
+
+/// Return the validated request `:authority` pseudo-header.
+pub fn authority(request: Request) -> String {
+  request.authority
+}
+
+/// Return this request connection's currently validated peer endpoint.
+///
+/// QUIC migration and NAT rebinding update this value only after path
+/// validation succeeds. The endpoint therefore never exposes an unvalidated
+/// candidate address.
+pub fn peer_endpoint(request: Request) -> Result(address.Endpoint, Error) {
+  use #(bytes, port) <- result.try(
+    server_backend.peer_endpoint(request.handle) |> map_backend,
+  )
+  use parsed <- result.try(
+    address.from_bytes(bytes)
+    |> result.replace_error(
+      Failure(runtime_failure.Quic(runtime_failure.Local, None)),
+    ),
+  )
+  address.endpoint(parsed, port)
+  |> result.replace_error(
+    Failure(runtime_failure.Quic(runtime_failure.Local, None)),
+  )
 }
 
 /// Return an accepted request's non-pseudo headers.
@@ -634,9 +692,16 @@ pub fn respond(
     when: bit_array.bit_size(body) % 8 != 0,
     return: Error(InvalidBody),
   )
-  case
-    server_response.prepare_bounded(status, headers, bit_array.byte_size(body))
-  {
+  let body_size = bit_array.byte_size(body)
+  use <- bool.guard(
+    when: request.method == http.Head && body_size != 0,
+    return: Error(InvalidBody),
+  )
+  let prepared = case request.method {
+    http.Head -> server_response.prepare_bounded_head(status, headers)
+    _ -> server_response.prepare_bounded(status, headers, body_size)
+  }
+  case prepared {
     Ok(headers) ->
       map_backend(server_backend.respond(request.handle, status, headers, body))
     Error(error) -> Error(from_response_error(error))

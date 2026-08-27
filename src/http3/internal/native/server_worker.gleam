@@ -96,6 +96,8 @@ pub type Incoming {
     method: String,
     path: String,
     protocol: Option(String),
+    scheme: String,
+    authority: String,
     headers: List(#(String, String)),
   )
 }
@@ -159,6 +161,7 @@ pub type Error {
 
 type Command {
   Port(reply: Subject(Result(Int, Error)))
+  PeerEndpoint(request_id: Int, reply: Subject(Result(#(BitArray, Int), Error)))
   ReloadCertificates(
     certificate_chain: List(BitArray),
     signing_key: authentication.SigningKey,
@@ -457,6 +460,7 @@ type CallOutcome(value) {
 /// Bind one typed UDP listener and start its unlinked owner-monitoring actor.
 pub fn start(
   port: Int,
+  bind_address: Option(BitArray),
   timeout_milliseconds: Int,
   drain_timeout_milliseconds: Int,
   idle_timeout_milliseconds: Int,
@@ -491,6 +495,7 @@ pub fn start(
   case
     port >= 0
     && port <= 65_535
+    && valid_bind_address(bind_address)
     && timeout_milliseconds > 0
     && drain_timeout_milliseconds > 0
     && idle_timeout_milliseconds > 0
@@ -528,6 +533,7 @@ pub fn start(
             owner,
             bootstrap,
             port,
+            bind_address,
             timeout_milliseconds,
             drain_timeout_milliseconds,
             idle_timeout_milliseconds,
@@ -635,6 +641,11 @@ pub fn accept(listener: Listener) -> Result(Incoming, Error) {
     listener.timeout_milliseconds + worker_reply_grace_milliseconds,
     fn(reply) { Accept(reply, deadline) },
   )
+}
+
+/// Return the current path-validated peer endpoint for one request.
+pub fn peer_endpoint(request: Request) -> Result(#(BitArray, Int), Error) {
+  call(request.listener, fn(reply) { PeerEndpoint(request.identifier, reply) })
 }
 
 /// Pull one request-body event.
@@ -884,6 +895,7 @@ fn initialise(
   owner: Pid,
   bootstrap: Subject(Result(Listener, Error)),
   port: Int,
+  bind_address: Option(BitArray),
   timeout_milliseconds: Int,
   drain_timeout_milliseconds: Int,
   idle_timeout_milliseconds: Int,
@@ -917,7 +929,8 @@ fn initialise(
 ) -> Nil {
   let startup = {
     use socket <- result.try(
-      open_listener(address_family, port) |> result.replace_error(StartFailed),
+      open_listener(address_family, bind_address, port)
+      |> result.replace_error(StartFailed),
     )
     use local <- result.try(
       udp.local_endpoint(socket) |> result.replace_error(StartFailed),
@@ -1048,21 +1061,59 @@ fn initialise(
 
 fn open_listener(
   address_family: AddressFamily,
+  bind_address: Option(BitArray),
   port: Int,
 ) -> Result(udp.Socket, udp.Error) {
-  case address_family {
-    DualStack -> udp.open_dual_stack(port)
-    Ipv4 -> {
-      use wildcard <- result.try(udp.ipv4(0, 0, 0, 0))
-      use endpoint <- result.try(udp.endpoint(wildcard, port))
+  case bind_address {
+    Some(bytes) -> {
+      use address <- result.try(udp.address_from_bytes(bytes))
+      use endpoint <- result.try(udp.endpoint(address, port))
       udp.open(endpoint)
     }
-    Ipv6 -> {
-      use wildcard <- result.try(udp.ipv6(0, 0, 0, 0, 0, 0, 0, 0))
-      use endpoint <- result.try(udp.endpoint(wildcard, port))
-      udp.open(endpoint)
-    }
+    None ->
+      case address_family {
+        DualStack -> udp.open_dual_stack(port)
+        Ipv4 -> {
+          use wildcard <- result.try(udp.ipv4(0, 0, 0, 0))
+          use endpoint <- result.try(udp.endpoint(wildcard, port))
+          udp.open(endpoint)
+        }
+        Ipv6 -> {
+          use wildcard <- result.try(udp.ipv6(0, 0, 0, 0, 0, 0, 0, 0))
+          use endpoint <- result.try(udp.endpoint(wildcard, port))
+          udp.open(endpoint)
+        }
+      }
   }
+}
+
+fn valid_bind_address(address: Option(BitArray)) -> Bool {
+  case address {
+    None -> True
+    Some(bytes) ->
+      case bit_array.byte_size(bytes), bit_array.bit_size(bytes) % 8 {
+        4, 0 | 16, 0 -> True
+        _, _ -> False
+      }
+  }
+}
+
+fn validated_peer_endpoint(
+  worker: Worker,
+  identifier: Int,
+) -> Result(#(BitArray, Int), Error) {
+  with_request_connection(worker, identifier, fn(_, peer, _) {
+    Ok(udp.endpoint_parts(server_connection.peer(peer.connection)))
+  })
+}
+
+fn handle_peer_endpoint(
+  worker: Worker,
+  identifier: Int,
+  reply: Subject(Result(#(BitArray, Int), Error)),
+) -> Result(Worker, Nil) {
+  process.send(reply, validated_peer_endpoint(worker, identifier))
+  Ok(worker)
 }
 
 fn valid_optional_key_ring(keys: List(BitArray)) -> Bool {
@@ -1341,6 +1392,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       process.send(reply, Ok(worker.port))
       Ok(worker)
     }
+    PeerEndpoint(identifier, reply) ->
+      handle_peer_endpoint(worker, identifier, reply)
     ReloadCertificates(
       certificate_chain,
       signing_key,
@@ -1991,7 +2044,11 @@ fn handle_send_chunk(
         request.response_finished,
         request.pending_send,
         request.failure,
-        new_total > worker.response_body_limit,
+        exceeds_streaming_body_limit(
+          request.declared_content_length,
+          new_total,
+          worker.response_body_limit,
+        ),
         exceeds_declared_length(request.declared_content_length, new_total)
       {
         False, _, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
@@ -2302,7 +2359,11 @@ fn handle_send_push_chunk(
         push.response_finished,
         push.pending_send,
         push.failure,
-        total > worker.response_body_limit,
+        exceeds_streaming_body_limit(
+          push.declared_content_length,
+          total,
+          worker.response_body_limit,
+        ),
         exceeds_declared_length(push.declared_content_length, total)
       {
         False, _, _, _, _, _ -> reply_error(worker, reply, ResponseNotStarted)
@@ -4130,6 +4191,8 @@ fn incoming(worker: Worker, identifier: Int) -> Result(Incoming, Error) {
     request.method,
     request.path,
     request.protocol,
+    request.scheme,
+    request.authority,
     request.headers,
   ))
 }
@@ -4822,6 +4885,22 @@ fn exceeds_declared_length(length: Option(Int), actual: Int) -> Bool {
 fn exceeds_response_body_limit(length: Option(Int), limit: Int) -> Bool {
   case length {
     Some(expected) -> expected > limit
+    None -> False
+  }
+}
+
+// A finite aggregate limit protects buffered and explicitly bounded bodies.
+// A response without Content-Length is the long-lived streaming path: each
+// frame, pending send, transport window, queue, and operation remains bounded,
+// but bytes successfully transferred in the past are not retained or counted
+// against a lifetime total.
+fn exceeds_streaming_body_limit(
+  length: Option(Int),
+  actual: Int,
+  limit: Int,
+) -> Bool {
+  case length {
+    Some(_) -> actual > limit
     None -> False
   }
 }

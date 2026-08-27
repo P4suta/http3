@@ -8,6 +8,7 @@ import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/driver
 import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
+import gleam_quic/internal/runtime/budget
 import gleam_quic/internal/runtime/connection
 import gleam_quic/internal/stateless_reset
 import gleam_quic/internal/tls/anti_replay
@@ -165,6 +166,18 @@ pub fn local_connection_id(state: State) -> BitArray {
 /// Stable lifecycle phase.
 pub fn phase(state: State) -> transport.Phase {
   connection.phase(state.connection)
+}
+
+/// Hold this connection's advertised receive credit inside the endpoint memory
+/// it has been granted, and report every byte it keeps resident.
+pub fn apply_memory_grant(
+  state: State,
+  granted_bytes: Int,
+  refused: Bool,
+) -> #(State, Int) {
+  let #(inner, retained) =
+    connection.apply_memory_grant(state.connection, granted_bytes, refused)
+  #(State(..state, connection: inner), retained)
 }
 
 /// Whether authenticated 1-RTT keys are installed.
@@ -471,6 +484,11 @@ fn server_transport_config(
     maximum_peer_streams_unidirectional: config.unidirectional_stream_limit,
     maximum_stream_receive_buffer: config.stream_buffer_limit,
     maximum_stream_send_buffer: config.stream_buffer_limit,
+    // The connection-level receive credit this server opens with is the credit
+    // its endpoint charged admission for, and no more. Everything above it is
+    // granted before it is advertised.
+    initial_receive_data: budget.initial_receive_credit(),
+    receive_data_window: budget.growth_step(),
     maximum_total_streams: config.bidirectional_stream_limit
       + config.unidirectional_stream_limit,
     maximum_udp_payload_size: maximum_udp_payload_size,
@@ -505,7 +523,12 @@ fn server_transport_parameters(
     transport_parameter.StatelessResetToken(reset_token),
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
     transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
-    transport_parameter.InitialMaxData(1_048_576),
+    // Grant-before-growth starts here. This is the only receive credit a
+    // server promises before it has asked its endpoint for room, so it is the
+    // credit the endpoint's admission charge has to fund, and the two are the
+    // same constant. A connection that wants a wider window asks for one on
+    // its first turn and advertises it as soon as the grant lands.
+    transport_parameter.InitialMaxData(budget.initial_receive_credit()),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
     transport_parameter.InitialMaxStreamDataUni(262_144),

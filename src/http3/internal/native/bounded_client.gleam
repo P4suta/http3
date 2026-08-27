@@ -24,6 +24,10 @@ import http3/internal/qpack/header.{type Header, Header}
 
 const maximum_packets_per_flush = 64
 
+// Keep every HTTP DATA payload within the bounded HTTP/3 parser default.
+// A bounded request may be larger, but it must not become one oversized frame.
+const maximum_request_data_chunk_bytes = 65_535
+
 // Pre-validation floor for one packet's frame payload. The send path widens it
 // to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
@@ -43,12 +47,14 @@ pub type Config {
     hostname: String,
     port: Int,
     address_family: AddressFamily,
+    connect_address: Option(BitArray),
     dns_timeout_milliseconds: Int,
     connect_timeout_milliseconds: Int,
     handshake_timeout_milliseconds: Int,
     timeout_milliseconds: Int,
     operation_timeout_milliseconds: Int,
     idle_timeout_milliseconds: Int,
+    maximum_request_body_bytes: Int,
     maximum_response_body_bytes: Int,
     trust_store: authentication.TrustStore,
     quic_version: Version,
@@ -117,22 +123,7 @@ pub fn send(
     Ok(Nil) -> {
       let started = udp.monotonic_millisecond()
       let deadline = started + config.timeout_milliseconds
-      use addresses <- result.try(
-        case
-          udp.resolve_with_timeout(
-            config.hostname,
-            udp_address_family(config.address_family),
-            int.min(
-              config.dns_timeout_milliseconds,
-              config.timeout_milliseconds,
-            ),
-          )
-        {
-          Ok(addresses) -> Ok(addresses)
-          Error(udp.Timeout) -> Error(DnsTimeout)
-          Error(_) -> Error(ResolutionFailed)
-        },
-      )
+      use addresses <- result.try(resolve_addresses(config))
       use headers <- result.try(encode_headers(fields))
       use established <- result.try(connect_addresses(
         config,
@@ -157,6 +148,27 @@ pub fn send(
         Error(error), _ -> Error(error)
       }
     }
+  }
+}
+
+fn resolve_addresses(config: Config) -> Result(List(udp.Address), Error) {
+  case config.connect_address {
+    Some(bytes) ->
+      udp.address_from_bytes(bytes)
+      |> result.map(fn(address) { [address] })
+      |> result.replace_error(ResolutionFailed)
+    None ->
+      case
+        udp.resolve_with_timeout(
+          config.hostname,
+          udp_address_family(config.address_family),
+          int.min(config.dns_timeout_milliseconds, config.timeout_milliseconds),
+        )
+      {
+        Ok(addresses) -> Ok(addresses)
+        Error(udp.Timeout) -> Error(DnsTimeout)
+        Error(_) -> Error(ResolutionFailed)
+      }
   }
 }
 
@@ -425,6 +437,7 @@ fn establish_on_socket_version(
     client_transport_config(
       selected_version,
       config.idle_timeout_milliseconds,
+      config.maximum_request_body_bytes,
       udp.dont_fragment(socket),
     )
   let tls_config =
@@ -508,12 +521,7 @@ fn request_after_handshake(
       Http3OperationFailed("open_request", error)
     }),
   )
-  use http3 <- result.try(case body {
-    <<>> -> Ok(http3)
-    _ ->
-      session.send_data(http3, stream_id, body)
-      |> result.map_error(fn(error) { Http3OperationFailed("send_data", error) })
-  })
+  use http3 <- result.try(send_request_body(http3, stream_id, body))
   use http3 <- result.try(
     session.finish_stream(http3, stream_id)
     |> result.map_error(fn(error) { Http3OperationFailed("finish", error) }),
@@ -538,6 +546,35 @@ fn request_after_handshake(
   ))
   graceful_close(http3, socket, peer)
   Ok(response)
+}
+
+fn send_request_body(
+  state: session.State,
+  stream_id: Int,
+  body: BitArray,
+) -> Result(session.State, Error) {
+  let size = bit_array.byte_size(body)
+  case size {
+    0 -> Ok(state)
+    _ -> {
+      let take = int.min(size, maximum_request_data_chunk_bytes)
+      use chunk <- result.try(
+        bit_array.slice(body, at: 0, take:)
+        |> result.replace_error(InvalidInput),
+      )
+      use rest <- result.try(
+        bit_array.slice(body, at: take, take: size - take)
+        |> result.replace_error(InvalidInput),
+      )
+      use state <- result.try(
+        session.send_data(state, stream_id, chunk)
+        |> result.map_error(fn(error) {
+          Http3OperationFailed("send_data", error)
+        }),
+      )
+      send_request_body(state, stream_id, rest)
+    }
+  }
 }
 
 fn handshake(
@@ -1054,6 +1091,7 @@ fn decode_headers(
 fn client_transport_config(
   selected_version: Version,
   idle_timeout_milliseconds: Int,
+  maximum_request_body_bytes: Int,
   dont_fragment: Bool,
 ) -> transport.Config {
   let config = transport.default_config(transport.Client)
@@ -1062,6 +1100,10 @@ fn client_transport_config(
     version: selected_version,
     path_dont_fragment: dont_fragment,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
+    maximum_stream_send_buffer: int.max(
+      config.maximum_stream_send_buffer,
+      maximum_request_body_bytes + 65_536,
+    ),
     maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
     maximum_datagram_frame_size: 0,
@@ -1177,6 +1219,7 @@ fn validate(config: Config, body: BitArray) -> Result(Nil, Error) {
     && config.timeout_milliseconds > 0
     && config.operation_timeout_milliseconds > 0
     && config.idle_timeout_milliseconds > 0
+    && config.maximum_request_body_bytes >= bit_array.byte_size(body)
     && config.maximum_response_body_bytes > 0
     && {
       config.keepalive_milliseconds == 0

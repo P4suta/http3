@@ -8,6 +8,7 @@ import gleam_quic/internal/connection_state
 import gleam_quic/internal/ecn
 import gleam_quic/internal/key_phase
 import gleam_quic/internal/packet_space
+import gleam_quic/internal/runtime/budget
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
@@ -16,6 +17,7 @@ import gleam_quic/internal/traffic_keys
 import gleam_quic/internal/wire_packet
 import gleam_quic/stream_id
 import gleam_quic/transport_parameter
+import gleam_quic/varint
 import gleam_quic/version
 
 @external(erlang, "gleam_quic_test_ffi", "fixture")
@@ -2639,4 +2641,475 @@ fn flush_sized_datagrams(
         _ -> #(connection, Ok(Nil))
       }
   }
+}
+
+/// A memory grant wide enough that nothing in these tests is held by it.
+const ample_memory_grant = 16_777_216
+
+/// One round of the credit test: small enough that several rounds fit inside
+/// the grant, large enough that the window updates during them.
+const credit_chunk_bytes = 4096
+
+const credit_rounds = 12
+
+/// The grant the credit test runs under, and it is not a number this test
+/// chose: it is exactly what a listener charges to admit one connection, so
+/// the bound asserted below is the bound a shipped server actually runs
+/// against rather than one arranged to be easy to meet.
+fn admission_grant_bytes() -> Int {
+  budget.admission_quanta() * budget.quantum()
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn a_refused_connection_stops_inviting_the_peer_to_open_streams_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Server)
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    _,
+    [frame.HandshakeDone],
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+
+  // The endpoint has no memory left for this connection.
+  let #(connection, _held) =
+    connection_state.apply_memory_grant(connection, 0, True)
+  assert connection_state.credit_growth_held(connection) == True
+
+  // A peer using the allowance this endpoint already advertised is served
+  // exactly as before. It is never punished for credit we handed it.
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Stream(2, 0, <<"done">>, True)],
+      packet_space.NotEct,
+      10,
+    )
+  let assert Ok(#(connection, read)) =
+    connection_state.read_stream(connection, 2, 16)
+  assert connection_state.read_data(read) == Some(#(<<"done">>, True))
+  assert connection_state.active_stream_count(connection) == 0
+  assert connection_state.phase(connection) == connection_state.Established
+
+  // What is withheld is the invitation to open another one: the allowance the
+  // closed stream freed is not advertised, and it does not grow.
+  let #(connection, held) = prepared_frames(connection, 20)
+  assert contains_max_streams(held, frame.Unidirectional, 101) == False
+  assert connection_state.advertised_stream_limit(
+      connection,
+      stream_id.Unidirectional,
+    )
+    == 100
+
+  // The moment the endpoint has room again the withheld allowance is stated,
+  // without the peer having to send anything to prompt it.
+  let #(connection, _released) =
+    connection_state.apply_memory_grant(connection, ample_memory_grant, False)
+  assert connection_state.credit_growth_held(connection) == False
+  let #(connection, released) = prepared_frames(connection, 30)
+  assert contains_max_streams(released, frame.Unidirectional, 101)
+  assert connection_state.advertised_stream_limit(
+      connection,
+      stream_id.Unidirectional,
+    )
+    == 101
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn advertised_receive_credit_stays_inside_the_memory_grant_test() -> Nil {
+  let assert Ok(connection) = granted_connection()
+  let opening = connection_state.advertised_max_data(connection)
+
+  // The credit a server promises in its handshake, before it has asked its
+  // endpoint for a single byte of room, is credit the admission charge has
+  // already funded. A server that advertised more than this would be
+  // over-committed by the difference on every connection it ever admitted.
+  assert opening == budget.initial_receive_credit()
+  assert connection_state.outstanding_receive_credit(connection)
+    <= admission_grant_bytes()
+
+  // The peer sends and the application reads, round after round, with the
+  // grant re-applied each turn exactly as the connection actor re-applies it.
+  let connection = exchange_within_grant(connection, 0, 10, credit_rounds)
+
+  // The window really did open -- so the bound below is a bound on growth that
+  // happened, not on growth that never started -- and it never opened past the
+  // room the grant funds.
+  assert connection_state.advertised_max_data(connection) > opening
+  assert connection_state.outstanding_receive_credit(connection)
+    <= admission_grant_bytes()
+  assert connection_state.retained_bytes(connection) <= admission_grant_bytes()
+}
+
+/// One peer send and one application read per round, checking after each that
+/// neither the credit advertised nor the memory held has left the grant.
+fn exchange_within_grant(
+  connection: connection_state.State,
+  offset: Int,
+  now: Int,
+  remaining: Int,
+) -> connection_state.State {
+  case remaining <= 0 {
+    True -> connection
+    False -> {
+      let #(connection, _held) =
+        connection_state.apply_memory_grant(
+          connection,
+          admission_grant_bytes(),
+          False,
+        )
+      let connection = case
+        offset + credit_chunk_bytes
+        <= connection_state.advertised_max_data(connection)
+      {
+        False -> connection
+        True -> send_and_read_chunk(connection, offset, now)
+      }
+      // The two standing bounds, checked every round rather than only at the
+      // end: a peer that keeps filling every window it is offered still cannot
+      // take this connection past what its endpoint granted.
+      assert connection_state.outstanding_receive_credit(connection)
+        <= admission_grant_bytes()
+      assert connection_state.retained_bytes(connection)
+        <= admission_grant_bytes()
+      exchange_within_grant(
+        connection,
+        smallest_offset(connection, offset),
+        now + 1,
+        remaining - 1,
+      )
+    }
+  }
+}
+
+fn smallest_offset(connection: connection_state.State, offset: Int) -> Int {
+  case
+    offset + credit_chunk_bytes
+    <= connection_state.advertised_max_data(connection)
+  {
+    False -> offset
+    True -> offset + credit_chunk_bytes
+  }
+}
+
+fn send_and_read_chunk(
+  connection: connection_state.State,
+  offset: Int,
+  now: Int,
+) -> connection_state.State {
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      now,
+      [frame.Stream(2, offset, credit_chunk(), False)],
+      packet_space.NotEct,
+      now,
+    )
+  let assert Ok(#(connection, _read)) =
+    connection_state.read_stream(connection, 2, credit_chunk_bytes)
+  connection
+}
+
+fn credit_chunk() -> BitArray {
+  <<0:size(credit_chunk_bytes)-unit(8)>>
+}
+
+/// An established server configured the way `server_transport` configures a
+/// shipped listener's connections: the connection-level receive credit it
+/// opens with is the credit its endpoint charged admission for, and the window
+/// it widens by is the step it asks its endpoint for room in.
+fn granted_connection() -> Result(
+  connection_state.State,
+  connection_state.Error,
+) {
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.Config(
+        ..connection_state.default_config(connection_state.Server),
+        path_dont_fragment: True,
+        initial_receive_data: budget.initial_receive_credit(),
+        receive_data_window: budget.growth_step(),
+      ),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.HandshakeComplete,
+    ])
+  let #(connection, _events) = connection_state.take_events(connection)
+  Ok(connection)
+}
+
+/// The 1-RTT frames this connection has to send now, if it has any at all.
+fn prepared_frames(
+  connection: connection_state.State,
+  now: Int,
+) -> #(connection_state.State, List(frame.Frame)) {
+  let assert Ok(prepared) =
+    connection_state.prepare_packet(connection, engine.OneRtt, 1200, now)
+  case prepared {
+    connection_state.PacketPrepared(connection, _level, _number, frames) -> #(
+      connection,
+      frames,
+    )
+    connection_state.NoPacket(connection) -> #(connection, [])
+  }
+}
+
+/// A stream receive window narrow enough that one chunk crosses the half-window
+/// deadband, so a single read is enough to make a MAX_STREAM_DATA increase due.
+const narrow_stream_window_bytes = 4096
+
+/// Connection-level receive credit wide enough that nothing in the restatement
+/// test is bounded by it: what that test is about is the per-stream frames.
+const narrow_connection_window_bytes = 65_536
+
+/// How many 1-RTT packets a restatement is allowed to need. The queue emits one
+/// queued frame per packet, and the whole point of the test is that only a
+/// handful of frames are owed, so this is a bound rather than an expectation.
+const restatement_packet_bound = 24
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn a_lifted_refusal_restates_only_the_credit_it_withheld_test() -> Nil {
+  let assert Ok(connection) = narrow_window_connection()
+  let #(connection, _handshake) =
+    drained_frames(connection, 1, restatement_packet_bound)
+
+  // A locally-opened unidirectional stream. This endpoint can only send on it,
+  // and RFC 9000 section 19.10 makes MAX_STREAM_DATA for a stream the peer
+  // cannot send on a STREAM_STATE_ERROR the peer must close the connection on.
+  let assert Ok(#(connection, send_only)) =
+    connection_state.open_stream(connection, stream_id.Unidirectional)
+
+  // One peer-opened bidirectional stream this endpoint goes on to read from,
+  // and one peer-opened unidirectional stream it never touches.
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [
+        frame.Stream(0, 0, narrow_chunk(), False),
+        frame.Stream(2, 0, narrow_chunk(), False),
+      ],
+      packet_space.NotEct,
+      10,
+    )
+
+  // The endpoint has no memory left for this connection, so credit growth is
+  // held down from here until it has room again.
+  let #(connection, _held) =
+    connection_state.apply_memory_grant(connection, 0, True)
+  assert connection_state.credit_growth_held(connection) == True
+
+  // Reading a whole window off the bidirectional stream would ordinarily raise
+  // that stream's limit. While the hold binds, the increase is withheld.
+  let assert Ok(#(connection, _read)) =
+    connection_state.read_stream(connection, 0, narrow_stream_window_bytes)
+  let #(connection, withheld) =
+    drained_frames(connection, 20, restatement_packet_bound)
+  assert list.any(withheld, is_max_stream_data(_, 0)) == False
+
+  // The moment the endpoint has room again, what was withheld is stated.
+  let #(connection, _released) =
+    connection_state.apply_memory_grant(connection, ample_memory_grant, False)
+  let #(_connection, restated) =
+    drained_frames(connection, 30, restatement_packet_bound)
+
+  // Exactly the stream whose increase was withheld, exactly once.
+  assert list.count(restated, is_max_stream_data(_, 0)) == 1
+  // Never the send-only stream: this endpoint has no receive credit to state
+  // for it, and stating any would be a protocol violation.
+  assert list.any(restated, is_max_stream_data(_, send_only)) == False
+  // And never a stream whose increase was never withheld in the first place.
+  assert list.any(restated, is_max_stream_data(_, 2)) == False
+}
+
+fn is_max_stream_data(value: frame.Frame, identifier: Int) -> Bool {
+  case value {
+    frame.MaxStreamData(stream, _maximum) -> stream == identifier
+    _ -> False
+  }
+}
+
+fn narrow_chunk() -> BitArray {
+  <<0:size(narrow_stream_window_bytes)-unit(8)>>
+}
+
+pub fn default_receive_offsets_do_not_cap_stream_lifetime_test() -> Nil {
+  let connection_state.Config(
+    maximum_receive_data:,
+    maximum_receive_stream_data:,
+    maximum_stream_final_size:,
+    ..,
+  ) = connection_state.default_config(connection_state.Server)
+  assert maximum_receive_data == varint.maximum
+  assert maximum_receive_stream_data == varint.maximum
+  assert maximum_stream_final_size == varint.maximum
+}
+
+/// An established server whose receive windows are narrow enough that a single
+/// read crosses the deadband, so what a credit hold withholds is visible in one
+/// exchange rather than after a megabyte of them.
+fn narrow_window_connection() -> Result(
+  connection_state.State,
+  connection_state.Error,
+) {
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.Config(
+        ..connection_state.default_config(connection_state.Server),
+        path_dont_fragment: True,
+        initial_receive_data: narrow_connection_window_bytes,
+        receive_data_window: narrow_connection_window_bytes,
+        initial_receive_stream_data: narrow_stream_window_bytes,
+        receive_stream_window: narrow_stream_window_bytes,
+        maximum_receive_stream_data: narrow_connection_window_bytes,
+      ),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.HandshakeComplete,
+    ])
+  let #(connection, _events) = connection_state.take_events(connection)
+  Ok(connection)
+}
+
+/// Every 1-RTT frame this connection has to send now, drained over at most
+/// `packets` prepared packets so the wait is bounded whatever it owes.
+fn drained_frames(
+  connection: connection_state.State,
+  now: Int,
+  packets: Int,
+) -> #(connection_state.State, List(frame.Frame)) {
+  drain_frames(connection, now, packets, [])
+}
+
+fn drain_frames(
+  connection: connection_state.State,
+  now: Int,
+  packets: Int,
+  seen: List(frame.Frame),
+) -> #(connection_state.State, List(frame.Frame)) {
+  case packets <= 0 {
+    True -> #(connection, list.reverse(seen))
+    False ->
+      case prepared_frames(connection, now) {
+        #(connection, []) -> #(connection, list.reverse(seen))
+        #(connection, frames) ->
+          drain_frames(
+            connection,
+            now,
+            packets - 1,
+            list.fold(frames, seen, fn(seen, value) { [value, ..seen] }),
+          )
+      }
+  }
+}
+
+/// Connection-level receive credit one peer stream can fill exactly, so the
+/// peer can be driven to no credit at all inside a single exchange.
+const shut_window_bytes = 8192
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn a_lifted_refusal_restates_the_connection_limit_test() -> Nil {
+  let assert Ok(connection) = shut_window_connection()
+  let #(connection, _handshake) =
+    drained_frames(connection, 1, restatement_packet_bound)
+  let opening = connection_state.advertised_max_data(connection)
+  assert opening == shut_window_bytes
+
+  // The endpoint has no memory left for this connection, so its advertised
+  // credit is held to what the peer has already read off.
+  let #(connection, _held) =
+    connection_state.apply_memory_grant(connection, 0, True)
+  assert connection_state.credit_growth_held(connection) == True
+
+  // The peer spends every byte of connection-level credit it holds, and the
+  // application reads all of it. Under the hold none of it is handed back, so
+  // the peer is left with no credit whatsoever.
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Stream(0, 0, shut_window_chunk(), False)],
+      packet_space.NotEct,
+      10,
+    )
+  let assert Ok(#(connection, _read)) =
+    connection_state.read_stream(connection, 0, shut_window_bytes)
+  let #(connection, withheld) =
+    drained_frames(connection, 20, restatement_packet_bound)
+  assert list.any(withheld, is_max_data) == False
+  assert connection_state.advertised_max_data(connection) == opening
+  assert connection_state.outstanding_receive_credit(connection) == 0
+
+  // The lift has to hand that room on by itself. The peer cannot send, so
+  // nothing will arrive to prompt this endpoint; the application has read
+  // everything there was, so it will not read again. A connection-level limit
+  // that only the next read can raise is a limit never raised, and a
+  // connection that waits for it is a connection stalled to its idle timeout.
+  let #(connection, _released) =
+    connection_state.apply_memory_grant(connection, ample_memory_grant, False)
+  let #(connection, restated) =
+    drained_frames(connection, 30, restatement_packet_bound)
+  assert list.any(restated, is_max_data) == True
+  assert connection_state.advertised_max_data(connection) > opening
+  assert connection_state.outstanding_receive_credit(connection) > 0
+}
+
+fn is_max_data(value: frame.Frame) -> Bool {
+  case value {
+    frame.MaxData(_maximum) -> True
+    _ -> False
+  }
+}
+
+fn shut_window_chunk() -> BitArray {
+  <<0:size(shut_window_bytes)-unit(8)>>
+}
+
+/// An established server whose connection-level receive credit is narrow
+/// enough for one peer stream to spend all of it in a single packet, so the
+/// state a lifted refusal has to recover from -- a peer holding no credit at
+/// all -- is reachable without a megabyte of traffic.
+fn shut_window_connection() -> Result(
+  connection_state.State,
+  connection_state.Error,
+) {
+  let assert Ok(connection) =
+    connection_state.new(
+      connection_state.Config(
+        ..connection_state.default_config(connection_state.Server),
+        path_dont_fragment: True,
+        initial_receive_data: shut_window_bytes,
+        receive_data_window: shut_window_bytes,
+        initial_receive_stream_data: shut_window_bytes,
+        receive_stream_window: shut_window_bytes,
+        maximum_receive_stream_data: narrow_connection_window_bytes,
+      ),
+      0,
+    )
+  let assert Ok(keys) = test_keys()
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.InstallWriteKeys(engine.OneRtt, keys),
+      engine.InstallReadKeys(engine.OneRtt, keys),
+      engine.PeerTransportParameters(peer_parameters()),
+      engine.HandshakeComplete,
+    ])
+  let #(connection, _events) = connection_state.take_events(connection)
+  Ok(connection)
 }

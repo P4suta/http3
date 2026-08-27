@@ -354,16 +354,20 @@ that bounds memory: 256 KiB of delivered-but-unconsumed bytes per connection,
 and 256 MiB across the default 1024-connection admission limit, where the
 narrower 64 KiB window it replaces totalled 64 MiB. That aggregate is four
 times the 64 MiB `EndpointMemory` value `config.default_limits` carries, and
-nothing enforces it today: endpoint-wide memory accounting and admission
-budgets are open work (PRE-003 and PRE-004), and this window is one of the
-inputs that accounting has to charge for when it lands. Reaching the aggregate
-also takes 1024 connections flooded at once whose owners have all stalled,
-because a connection that keeps up holds a full window only momentarily. The
-byte half is still far narrower than two batches of the largest datagram the
-transport can carry: those would be 7.5 MiB per connection, while the listener
-socket's whole receive buffer is 4 MiB, so a burst that large cannot even be
-queued for the relay. Datagrams above 2 KiB are still delivered -- the byte
-half simply becomes the half that bounds them.
+the two bounds are separate on purpose rather than by omission. The endpoint
+budget below charges what a connection actor holds once it has taken a datagram
+off its mailbox -- reassembly, backlogs, send buffers, sent-packet histories.
+This window bounds what is still in the mailbox, delivered to the actor but not
+yet consumed by it. Mailbox occupancy is therefore bounded per connection by
+this window, and in aggregate by `Connections` times this window; the endpoint
+budget does not hold that total down. Reaching the aggregate also takes 1024
+connections flooded at once whose owners have all stalled, because a connection
+that keeps up holds a full window only momentarily. The byte half is still far
+narrower than two batches of the largest datagram the transport can carry:
+those would be 7.5 MiB per connection, while the listener socket's whole
+receive buffer is 4 MiB, so a burst that large cannot even be queued for the
+relay. Datagrams above 2 KiB are still delivered -- the byte half simply
+becomes the half that bounds them.
 
 No configured `Limits` resource fits that window, so both halves are fixed
 constants in the listener actor. `Queue` counts accepted work, `Buffer` counts
@@ -414,13 +418,284 @@ byte half would not exercise the floor either -- a peer allowed more bytes in
 flight than the window admits is outrunning the delivery window by
 construction, and the drops would be correct.
 
+### Endpoint memory budget
+
+`EndpointMemory` is one aggregate byte budget per endpoint. For a server that
+endpoint is the whole listener, and the listener enforces it. For a client the
+endpoint is the one connection the client owns -- and the client role does not
+enforce it yet: nothing on the client path reads the value. What bounds a
+client connection today is the per-connection ceilings, `Buffer`, `Queue` and
+`Datagram`. Both readings, and the fact that only one of them is enforced, are
+stated on `config.Limits`.
+
+The listener owns the accumulator. The arithmetic itself is a separate pure
+module, `internal/runtime/budget`, so it is exercised directly -- without a
+socket, a handshake, or an actor -- and can be replaced without touching either
+runtime. A budget is charged in whole 16 KiB quanta, always rounding upwards, so
+it over-counts rather than under-counts and the error one connection can hide is
+bounded by one quantum on the safe side. A reservation that does not fit is
+refused whole and charges nothing; a release larger than a connection holds is
+rejected rather than credited, because a budget that can be over-released is a
+budget that silently grows; and releasing a connection twice frees its bytes
+once, which is what lets the listener run the same release on the actor's
+`Released` notice and on the monitor `Down` for the same actor.
+
+The quantum is 16 KiB because the defaults have to agree with each other.
+`config.default_limits` pairs a 64 MiB budget with a 1024-connection admission
+limit, and admission charges three quanta -- 48 KiB, made up of a 16 KiB
+handshake working set and the 32 KiB of connection-level receive credit the
+server advertises in its own transport parameters. At a 64 KiB quantum a single
+quantum each would already have been the whole budget, and an endpoint at its
+default connection limit would have been refusing connections while every one
+of them was still idle. At 16 KiB the default budget is 4096 quanta, which
+funds 1024 admissions with room to spare.
+
+Connections ask for room in 256 KiB steps rather than a quantum at a time, so
+the ledger counts finely while the traffic between an actor and its listener
+stays as coarse as a 64 KiB quantum made it. That step is also the receive
+credit a connection has room to advertise above what it already holds, which is
+why it is a window's width rather than a quantum: a step of one or two quanta
+would make every window update a round trip to the listener.
+
+#### Grant before growth
+
+A connection is never billed for memory it has already taken. It holds a
+*grant*, in whole quanta, and it may only advertise receive credit -- MAX_DATA,
+MAX_STREAM_DATA, MAX_STREAMS -- and only admit an application's write into its
+send buffers, inside that grant. When what it holds comes within one step of
+the grant it asks the listener for the next step, asynchronously, so its hot
+path never waits on the listener, and it keeps holding exactly what it holds
+until the answer arrives. The peer therefore cannot make it hold more than the
+grant plus the credit that was already advertised, and credit already
+advertised is never retracted, because a MAX_DATA value the peer has seen is a
+promise.
+
+Every request carries a sequence number that the answer echoes, and a
+connection applies only the answer to its newest outstanding request. Without
+that, a `Granted` racing a later request would install a grant sized for a
+footprint the connection has already grown past.
+
+The first credit a server ever advertises is the InitialMaxData in its
+handshake, and a transport parameter cannot be retracted once the peer has read
+it. That value is therefore not a free promise: it is derived from the same
+constant the admission charge covers, so the credit a connection opens with is
+credit the budget has already funded. Every byte of credit above it is granted
+before it is advertised.
+
+The transport side of the grant is a hold on the connection receiver, stated as
+an allowance over what the application has already read: the credit the peer may
+have outstanding is the granted bytes less the memory the connection holds for
+reasons advertising does not grow -- send buffers, sent-packet histories, crypto
+reassembly. Stating it as an allowance rather than as an absolute limit is what
+lets it stay true as the application reads without being restated on every read.
+
+A held receiver keeps the ordinary half-window deadband on credit updates and
+adds two triggers beneath it. One fires when there is half an update window of
+room to advertise that has not been advertised yet. The other is a floor: a
+peer that has spent every byte of the credit it holds is given whatever there
+is room for, however little, because a hold narrower than one update window
+would otherwise deadlock -- the peer runs out of credit, so the application has
+nothing left to read, so half a window is never consumed and the credit is
+never returned. A receiver with no hold sees none of this, so no path without
+an endpoint memory grant behind it changes at all.
+
+Both triggers are evaluated when the application reads, and a read is not the
+only thing that makes room -- a grant that widens does too. Lifting a refusal
+therefore drives the connection receiver directly, advertising whatever the
+widened hold has made room for with nothing of the peer's to prompt it and no
+read of the connection's own. Without that, a connection the hold had squeezed
+down to the credit its peer had already spent would stall until its idle
+timeout: the peer cannot send, so nothing arrives, so the application is never
+woken to read, so a limit that only a read can raise is never raised.
+
+#### What follows from it
+
+- On a validated Initial the listener charges the 48 KiB admission charge
+  before it builds any per-connection state. A connection that does not fit is
+  refused with a CONNECTION_CLOSE carrying CONNECTION_REFUSED (0x02) in the
+  Initial packet space, which RFC 9000 section 5.2.2 permits and which keeps the
+  refusal cheap: no handshake is run and the peer learns immediately instead of
+  waiting out its own connect deadline. Every admission step that fails after
+  the charge returns the working set.
+- A peer is never punished for using credit this endpoint advertised. A stream
+  that arrives inside the advertised limits is always accepted, whatever the
+  budget is doing; what a refusal holds back is the invitation to open more, so
+  the MAX_STREAMS increase a closing stream would replenish is withheld, and
+  every withheld increase is stated at once when the refusal lifts. The
+  per-stream MAX_STREAM_DATA increases a refusal withholds are recorded by
+  stream, so the lift restates those streams and only those: never a stream
+  whose window was never held back, and never a stream this endpoint cannot
+  receive on, for which RFC 9000 section 19.10 makes MAX_STREAM_DATA a
+  STREAM_STATE_ERROR the peer must close the connection on. The record is
+  bounded by the live stream set -- an entry is made only for a stream just read
+  from, it leaves with the stream that closes, and the lift empties it. The
+  connection-level limit is restated on the same lift, and from the receiver
+  itself rather than from a withheld frame: the hold is a ceiling on that
+  receiver rather than a queue of frames, and a ceiling that stopped a limit
+  rising has to be taken off by hand.
+- While refused, a Datagram frame that would take the connection past its grant
+  is dropped, which RFC 9221 permits for Datagrams and which is the only place
+  data is discarded. It is counted where every other inbound loss for that
+  connection is counted, so an operator can see it. Stream data already inside
+  an advertised window is never discarded.
+- An application's write is taken into a connection's send buffers only as far
+  as the grant still reaches past what that connection holds. That is checked on
+  every write, not only once a refusal has landed, because a send buffer is
+  memory this endpoint holds until the peer acknowledges it and billing for it
+  afterwards is not a bound. A connection whose grant is being met feels no
+  throttle, because the grant is kept a whole growth step ahead of what it holds
+  and that step is as wide as the per-stream `Buffer` ceiling. A connection the
+  endpoint has stopped funding can still finish what the grant already funds --
+  a short reply, an acknowledgement -- and only what the grant does not fund is
+  held back. The rest parks and ends on its own deadline as
+  `Overload(EndpointMemory)` rather than as a bare operation timeout, so the
+  caller can tell transient endpoint pressure from a slow peer. What decides
+  that is the clamp that held the write rather than any refusal, and it is
+  recorded per parked write: room left under the `Buffer` ceiling and none
+  under the grant is endpoint memory, whether or not the endpoint has yet said
+  no. Waiting for a refusal to say so would report the commonest case -- a
+  grant met in full and already spent -- as a bare timeout. The connection
+  itself is never destroyed for it, and reading, draining a backlog and
+  acknowledging are untouched.
+- A refusal is not sticky. A refused connection does not ask again -- it would
+  only be refused again, and a busy endpoint would spend its time answering the
+  same refusals -- so the endpoint keeps the request it could not meet and
+  retries it, oldest first, on every path that returns memory. The retry stops
+  at the first request still too large for the room available, so the queue is
+  genuinely first-in-first-out and a small request cannot starve an older larger
+  one. The bookkeeping lives in the ledger, keyed by connection, so it is
+  bounded by the connection set itself: one connection waits on at most one
+  request, a newer request replaces an older one in place, and a released
+  connection takes its entry with it. Without the retry a steady connection that
+  never sends another byte would stay refused forever.
+- Releasing a connection returns its whole reservation, on whichever of the two
+  release paths arrives first, including a connection actor that was killed
+  rather than closed.
+
+#### Sizing, and how tight the bound is
+
+`EndpointMemory` should cover `Connections * (48 KiB + Buffer)` for the load an
+endpoint expects to carry at once: the admission charge every connection pays,
+plus the buffer a connection whose owner has stopped reading comes to hold. The
+defaults deliberately do not satisfy that product -- 1024 connections at a
+256 KiB `Buffer` would want 304 MiB against a 64 MiB default -- because refusing
+to grow is the intended behaviour beyond the budget rather than a failure of it.
+Connections past the budget keep the credit they were already advertised and
+stop being offered more, and new connections are refused rather than admitted
+into memory the endpoint does not have.
+
+The bound is tight at admission and soft afterwards. The slack has exactly two
+sources, and neither of them is the send side.
+
+The first is advertised credit. It is never retracted, so a connection whose
+grant has shrunk -- because what it holds has shrunk -- may still have
+outstanding receive credit sized for the grant it held a moment ago. That is at
+most one 256 KiB growth step per connection, and it closes as the peer spends
+the credit and the application reads it.
+
+The second is measurement lag. A connection walks its own footprint once per
+16 KiB of traffic rather than once per datagram, so the hold it installed on its
+receiver was computed from a footprint that may already be a quantum out of
+date. The walk is deferred at most to the actor's next turn, so the lag is
+bounded by one turn's arrivals -- itself bounded by the listener's 256 KiB
+per-connection delivery window -- and the quantum is the resolution the ledger
+counts in and rounds up from anyway.
+
+The send side contributes nothing to either. An application's write is admitted
+only as far as the grant reaches past what the connection holds, on every write
+rather than only once a refusal has landed, and what it holds is counted
+conservatively: the last measured footprint plus every byte that could have
+grown it since. That is what closes the `Buffer`-sized hole a
+charge-after-the-fact send side would leave, and it is what stops one turn that
+advances several parked streams from admitting a whole grant to each of them.
+
+Two costs of this design are bounded in principle and unmeasured in practice,
+and the soak is where they get numbers. The footprint walk is
+O(streams + in-flight packets) and runs once per 16 KiB of traffic, so a
+connection with many streams pays for all of them on every quantum it moves.
+And the CONNECTION_REFUSED reply is emitted per inbound Initial packet that the
+budget cannot admit -- key derivation and one protected packet each time, with
+no rate limit of its own beyond the `Handshakes` ceiling -- so a flood of
+Initials at a full endpoint is answered one for one.
+
+One interaction with a neighbouring bound decides what a flood meets first, and
+it is worth stating plainly. A stream's receive credit is advertised against
+its reassembly buffer, and the window rule can advertise more of it than that
+buffer holds: the advertised limit rises by a whole window for every half
+window consumed, and what caps it is `maximum_receive_stream_data` rather than
+`Buffer`. A peer that fills the window it was given then exceeds the buffer,
+and the connection is torn down for a frame that was inside every limit it had
+been told about. That predates the endpoint budget and is not addressed here.
+What follows for sizing is that `Buffer` wants to be at least as wide as the
+growth step a connection rests on, so that the endpoint budget rather than one
+stream's reassembly bound is what ends a flood; the public memory suite sizes
+it at twice the growth step for exactly that reason.
+
+#### What the suites pin
+
+The pure suite pins the ledger arithmetic and the grant state machine:
+rounding, whole refusal, rejected over-release, idempotent release, the
+convergence property, the defaults agreeing with each other at 1024
+connections, the request-before-growth rule, and the sequence-number race where
+a stale answer is ignored and the newest one lands. The state-model suite pins
+the two credit rules directly: under a refusal a peer stream inside the
+advertised limits is still served and the advertised stream limit does not
+grow until the refusal lifts; that lifting a refusal restates the per-stream
+credit it withheld and nothing else, never a send-only stream and never a
+stream whose update was never held back; that lifting a refusal re-advertises
+the connection-level limit with no traffic and no read of the connection's own,
+which is what stops a peer squeezed to zero credit from stalling to its idle
+timeout; and that under the three-quantum admission grant -- the charge a
+shipped listener actually applies, rather than a figure chosen for the test --
+the connection holds and advertises no more than the grant however much the
+peer sends.
+
+The listener-side retry is pinned in the pure suite rather than over UDP,
+because that is where it can be pinned deterministically: requests met oldest
+first, a retry that stops at a head it cannot meet whole rather than stepping
+over it, a connection refused twice keeping its place in the queue, and a
+released connection owed nothing. Removing the retry fails those four tests
+outright.
+
+The public suite pins the observable consequences over real UDP, with a budget
+sized from the endpoint's own arithmetic -- every connection a test admits but
+the last resting on a growth step, and the last one left with an admission
+charge and no room to grow. It pins that a further connection is refused with a
+typed failure rather than a handshake that merely times out; that closing or
+crashing one connection readmits the next; that a peer which stops reading gets
+backpressure, where the parked send ends as `Overload(EndpointMemory)` while
+the connection itself stays live, the data already inside its window still
+arrives whole, and an unrelated connection completes an exchange untouched;
+that a connection whose grant was met in full, with nothing refused it, still
+admits a write only as far as that grant reaches, so a write far wider than the
+grant and far inside the per-stream `Buffer` ceiling parks and ends as
+`Overload(EndpointMemory)` rather than filling the ceiling; that a Datagram
+offered to a refused connection is dropped and counted while that connection
+stays live; and that a refused connection resumes once its neighbours release
+the memory it was waiting on. That last test drives the subject connection
+while it waits, so what it demonstrates is the recovery, not that the recovery
+needed no traffic; the no-traffic property is what the pure suite pins.
+
+One send-side test reads past the outcome of a single write, because a single
+parked write cannot distinguish a grant that bounded it from a refusal that
+landed while it waited. Sixteen streams are offered a quarter of the per-stream
+`Buffer` ceiling each at once, and what the connection's send buffers hold is
+sampled against its grant throughout. A send side that admitted a write against
+the stream it is on rather than against the connection's one grant takes
+sixteen ceilings' worth in the single turn that advances every parked stream;
+the shipped one never takes more than the grant that funds it. The sample is a
+seam on the connection actor rather than a public counter, for the same reason:
+every outward consequence of overrunning the grant is a consequence the
+endpoint's own refusal produces too.
+
 Known peer-controlled lengths, counts, tables, stream windows, queues,
 Capsules, Datagrams, packet histories, retained keys, terminal entries,
 timeouts, and amplification credit have explicit bounds, including a connection
 actor's own mailbox of forwarded inbound batches, which the listener's
 per-connection delivery window bounds. All role-applicable per-connection public
-limits now reach those allocations; isolated accounting and enforcement of the
-aggregate `EndpointMemory` budget remain release gates.
+limits now reach those allocations, and the aggregate `EndpointMemory` budget is
+enforced listener-wide as described above -- on the server role only; the client
+role does not read it yet.
 Cleanup tests require process and mailbox convergence rather than treating a
 returned response as sufficient.
 

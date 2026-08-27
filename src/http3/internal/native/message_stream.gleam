@@ -16,7 +16,7 @@ pub type HeaderKind {
   Trailers
 }
 
-/// One bounded message-stream state.
+/// One HTTP message-stream framing state.
 pub opaque type State {
   State(
     message_kind: MessageKind,
@@ -48,7 +48,7 @@ pub type Error {
   NonByteAligned
 }
 
-/// Start one inbound request or response with a fixed body bound.
+/// Start one inbound request or response.
 pub fn new(message_kind: MessageKind) -> State {
   State(message_kind, False, False, 0, None, False, False)
 }
@@ -78,6 +78,11 @@ pub fn receive_headers_with_length(
 }
 
 /// Account a DATA frame without retaining its bytes.
+///
+/// Request bodies and responses with an explicit Content-Length remain
+/// bounded by `maximum_body_bytes`. A Content-Length-free response is the
+/// streaming path: its framing counters are monotonic, but bytes transferred
+/// in the past are not treated as a lifetime quota.
 pub fn receive_data(
   state: State,
   data: BitArray,
@@ -153,7 +158,7 @@ fn receive_aligned_data(
     state.finished,
     state.final_headers_received,
     state.trailers_received,
-    maximum_body_bytes >= 0 && updated_body_bytes <= maximum_body_bytes,
+    within_body_limit(state, updated_body_bytes, maximum_body_bytes),
     state.content_length
   {
     True, _, _, _, _ -> Error(FrameAfterFinished)
@@ -164,5 +169,17 @@ fn receive_aligned_data(
       Error(ContentLengthExceeded(expected, updated_body_bytes))
     False, True, False, True, _ ->
       Ok(State(..state, body_bytes: updated_body_bytes))
+  }
+}
+
+fn within_body_limit(
+  state: State,
+  updated_body_bytes: Int,
+  maximum_body_bytes: Int,
+) -> Bool {
+  case state.message_kind, state.content_length {
+    Response, None -> True
+    Request, _ | Response, Some(_) ->
+      maximum_body_bytes >= 0 && updated_body_bytes <= maximum_body_bytes
   }
 }

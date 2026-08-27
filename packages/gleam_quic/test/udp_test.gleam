@@ -234,24 +234,19 @@ pub fn active_once_delivers_exactly_one_bounded_mailbox_datagram_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
-
   let assert Ok(Nil) = udp.activate_once(receiver)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok(udp.Datagram(_, <<"first">>, _)) =
-    udp.receive_active(receiver, message)
-  assert process.selector_receive(selector, within: 10) == Error(Nil)
+    receive_active_until(receiver, udp.monotonic_millisecond() + 1000)
+  assert receive_active_until(receiver, udp.monotonic_millisecond() + 10)
+    == Error(Nil)
 
   let assert Ok(Nil) = udp.activate_once(receiver)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok(udp.Datagram(_, <<"second">>, _)) =
-    udp.receive_active(receiver, message)
+    receive_active_until(receiver, udp.monotonic_millisecond() + 1000)
   let assert Ok(Nil) = udp.close(sender)
   let assert Ok(Nil) = udp.close(receiver)
   Nil
@@ -264,25 +259,21 @@ pub fn relay_waits_for_credit_before_forwarding_another_batch_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
   let assert Ok(relay) = udp.start_relay(receiver)
 
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"first">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
-  assert process.selector_receive(selector, within: 10) == Error(Nil)
+  assert receive_relay_until(relay, udp.monotonic_millisecond() + 10)
+    == Error(Nil)
 
   let assert Ok(Nil) = udp.continue_relay(relay)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"second">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) = udp.stop_relay(relay)
   let assert Ok(Nil) = udp.close(sender)
@@ -296,17 +287,13 @@ pub fn relay_ignores_connection_local_icmp_reset_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
   let assert Ok(relay) = udp.start_relay(receiver)
 
   inject_relay_connection_reset(relay)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"still-listening">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"still-listening">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) = udp.stop_relay(relay)
   let assert Ok(Nil) = udp.close(sender)
@@ -426,17 +413,13 @@ pub fn dual_stack_relay_batches_ipv4_and_ipv6_datagrams_test() -> Nil {
   let #(_, port) = udp.endpoint_parts(local)
   let assert Ok(ipv4_receiver) = udp.endpoint(ipv4_loopback, port)
   let assert Ok(ipv6_receiver) = udp.endpoint(ipv6_loopback, port)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
-
   let assert Ok(Nil) =
     udp.send(ipv4_sender, ipv4_receiver, <<"ipv4-relay">>, ecn.NotEct)
   let assert Ok(Nil) =
     udp.send(ipv6_sender, ipv6_receiver, <<"ipv6-relay">>, ecn.NotEct)
   let assert Ok(relay) = udp.start_relay(receiver)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
-  let assert Ok(batch) = udp.receive_relay_batch(relay, message)
+  let assert Ok(batch) =
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
   let payloads =
     list.map(batch, fn(datagram) {
       let udp.Datagram(_, payload, _) = datagram
@@ -449,4 +432,54 @@ pub fn dual_stack_relay_batches_ipv4_and_ipv6_datagrams_test() -> Nil {
   let assert Ok(Nil) = udp.close(ipv4_sender)
   let assert Ok(Nil) = udp.close(ipv6_sender)
   Nil
+}
+
+/// Ignore late active-mode messages owned by fixtures from earlier tests.
+fn receive_active_until(
+  socket: udp.Socket,
+  deadline: Int,
+) -> Result(udp.Datagram, Nil) {
+  let remaining = deadline - udp.monotonic_millisecond()
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False -> {
+      let selector =
+        process.new_selector()
+        |> process.select_other(fn(value) { value })
+      case process.selector_receive(selector, within: remaining) {
+        Error(Nil) -> Error(Nil)
+        Ok(message) ->
+          case udp.receive_active(socket, message) {
+            Ok(datagram) -> Ok(datagram)
+            Error(udp.InvalidInput) -> receive_active_until(socket, deadline)
+            Error(_) -> Error(Nil)
+          }
+      }
+    }
+  }
+}
+
+/// Ignore late relay messages whose capability belongs to another fixture.
+fn receive_relay_until(
+  relay: udp.Relay,
+  deadline: Int,
+) -> Result(List(udp.Datagram), Nil) {
+  let remaining = deadline - udp.monotonic_millisecond()
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False -> {
+      let selector =
+        process.new_selector()
+        |> process.select_other(fn(value) { value })
+      case process.selector_receive(selector, within: remaining) {
+        Error(Nil) -> Error(Nil)
+        Ok(message) ->
+          case udp.receive_relay_batch(relay, message) {
+            Ok(batch) -> Ok(batch)
+            Error(udp.InvalidInput) -> receive_relay_until(relay, deadline)
+            Error(_) -> Error(Nil)
+          }
+      }
+    }
+  }
 }

@@ -425,6 +425,7 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     config.limit(server.limits, failure.BidirectionalStreams),
     config.limit(server.limits, failure.UnidirectionalStreams),
     config.limit(server.limits, failure.Datagram),
+    config.limit(server.limits, failure.EndpointMemory),
     server.certificate_chain,
     server.signing_key,
     server.signature_scheme,
@@ -590,13 +591,18 @@ pub fn connection_stats(
   |> result.map_error(map_error)
 }
 
-/// Count the inbound datagrams the listener dropped for this connection
-/// because its bounded delivery window was full.
+/// Count the inbound datagrams this connection lost before its owner could see
+/// them, for want of room to hold them.
 ///
-/// The listener hands each connection only as many routed datagrams as that
-/// connection's window admits, so one flooded connection can neither grow its
-/// own actor's mailbox nor delay any other connection. QUIC is loss tolerant,
-/// so a datagram dropped here is recovered exactly like one the network lost.
+/// Two bounds drop datagrams here, and both are counted together because both
+/// are the same loss from the peer's side. The listener hands each connection
+/// only as many routed datagrams as that connection's delivery window admits,
+/// so one flooded connection can neither grow its own actor's mailbox nor delay
+/// any other connection. And a connection whose endpoint has refused it more
+/// memory drops an RFC 9221 Datagram frame that would take it past the room it
+/// was granted, which RFC 9221 permits precisely because a Datagram is
+/// droppable. QUIC is loss tolerant, so a datagram dropped either way is
+/// recovered exactly like one the network lost.
 ///
 /// This counter is deliberately server-only: a client owns its own socket and
 /// its own connection, with no listener in front of it to route, credit, or
@@ -887,6 +893,8 @@ fn map_error(error: connection_worker.Error) -> Error {
       Failure(failure.Quic(failure.Peer, None))
     connection_worker.CongestionLimited ->
       Failure(failure.Overload(failure.Queue))
+    connection_worker.EndpointMemoryExceeded ->
+      Failure(failure.Overload(failure.EndpointMemory))
     connection_worker.QlogUnavailable ->
       Failure(failure.Socket(failure.WriteFile))
   }

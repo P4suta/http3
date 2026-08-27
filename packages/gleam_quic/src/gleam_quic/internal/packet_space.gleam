@@ -494,6 +494,22 @@ pub fn largest_acknowledged(state: State) -> Option(Int) {
   state.largest_acknowledged
 }
 
+/// Return the bytes this space's sent-packet history keeps resident.
+///
+/// The history is what recovery retransmits from, so it is memory the endpoint
+/// holds on the peer's behalf until the peer acknowledges it -- and therefore
+/// memory the endpoint's aggregate budget has to charge for.
+pub fn retained_bytes(state: State) -> Int {
+  sent_packet_bytes(state.sent_packets, 0)
+}
+
+fn sent_packet_bytes(packets: List(SentPacket), accumulated: Int) -> Int {
+  case packets {
+    [] -> accumulated
+    [packet, ..rest] -> sent_packet_bytes(rest, accumulated + packet.sent_bytes)
+  }
+}
+
 /// Return the number of retained ack-eliciting or in-flight packets.
 pub fn outstanding_count(state: State) -> Int {
   list.length(state.sent_packets)

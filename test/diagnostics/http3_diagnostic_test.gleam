@@ -9,6 +9,7 @@ pub fn diagnostic_scenarios_are_a_fixed_allowlist_test() -> Nil {
     "connection-isolation",
     "slow-consumer",
     "cleanup",
+    "notify-integration",
   ])
   http3_diagnostic.is_supported_scenario("round-trip") |> should.be_true
   http3_diagnostic.is_supported_scenario("../../unbounded") |> should.be_false

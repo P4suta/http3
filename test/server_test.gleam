@@ -2,9 +2,12 @@ import gleam/bit_array
 import gleam/http
 import gleam/http/request
 import gleam/http/response
+import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/result
 import gleeunit/should
+import http3/address
 import http3/client
 import http3/config
 import http3/failure
@@ -50,6 +53,68 @@ pub fn bounded_server_round_trip_over_real_udp_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_client_request_crosses_initial_connection_window_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  let configuration = server.with_timeout(configuration, 10_000) |> should.be_ok
+  let configuration =
+    server.with_stream_buffer_limit(configuration, 262_144) |> should.be_ok
+  let listener = server.start(configuration) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let body = http3_test_support.repeated_bytes(1_048_577)
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let configuration =
+        client.with_timeout(client.new(), 10_000) |> should.be_ok
+      let configuration =
+        client.with_ca_certificate(configuration, ca_certificate)
+        |> should.be_ok
+      let outbound =
+        request.new()
+        |> request.set_host("localhost")
+        |> request.set_port(port)
+        |> request.set_path("/large-request")
+        |> request.set_method(http.Post)
+        |> request.set_body(body)
+      client.send(configuration, outbound)
+    })
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert receive_request_bytes(incoming, 0) == Ok(1_048_577)
+  server.respond(incoming, 204, [], <<>>) |> should.be_ok
+  let reply = http3_test_support.await_task(client_task)
+  assert result.map(reply, fn(response) { response.status }) == Ok(204)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_head_response_keeps_representation_length_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let client_task =
+    http3_test_support.start_task(fn() {
+      let outbound =
+        request.new()
+        |> request.set_host("localhost")
+        |> request.set_port(port)
+        |> request.set_path("/head")
+        |> request.set_method(http.Head)
+        |> request.set_body(<<>>)
+      client.send(client_configuration(ca_certificate), outbound)
+    })
+
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.method(incoming) == http.Head
+  server.respond(incoming, 200, [#("content-length", "1048577")], <<>>)
+  |> should.be_ok
+  let reply = http3_test_support.await_task(client_task) |> should.be_ok
+  assert reply.status == 200
+  assert reply.body == <<>>
+  assert response.get_header(reply, "content-length") == Ok("1048577")
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn ipv6_server_round_trip_over_real_udp_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
@@ -79,6 +144,31 @@ pub fn ipv6_server_round_trip_over_real_udp_test() -> Nil {
   let _served = http3_test_support.await_task(server_task)
   assert reply.status == 200
   assert reply.body == <<"ipv6":utf8>>
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn exact_bind_and_validated_request_context_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let bind_address = address.parse("127.0.0.1") |> should.be_ok
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  let configuration = server.with_bind_address(configuration, bind_address)
+  let configuration = server.with_timeout(configuration, 3000) |> should.be_ok
+  let listener = server.start(configuration) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let client_task = start_bounded_client(port, ca_certificate, "/context")
+  let incoming = server.accept(listener) |> should.be_ok
+
+  assert server.scheme(incoming) == "https"
+  assert server.authority(incoming) == "localhost:" <> int.to_string(port)
+  let peer = server.peer_endpoint(incoming) |> should.be_ok
+  assert address.to_string(address.endpoint_address(peer)) == "127.0.0.1"
+  assert address.port(peer) > 0
+
+  server.respond(incoming, 200, [], <<>>) |> should.be_ok
+  let reply = http3_test_support.await_task(client_task) |> should.be_ok
+  assert reply.status == 200
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
@@ -690,6 +780,30 @@ pub fn streaming_server_enforces_declared_content_length_test() -> Nil {
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn streaming_server_has_no_lifetime_body_ceiling_without_length_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  let configuration =
+    server.with_response_body_limit(configuration, 4) |> should.be_ok
+  let configuration = server.with_timeout(configuration, 3000) |> should.be_ok
+  let listener = server.start(configuration) |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let client_task =
+    start_bounded_client(port, ca_certificate, "/unbounded-stream")
+  let incoming = server.accept(listener) |> should.be_ok
+
+  server.send_response(incoming, 200, []) |> should.be_ok
+  server.send_chunk(incoming, <<1, 2, 3, 4>>) |> should.be_ok
+  server.send_chunk(incoming, <<5, 6, 7, 8>>) |> should.be_ok
+  server.finish_response(incoming) |> should.be_ok
+
+  let reply = http3_test_support.await_task(client_task) |> should.be_ok
+  assert reply.body == <<1, 2, 3, 4, 5, 6, 7, 8>>
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
 fn start_server() -> #(server.Listener, Int, BitArray) {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
@@ -778,6 +892,19 @@ fn receive_server_body(incoming: server.Request, body: BitArray) -> BitArray {
       receive_server_body(incoming, bit_array.append(body, chunk))
     server.Trailers(_) -> receive_server_body(incoming, body)
     server.End -> body
+  }
+}
+
+fn receive_request_bytes(
+  incoming: server.Request,
+  received: Int,
+) -> Result(Int, #(Int, server.Error)) {
+  case server.next_event(incoming) {
+    Ok(server.Data(chunk)) ->
+      receive_request_bytes(incoming, received + bit_array.byte_size(chunk))
+    Ok(server.Trailers(_)) -> receive_request_bytes(incoming, received)
+    Ok(server.End) -> Ok(received)
+    Error(error) -> Error(#(received, error))
   }
 }
 

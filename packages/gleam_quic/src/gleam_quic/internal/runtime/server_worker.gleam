@@ -55,14 +55,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_quic.{type AddressFamily, DualStack, Ipv4, Ipv6}
+import gleam_quic/frame
 import gleam_quic/internal/address_token
 import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/crypto
 import gleam_quic/internal/ecn
+import gleam_quic/internal/initial_crypto
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/process_label
 import gleam_quic/internal/qlog
 import gleam_quic/internal/retry_integrity
+import gleam_quic/internal/runtime/budget
 import gleam_quic/internal/runtime/connection_worker.{
   type Connection, type Error, type Queue, AcceptQueueExceeded, InvalidInput,
   ListenerClosed, OperationTimeout, QlogUnavailable, StartFailed,
@@ -75,6 +78,7 @@ import gleam_quic/internal/tls/extension_value
 import gleam_quic/internal/tls/replay_guard
 import gleam_quic/internal/tls/resumption
 import gleam_quic/internal/udp
+import gleam_quic/internal/wire_packet
 import gleam_quic/packet
 import gleam_quic/version.{type Version}
 
@@ -91,6 +95,14 @@ const retry_token_lifetime_milliseconds = 10_000
 const new_token_lifetime_milliseconds = 86_400_000
 
 const worker_reply_grace_milliseconds = 100
+
+/// The QUIC transport error code for CONNECTION_REFUSED (RFC 9000 section 20).
+const connection_refused_code = 0x02
+
+/// The smallest plaintext an Initial packet may carry here, padded with
+/// PADDING frames. Header protection samples 16 bytes from four bytes past the
+/// packet-number field, so a bare CONNECTION_CLOSE is too short to protect.
+const minimum_initial_plaintext_bytes = 32
 
 // The listener-to-connection delivery window (stage 2 above): one connection
 // may hold at most this many routed datagrams, and this many routed bytes, in
@@ -143,13 +155,17 @@ const datagram_credit = 192
 /// memory per connection, and 256 MiB across the default 1024-connection
 /// admission limit, where the narrower 64 KiB window this replaces totalled
 /// 64 MiB. That aggregate is four times the 64 MiB `EndpointMemory` value
-/// `config.default_limits` carries, and nothing enforces it today: endpoint
-/// wide memory accounting and admission budgets are open work (see PRE-003
-/// and PRE-004 in the conformance notes), and this window is one of the
-/// inputs that accounting has to charge for when it lands. Reaching the
-/// aggregate also takes 1024 connections flooded at once whose owners have
-/// all stalled, because a connection that keeps up holds a full window only
-/// momentarily.
+/// `config.default_limits` carries, and the two bounds are separate on
+/// purpose rather than by omission. `EndpointMemory` charges what a
+/// connection actor holds once it has taken a datagram off its mailbox --
+/// reassembly, backlogs, send buffers, sent-packet histories -- and this
+/// window bounds what is still in the mailbox, delivered to the actor but not
+/// yet consumed by it. Mailbox occupancy is therefore bounded per connection
+/// by this window and in aggregate by `Connections` times this window; the
+/// endpoint budget does not hold that total down, and never claimed to.
+/// Reaching the aggregate also takes 1024 connections flooded at once whose
+/// owners have all stalled, because a connection that keeps up holds a full
+/// window only momentarily.
 ///
 /// The byte half is deliberately narrower than two batches of the largest
 /// datagram the transport can carry, and the socket receive buffer is what
@@ -218,6 +234,12 @@ type ConnectionWaiter {
 /// about yet; `outstanding` counts the messages already sent to it that it has
 /// not acknowledged, which is what keeps the mailbox bounded in messages as
 /// well as in datagrams and bytes.
+///
+///
+/// This connection's share of the endpoint memory budget is not kept here. The
+/// ledger in `endpoint_memory` already holds what every connection was granted
+/// and which requests it could not meet, keyed by the same identifier this
+/// `Dict` is keyed by, so a second copy here could only ever disagree with it.
 type Entry {
   Entry(
     connection: Connection,
@@ -247,6 +269,7 @@ type Worker {
     connections: Dict(BitArray, Entry),
     routes: Dict(Pid, BitArray),
     aliases: Dict(BitArray, BitArray),
+    endpoint_memory: budget.Budget,
     handshaking: Int,
     pending_connections: Queue(BitArray),
     connection_waiters: Queue(ConnectionWaiter),
@@ -283,6 +306,7 @@ pub fn start(
   bidirectional_stream_limit: Int,
   unidirectional_stream_limit: Int,
   datagram_limit: Int,
+  endpoint_memory_limit: Int,
   certificate_chain: List(BitArray),
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
@@ -317,6 +341,7 @@ pub fn start(
         bidirectional_stream_limit,
         unidirectional_stream_limit,
         datagram_limit,
+        endpoint_memory_limit,
         certificate_chain,
         signing_key,
         signature_scheme,
@@ -397,6 +422,7 @@ fn initialise(
   bidirectional_stream_limit: Int,
   unidirectional_stream_limit: Int,
   datagram_limit: Int,
+  endpoint_memory_limit: Int,
   certificate_chain: List(BitArray),
   signing_key: authentication.SigningKey,
   signature_scheme: extension_value.SignatureScheme,
@@ -511,6 +537,7 @@ fn initialise(
         dict.new(),
         dict.new(),
         dict.new(),
+        budget.new(endpoint_memory_limit),
         0,
         connection_worker.queue_new(),
         connection_worker.queue_new(),
@@ -723,6 +750,16 @@ fn refill_credit(
       }
     }
   }
+}
+
+/// Return one connection's whole reservation after admission failed part way,
+/// and offer the room straight to any connection waiting on it.
+fn release_reservation(worker: Worker, identifier: BitArray) -> Worker {
+  Worker(
+    ..worker,
+    endpoint_memory: budget.release_all(worker.endpoint_memory, identifier),
+  )
+  |> retry_withheld_requests
 }
 
 fn put_entry(worker: Worker, identifier: BitArray, entry: Entry) -> Worker {
@@ -939,42 +976,169 @@ fn accept_connection(
         }
       {
         Error(_) -> worker
-        Ok(local_connection_id) -> {
-          let now = udp.monotonic_millisecond()
-          case replay_policy(worker, now) {
-            Error(_) -> worker
-            Ok(policy) ->
-              case
-                server_transport.accept_initial(
-                  worker.server_config,
-                  protocol_version,
+        Ok(local_connection_id) ->
+          // Decision D1. One handshake working set is charged to the endpoint
+          // memory budget before any per-connection state is built, so a
+          // connection the endpoint has no room for is refused here rather
+          // than admitted into memory that has already been spent. A refusal
+          // charges nothing, and every step that fails after this point
+          // returns the working set with `worker` unchanged.
+          case
+            budget.reserve(
+              worker.endpoint_memory,
+              local_connection_id,
+              budget.admission_quanta() * budget.quantum(),
+            )
+          {
+            Error(_) ->
+              send_connection_refused(
+                worker,
+                peer,
+                protocol_version,
+                initial_destination(
                   original_destination,
-                  local_connection_id,
-                  peer_connection_id,
-                  retry_source_connection_id,
-                  peer,
-                  datagram,
-                  marking,
-                  now,
-                  policy,
-                )
-              {
-                Error(_) -> worker
-                Ok(connection) ->
-                  spawn_connection(
-                    worker,
-                    connection,
-                    protocol_version,
-                    original_destination,
-                    local_connection_id,
-                    retry_source_connection_id,
-                    bit_array.byte_size(datagram),
-                    now,
-                  )
-              }
+                  selected_local_connection_id,
+                ),
+                peer_connection_id,
+              )
+            Ok(endpoint_memory) ->
+              admit_connection(
+                worker,
+                Worker(..worker, endpoint_memory: endpoint_memory),
+                peer,
+                protocol_version,
+                original_destination,
+                local_connection_id,
+                peer_connection_id,
+                retry_source_connection_id,
+                datagram,
+                marking,
+              )
           }
+      }
+  }
+}
+
+/// Build one admitted connection's transport state and spawn its actor.
+///
+/// Two listeners are passed deliberately: `unreserved` is the listener as it
+/// was before D1 charged the handshake working set, and `reserved` is the same
+/// listener holding that charge. Only the path that reaches `spawn_connection`
+/// keeps the charge; every failure below returns `unreserved`, so a connection
+/// that is never admitted leaves the budget exactly as it found it.
+fn admit_connection(
+  unreserved: Worker,
+  reserved: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  original_destination: BitArray,
+  local_connection_id: BitArray,
+  peer_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+) -> Worker {
+  let now = udp.monotonic_millisecond()
+  case replay_policy(unreserved, now) {
+    Error(_) -> unreserved
+    Ok(policy) ->
+      case
+        server_transport.accept_initial(
+          unreserved.server_config,
+          protocol_version,
+          original_destination,
+          local_connection_id,
+          peer_connection_id,
+          retry_source_connection_id,
+          peer,
+          datagram,
+          marking,
+          now,
+          policy,
+        )
+      {
+        Error(_) -> unreserved
+        Ok(connection) ->
+          spawn_connection(
+            reserved,
+            connection,
+            protocol_version,
+            original_destination,
+            local_connection_id,
+            retry_source_connection_id,
+            bit_array.byte_size(datagram),
+            now,
+          )
+      }
+  }
+}
+
+/// The Destination Connection ID the peer's Initial packet carried, which is
+/// what its Initial keys are derived from: the Retry source connection ID once
+/// a Retry has been answered, and the peer's own first choice otherwise.
+fn initial_destination(
+  original_destination: BitArray,
+  selected_local_connection_id: Option(BitArray),
+) -> BitArray {
+  case selected_local_connection_id {
+    Some(value) -> value
+    None -> original_destination
+  }
+}
+
+/// Refuse one connection the endpoint has no memory for, in the packet space
+/// the peer can already read.
+///
+/// RFC 9000 section 5.2.2 lets a server refuse a new connection with a
+/// CONNECTION_CLOSE carrying CONNECTION_REFUSED (0x02), and refusing it in the
+/// Initial space is what makes the refusal cheap: no handshake is run, no
+/// connection state is kept, and the peer learns immediately rather than
+/// waiting out its own connect deadline. The packet is built here rather than
+/// through a transport state because no transport state is created for a
+/// connection that is never admitted.
+fn send_connection_refused(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  initial_destination_connection_id: BitArray,
+  peer_connection_id: BitArray,
+) -> Worker {
+  case
+    initial_crypto.derive_initial(
+      protocol_version,
+      initial_destination_connection_id,
+    ),
+    frame.encode(frame.ConnectionCloseTransport(connection_refused_code, 0, ""))
+  {
+    Ok(keys), Ok(close_frame) ->
+      case
+        wire_packet.protect_long(
+          wire_packet.Initial(<<>>),
+          protocol_version,
+          peer_connection_id,
+          initial_destination_connection_id,
+          0,
+          None,
+          padded_plaintext(close_frame),
+          wire_packet.InitialPacketKeys(keys.server),
+        )
+      {
+        Error(_) -> worker
+        Ok(bytes) -> {
+          let _sent = udp.send(worker.socket, peer, bytes, ecn.NotEct)
+          worker
         }
       }
+    _, _ -> worker
+  }
+}
+
+/// Pad one Initial payload with PADDING frames until header protection has a
+/// long enough sample to draw from.
+fn padded_plaintext(plaintext: BitArray) -> BitArray {
+  case bit_array.byte_size(plaintext) >= minimum_initial_plaintext_bytes {
+    True -> plaintext
+    False -> padded_plaintext(<<plaintext:bits, 0>>)
   }
 }
 
@@ -989,7 +1153,7 @@ fn spawn_connection(
   now: Int,
 ) -> Worker {
   case open_qlog(worker.qlog_directory, worker.telemetry_limit, now) {
-    Error(_) -> worker
+    Error(_) -> release_reservation(worker, local_connection_id)
     Ok(writer) -> {
       case writer {
         Some(value) -> {
@@ -1002,7 +1166,7 @@ fn spawn_connection(
       case current_key(worker.address_token_keys) {
         Error(_) -> {
           close_qlog(writer)
-          worker
+          release_reservation(worker, local_connection_id)
         }
         Ok(address_token_key) ->
           case
@@ -1030,7 +1194,7 @@ fn spawn_connection(
           {
             Error(_) -> {
               close_qlog(writer)
-              worker
+              release_reservation(worker, local_connection_id)
             }
             Ok(handle) -> {
               let pid = connection_worker.worker_pid(handle)
@@ -1070,9 +1234,79 @@ fn handle_notice(
       handle_established(worker, identifier)
     connection_worker.Consumed(identifier, datagrams, bytes) ->
       refill_credit(worker, identifier, datagrams, bytes)
+    connection_worker.Request(identifier, sequence, quanta) ->
+      handle_request(worker, identifier, sequence, quanta)
     connection_worker.Released(identifier, pid) ->
       release_reported_connection(worker, identifier, pid)
   }
+}
+
+/// Decision D2, listener side. One connection actor asks for the room it is
+/// about to need, and the listener answers before that room is used.
+///
+/// A request names the whole quanta the connection wants to hold in total, not
+/// the growth it wants on top, and the answer echoes the request's sequence
+/// number, so an answer that races a later request is recognised as stale by
+/// the actor rather than installed over a newer one.
+///
+/// The arithmetic is the ledger's own: it already knows what this connection
+/// was granted, it fills growth as far as the budget reaches rather than
+/// refusing it whole, and it keeps a request it could not meet so that room
+/// released later can be offered to it. All this function adds is the message
+/// back, and the retry that a request for less than the connection holds --
+/// memory coming back -- makes possible.
+fn handle_request(
+  worker: Worker,
+  identifier: BitArray,
+  sequence: Int,
+  quanta: Int,
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let held = budget.used(worker.endpoint_memory)
+      let #(endpoint_memory, answer) =
+        budget.answer_request(
+          worker.endpoint_memory,
+          identifier,
+          sequence,
+          quanta,
+        )
+      case answer {
+        budget.Met(granted) ->
+          connection_worker.grant(entry.connection, sequence, granted)
+        budget.Short(granted) ->
+          connection_worker.refuse(entry.connection, sequence, granted)
+      }
+      let worker = Worker(..worker, endpoint_memory: endpoint_memory)
+      case budget.used(endpoint_memory) < held {
+        False -> worker
+        True -> retry_withheld_requests(worker)
+      }
+    }
+  }
+}
+
+/// Decision D3, listener side. Offer released memory to the connections whose
+/// requests could not be met, oldest first.
+///
+/// Every path that returns memory runs this. A refused connection does not ask
+/// again -- it would only be refused again, and a busy endpoint would spend
+/// itself answering the same refusals -- so the listener owes it the retry,
+/// and a refusal lifted only by traffic is a refusal that never lifts on a
+/// steady connection. The ordering, the head-of-line fairness, and the
+/// bookkeeping are the ledger's; what happens here is the message back.
+fn retry_withheld_requests(worker: Worker) -> Worker {
+  let #(endpoint_memory, retries) =
+    budget.retry_withheld(worker.endpoint_memory)
+  list.each(retries, fn(retry) {
+    case dict.get(worker.connections, retry.connection) {
+      Error(Nil) -> Nil
+      Ok(entry) ->
+        connection_worker.grant(entry.connection, retry.sequence, retry.quanta)
+    }
+  })
+  Worker(..worker, endpoint_memory: endpoint_memory)
 }
 
 /// Free a connection the actor itself reported as ended, before its monitor
@@ -1171,12 +1405,19 @@ fn release_connection_pid(worker: Worker, pid: Pid) -> Worker {
         connections: dict.delete(worker.connections, identifier),
         routes: dict.delete(worker.routes, pid),
         aliases: remove_aliases(worker.aliases, identifier),
+        // Decision D6: the whole reservation comes back here, on whichever of
+        // the two release paths arrives first, and `release_all` makes the
+        // second one free.
+        endpoint_memory: budget.release_all(worker.endpoint_memory, identifier),
         handshaking: handshaking,
         pending_connections: connection_worker.queue_filter(
           worker.pending_connections,
           fn(value) { value != identifier },
         ),
       )
+      // The memory this connection held is now free, so the connections whose
+      // requests it was crowding out are offered it before anything else runs.
+      |> retry_withheld_requests
     }
   }
 }

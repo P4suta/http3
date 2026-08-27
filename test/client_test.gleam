@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import gleeunit/should
+import http3/address
 import http3/client
 import http3/config
 import http3/failure
@@ -228,6 +229,27 @@ pub fn bounded_client_round_trip_over_real_udp_test() -> Nil {
     assert response.get_header(reply, "x-received-test") == Ok("loopback")
     assert response.get_header(reply, ":status") == Error(Nil)
     assert reply.body == <<"hello over h3":utf8>>
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_client_can_dial_an_exact_address_without_changing_tls_identity_test() -> Nil {
+  http3_test_support.with_server(fn(port, ca_certificate) {
+    let configuration = client.with_timeout(client.new(), 3000) |> should.be_ok
+    let configuration =
+      client.with_ca_certificate(configuration, ca_certificate) |> should.be_ok
+    let loopback = address.parse("127.0.0.1") |> should.be_ok
+    let request =
+      request.new()
+      // The certificate is issued to localhost. The explicit address is only
+      // the UDP dial target and must not replace this verified identity.
+      |> request.set_host("localhost")
+      |> request.set_port(port)
+      |> request.set_path("/echo")
+      |> request.set_body(<<>>)
+
+    let reply = client.send_to(configuration, loopback, request) |> should.be_ok
+    assert reply.status == 200
   })
 }
 

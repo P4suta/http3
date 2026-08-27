@@ -2,9 +2,11 @@
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import gleam_quic/frame
 import gleam_quic/internal/aead_usage
@@ -313,6 +315,10 @@ pub opaque type State {
     packets_coalesced: Int,
     last_activity_milliseconds: Int,
     close_deadline_milliseconds: Option(Int),
+    credit_frozen: Bool,
+    withheld_bidirectional_streams: Int,
+    withheld_unidirectional_streams: Int,
+    withheld_stream_data: Set(Int),
   )
 }
 
@@ -349,6 +355,12 @@ pub type Error {
 
 /// Conservative bounded defaults; authenticated transport parameters raise
 /// only peer-controlled sending limits.
+///
+/// Receive windows and reassembly buffers are finite resident-memory bounds.
+/// Their maximum offsets are deliberately the QUIC varint ceiling instead of
+/// a transfer quota: MAX_DATA and MAX_STREAM_DATA are monotonic lifetime
+/// offsets, so a small offset ceiling would eventually deadlock a healthy
+/// stream even when the application continuously consumes every byte.
 pub fn default_config(role: Role) -> Config {
   Config(
     role: role,
@@ -359,15 +371,15 @@ pub fn default_config(role: Role) -> Config {
     maximum_outstanding_packets: 4096,
     initial_receive_data: 1_048_576,
     receive_data_window: 1_048_576,
-    maximum_receive_data: 16_777_216,
+    maximum_receive_data: varint.maximum,
     initial_receive_stream_data: 262_144,
     receive_stream_window: 262_144,
-    maximum_receive_stream_data: 4_194_304,
+    maximum_receive_stream_data: varint.maximum,
     maximum_peer_streams_bidirectional: 100,
     maximum_peer_streams_unidirectional: 100,
     maximum_stream_receive_buffer: 262_144,
     maximum_stream_send_buffer: 262_144,
-    maximum_stream_final_size: 16_777_216,
+    maximum_stream_final_size: varint.maximum,
     maximum_total_streams: 1024,
     maximum_udp_payload_size: 65_527,
     maximum_datagram_frame_size: 65_535,
@@ -530,6 +542,10 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     packets_coalesced: 0,
     last_activity_milliseconds: now_milliseconds,
     close_deadline_milliseconds: None,
+    credit_frozen: False,
+    withheld_bidirectional_streams: 0,
+    withheld_unidirectional_streams: 0,
+    withheld_stream_data: set.new(),
   ))
 }
 
@@ -1668,14 +1684,24 @@ fn reset_send_direction(
   }
 }
 
+/// Queue a whole batch of application frames in one append.
+///
+/// The queue is consumed from its head, one frame per prepared packet, so it is
+/// held in send order and appended to at its tail. Appending a batch once costs
+/// a single walk of the queue rather than one walk per frame, which is what
+/// keeps a credit-hold lift proportional to the streams it restates instead of
+/// to the streams times the queue in front of them.
 fn queue_application_frame_list(
   state: State,
   frames: List(frame.Frame),
 ) -> State {
   case frames {
     [] -> state
-    [next, ..rest] ->
-      queue_application_frame_list(queue_application_frame(state, next), rest)
+    _ ->
+      State(
+        ..state,
+        application_queue: list.append(state.application_queue, frames),
+      )
   }
 }
 
@@ -1803,6 +1829,286 @@ pub fn next_deadline(
 /// Return stable connection progress.
 pub fn phase(state: State) -> Phase {
   state.phase
+}
+
+/// Return every byte this connection keeps resident, for the endpoint's
+/// aggregate memory budget.
+///
+/// The sum is deliberately the peer-controlled memory only: stream receive
+/// reassembly and delivered-but-unread bytes, unsent and retransmittable
+/// stream send buffers, the sent-packet history of all three packet spaces,
+/// and the crypto reassembly buffers. Fixed-size state -- keys, estimators,
+/// congestion and path state -- is bounded by construction and is covered by
+/// the working set the endpoint reserves when it admits the connection.
+pub fn retained_bytes(state: State) -> Int {
+  let Footprint(receiving, overhead) = footprint(state)
+  receiving + overhead
+}
+
+/// One walk of everything this connection holds, split at the line the memory
+/// grant cares about.
+///
+/// `receiving` is what advertising receive credit grows: reassembly and
+/// delivered-but-unread stream data. `overhead` is everything else -- send
+/// buffers, sent-packet histories, crypto reassembly -- which a grant has to
+/// cover before any of it is room for the peer to send into. Both are wanted
+/// on the same turn, and the walk is over every stream and every sent-packet
+/// history in three packet spaces, so it is done once and split rather than
+/// twice and summed.
+type Footprint {
+  Footprint(receiving: Int, overhead: Int)
+}
+
+fn footprint(state: State) -> Footprint {
+  let Footprint(receiving, sending) =
+    stream_footprint(dict.values(state.streams), 0, 0)
+  Footprint(
+    receiving,
+    sending
+      + packet_space.retained_bytes(state.initial_space)
+      + packet_space.retained_bytes(state.handshake_space)
+      + packet_space.retained_bytes(state.application_space)
+      + reassembler.buffered_bytes(state.initial_crypto_receive)
+      + reassembler.buffered_bytes(state.handshake_crypto_receive)
+      + reassembler.buffered_bytes(state.application_crypto_receive),
+  )
+}
+
+fn stream_footprint(
+  streams: List(stream_state.State),
+  receiving: Int,
+  sending: Int,
+) -> Footprint {
+  case streams {
+    [] -> Footprint(receiving, sending)
+    [stream, ..rest] ->
+      stream_footprint(
+        rest,
+        receiving + stream_state.buffered_receive_bytes(stream),
+        sending + stream_state.buffered_send_bytes(stream),
+      )
+  }
+}
+
+/// Hold this connection's advertised receive credit inside the endpoint memory
+/// its endpoint has granted it, and report what it holds.
+///
+/// The grant is room to grow into, not a bill for growth already taken on: the
+/// connection may have receive credit outstanding up to the granted bytes less
+/// the memory it already holds for other reasons -- send buffers, sent-packet
+/// histories, crypto reassembly -- so a peer that fills every window it has
+/// been offered still cannot take the connection past its grant.
+///
+/// Credit already advertised is never retracted, because a MAX_DATA value the
+/// peer has seen is a promise, and a peer is never punished for using credit
+/// this endpoint advertised. The hold only stops the limit rising. While it
+/// binds, MAX_STREAMS and MAX_STREAM_DATA increases are withheld too; the
+/// moment it lifts, every withheld increase is stated at once, so a peer parked
+/// behind the hold resumes without needing to consume another window first.
+///
+/// The bytes returned alongside are the same walk's total, so a caller that
+/// needs both the hold applied and the footprint measured -- which is every
+/// caller -- pays for one walk rather than two.
+pub fn apply_memory_grant(
+  state: State,
+  granted_bytes: Int,
+  refused: Bool,
+) -> #(State, Int) {
+  let Footprint(receiving, overhead) = footprint(state)
+  let state =
+    State(
+      ..state,
+      connection_receiver: flow_control.with_memory_hold(
+        state.connection_receiver,
+        int.max(0, granted_bytes - overhead),
+      ),
+    )
+  #(settle_credit_hold(state, refused), receiving + overhead)
+}
+
+/// Put the hold on or take it off, and state everything it withheld.
+///
+/// Taking it off is deferred until the connection is established, because that
+/// is the only phase in which the withheld MAX_STREAMS and MAX_STREAM_DATA
+/// frames can be sent. Clearing the flag any earlier would strand the
+/// concurrency a closed stream freed until some later hold happened to lift
+/// while established, which is a silent loss of peer stream concurrency.
+fn settle_credit_hold(state: State, refused: Bool) -> State {
+  case refused, state.credit_frozen, state.phase {
+    True, _, _ -> State(..state, credit_frozen: True)
+    False, True, Established ->
+      restate_withheld_credit(State(..state, credit_frozen: False))
+    False, True, _ -> state
+    False, False, _ -> state
+  }
+}
+
+/// The connection-level MAX_DATA value this connection has advertised.
+pub fn advertised_max_data(state: State) -> Int {
+  flow_control.receiver_limit(state.connection_receiver)
+}
+
+/// The receive credit this connection has advertised and the application has
+/// not yet read: the bytes a peer may still make it hold.
+pub fn outstanding_receive_credit(state: State) -> Int {
+  int.max(
+    0,
+    flow_control.receiver_limit(state.connection_receiver)
+      - flow_control.consumed_bytes(state.connection_receiver),
+  )
+}
+
+/// The MAX_STREAMS value this connection has advertised for one direction.
+pub fn advertised_stream_limit(
+  state: State,
+  direction: stream_id.Direction,
+) -> Int {
+  flow_control.advertised_stream_limit(remote_limit(state, direction))
+}
+
+/// Whether the endpoint memory grant is currently holding credit growth down.
+pub fn credit_growth_held(state: State) -> Bool {
+  state.credit_frozen
+}
+
+/// State every credit increase that was withheld while the hold was on. The
+/// caller has already established that this connection is established.
+///
+/// All three kinds of credit are stated here, and the connection-level limit
+/// is not the least of them: it is the one the hold squeezes hardest, because
+/// the hold is applied to the connection receiver directly.
+fn restate_withheld_credit(state: State) -> State {
+  let state = release_withheld_stream_credit(state, stream_id.Bidirectional)
+  let state = release_withheld_stream_credit(state, stream_id.Unidirectional)
+  restate_connection_receive_credit(restate_stream_receive_credit(state))
+}
+
+/// Advertise the connection-level receive credit the widened hold has made
+/// room for, with nothing of the peer's to prompt it.
+///
+/// The hold is a ceiling on the connection receiver rather than a queue of
+/// withheld frames, so there is no withheld MAX_DATA to replay -- but a
+/// ceiling that stopped the limit rising has to be taken off by hand. A
+/// connection whose hold had squeezed its limit down to what the peer had
+/// already spent has left that peer with no credit at all: it cannot send, so
+/// nothing arrives, so the application is never woken to read, so a limit
+/// raised only by the next read is a limit never raised. That is a connection
+/// stalled until its idle timeout, and this is what stops it.
+fn restate_connection_receive_credit(state: State) -> State {
+  let #(receiver, advertised) =
+    flow_control.advertise_pending(state.connection_receiver)
+  let state = State(..state, connection_receiver: receiver)
+  case advertised {
+    None -> state
+    Some(limit) -> queue_application_frame(state, frame.MaxData(limit))
+  }
+}
+
+/// Replenish, in one MAX_STREAMS frame, every unit of peer stream concurrency
+/// whose replenishment was withheld while the hold was on.
+fn release_withheld_stream_credit(
+  state: State,
+  direction: stream_id.Direction,
+) -> State {
+  case withheld_stream_credit(state, direction) {
+    withheld if withheld <= 0 -> state
+    withheld -> {
+      let #(limit, advertised) =
+        replenish_repeatedly(remote_limit(state, direction), withheld, None)
+      let state =
+        put_withheld_stream_credit(
+          put_remote_limit(state, direction, limit),
+          direction,
+          0,
+        )
+      case advertised {
+        None -> state
+        Some(maximum) ->
+          queue_application_frame(
+            state,
+            frame.MaxStreams(frame_stream_direction(direction), maximum),
+          )
+      }
+    }
+  }
+}
+
+fn replenish_repeatedly(
+  limit: flow_control.StreamLimit,
+  remaining: Int,
+  advertised: Option(Int),
+) -> #(flow_control.StreamLimit, Option(Int)) {
+  case remaining <= 0 {
+    True -> #(limit, advertised)
+    False -> {
+      let #(next, value) = flow_control.replenish_stream_limit(limit)
+      let advertised = case value {
+        None -> advertised
+        Some(_) -> value
+      }
+      replenish_repeatedly(next, remaining - 1, advertised)
+    }
+  }
+}
+
+/// State the per-stream receive credit the hold withheld, and only that.
+///
+/// The set names the streams whose MAX_STREAM_DATA increase was actually
+/// withheld while the hold bound, so a stream that was never held back is not
+/// sent a frame restating a limit it already knows. Each is checked twice
+/// before a frame is queued: it must still exist, because a stream that closed
+/// under the hold owes the peer nothing, and this endpoint must be able to
+/// receive on it. RFC 9000 section 19.10 allows MAX_STREAM_DATA only for a
+/// stream the peer can send on, and a peer that receives one for a send-only
+/// stream of its own -- a locally-initiated unidirectional stream, here -- MUST
+/// close the connection with STREAM_STATE_ERROR.
+///
+/// The whole restatement is queued in one append rather than one append per
+/// stream, so a lift costs one walk of the set and one walk of the queue rather
+/// than a walk of the queue per stream.
+fn restate_stream_receive_credit(state: State) -> State {
+  let local = local_initiator(state)
+  let restated =
+    set.fold(state.withheld_stream_data, [], fn(frames, identifier) {
+      case dict.get(state.streams, identifier) {
+        Error(Nil) -> frames
+        Ok(stream) ->
+          case stream_id.can_receive(identifier, local) {
+            False -> frames
+            True -> [
+              frame.MaxStreamData(
+                identifier,
+                stream_state.advertised_receive_limit(stream),
+              ),
+              ..frames
+            ]
+          }
+      }
+    })
+  queue_application_frame_list(
+    State(..state, withheld_stream_data: set.new()),
+    restated,
+  )
+}
+
+fn withheld_stream_credit(state: State, direction: stream_id.Direction) -> Int {
+  case direction {
+    stream_id.Bidirectional -> state.withheld_bidirectional_streams
+    stream_id.Unidirectional -> state.withheld_unidirectional_streams
+  }
+}
+
+fn put_withheld_stream_credit(
+  state: State,
+  direction: stream_id.Direction,
+  withheld: Int,
+) -> State {
+  case direction {
+    stream_id.Bidirectional ->
+      State(..state, withheld_bidirectional_streams: withheld)
+    stream_id.Unidirectional ->
+      State(..state, withheld_unidirectional_streams: withheld)
+  }
 }
 
 /// Return whether this established client selected an offered TLS ticket.
@@ -4822,6 +5128,12 @@ fn cleanup_stream_if_terminal(state: State, identifier: Int) -> State {
             stream_order: list.filter(state.stream_order, fn(value) {
               value != identifier
             }),
+            // A stream that has closed owes the peer no window update, so it
+            // leaves the withheld record with everything else it held.
+            withheld_stream_data: set.delete(
+              state.withheld_stream_data,
+              identifier,
+            ),
           )
           |> replenish_remote_stream_credit(identifier)
       }
@@ -4834,20 +5146,34 @@ fn replenish_remote_stream_credit(state: State, identifier: Int) -> State {
     Ok(stream_id.StreamId(_, initiator, direction)) ->
       case initiator == remote_endpoint(state.config.role) {
         False -> state
-        True -> {
-          let #(limit, advertised) =
-            remote_limit(state, direction)
-            |> flow_control.replenish_stream_limit
-          let state = put_remote_limit(state, direction, limit)
-          case advertised {
-            None -> state
-            Some(maximum) ->
-              queue_application_frame(
+        // While the endpoint memory grant holds credit growth down, the unit
+        // of stream concurrency this closed stream freed is recorded rather
+        // than advertised: inviting the peer to open another stream is exactly
+        // the growth the endpoint has just declined to fund. Nothing is lost,
+        // because every withheld unit is replenished the moment the hold lifts.
+        True ->
+          case state.credit_frozen {
+            True ->
+              put_withheld_stream_credit(
                 state,
-                frame.MaxStreams(frame_stream_direction(direction), maximum),
+                direction,
+                withheld_stream_credit(state, direction) + 1,
               )
+            False -> {
+              let #(limit, advertised) =
+                remote_limit(state, direction)
+                |> flow_control.replenish_stream_limit
+              let state = put_remote_limit(state, direction, limit)
+              case advertised {
+                None -> state
+                Some(maximum) ->
+                  queue_application_frame(
+                    state,
+                    frame.MaxStreams(frame_stream_direction(direction), maximum),
+                  )
+              }
+            }
           }
-        }
       }
   }
 }
@@ -4929,10 +5255,27 @@ fn queue_receive_credit_updates(
   stream_limit: Option(Int),
   connection_limit: Option(Int),
 ) -> State {
-  let state = case stream_limit {
-    None -> state
-    Some(limit) ->
+  // A per-stream increase is withheld while the endpoint memory grant holds
+  // credit growth down, and the stream it was withheld for is recorded so that
+  // the lift restates that stream and no other. The connection-level increase
+  // needs no gate of its own: the grant is applied as a ceiling on the
+  // connection receiver, so a limit it may not advertise is a limit that was
+  // never raised. What that ceiling withheld is not replayed from here either;
+  // it is taken off by `restate_connection_receive_credit` on the lift, which
+  // is what keeps a peer squeezed to zero credit from stalling for good.
+  //
+  // The record is bounded by the live stream set: an entry is only ever made
+  // for a stream this endpoint just read from, it is dropped when that stream
+  // closes, and the whole set is emptied on the lift.
+  let state = case stream_limit, state.credit_frozen {
+    Some(limit), False ->
       queue_application_frame(state, frame.MaxStreamData(identifier, limit))
+    Some(_limit), True ->
+      State(
+        ..state,
+        withheld_stream_data: set.insert(state.withheld_stream_data, identifier),
+      )
+    None, _ -> state
   }
   case connection_limit {
     None -> state

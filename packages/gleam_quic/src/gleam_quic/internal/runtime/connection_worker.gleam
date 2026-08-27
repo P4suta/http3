@@ -43,6 +43,7 @@ import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/process_label
 import gleam_quic/internal/qlog
+import gleam_quic/internal/runtime/budget
 import gleam_quic/internal/runtime/connection as runtime_connection
 import gleam_quic/internal/runtime/server_transport
 import gleam_quic/internal/tls/anti_replay
@@ -122,6 +123,7 @@ pub type Error {
   DatagramTooLarge(Int)
   DatagramsNotNegotiated
   CongestionLimited
+  EndpointMemoryExceeded
   QlogUnavailable
   QuicFailure
 }
@@ -144,6 +146,13 @@ pub type ConnectionToListener {
   /// connection's delivery credit by exactly what the actor took off its
   /// mailbox. Without it the window never reopens and delivery stalls.
   Consumed(identifier: BitArray, datagrams: Int, bytes: Int)
+  /// This connection asks to hold `quanta` whole quanta. Sent before the room
+  /// is used, not after, and only when what the connection holds comes within
+  /// one growth step of its grant -- never per packet -- so the endpoint funds
+  /// growth in advance without per-packet chatter reaching the listener. The
+  /// sequence number is echoed in the answer, so a connection applies only the
+  /// answer to its newest outstanding request.
+  Request(identifier: BitArray, sequence: Int, quanta: Int)
   /// The connection ended, so the listener owns its identifiers again. The
   /// actor sends this immediately before it exits, so the listener frees the
   /// route, its aliases, and the admission slot without waiting for the
@@ -182,6 +191,13 @@ type Command {
   /// that drop count.
   Deliver(deliveries: List(ListenerToConnection), dropped: Int)
   ReloadedKeys(ticket_keys: List(BitArray), address_token_key: BitArray)
+  /// The listener met request `sequence` in full: this connection may hold
+  /// `quanta` whole quanta.
+  Granted(sequence: Int, quanta: Int)
+  /// The listener could not meet request `sequence`: `quanta` is what it could
+  /// actually cover, and the shortfall holds this connection where it is until
+  /// the listener retries the request from memory another connection released.
+  Refused(sequence: Int, quanta: Int)
   Terminate
   Open(direction: stream_id.Direction, reply: Subject(Result(Int, Error)))
   AcceptStream(reply: Subject(Result(IncomingStream, Error)), deadline: Int)
@@ -212,6 +228,9 @@ type Command {
     reply: Subject(Result(#(runtime_connection.Stats, Int), Error)),
   )
   TelemetryStats(reply: Subject(Result(qlog.Stats, Error)))
+  /// Report what this connection's send buffers hold against the endpoint
+  /// memory grant that funded them, which no public API publishes.
+  SendBufferGrant(reply: Subject(Result(#(Int, Int), Error)))
   Phase(reply: Subject(Result(transport.Phase, Error)))
   ClientIdentity(reply: Subject(Result(Option(BitArray), Error)))
   Protocol(
@@ -272,6 +291,16 @@ type PendingSend {
     finish: Bool,
     reply: Subject(Result(Nil, Error)),
     deadline: Int,
+    /// Whether what this send is waiting on is the endpoint memory grant
+    /// rather than the `Buffer` ceiling the application chose.
+    ///
+    /// Decision D5. The two are different answers to the caller: a send the
+    /// `Buffer` ceiling holds is waiting on its own peer to acknowledge what
+    /// is already buffered, while a send the grant holds was never going to be
+    /// funded until the endpoint has room, whether or not a refusal has landed
+    /// yet. It is recomputed on every park and cleared whenever the send makes
+    /// progress, so it always names why this send is waiting now.
+    held_by_grant: Bool,
   )
 }
 
@@ -328,6 +357,25 @@ type Worker {
     stream_buffer_limit: Int,
     queue_limit: Int,
     datagram_limit: Int,
+    // The endpoint memory this connection holds, and the room its endpoint has
+    // granted it to hold. A grant that fell short is the endpoint at its
+    // budget: this connection stops advertising more receive credit (D3),
+    // drops Datagrams that would grow it further (D4), and ends a parked send
+    // as an overload (D5) rather than as a bare operation timeout.
+    //
+    // Measuring `retained_bytes` walks every stream and every sent-packet
+    // history in three packet spaces, so it is not done per turn. It is done
+    // when something could have moved it by a whole ledger quantum, which is
+    // the resolution the ledger counts in anyway: `unmeasured_bytes` is an
+    // upper bound on how far the footprint can have moved since the last walk
+    // -- every byte delivered into this actor and every byte it has admitted
+    // into a send buffer -- and `remeasure` forces the walk on the turns where
+    // the grant itself changed. A peer sending a flood of small datagrams
+    // therefore costs one walk per 16 KiB rather than one per datagram.
+    retained_bytes: Int,
+    unmeasured_bytes: Int,
+    remeasure: Bool,
+    grant: budget.Grant,
   )
 }
 
@@ -373,6 +421,21 @@ pub fn reload_keys(
     connection.commands,
     ReloadedKeys(ticket_keys, address_token_key),
   )
+}
+
+/// Tell one connection actor that its request was met in full.
+///
+/// Decision D2, connection side: the grant is asked for in advance, in whole
+/// quanta, and it arrives asynchronously, so the actor's hot path never waits
+/// on the listener.
+pub fn grant(connection: Connection, sequence: Int, quanta: Int) -> Nil {
+  process.send(connection.commands, Granted(sequence, quanta))
+}
+
+/// Tell one connection actor that its request could not be met, and how much
+/// of it the endpoint could cover.
+pub fn refuse(connection: Connection, sequence: Int, quanta: Int) -> Nil {
+  process.send(connection.commands, Refused(sequence, quanta))
 }
 
 /// Ask one connection actor to release its resources and exit.
@@ -501,6 +564,20 @@ pub fn connection_stats(
   call(connection, ConnectionStats)
 }
 
+/// Snapshot the bytes this connection's stream send buffers hold, summed over
+/// every stream it owns, together with the endpoint memory it was granted.
+///
+/// This is a seam for the memory suite rather than a public diagnostic. It
+/// exists because decision D5's bound -- an application's write is admitted
+/// only as far as the grant reaches past what the connection already holds --
+/// has no observable consequence of its own that a refusal does not also
+/// produce. A single parked write cannot tell a grant that bounded it from a
+/// refusal that landed while it waited; what the send buffers are holding
+/// against the grant that funded them can.
+pub fn send_buffer_grant(connection: Connection) -> Result(#(Int, Int), Error) {
+  call(connection, SendBufferGrant)
+}
+
 /// Return a redacted SHA-256 fingerprint for the verified client identity.
 pub fn client_identity(
   connection: Connection,
@@ -591,6 +668,10 @@ fn initialise(bootstrap: Bootstrap, ready: Subject(Connection)) -> Nil {
     bootstrap.stream_buffer_limit,
     bootstrap.queue_limit,
     bootstrap.datagram_limit,
+    0,
+    0,
+    True,
+    budget.new_grant(budget.admission_quanta()),
   ))
 }
 
@@ -601,6 +682,7 @@ fn initialise(bootstrap: Bootstrap, ready: Subject(Connection)) -> Nil {
 fn loop(worker: Worker) -> Nil {
   let worker = when_live(worker, dispatch_all_events)
   let now = udp.monotonic_millisecond()
+  let worker = when_live(worker, maintain_grant)
   let worker = when_live(worker, expire_waiters(_, now))
   let worker = when_live(worker, retry_pending_sends)
   case worker.failure, transport_closed(worker), worker.dirty {
@@ -714,6 +796,9 @@ fn consume_deliveries(
     Worker(
       ..worker,
       dropped_datagrams: worker.dropped_datagrams + int.max(0, dropped),
+      // Every delivered byte is a byte this connection's footprint may have
+        // grown by, which is what decides whether the next turn walks it.
+        unmeasured_bytes: worker.unmeasured_bytes + bytes,
     )
   let worker = receive_deliveries(worker, deliveries)
   process.send(worker.notices, Consumed(worker.identifier, datagrams, bytes))
@@ -1143,15 +1228,149 @@ fn report_established(worker: Worker) -> Worker {
     True -> worker
     False -> {
       process.send(worker.notices, Established(worker.identifier))
-      Worker(..worker, established_reported: True)
+      // Becoming established is what lets a withheld credit hold lift, so the
+      // next turn walks the footprint whatever the traffic has been.
+      Worker(..worker, established_reported: True, remeasure: True)
     }
   }
+}
+
+/// Decision D2, connection side. Keep this connection's grant ahead of what it
+/// holds, and hold its advertised credit inside that grant.
+///
+/// This is grant-before-growth. The connection measures what it holds, tells
+/// the transport how much room it has been granted -- which is what bounds the
+/// MAX_DATA, MAX_STREAM_DATA and MAX_STREAMS values it may advertise from here
+/// on -- and asks the listener for the next growth step once what it holds
+/// comes within one step of the grant. It never has to hold more than it was
+/// granted plus what it had already advertised, because the credit it may
+/// advertise is bounded by the grant rather than charged after the fact.
+///
+/// The request is asynchronous, so the hot path never waits on the listener,
+/// and it carries a sequence number the answer echoes, so a `Granted` racing a
+/// later request cannot install a grant sized for a footprint this connection
+/// has already grown past.
+fn maintain_grant(worker: Worker) -> Worker {
+  case worker.remeasure || worker.unmeasured_bytes >= budget.quantum() {
+    False -> worker
+    True -> measure_grant(worker)
+  }
+}
+
+/// Walk this connection's footprint once, hold its advertised credit inside the
+/// grant, and ask for the next step if what it holds has come within one of the
+/// grant.
+///
+/// The transport accounts for stream receive reassembly, delivered-but-unread
+/// bytes, unsent and retransmittable send buffers, the three packet spaces'
+/// sent-packet histories, and crypto reassembly, and it applies the hold in the
+/// same walk. This actor adds the queue it owns itself: the RFC 9221 Datagram
+/// backlog its owner has not read yet, which is paid for out of the grant
+/// before the transport is told what is left of it.
+fn measure_grant(worker: Worker) -> Worker {
+  let peer = worker.peer
+  let #(connection, retained) =
+    server_transport.apply_memory_grant(
+      peer.connection,
+      budget.granted_bytes(worker.grant) - peer.datagram_bytes,
+      budget.grant_refused(worker.grant),
+    )
+  let held = retained + peer.datagram_bytes
+  let worker =
+    put_peer(
+      Worker(
+        ..worker,
+        retained_bytes: held,
+        unmeasured_bytes: 0,
+        remeasure: False,
+      ),
+      PeerState(..peer, connection: connection),
+    )
+  case budget.request(worker.grant, held) {
+    None -> worker
+    Some(#(grant, sequence, quanta)) -> {
+      process.send(worker.notices, Request(worker.identifier, sequence, quanta))
+      Worker(..worker, grant: grant)
+    }
+  }
+}
+
+/// Decision D5. How much of an application's own write this connection may
+/// take into its send buffers.
+///
+/// Growth has to be funded before it happens on the send side too, and the send
+/// buffers are where an application's writes become memory this endpoint holds.
+/// A write is therefore admitted only as far as the grant still reaches past
+/// what this connection holds, unconditionally: not once a refusal has landed,
+/// which would be charging for the growth after taking it, but on every write.
+/// A connection whose grant is being met sees no throttle from this, because
+/// the grant is kept a whole growth step ahead of what it holds and that step
+/// is as wide as the per-stream `Buffer` ceiling; a connection the endpoint has
+/// stopped funding sees the ceiling close on it instead.
+///
+/// What it holds is counted conservatively -- the last footprint it measured
+/// plus every byte that could have grown it since -- so a turn that advances
+/// several parked streams admits one grant between them rather than one each,
+/// and the send side adds no measurement slack of its own.
+///
+/// An application can still finish what the grant already funds: a short reply,
+/// an acknowledgement. Only what the grant does not fund is held back, and it
+/// parks like any other blocked write and ends on its own deadline -- as a
+/// transient endpoint overload when the endpoint has refused this connection
+/// room, so the caller can tell endpoint pressure from a slow peer. Nothing
+/// else is held: reading, draining a backlog, and acknowledging are untouched.
+/// What this connection's stream send buffers hold right now, summed over
+/// every stream it owns.
+fn buffered_send_bytes(worker: Worker) -> Int {
+  list.fold(dict.keys(worker.peer.streams), 0, fn(total, identifier) {
+    case
+      server_transport.buffered_send_bytes(worker.peer.connection, identifier)
+    {
+      // nolint: thrown_away_error -- an unknown stream buffers nothing.
+      Error(_reason) -> total
+      Ok(buffered) -> total + buffered
+    }
+  })
+}
+
+/// What one write may take into this connection's send buffers now, given what
+/// its streams already hold.
+///
+/// The answer is `budget`'s to give and this actor's only to carry: the
+/// allowance is opaque, so nothing here can widen it to the `Buffer` ceiling
+/// the application chose. What this function contributes is the footprint --
+/// the last walk plus everything admitted or delivered since -- which is what
+/// makes one grant bound every stream on the connection together rather than
+/// each of them separately.
+fn send_allowance(worker: Worker, buffered: Int) -> budget.Admission {
+  budget.send_allowance(
+    worker.grant,
+    worker.retained_bytes + worker.unmeasured_bytes,
+    worker.stream_buffer_limit - buffered,
+  )
 }
 
 fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
   case command {
     Deliver(deliveries, dropped) ->
       Ok(consume_deliveries(worker, deliveries, dropped))
+    Granted(sequence, quanta) ->
+      Ok(
+        Worker(
+          ..worker,
+          grant: budget.apply_grant(worker.grant, sequence, quanta),
+          remeasure: True,
+        )
+        |> mark_dirty,
+      )
+    Refused(sequence, quanta) ->
+      Ok(
+        Worker(
+          ..worker,
+          grant: budget.apply_refusal(worker.grant, sequence, quanta),
+          remeasure: True,
+        ),
+      )
     ReloadedKeys(ticket_keys, address_token_key) ->
       Ok(
         Worker(
@@ -1200,6 +1419,13 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
         Ok(#(server_transport.stats(peer.connection), worker.dropped_datagrams))
       })
     TelemetryStats(reply) -> handle_telemetry_stats(worker, reply)
+    SendBufferGrant(reply) -> {
+      process.send(
+        reply,
+        Ok(#(buffered_send_bytes(worker), budget.granted_bytes(worker.grant))),
+      )
+      Ok(worker)
+    }
     Phase(reply) ->
       with_peer_reply(worker, reply, fn(peer) {
         Ok(server_transport.phase(peer.connection))
@@ -1308,7 +1534,7 @@ fn handle_send(
                 advance_send(
                   worker,
                   identifier,
-                  PendingSend(bytes, finish, reply, deadline),
+                  PendingSend(bytes, finish, reply, deadline, False),
                 )
                 |> mark_dirty,
               )
@@ -1336,7 +1562,8 @@ fn advance_send(
           worker
         }
         Ok(buffered) -> {
-          let available = worker.stream_buffer_limit - buffered
+          let admission = send_allowance(worker, buffered)
+          let available = budget.admitted_bytes(admission)
           let remaining_size = bit_array.byte_size(pending.remaining)
           case remaining_size, available {
             size, available if size > 0 && available <= 0 ->
@@ -1345,7 +1572,17 @@ fn advance_send(
                 put_peer_stream(
                   peer,
                   identifier,
-                  StreamState(..stream, pending_send: Some(pending)),
+                  StreamState(
+                    ..stream,
+                    // The allowance names which of the two bounds ran out, and
+                    // that is what this send's deadline reports.
+                    pending_send: Some(
+                      PendingSend(
+                        ..pending,
+                        held_by_grant: budget.grant_bound(admission),
+                      ),
+                    ),
+                  ),
                 ),
               )
             _, _ -> {
@@ -1355,6 +1592,13 @@ fn advance_send(
                   int.min(maximum_send_chunk_bytes, int.max(available, 0)),
                 )
               let #(chunk, rest) = take_bytes(pending.remaining, take)
+              // Admitted into a send buffer is retained until the peer
+              // acknowledges it, so it counts towards the next footprint walk.
+              let worker =
+                Worker(
+                  ..worker,
+                  unmeasured_bytes: worker.unmeasured_bytes + take,
+                )
               let finish = pending.finish && rest == <<>>
               case
                 server_transport.send(
@@ -1398,6 +1642,7 @@ fn advance_send(
                               pending.finish,
                               pending.reply,
                               pending.deadline,
+                              False,
                             )),
                           ),
                         ),
@@ -1643,6 +1888,14 @@ fn register_stream(worker: Worker, identifier: Int) -> Worker {
   }
 }
 
+/// Decision D3. A peer is never punished for using credit this endpoint
+/// advertised, so a stream that arrives inside the advertised limits is always
+/// accepted, whatever the endpoint's memory budget is doing. What the budget
+/// holds back is the invitation to open more: while the endpoint has refused
+/// this connection room, the transport withholds the MAX_STREAMS increase a
+/// closing stream would otherwise replenish, so the peer's allowance stops
+/// growing instead of the connection being destroyed. Only the standing
+/// `Queue` limit, which the application chose, is fatal here.
 fn enqueue_incoming_stream(worker: Worker, identifier: Int) -> Worker {
   let peer = worker.peer
   case peer.stream_waiter {
@@ -1684,22 +1937,42 @@ fn enqueue_datagram(worker: Worker, payload: BitArray) -> Worker {
     None -> {
       let size = bit_array.byte_size(payload)
       case
-        queue_count(peer.datagrams) >= worker.queue_limit
-        || peer.datagram_bytes + size > worker.datagram_limit
+        // Decision D4. A Datagram frame is droppable by RFC 9221, so one that
+        // would take this connection past a grant the endpoint has refused to
+        // widen is dropped rather than queued, and never fatal. The drop is
+        // counted where every other inbound drop for this connection is
+        // counted, so an operator can see it.
+        budget.grant_refused(worker.grant)
+        && worker.retained_bytes + size > budget.granted_bytes(worker.grant)
       {
         True ->
-          fail_connection(worker, DatagramQueueExceeded(worker.queue_limit))
-        False ->
-          put_peer(
-            worker,
-            PeerState(
-              ..peer,
-              datagrams: queue_push(peer.datagrams, payload),
-              datagram_bytes: peer.datagram_bytes + size,
-            ),
-          )
+          Worker(..worker, dropped_datagrams: worker.dropped_datagrams + 1)
+        False -> enqueue_bounded_datagram(worker, peer, payload, size)
       }
     }
+  }
+}
+
+fn enqueue_bounded_datagram(
+  worker: Worker,
+  peer: PeerState,
+  payload: BitArray,
+  size: Int,
+) -> Worker {
+  case
+    queue_count(peer.datagrams) >= worker.queue_limit
+    || peer.datagram_bytes + size > worker.datagram_limit
+  {
+    True -> fail_connection(worker, DatagramQueueExceeded(worker.queue_limit))
+    False ->
+      put_peer(
+        worker,
+        PeerState(
+          ..peer,
+          datagrams: queue_push(peer.datagrams, payload),
+          datagram_bytes: peer.datagram_bytes + size,
+        ),
+      )
   }
 }
 
@@ -1762,6 +2035,26 @@ fn expire_waiters(worker: Worker, now: Int) -> Worker {
   put_peer(worker, expire_stream_waiters(peer, dict.to_list(peer.streams), now))
 }
 
+/// Decision D5. A send that parked ends on its own deadline, and it names what
+/// it was waiting on. A send the endpoint memory grant had no room for did not
+/// merely run late: it was never going to be funded until the endpoint has room
+/// to fund it, so its caller reads a transient endpoint overload rather than a
+/// bare operation timeout.
+///
+/// The reason is the parked send's own rather than the connection's, and it is
+/// the grant clamp rather than a refusal that decides it. A grant that was met
+/// in full still bounds what a write may take -- that is the whole of
+/// grant-before-growth on the send side -- so a write held by a met grant is
+/// held by endpoint memory just as surely as one held by a refused grant, and
+/// waiting for a refusal to say so would leave the commonest case reported as
+/// a bare timeout.
+fn send_deadline_error(pending: PendingSend) -> Error {
+  case pending.held_by_grant {
+    True -> EndpointMemoryExceeded
+    False -> OperationTimeout
+  }
+}
+
 fn expire_stream_waiters(
   peer: PeerState,
   streams: List(#(Int, StreamState)),
@@ -1778,8 +2071,10 @@ fn expire_stream_waiters(
         _ -> stream
       }
       let stream = case stream.pending_send {
-        Some(PendingSend(_, _, reply, deadline)) if now >= deadline -> {
-          process.send(reply, Error(OperationTimeout))
+        Some(PendingSend(deadline: deadline, ..) as pending)
+          if now >= deadline
+        -> {
+          process.send(pending.reply, Error(send_deadline_error(pending)))
           StreamState(..stream, pending_send: None)
         }
         _ -> stream
@@ -1852,7 +2147,7 @@ fn fail_peer_waiters(peer: PeerState, error: Error) -> Nil {
       None -> Nil
     }
     case stream.pending_send {
-      Some(PendingSend(_, _, reply, _)) -> process.send(reply, Error(error))
+      Some(PendingSend(reply: reply, ..)) -> process.send(reply, Error(error))
       None -> Nil
     }
   })
@@ -2131,7 +2426,7 @@ fn read_waiter_deadline(waiter: Option(ReadWaiter)) -> Option(Int) {
 
 fn pending_send_deadline(send: Option(PendingSend)) -> Option(Int) {
   case send {
-    Some(PendingSend(_, _, _, deadline)) -> Some(deadline)
+    Some(PendingSend(deadline: deadline, ..)) -> Some(deadline)
     None -> None
   }
 }

@@ -6,6 +6,14 @@ import gleam_quic/varint
 const maximum_stream_count = 1_152_921_504_606_846_975
 
 /// Receive-side aggregate credit and consumption state.
+///
+/// `hold` is the endpoint memory budget's grip on this receiver: the credit it
+/// may have outstanding -- advertised but not yet read off -- until its
+/// endpoint grants it more room. `None` is no grip at all, and it is what
+/// every receiver starts with and what every receiver on a path with no
+/// endpoint memory grant behind it keeps: per-stream receivers, and every
+/// receiver on the client side. A receiver with no hold behaves exactly as it
+/// did before endpoint memory grants existed.
 pub opaque type Receiver {
   Receiver(
     limit: Int,
@@ -14,6 +22,7 @@ pub opaque type Receiver {
     update_window: Int,
     maximum_limit: Int,
     consumed_since_update: Int,
+    hold: Option(Int),
   )
 }
 
@@ -49,7 +58,8 @@ pub fn new_receiver(
     && maximum_limit >= initial_limit
     && maximum_limit <= varint.maximum
   {
-    True -> Ok(Receiver(initial_limit, 0, 0, update_window, maximum_limit, 0))
+    True ->
+      Ok(Receiver(initial_limit, 0, 0, update_window, maximum_limit, 0, None))
     False -> Error(InvalidInput)
   }
 }
@@ -80,6 +90,30 @@ pub fn consume(
 /// Return the currently advertised receive limit.
 pub fn receiver_limit(receiver: Receiver) -> Int {
   receiver.limit
+}
+
+/// Return the bytes the application has already read off this receiver.
+pub fn consumed_bytes(receiver: Receiver) -> Int {
+  receiver.consumed
+}
+
+/// Hold this receiver to `allowance` bytes of outstanding credit until its
+/// endpoint grants it more room.
+///
+/// The hold is stated as an allowance over what has already been read rather
+/// than as an absolute limit, so it stays true as the application reads
+/// without having to be restated on every read: what it bounds is the credit
+/// the peer still has in hand, which is exactly the memory the peer can still
+/// make this endpoint hold.
+///
+/// The hold only ever stops the limit rising; it never retracts credit already
+/// advertised, because a MAX_DATA or MAX_STREAM_DATA value the peer has seen
+/// is a promise, and a peer is never punished for using credit this endpoint
+/// advertised. Consumption keeps accumulating while the hold binds, so the
+/// first read after it widens advertises the window that was withheld rather
+/// than waiting for another window to be consumed.
+pub fn with_memory_hold(receiver: Receiver, allowance: Int) -> Receiver {
+  Receiver(..receiver, hold: Some(maximum(0, allowance)))
 }
 
 /// Configure peer-advertised send credit.
@@ -167,6 +201,11 @@ pub fn opened_streams(stream_limit: StreamLimit) -> Int {
   stream_limit.opened
 }
 
+/// Return the stream count currently advertised to the peer.
+pub fn advertised_stream_limit(stream_limit: StreamLimit) -> Int {
+  stream_limit.limit
+}
+
 /// Replenish one unit of peer stream concurrency after a stream closes.
 pub fn replenish_stream_limit(
   stream_limit: StreamLimit,
@@ -184,33 +223,47 @@ fn consume_valid(
   receiver: Receiver,
   bytes: Int,
 ) -> Result(#(Receiver, Option(Int)), Error) {
-  let consumed_since_update = receiver.consumed_since_update + bytes
-  let consumed = receiver.consumed + bytes
+  Ok(raise_limit(
+    Receiver(
+      ..receiver,
+      consumed: receiver.consumed + bytes,
+      consumed_since_update: receiver.consumed_since_update + bytes,
+    ),
+  ))
+}
+
+/// Advertise the credit this receiver now has room for, without the
+/// application having read anything.
+///
+/// A read is the ordinary reason a limit rises, and it is not the only one: an
+/// endpoint memory hold that widens makes room the peer is owed just as a read
+/// does. Nothing here is a read, so nothing is consumed; the same deadband and
+/// the same floor decide whether an update is due, so a hold that widened by
+/// nothing worth stating still says nothing.
+///
+/// Without it a connection whose hold had squeezed its limit down to what the
+/// peer had already spent would stall for good: the peer has no credit, so
+/// nothing arrives, so the application is never woken to read, so the limit
+/// that only a read can raise is never raised.
+pub fn advertise_pending(receiver: Receiver) -> #(Receiver, Option(Int)) {
+  raise_limit(receiver)
+}
+
+/// Raise the advertised limit if an update is due and there is room above it,
+/// reporting the new limit when one was stated.
+fn raise_limit(receiver: Receiver) -> #(Receiver, Option(Int)) {
+  let highest = highest_limit(receiver, receiver.consumed)
   case
-    consumed_since_update >= receiver.update_window / 2
-    && receiver.limit < receiver.maximum_limit
+    update_due(receiver, receiver.consumed_since_update, highest)
+    && receiver.limit < highest
   {
-    False ->
-      Ok(#(
-        Receiver(
-          ..receiver,
-          consumed: consumed,
-          consumed_since_update: consumed_since_update,
-        ),
-        None,
-      ))
+    False -> #(receiver, None)
     True -> {
-      let next_limit =
-        minimum(receiver.limit + receiver.update_window, receiver.maximum_limit)
-      Ok(#(
-        Receiver(
-          ..receiver,
-          limit: next_limit,
-          consumed: consumed,
-          consumed_since_update: 0,
-        ),
+      let next_limit = minimum(receiver.limit + receiver.update_window, highest)
+      #(
+        Receiver(..receiver, limit: next_limit, consumed_since_update: 0),
         Some(next_limit),
-      ))
+      )
     }
   }
 }
@@ -219,8 +272,54 @@ fn valid_stream_limit(limit: Int) -> Bool {
   limit >= 0 && limit <= maximum_stream_count
 }
 
+/// The highest limit this receiver may advertise: its configured maximum, and
+/// no more than one endpoint memory allowance above what has been read.
+fn highest_limit(receiver: Receiver, consumed: Int) -> Int {
+  case receiver.hold {
+    None -> receiver.maximum_limit
+    Some(allowance) -> minimum(receiver.maximum_limit, consumed + allowance)
+  }
+}
+
+/// Whether a MAX_DATA or MAX_STREAM_DATA update is due.
+///
+/// The deadband is half an update window consumed since the last update, which
+/// is what it has always been.
+///
+/// A held receiver keeps that deadband and adds a floor beneath it, because
+/// the deadband alone would deadlock a connection whose hold is narrower than
+/// one update window: the peer runs out of credit, so the application has
+/// nothing left to read, so half a window is never consumed and the credit is
+/// never returned. The floor is the peer having spent every byte of credit it
+/// holds -- then it is given whatever there is room for, however little,
+/// because a blocked peer with room going spare is the one case where a small
+/// update is worth more than a quiet link. Nothing is added for a receiver
+/// with no hold, so no path without an endpoint memory grant behind it changes
+/// at all.
+fn update_due(
+  receiver: Receiver,
+  consumed_since_update: Int,
+  highest: Int,
+) -> Bool {
+  let ordinary = consumed_since_update >= receiver.update_window / 2
+  case receiver.hold {
+    None -> ordinary
+    Some(_allowance) ->
+      ordinary
+      || highest - receiver.limit >= receiver.update_window / 2
+      || receiver.received >= receiver.limit
+  }
+}
+
 fn minimum(left: Int, right: Int) -> Int {
   case left < right {
+    True -> left
+    False -> right
+  }
+}
+
+fn maximum(left: Int, right: Int) -> Int {
+  case left > right {
     True -> left
     False -> right
   }

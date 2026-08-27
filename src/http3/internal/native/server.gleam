@@ -29,6 +29,7 @@ pub opaque type Server {
     signature_scheme: extension_value.SignatureScheme,
     alternative_credentials: List(engine.ServerCredential),
     port: Int,
+    bind_address: Option(BitArray),
     timeout_milliseconds: Int,
     drain_timeout_milliseconds: Int,
     idle_timeout_milliseconds: Int,
@@ -95,6 +96,8 @@ pub type Incoming {
     method: String,
     path: String,
     protocol: Option(String),
+    scheme: String,
+    authority: String,
     headers: List(#(String, String)),
   )
 }
@@ -154,6 +157,7 @@ pub type ConfigurationError {
   InvalidServerName
   DuplicateServerName
   InvalidPort(Int)
+  InvalidBindAddress
   InvalidTimeout
   InvalidRequestBodyLimit
   InvalidResponseBodyLimit
@@ -229,6 +233,7 @@ pub fn new(
     signature_scheme,
     [],
     0,
+    None,
     30_000,
     30_000,
     30_000,
@@ -456,6 +461,17 @@ pub fn with_port(
   }
 }
 
+/// Bind the listener to one exact network-order IPv4 or IPv6 address.
+pub fn with_bind_address(
+  server: Server,
+  address: BitArray,
+) -> Result(Server, ConfigurationError) {
+  case bit_array.byte_size(address), bit_array.bit_size(address) % 8 {
+    4, 0 | 16, 0 -> Ok(Server(..server, bind_address: Some(address)))
+    _, _ -> Error(InvalidBindAddress)
+  }
+}
+
 /// Set one fixed operation timeout from one millisecond to one hour.
 pub fn with_timeout(
   server: Server,
@@ -676,6 +692,7 @@ pub fn with_qlog(
 pub fn start(server: Server) -> Result(Listener, Error) {
   server_worker.start(
     server.port,
+    server.bind_address,
     server.timeout_milliseconds,
     server.drain_timeout_milliseconds,
     server.idle_timeout_milliseconds,
@@ -793,10 +810,32 @@ pub fn reload_operational_key_rings(
 pub fn accept(listener: Listener) -> Result(Incoming, Error) {
   let Listener(handle) = listener
   case server_worker.accept(handle) {
-    Ok(server_worker.Incoming(request, method, path, protocol, headers)) ->
-      Ok(Incoming(Request(request), method, path, protocol, headers))
+    Ok(server_worker.Incoming(
+      request,
+      method,
+      path,
+      protocol,
+      scheme,
+      authority,
+      headers,
+    )) ->
+      Ok(Incoming(
+        Request(request),
+        method,
+        path,
+        protocol,
+        scheme,
+        authority,
+        headers,
+      ))
     Error(error) -> Error(map_error(error))
   }
+}
+
+/// Return the request connection's currently validated peer endpoint.
+pub fn peer_endpoint(request: Request) -> Result(#(BitArray, Int), Error) {
+  let Request(handle) = request
+  server_worker.peer_endpoint(handle) |> result.map_error(map_error)
 }
 
 /// Pull one request-body event.

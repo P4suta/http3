@@ -21,8 +21,9 @@ import gleam/bit_array
 import gleam/bool
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/address
 import http3/capsule
 import http3/config as policy
 import http3/failure as runtime_failure
@@ -393,13 +394,34 @@ pub fn send(
   client client: Client,
   request request: Request(BitArray),
 ) -> Result(Response(BitArray), Error) {
+  send_to_address(client:, request:, connect_address: None)
+}
+
+/// Send one bounded request to an exact IP address while retaining the
+/// request host for TLS SNI, certificate identity, and HTTP authority checks.
+///
+/// This is intended for health probes and controlled routing where DNS or a
+/// NAT hairpin must not select the UDP peer. It never weakens TLS validation.
+pub fn send_to(
+  client client: Client,
+  address address: address.Address,
+  request request: Request(BitArray),
+) -> Result(Response(BitArray), Error) {
+  send_to_address(client:, request:, connect_address: Some(address))
+}
+
+fn send_to_address(
+  client client: Client,
+  request request: Request(BitArray),
+  connect_address connect_address: Option(address.Address),
+) -> Result(Response(BitArray), Error) {
   case client_request.prepare(request) {
     Ok(prepared) -> {
       let request_body_limit =
         policy.limit(client.limits, runtime_failure.RequestBody)
       case bit_array.byte_size(request.body) > request_body_limit {
         True -> Error(RequestBodyTooLarge(request_body_limit))
-        False -> send_prepared(client, prepared)
+        False -> send_prepared(client:, request: prepared, connect_address:)
       }
     }
     Error(error) -> Error(from_preparation_error(error))
@@ -407,12 +429,14 @@ pub fn send(
 }
 
 fn send_prepared(
-  client: Client,
-  request: client_request.PreparedRequest,
+  client client: Client,
+  request request: client_request.PreparedRequest,
+  connect_address connect_address: Option(address.Address),
 ) -> Result(Response(BitArray), Error) {
   case
     client_backend.send(
       request,
+      connect_address,
       client.ca_certificates,
       client.address_family,
       policy.deadline(client.deadlines, runtime_failure.Dns),

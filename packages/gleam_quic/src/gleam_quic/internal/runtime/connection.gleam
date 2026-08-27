@@ -71,6 +71,26 @@ pub fn phase(state: State) -> transport.Phase {
   driver.phase(state.quic)
 }
 
+/// Hold this connection's advertised receive credit inside the endpoint memory
+/// it has been granted, so growth is funded before it happens, and report every
+/// byte it keeps resident.
+pub fn apply_memory_grant(
+  state: State,
+  granted_bytes: Int,
+  refused: Bool,
+) -> #(State, Int) {
+  let #(connection, retained) =
+    transport.apply_memory_grant(
+      driver.connection(state.quic),
+      granted_bytes,
+      refused,
+    )
+  #(
+    State(..state, quic: driver.put_connection(state.quic, connection)),
+    retained,
+  )
+}
+
 /// Whether TLS has installed authenticated 1-RTT keys.
 pub fn established(state: State) -> Bool {
   phase(state) == transport.Established

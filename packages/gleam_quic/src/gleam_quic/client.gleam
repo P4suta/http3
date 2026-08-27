@@ -688,6 +688,8 @@ fn map_error(error: client_worker.Error) -> Error {
       Failure(failure.Quic(failure.Peer, None))
     client_worker.ConnectionClosed ->
       Failure(failure.Closed(failure.Peer, None))
+    client_worker.PeerClosedWithCode(code) ->
+      Failure(failure.Closed(failure.Peer, Some(code)))
     client_worker.StreamClosed -> StreamFinished
     client_worker.StreamReset(code) -> StreamReset(code)
     client_worker.InvalidDirection -> InvalidDirection

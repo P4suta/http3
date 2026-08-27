@@ -102,6 +102,9 @@ pub type Error {
   TlsHandshakeFailed
   QuicFailure
   ConnectionClosed
+  /// The peer closed during the handshake and named a close code, such as the
+  /// CONNECTION_REFUSED a server sends when it has no room for a connection.
+  PeerClosedWithCode(Int)
   StreamClosed
   StreamReset(Int)
   InvalidDirection
@@ -1730,7 +1733,8 @@ fn map_transport_error(error: client_transport.Error) -> Error {
     client_transport.HandshakeTimeout -> HandshakeTimeout
     client_transport.TotalTimeout -> TotalTimeout
     client_transport.TlsHandshakeFailed -> TlsHandshakeFailed
-    client_transport.PeerClosed -> ConnectionClosed
+    client_transport.PeerClosed(None) -> ConnectionClosed
+    client_transport.PeerClosed(Some(code)) -> PeerClosedWithCode(code)
     client_transport.MigrationUnavailable -> MigrationUnavailable
     client_transport.VersionNegotiationReceived(_)
     | client_transport.VersionNegotiationFailed -> VersionNegotiationFailed

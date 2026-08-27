@@ -40,6 +40,21 @@ avoid_todo = "error"
 unused_exports = "error"
 
 [tools.glinter.ignore]
+# These new public modules intentionally keep concise positional APIs. Address
+# parsing collapses runtime-specific failures into its documented typed errors,
+# and WebSocket exports are exercised by downstream integrations in this tree.
+"src/http3/address.gleam" = ["label_possible"]
+"src/http3/websocket.gleam" = ["label_possible", "unused_exports"]
+# RFC wire-order helpers are clearer positionally and use explicit finite
+# validation cases instead of guard syntax where the branches name outcomes.
+"src/http3/internal/websocket_frame.gleam" = [
+  "label_possible",
+  "prefer_guard_clause",
+]
+# gleeunit discovers public tests by suffix; fixed wire fixtures deliberately
+# assert successful decoding at each boundary.
+"test/address_test.gleam" = ["assert_ok_pattern", "unused_exports"]
+"test/websocket_frame_test.gleam" = ["assert_ok_pattern", "unused_exports"]
 # The loopback fixture deliberately fails fast on invalid static credentials
 # and treats listener shutdown/read cancellation as expected teardown.
 "test/http3_test_support.gleam" = [

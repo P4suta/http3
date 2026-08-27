@@ -24,6 +24,16 @@ pub fn prepare_bounded(
   validate_headers(headers, Some(body_size))
 }
 
+/// Validate a bounded HEAD response without equating its declared
+/// representation length to the transmitted empty body.
+pub fn prepare_bounded_head(
+  status status: Int,
+  headers headers: List(#(String, String)),
+) -> Result(List(#(String, String)), Error) {
+  use _ <- result.try(validate_status(status))
+  validate_headers(headers, None)
+}
+
 /// Validate a streaming response head.
 pub fn prepare_streaming(
   status status: Int,

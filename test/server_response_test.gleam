@@ -43,6 +43,18 @@ pub fn bounded_server_response_checks_content_length_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_head_response_preserves_representation_length_test() -> Nil {
+  assert server_response.prepare_bounded_head(200, [
+      #("content-length", "1048577"),
+    ])
+    == Ok([#("content-length", "1048577")])
+  assert server_response.prepare_bounded_head(200, [
+      #("content-length", "invalid"),
+    ])
+    == Error(server_response.InvalidContentLength)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn server_push_promise_fields_are_strict_test() -> Nil {
   assert server_response.prepare_push_request([#("accept", "text/css")])
     == Ok([#("accept", "text/css")])

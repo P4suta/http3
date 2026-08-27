@@ -40,7 +40,15 @@ pub type RawError =
   #(Int, Int, String)
 
 pub type Incoming =
-  #(RequestHandle, String, String, Option(String), List(#(String, String)))
+  #(
+    RequestHandle,
+    String,
+    String,
+    Option(String),
+    String,
+    String,
+    List(#(String, String)),
+  )
 
 pub type RawEvent =
   #(Int, List(#(String, String)), BitArray)
@@ -122,6 +130,7 @@ pub fn start(
     #(String, BitArray, BitArray),
   ),
   port port: Int,
+  bind_address bind_address: Option(BitArray),
   timeout_milliseconds timeout_milliseconds: Int,
   drain_timeout_milliseconds drain_timeout_milliseconds: Int,
   idle_timeout_milliseconds idle_timeout_milliseconds: Int,
@@ -159,6 +168,12 @@ pub fn start(
     native_server.with_port(configuration, port)
     |> result.map_error(map_configuration_error),
   )
+  use configuration <- result.try(case bind_address {
+    None -> Ok(configuration)
+    Some(address) ->
+      native_server.with_bind_address(configuration, address)
+      |> result.map_error(map_configuration_error)
+  })
   use configuration <- result.try(
     native_server.with_timeout(configuration, timeout_milliseconds)
     |> result.map_error(map_configuration_error),
@@ -357,10 +372,23 @@ pub fn port(listener: ListenerHandle) -> Result(Int, Failure) {
 
 pub fn accept(listener: ListenerHandle) -> Result(Incoming, Failure) {
   case native_server.accept(listener) {
-    Ok(native_server.Incoming(request, method, path, protocol, headers)) ->
-      Ok(#(request, method, path, protocol, headers))
+    Ok(native_server.Incoming(
+      request,
+      method,
+      path,
+      protocol,
+      scheme,
+      authority,
+      headers,
+    )) -> Ok(#(request, method, path, protocol, scheme, authority, headers))
     Error(error) -> Error(map_native_error(error))
   }
+}
+
+pub fn peer_endpoint(
+  request: RequestHandle,
+) -> Result(#(BitArray, Int), Failure) {
+  native_server.peer_endpoint(request) |> result.map_error(map_native_error)
 }
 
 pub fn next_event(request: RequestHandle) -> Result(RawEvent, Failure) {

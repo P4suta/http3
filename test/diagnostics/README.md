@@ -13,10 +13,11 @@ BEAMTRACE_BIN=/path/to/beamtrace mise run diagnose -- round-trip
 ```
 
 The fixed scenarios are `round-trip`, `connection-isolation`,
-`slow-consumer`, and `cleanup`. Each runs once as a warm-up before entering a
-single `diagnostics@http3_diagnostic:trace_root/1` capture root. Protocol work
-uses only the public client, server, and qlog APIs, with finite operation and
-cleanup timeouts.
+`slow-consumer`, `cleanup`, and `notify-integration`. Each runs once as a
+warm-up before entering a single
+`diagnostics@http3_diagnostic:trace_root/1` capture root. Protocol work uses
+only the public client, server, WebSocket, transport, and qlog APIs, with
+finite operation and cleanup timeouts.
 
 - `round-trip` sends and receives one streaming request.
 - `connection-isolation` abandons an unanswered request, then proves that a
@@ -24,6 +25,11 @@ cleanup timeouts.
 - `slow-consumer` deterministically exceeds an eight-event consumer buffer.
 - `cleanup` crashes a connection owner without closing, waits for process and
   mailbox convergence, then proves that a new connection remains usable.
+- `notify-integration` binds exactly to IPv4 loopback, verifies the
+  authenticated peer endpoint, migrates a live connection, pulls a
+  Content-Length-free response larger than 8 MiB despite a 64 KiB bounded-body
+  policy through a finite 256 KiB queue, and performs an RFC 9220 text,
+  Ping/Pong, and Close exchange.
 
 The runner creates a unique temporary artifact directory and prints its path.
 It contains the metadata-only `.beamtrace` container, a JSONL metadata export,

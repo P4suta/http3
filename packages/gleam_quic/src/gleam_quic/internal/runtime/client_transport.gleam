@@ -86,7 +86,9 @@ pub type Error {
   TotalTimeout
   TlsHandshakeFailed
   QuicFailure(driver.Error)
-  PeerClosed
+  /// The peer closed the connection during the handshake, with the close code
+  /// it named when one was carried.
+  PeerClosed(code: Option(Int))
   MigrationUnavailable
   VersionNegotiationReceived(List(Version))
   VersionNegotiationFailed
@@ -611,7 +613,7 @@ fn candidate_error_priority(error: Error) -> Int {
   case error {
     TlsHandshakeFailed -> 100
     VersionNegotiationFailed | VersionNegotiationReceived(_) -> 90
-    QuicFailure(_) | PeerClosed -> 80
+    QuicFailure(_) | PeerClosed(_) -> 80
     HandshakeTimeout -> 60
     ConnectTimeout -> 50
     DnsTimeout | ResolutionFailed -> 40
@@ -866,7 +868,11 @@ fn handshake(
 ) -> Result(State, Error) {
   case phase(state), remaining_milliseconds(deadline) {
     transport.Established, _ -> Ok(state)
-    transport.Closed, _ -> Error(PeerClosed)
+    // A peer that closes mid-handshake -- a server refusing this connection,
+    // say -- is reported with the code it sent rather than as a deadline this
+    // attempt would otherwise have to wait out.
+    transport.Closed, _ | transport.Draining, _ ->
+      Error(peer_close_error(state))
     _, remaining if remaining <= 0 -> Error(HandshakeTimeout)
     _, _ -> {
       use state <- result.try(drive(state))
@@ -879,6 +885,21 @@ fn handshake(
       ))
       handshake(state, deadline, ignore_version_negotiation)
     }
+  }
+}
+
+/// The close the peer named, if it named one. The events are taken from a
+/// connection this attempt is abandoning, so nothing else will read them.
+fn peer_close_error(state: State) -> Error {
+  let #(_discarded, events) = take_events(state)
+  PeerClosed(peer_close_code(events))
+}
+
+fn peer_close_code(events: List(transport.Event)) -> Option(Int) {
+  case events {
+    [] -> None
+    [transport.PeerClosed(code, _reason), ..] -> Some(code)
+    [_other, ..rest] -> peer_close_code(rest)
   }
 }
 
