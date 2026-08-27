@@ -201,7 +201,11 @@ const drain_settle_bound_milliseconds = 10_000
 /// test bound is the outer limit either way.
 const recovery_round_trip_bound_milliseconds = 2000
 
-const recovery_drain_bound_milliseconds = 2000
+/// Draining the 2 MiB recovery flood can take longer than one operation bound
+/// on a path that correctly stays at QUIC's 1200-byte floor (for example when
+/// the host cannot enable Don't-Fragment for DPLPMTUD). Keep the test finite,
+/// while giving that portable path enough time to deliver the complete stream.
+const recovery_drain_bound_milliseconds = 10_000
 
 const drain_chunk_bytes = 65_536
 

@@ -170,9 +170,14 @@ pub fn releasing_one_connection_keeps_its_neighbour_routed_test() -> Nil {
 
   // Releasing one connection must free exactly its own identifiers and its
   // own admission slot: the neighbour keeps routing, and exactly one slot
-  // comes back.
+  // comes back. The listener deliberately gives every connection the same
+  // short idle timeout, so exercise the neighbour while waiting instead of
+  // letting that unrelated timeout decide the test on a slower scheduler.
   vanish(first)
-  let exited = settled_exit(first_actor, idle_bound_milliseconds)
+  let exited =
+    settled_exit_while(first_actor, idle_bound_milliseconds, fn() {
+      client.ping(second)
+    })
   let #(neighbour, neighbour_stream) = opened_stream(second, second_peer)
   client.send(neighbour, <<"pong":utf8>>) |> should.be_ok
   let neighbour_read = server.receive(neighbour_stream, read_bytes)
@@ -304,6 +309,38 @@ fn close_peer(peer: Result(server.Connection, server.Error)) -> Nil {
 /// Whether one actor has exited within a fixed bound.
 fn settled_exit(actor: Pid, bound_milliseconds: Int) -> Bool {
   poll_exit(actor, udp.monotonic_millisecond() + bound_milliseconds)
+}
+
+/// Whether one actor exits while a live neighbour performs bounded work.
+fn settled_exit_while(
+  actor: Pid,
+  bound_milliseconds: Int,
+  keep_alive: fn() -> Result(Nil, client.Error),
+) -> Bool {
+  poll_exit_while(
+    actor,
+    udp.monotonic_millisecond() + bound_milliseconds,
+    keep_alive,
+  )
+}
+
+fn poll_exit_while(
+  actor: Pid,
+  deadline: Int,
+  keep_alive: fn() -> Result(Nil, client.Error),
+) -> Bool {
+  case process.is_alive(actor) {
+    False -> True
+    True ->
+      case udp.monotonic_millisecond() >= deadline {
+        True -> False
+        False -> {
+          let _kept_alive = keep_alive()
+          process.sleep(poll_interval_milliseconds)
+          poll_exit_while(actor, deadline, keep_alive)
+        }
+      }
+  }
 }
 
 fn poll_exit(actor: Pid, deadline: Int) -> Bool {
