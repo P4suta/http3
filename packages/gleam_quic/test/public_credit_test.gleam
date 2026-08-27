@@ -207,6 +207,12 @@ const recovery_round_trip_bound_milliseconds = 2000
 /// while giving that portable path enough time to deliver the complete stream.
 const recovery_drain_bound_milliseconds = 30_000
 
+/// This scenario deliberately fills, closes, and reopens the delivery window
+/// before starting its recovery drain. On slower hosts that setup can consume
+/// most of the normal connection lifetime, so its test-only total deadline
+/// must cover setup plus the independently bounded drain and round trip.
+const recovery_total_bound_milliseconds = 90_000
+
 const drain_chunk_bytes = 65_536
 
 /// The step of a recovery exchange that failed, if any did.
@@ -557,9 +563,17 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
-  // A long operation deadline lets the statistics query drain the flooded
-  // actor and consume its own reply, so a slow answer never outlives the call.
-  let deadlines = config.default_deadlines()
+  // The normal operation deadline lets the statistics query drain the
+  // flooded actor and consume its own reply. This multi-phase test gets a
+  // longer total lifetime so a slower host does not close an otherwise
+  // recovering connection before the separately bounded drain begins.
+  let deadlines =
+    config.with_deadline(
+      config.default_deadlines(),
+      failure.Total,
+      recovery_total_bound_milliseconds,
+    )
+    |> should.be_ok
   let limits = stalled_limits()
   let listener = start_listener(deadlines, limits)
   let port = server.port(listener) |> should.be_ok
