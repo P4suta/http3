@@ -82,11 +82,6 @@ fn connection_handle(
   connection: server.Connection,
 ) -> Result(connection_worker.Connection, Nil)
 
-/// The actor-owned stream inside one public stream, used to retain an exact
-/// internal failure in this regression rather than its public normalisation.
-@external(erlang, "gleam_quic_test_ffi", "stream_handle")
-fn stream_handle(stream: server.Stream) -> Result(connection_worker.Stream, Nil)
-
 /// The fixed diagnostic label every per-connection actor must carry.
 const connection_label = "gleam_quic.connection"
 
@@ -353,7 +348,6 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // advertised and inside the room it was granted, so it has to arrive whole
   // however tight the budget becomes afterwards.
   let outgoing = server.open_bidirectional(stalled.peer) |> should.be_ok
-  let outgoing_handle = stream_handle(outgoing) |> should.be_ok
   let inside_window = server.send(outgoing, repeated_bytes(quantum_bytes))
 
   // The budget is then spent by the connections whose owners never read, and
@@ -366,7 +360,7 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // remainder parks, so that partial progress must retain the grant as its
   // binding cause and end on its own deadline as a transient overload rather
   // than as a bare operation timeout.
-  let blocked = send_until_refused(outgoing_handle, blocked_send_quanta)
+  let blocked = send_until_refused(outgoing, blocked_send_quanta)
 
   // Backpressure, not truncation: the connection that could not be funded is
   // still there -- a write was held back, not a connection destroyed -- what
@@ -387,7 +381,8 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   assert pressed == True
   // Red until the budget exists: today the server keeps growing its send
   // buffer for a peer that never reads until the exchange fails outright.
-  assert blocked == Error(connection_worker.EndpointMemoryExceeded)
+  assert blocked
+    == Error(server.Failure(failure.Overload(failure.EndpointMemory)))
   assert alive == True
   assert delivered >= quantum_bytes
   assert retained == True
@@ -864,13 +859,13 @@ fn drain_stream(
 /// refused, and report the refusal. A run that is never refused reports the
 /// success it should not have had.
 fn send_until_refused(
-  stream: connection_worker.Stream,
+  stream: server.Stream,
   remaining: Int,
-) -> Result(Nil, connection_worker.Error) {
+) -> Result(Nil, server.Error) {
   case remaining <= 0 {
     True -> Ok(Nil)
     False ->
-      case connection_worker.send(stream, repeated_bytes(quantum_bytes)) {
+      case server.send(stream, repeated_bytes(quantum_bytes)) {
         Error(reason) -> Error(reason)
         Ok(Nil) -> send_until_refused(stream, remaining - 1)
       }

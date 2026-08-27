@@ -19,6 +19,7 @@ import gleam_quic/internal/qlog
 import gleam_quic/internal/runtime/connection as runtime_connection
 import gleam_quic/internal/runtime/connection_worker
 import gleam_quic/internal/runtime/server_worker
+import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
@@ -889,6 +890,15 @@ fn map_error(error: connection_worker.Error) -> Error {
     connection_worker.DatagramQueueExceeded(maximum)
     | connection_worker.DatagramTooLarge(maximum) ->
       Failure(failure.Limit(failure.Datagram, maximum))
+    connection_worker.StreamQueueFailure(stream_state.WrongDirection) ->
+      InvalidDirection
+    connection_worker.StreamQueueFailure(stream_state.SendClosed) ->
+      StreamFinished
+    connection_worker.StreamQueueFailure(stream_state.SendBufferLimitExceeded(_)) ->
+      Failure(failure.Overload(failure.Queue))
+    connection_worker.StreamQueueFailure(stream_state.InvalidInput)
+    | connection_worker.StreamQueueFailure(stream_state.NonByteAligned) ->
+      InvalidOperation
     connection_worker.DatagramsNotNegotiated
     | connection_worker.QuicFailure
     | connection_worker.StreamQueueFailure(_) ->
