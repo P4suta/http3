@@ -1401,7 +1401,13 @@ pub fn paces_datagrams_the_validated_path_carries_test() -> Nil {
   // send budget has to admit it instead of rejecting it out of hand.
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 16_384, 210)
-  assert connection_state.validate_send_budget(prepared, frames, 16_384, 210)
+  assert connection_state.validate_send_budget(
+      prepared,
+      engine.OneRtt,
+      frames,
+      16_384,
+      210,
+    )
     == Ok(Nil)
 }
 
@@ -1426,9 +1432,72 @@ pub fn floors_the_congestion_window_at_the_validated_path_test() -> Nil {
   assert connection_state.congestion_window(connection) >= 18_000
   assert connection_state.validate_send_budget(
       connection,
+      engine.OneRtt,
       [frame.Ping],
       9000,
       70,
+    )
+    == Ok(Nil)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn full_recovery_ledger_backpressures_before_transmission_test() -> Nil {
+  let config =
+    connection_state.Config(
+      ..connection_state.default_config(connection_state.Client),
+      maximum_outstanding_packets: 1,
+      path_dont_fragment: True,
+    )
+  let assert Ok(connection) = established_with_config(config)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ping],
+      100,
+      ecn.NotEct,
+      1,
+    )
+
+  // The next ack-eliciting packet must remain queued until the peer frees a
+  // ledger entry. This refusal happens during preflight, before the caller
+  // hands the datagram to UDP.
+  assert connection_state.validate_send_budget(
+      connection,
+      engine.OneRtt,
+      [frame.Ping],
+      100,
+      1000,
+    )
+    == Error(connection_state.RecoveryLimited)
+
+  // ACK-only output is not retained, so it remains available to make the
+  // progress that can free the peer's own recovery state.
+  assert connection_state.validate_send_budget(
+      connection,
+      engine.OneRtt,
+      [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(0, 0)], None))],
+      100,
+      1000,
+    )
+    == Ok(Nil)
+
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.Ack(frame.Acknowledgement(0, [frame.AckRange(0, 0)], None))],
+      packet_space.NotEct,
+      1000,
+    )
+  assert connection_state.validate_send_budget(
+      connection,
+      engine.OneRtt,
+      [frame.Ping],
+      100,
+      1000,
     )
     == Ok(Nil)
 }
@@ -2468,14 +2537,18 @@ fn pacer_bound_connection_after(
 fn established(
   role: connection_state.Role,
 ) -> Result(connection_state.State, connection_state.Error) {
-  let assert Ok(connection) =
-    connection_state.new(
-      connection_state.Config(
-        ..connection_state.default_config(role),
-        path_dont_fragment: True,
-      ),
-      0,
-    )
+  established_with_config(
+    connection_state.Config(
+      ..connection_state.default_config(role),
+      path_dont_fragment: True,
+    ),
+  )
+}
+
+fn established_with_config(
+  config: connection_state.Config,
+) -> Result(connection_state.State, connection_state.Error) {
+  let assert Ok(connection) = connection_state.new(config, 0)
   let assert Ok(keys) = test_keys()
   let assert Ok(connection) =
     connection_state.apply_tls_actions(connection, [
@@ -2613,6 +2686,7 @@ fn flush_sized_datagrams(
           case
             connection_state.validate_send_budget(
               prepared,
+              engine.OneRtt,
               frames,
               datagram_bytes,
               now_milliseconds,

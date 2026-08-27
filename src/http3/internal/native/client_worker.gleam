@@ -1133,6 +1133,12 @@ fn is_send_pressure(error: client_connection.Error) -> Bool {
         session.DriverFailure(driver.ConnectionFailure(
           transport.CongestionLimited,
         )),
+      )
+    | client_connection.Http3OperationFailed(
+        _,
+        session.DriverFailure(driver.ConnectionFailure(
+          transport.RecoveryLimited,
+        )),
       ) -> True
     _ -> False
   }

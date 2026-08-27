@@ -899,8 +899,6 @@ fn map_error(error: connection_worker.Error) -> Error {
     connection_worker.StreamQueueFailure(stream_state.InvalidInput)
     | connection_worker.StreamQueueFailure(stream_state.NonByteAligned) ->
       InvalidOperation
-    connection_worker.QuicFailureAt(stage) ->
-      Failure(failure.Quic(failure.Peer, Some(stage)))
     connection_worker.DatagramsNotNegotiated
     | connection_worker.QuicFailure
     | connection_worker.StreamQueueFailure(_) ->

@@ -127,7 +127,6 @@ pub type Error {
   EndpointMemoryExceeded
   QlogUnavailable
   QuicFailure
-  QuicFailureAt(Int)
   StreamQueueFailure(stream_state.Error)
 }
 
@@ -767,7 +766,7 @@ fn tick_and_flush(worker: Worker) -> Worker {
   let now = udp.monotonic_millisecond()
   let worker = Worker(..worker, dirty: False)
   case server_transport.tick(worker.peer.connection, now) {
-    Error(_) -> fail_connection(worker, QuicFailureAt(901))
+    Error(_) -> fail_connection(worker, QuicFailure)
     Ok(connection) -> {
       let worker =
         put_peer(worker, PeerState(..worker.peer, connection: connection))
@@ -853,7 +852,7 @@ fn receive_one_datagram(
   let peer_state = worker.peer
   let now = udp.monotonic_millisecond()
   case replay_policy(worker, now) {
-    Error(_) -> fail_connection(worker, QuicFailureAt(902))
+    Error(_) -> fail_connection(worker, QuicFailure)
     Ok(policy) ->
       case
         server_transport.receive_datagram(
@@ -867,9 +866,9 @@ fn receive_one_datagram(
         Error(server_transport.DriverFailure(error)) ->
           case driver.discardable_receive_error(error) {
             True -> worker
-            False -> fail_connection(worker, QuicFailureAt(903))
+            False -> fail_connection(worker, QuicFailure)
           }
-        Error(_) -> fail_connection(worker, QuicFailureAt(904))
+        Error(_) -> fail_connection(worker, QuicFailure)
         Ok(connection) -> {
           case peer_state.qlog_writer {
             Some(writer) ->
@@ -1018,7 +1017,7 @@ fn maybe_issue_session_ticket(worker: Worker, now: Int) -> Worker {
   case
     server_transport.issue_session_ticket_if_ready(worker.peer.connection, now)
   {
-    Error(_) -> fail_connection(worker, QuicFailureAt(905))
+    Error(_) -> fail_connection(worker, QuicFailure)
     Ok(connection) ->
       put_peer(worker, PeerState(..worker.peer, connection: connection))
   }
@@ -1127,8 +1126,11 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
         | Error(server_transport.DriverFailure(driver.ConnectionFailure(
             transport.CongestionLimited,
           )))
+        | Error(server_transport.DriverFailure(driver.ConnectionFailure(
+            transport.RecoveryLimited,
+          )))
         | Ok(None) -> worker
-        Error(_) -> fail_connection(worker, QuicFailureAt(906))
+        Error(_) -> fail_connection(worker, QuicFailure)
         Ok(Some(prepared)) -> {
           let bytes = server_transport.prepared_bytes(prepared)
           let destination = candidate_send_endpoint(peer)
@@ -1159,16 +1161,12 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
                       ),
                     ),
                   )
-                udp.SocketLost -> fail_connection(worker, QuicFailureAt(907))
+                udp.SocketLost -> fail_connection(worker, QuicFailure)
                 udp.Delivered ->
                   case
                     server_transport.commit_datagram(prepared, ecn.NotEct, now)
                   {
-                    Error(error) ->
-                      fail_connection(
-                        worker,
-                        QuicFailureAt(commit_failure_stage(error)),
-                      )
+                    Error(_) -> fail_connection(worker, QuicFailure)
                     Ok(connection) -> {
                       case peer.qlog_writer {
                         Some(writer) ->
@@ -1195,35 +1193,6 @@ fn flush_connection(worker: Worker, now: Int, remaining: Int) -> Worker {
           }
         }
       }
-  }
-}
-
-fn commit_failure_stage(error: server_transport.Error) -> Int {
-  case error {
-    server_transport.DriverFailure(driver.InvalidInput) -> 90_801
-    server_transport.DriverFailure(driver.ConnectionFailure(
-      transport.ConnectionUnavailable,
-    )) -> 90_802
-    server_transport.DriverFailure(driver.ConnectionFailure(
-      transport.SpaceUnavailable,
-    )) -> 90_803
-    server_transport.DriverFailure(driver.ConnectionFailure(transport.MissingWriteKeys(
-      _,
-    ))) -> 90_804
-    server_transport.DriverFailure(driver.ConnectionFailure(
-      transport.PacketSpaceFailure,
-    )) -> 90_805
-    server_transport.DriverFailure(driver.ConnectionFailure(
-      transport.CongestionLimited,
-    )) -> 90_806
-    server_transport.DriverFailure(driver.ConnectionFailure(transport.PacingLimited(
-      _,
-    ))) -> 90_807
-    server_transport.DriverFailure(driver.ConnectionFailure(
-      transport.AmplificationLimited,
-    )) -> 90_808
-    server_transport.DriverFailure(driver.ConnectionFailure(_)) -> 90_809
-    _ -> 90_810
   }
 }
 
@@ -2526,7 +2495,8 @@ fn map_transport_error(error: server_transport.Error) -> Error {
     server_transport.DriverFailure(error) ->
       case error {
         driver.ConnectionFailure(transport.CongestionLimited)
-        | driver.ConnectionFailure(transport.PacingLimited(_)) ->
+        | driver.ConnectionFailure(transport.PacingLimited(_))
+        | driver.ConnectionFailure(transport.RecoveryLimited) ->
           CongestionLimited
         driver.ConnectionFailure(transport.DatagramNotNegotiated) ->
           DatagramsNotNegotiated

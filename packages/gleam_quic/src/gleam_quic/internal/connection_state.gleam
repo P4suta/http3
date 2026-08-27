@@ -339,6 +339,7 @@ pub type Error {
   ProtocolViolation
   CongestionLimited
   PacingLimited(Int)
+  RecoveryLimited
   AmplificationLimited
   DatagramNotNegotiated
   DatagramTooLarge(Int)
@@ -1062,11 +1063,12 @@ pub fn commit_packet(
   }
 }
 
-/// Check congestion, pacing, and anti-amplification budgets before a caller
-/// transmits a protected datagram. The decision is non-mutating; a successful
-/// UDP send is still recorded by `commit_packet`.
+/// Check recovery retention, congestion, pacing, and anti-amplification budgets
+/// before a caller transmits a protected datagram. The decision is non-mutating;
+/// a successful UDP send is still recorded by `commit_packet`.
 pub fn validate_send_budget(
   state: State,
+  level: engine.EncryptionLevel,
   frames: List(frame.Frame),
   datagram_bytes: Int,
   now_milliseconds: Int,
@@ -1076,6 +1078,7 @@ pub fn validate_send_budget(
     True -> {
       let ack_eliciting = frames_ack_eliciting(frames)
       let in_flight = ack_eliciting || frames_have_padding(frames)
+      use _ <- result.try(validate_recovery_capacity(state, level, in_flight))
       use _ <- result.try(debit_amplification(
         state.amplification,
         datagram_bytes,
@@ -1093,6 +1096,21 @@ pub fn validate_send_budget(
       ))
       Ok(Nil)
     }
+  }
+}
+
+fn validate_recovery_capacity(
+  state: State,
+  level: engine.EncryptionLevel,
+  retained: Bool,
+) -> Result(Nil, Error) {
+  case
+    retained
+    && packet_space.outstanding_count(packet_space_for_level(state, level))
+    >= state.config.maximum_outstanding_packets
+  {
+    True -> Error(RecoveryLimited)
+    False -> Ok(Nil)
   }
 }
 
@@ -4072,6 +4090,7 @@ fn commit_valid_packet(
       codepoint,
     )
   {
+    Error(packet_space.SentLedgerFull(_)) -> Error(RecoveryLimited)
     Error(_) -> Error(PacketSpaceFailure)
     Ok(#(space, _)) -> {
       use ecn_state <- result.try(record_ecn_send(state.ecn, codepoint))

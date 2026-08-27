@@ -4920,11 +4920,17 @@ fn is_send_pressure(error: server_connection.Error) -> Bool {
     | server_connection.DriverFailure(driver.ConnectionFailure(
         transport.CongestionLimited,
       ))
+    | server_connection.DriverFailure(driver.ConnectionFailure(
+        transport.RecoveryLimited,
+      ))
     | server_connection.SessionFailure(session.DriverFailure(driver.ConnectionFailure(transport.PacingLimited(
         _,
       ))))
     | server_connection.SessionFailure(session.DriverFailure(driver.ConnectionFailure(
         transport.CongestionLimited,
+      )))
+    | server_connection.SessionFailure(session.DriverFailure(driver.ConnectionFailure(
+        transport.RecoveryLimited,
       ))) -> True
     _ -> False
   }

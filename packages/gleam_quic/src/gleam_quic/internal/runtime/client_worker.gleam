@@ -1443,6 +1443,9 @@ fn maybe_probe_path_mtu(worker: Worker, now: Int) -> Result(Worker, Error) {
             ))))
             | Error(client_transport.QuicFailure(driver.ConnectionFailure(
                 transport.CongestionLimited,
+              )))
+            | Error(client_transport.QuicFailure(driver.ConnectionFailure(
+                transport.RecoveryLimited,
               ))) ->
               Ok(
                 Worker(
@@ -1745,7 +1748,8 @@ fn map_transport_error(error: client_transport.Error) -> Error {
 fn map_driver_error(error: driver.Error) -> Error {
   case error {
     driver.ConnectionFailure(transport.CongestionLimited)
-    | driver.ConnectionFailure(transport.PacingLimited(_)) -> CongestionLimited
+    | driver.ConnectionFailure(transport.PacingLimited(_))
+    | driver.ConnectionFailure(transport.RecoveryLimited) -> CongestionLimited
     driver.ConnectionFailure(transport.DatagramNotNegotiated) ->
       DatagramsNotNegotiated
     driver.ConnectionFailure(transport.DatagramTooLarge(maximum)) ->

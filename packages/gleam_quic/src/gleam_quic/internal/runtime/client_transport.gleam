@@ -962,7 +962,8 @@ fn flush(
         )
       {
         Error(driver.ConnectionFailure(transport.PacingLimited(_)))
-        | Error(driver.ConnectionFailure(transport.CongestionLimited)) ->
+        | Error(driver.ConnectionFailure(transport.CongestionLimited))
+        | Error(driver.ConnectionFailure(transport.RecoveryLimited)) ->
           Ok(state)
         Error(error) -> Error(QuicFailure(error))
         Ok(None) -> Ok(state)

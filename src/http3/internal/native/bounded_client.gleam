@@ -640,7 +640,8 @@ fn flush_driver(
     _ ->
       case driver.prepare_datagram(state, maximum_frame_data_bytes, now) {
         Error(driver.ConnectionFailure(transport.PacingLimited(_))) -> Ok(state)
-        Error(driver.ConnectionFailure(transport.CongestionLimited)) ->
+        Error(driver.ConnectionFailure(transport.CongestionLimited))
+        | Error(driver.ConnectionFailure(transport.RecoveryLimited)) ->
           Ok(state)
         Error(error) -> Error(QuicTransportFailed("prepare", error))
         Ok(None) -> Ok(state)
@@ -908,7 +909,10 @@ fn flush_session(
         )))) -> Ok(state)
         Error(session.DriverFailure(driver.ConnectionFailure(
           transport.CongestionLimited,
-        ))) -> Ok(state)
+        )))
+        | Error(session.DriverFailure(driver.ConnectionFailure(
+            transport.RecoveryLimited,
+          ))) -> Ok(state)
         Error(error) -> Error(Http3OperationFailed("prepare", error))
         Ok(None) -> Ok(state)
         Ok(Some(prepared)) ->

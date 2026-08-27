@@ -638,6 +638,7 @@ fn make_prepared(
   use Nil <- result.try(
     connection_state.validate_send_budget(
       state.connection,
+      level,
       frames,
       bit_array.byte_size(bytes),
       now_ms,
