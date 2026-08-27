@@ -190,6 +190,11 @@ const parallel_bound_milliseconds = 10_000
 /// Every wait in this module is bounded; exceeding a bound is a failure.
 const operation_bound_milliseconds = 2000
 
+/// Endpoint-memory pressure, not an unrelated idle timer, decides these
+/// multi-connection tests. The bound stays finite but outlasts every bounded
+/// flood and drain even when pure BEAM crypto shares a 1200-byte path.
+const memory_test_idle_milliseconds = 120_000
+
 /// A flood ends when its own sends stop being accepted, one operation
 /// deadline after the peer's window shuts; this bound covers every flooder.
 const flood_bound_milliseconds = 20_000
@@ -337,6 +342,7 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
     admit(listener, port, ca_certificate, deadlines, limits, loaded_connections)
   let stalled = admitted(listener, port, ca_certificate, deadlines, limits)
   let healthy = admitted(listener, port, ca_certificate, deadlines, limits)
+  let stalled_actor = labelled_pid(stalled.peer, connection_label)
 
   // One quantum offered to the stalled peer, inside the window this endpoint
   // advertised and inside the room it was granted, so it has to arrive whole
@@ -359,8 +365,7 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // was already offered still arrives whole, the pressed connection's own
   // backlog is still there for its owner to read, and an unrelated connection
   // is untouched by any of it.
-  let actor = labelled_pid(stalled.peer, connection_label) |> should.be_ok
-  let alive = process.is_alive(actor)
+  let alive = result.map(stalled_actor, process.is_alive) == Ok(True)
   let delivered = read_prefix(stalled.connection)
   let retained = drain_backlog(list.first(loaded) |> should.be_ok)
   let exchanged = round_trip(healthy)
@@ -610,6 +615,8 @@ fn bounded_deadlines() -> config.Deadlines {
   |> config.with_deadline(failure.Handshake, operation_bound_milliseconds)
   |> should.be_ok
   |> config.with_deadline(failure.Operation, operation_bound_milliseconds)
+  |> should.be_ok
+  |> config.with_deadline(failure.Idle, memory_test_idle_milliseconds)
   |> should.be_ok
 }
 
