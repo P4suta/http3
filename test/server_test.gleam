@@ -52,12 +52,21 @@ pub fn bounded_server_round_trip_over_real_udp_test() -> Nil {
   assert server.stop(listener) == Ok(server.AlreadyStopped)
 }
 
+/// A one-byte crossing of the initial connection window still has to move a
+/// full MiB through stream-level credit updates. Pure BEAM crypto on a host
+/// whose path correctly stays at QUIC's 1200-byte floor can take more than ten
+/// seconds, so keep a portable finite outer bound for this throughput-neutral
+/// flow-control regression.
+const large_request_bound_milliseconds = 30_000
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bounded_client_request_crosses_initial_connection_window_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
   let configuration = server.new(certificate, private_key) |> should.be_ok
-  let configuration = server.with_timeout(configuration, 10_000) |> should.be_ok
+  let configuration =
+    server.with_timeout(configuration, large_request_bound_milliseconds)
+    |> should.be_ok
   let configuration =
     server.with_stream_buffer_limit(configuration, 262_144) |> should.be_ok
   let listener = server.start(configuration) |> should.be_ok
@@ -66,7 +75,8 @@ pub fn bounded_client_request_crosses_initial_connection_window_test() -> Nil {
   let client_task =
     http3_test_support.start_task(fn() {
       let configuration =
-        client.with_timeout(client.new(), 10_000) |> should.be_ok
+        client.with_timeout(client.new(), large_request_bound_milliseconds)
+        |> should.be_ok
       let configuration =
         client.with_ca_certificate(configuration, ca_certificate)
         |> should.be_ok
