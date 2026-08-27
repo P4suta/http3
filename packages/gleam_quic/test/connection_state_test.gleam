@@ -2942,6 +2942,7 @@ fn narrow_chunk() -> BitArray {
   <<0:size(narrow_stream_window_bytes)-unit(8)>>
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn default_receive_offsets_do_not_cap_stream_lifetime_test() -> Nil {
   let connection_state.Config(
     maximum_receive_data:,
