@@ -13,8 +13,13 @@
     routed_connection_id/1,
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1,
+    start_server_send_trace/1,
+    stop_server_send_trace/1,
     traced_routed_connection_id/2
 ]).
+
+-define(SERVER_TRANSPORT,
+        'gleam_quic@internal@runtime@server_transport').
 
 %% IPPROTO_IP / IP_MTU_DISCOVER and IPPROTO_IPV6 / IPV6_MTU_DISCOVER, the
 %% Linux socket options that carry the Don't-Fragment policy DPLPMTUD needs
@@ -190,6 +195,69 @@ labelled_pid(Handle, Label) ->
     case labelled_pids(Handle, Label) of
         [Pid | _Rest] -> {ok, Pid};
         [] -> {error, nil}
+    end.
+
+%% Temporarily expose the exact internal driver error behind a public send
+%% failure. This is a test-only diagnostic seam: tracing is limited to one
+%% connection actor, and every trace pattern is removed before returning.
+-spec start_server_send_trace(pid()) -> nil.
+start_server_send_trace(Pid) when is_pid(Pid) ->
+    _ = erlang:trace_pattern(
+          {?SERVER_TRANSPORT, send, 4},
+          [{'_', [], [{return_trace}]}],
+          [local]),
+    _ = erlang:trace_pattern(
+          {?SERVER_TRANSPORT, buffered_send_bytes, 2},
+          [{'_', [], [{return_trace}]}],
+          [local]),
+    _ = erlang:trace(Pid, true, [call, {tracer, self()}]),
+    nil.
+
+-spec stop_server_send_trace(pid()) -> binary().
+stop_server_send_trace(Pid) when is_pid(Pid) ->
+    _ = erlang:trace(Pid, false, [call]),
+    await_trace_delivery(Pid),
+    _ = erlang:trace_pattern(
+          {?SERVER_TRANSPORT, send, 4}, false, [local]),
+    _ = erlang:trace_pattern(
+          {?SERVER_TRANSPORT, buffered_send_bytes, 2}, false, [local]),
+    Errors = collect_server_send_errors(Pid, []),
+    list_to_binary(io_lib:format("~p", [lists:reverse(Errors)])).
+
+-spec await_trace_delivery(pid()) -> ok.
+await_trace_delivery(Pid) ->
+    case erlang:is_process_alive(Pid) of
+        true ->
+            Reference = erlang:trace_delivered(Pid),
+            receive
+                {trace_delivered, Pid, Reference} -> ok
+            after 2000 ->
+                ok
+            end;
+        false ->
+            ok
+    end.
+
+-spec collect_server_send_errors(pid(), [term()]) -> [term()].
+collect_server_send_errors(Pid, Errors) ->
+    receive
+        {trace, Pid, call,
+         {?SERVER_TRANSPORT, Function, _Arguments}}
+                when Function =:= send;
+                     Function =:= buffered_send_bytes ->
+            collect_server_send_errors(Pid, Errors);
+        {trace, Pid, return_from,
+         {?SERVER_TRANSPORT, Function, _Arity}, {error, Error}}
+                when Function =:= send;
+                     Function =:= buffered_send_bytes ->
+            collect_server_send_errors(Pid, [{Function, Error} | Errors]);
+        {trace, Pid, return_from,
+         {?SERVER_TRANSPORT, Function, _Arity}, _Result}
+                when Function =:= send;
+                     Function =:= buffered_send_bytes ->
+            collect_server_send_errors(Pid, Errors)
+    after 0 ->
+        Errors
     end.
 
 -spec labelled_pids(term(), binary()) -> [pid()].

@@ -82,6 +82,13 @@ fn connection_handle(
   connection: server.Connection,
 ) -> Result(connection_worker.Connection, Nil)
 
+/// Capture only failed internal send-driver returns for one connection actor.
+@external(erlang, "gleam_quic_test_ffi", "start_server_send_trace")
+fn start_server_send_trace(actor: Pid) -> Nil
+
+@external(erlang, "gleam_quic_test_ffi", "stop_server_send_trace")
+fn stop_server_send_trace(actor: Pid) -> String
+
 /// The fixed diagnostic label every per-connection actor must carry.
 const connection_label = "gleam_quic.connection"
 
@@ -343,6 +350,7 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   let stalled = admitted(listener, port, ca_certificate, deadlines, limits)
   let healthy = admitted(listener, port, ca_certificate, deadlines, limits)
   let stalled_actor = labelled_pid(stalled.peer, connection_label)
+  start_server_send_trace(stalled_actor |> should.be_ok)
 
   // One quantum offered to the stalled peer, inside the window this endpoint
   // advertised and inside the room it was granted, so it has to arrive whole
@@ -359,6 +367,7 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // endpoint has refused to fund, so the offer parks and ends on its own
   // deadline as a transient overload rather than as a bare operation timeout.
   let blocked = send_until_refused(outgoing, blocked_send_quanta)
+  let send_trace = stop_server_send_trace(stalled_actor |> should.be_ok)
 
   // Backpressure, not truncation: the connection that could not be funded is
   // still there -- a write was held back, not a connection destroyed -- what
@@ -379,8 +388,11 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   assert pressed == True
   // Red until the budget exists: today the server keeps growing its send
   // buffer for a peer that never reads until the exchange fails outright.
-  assert blocked
-    == Error(server.Failure(failure.Overload(failure.EndpointMemory)))
+  assert #(blocked, send_trace)
+    == #(
+      Error(server.Failure(failure.Overload(failure.EndpointMemory))),
+      send_trace,
+    )
   assert alive == True
   assert delivered >= quantum_bytes
   assert retained == True
