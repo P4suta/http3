@@ -228,11 +228,20 @@ stop_server_send_trace(Pid) when is_pid(Pid) ->
 await_trace_delivery(Pid) ->
     case erlang:is_process_alive(Pid) of
         true ->
-            Reference = erlang:trace_delivered(Pid),
-            receive
-                {trace_delivered, Pid, Reference} -> ok
-            after 2000 ->
-                ok
+            %% A pressured connection may exit between the liveness read and
+            %% this barrier. `trace_delivered/1` then raises `badarg`, but all
+            %% trace signals sent before that exit are already deliverable and
+            %% can still be drained below.
+            try erlang:trace_delivered(Pid) of
+                Reference ->
+                    receive
+                        {trace_delivered, Pid, Reference} -> ok
+                    after 2000 ->
+                        ok
+                    end
+            catch
+                error:badarg ->
+                    ok
             end;
         false ->
             ok
