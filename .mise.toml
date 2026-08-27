@@ -1,6 +1,7 @@
 [tools]
 gleam = "1.18.1"
 erlang = "29.0.5"
+elixir = "1.20.3"
 rebar = "3.27.0"
 actionlint = "1.7.12"
 go = "1.27.0"
@@ -54,6 +55,10 @@ run = [
 [tasks.build]
 description = "Build with compiler warnings treated as errors"
 run = "gleam build --warnings-as-errors"
+
+[tasks.mix-package]
+description = "Build runtime-only http3 and gleam_quic OTP applications with MixGleam"
+run = "sh test/run_mix_gleam_package.sh"
 
 [tasks.test]
 description = "Run the gleeunit test suite"
@@ -182,8 +187,8 @@ run = [
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
-  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh",
-  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh",
+  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
+  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
   "typos",
   "reuse lint",
   "gitleaks dir . --redact --no-banner",
@@ -234,6 +239,7 @@ description = "Run every required local verification"
 run = [
   "mise run core-check",
   "mise run core-package",
+  "mise run mix-package",
   "gleam format --check src test",
   "gleam build --warnings-as-errors",
   "bash test/run_ffi_audit.sh",
@@ -248,8 +254,8 @@ run = [
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
-  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh",
-  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh",
+  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
+  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
   "typos",
   "reuse lint",
   "mise run semgrep",

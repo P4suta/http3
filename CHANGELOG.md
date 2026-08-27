@@ -69,6 +69,9 @@ imply a tag, a hosted release, or publication to Hex.
   package now owns its RFC 9000 varint and stream-identifier helpers.
 - `CLAUDE.md`, a dated evidence convention under `docs/evidence/`, stub tasks
   for the remaining qualification gates, and a nightly workflow skeleton.
+- Runtime-only MixGleam 0.6.2 descriptors and a locked packaging gate that
+  produces separate `http3` and `gleam_quic` OTP applications for
+  Git-SHA-pinned Burrito consumers.
 
 ### Changed
 

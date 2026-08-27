@@ -15,11 +15,14 @@ the full local verification suite:
 
 ```sh
 mise install
+mix local.hex 2.5.1 --force
+mix archive.install hex mix_gleam 0.6.2 --force
 mise run check
 ```
 
 The package supports Erlang/OTP 28 and 29. Local development uses OTP 29;
-the CI definition covers the complete supported range.
+the CI definition covers the complete supported range. The exact MixGleam
+archive is used only by the runtime-only OTP application packaging check.
 
 ## Making a change
 
