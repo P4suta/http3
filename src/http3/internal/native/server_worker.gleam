@@ -4947,9 +4947,15 @@ fn map_connection_error(error: server_connection.Error) -> Error {
     server_connection.DriverFailure(driver.ConnectionFailure(
       transport.StreamFailure,
     ))
+    | server_connection.DriverFailure(driver.ConnectionFailure(transport.StreamQueueFailure(
+        _,
+      )))
     | server_connection.SessionFailure(session.TransportFailure(
         transport.StreamFailure,
-      )) -> CongestionLimited
+      ))
+    | server_connection.SessionFailure(session.TransportFailure(transport.StreamQueueFailure(
+        _,
+      ))) -> CongestionLimited
     server_connection.SessionFailure(session.TransportFailure(
       transport.DatagramNotNegotiated,
     )) -> DatagramsNotNegotiated
