@@ -19,6 +19,16 @@ a production-support statement.
   The library's anti-amplification and admission controls do not stop
   volumetric traffic before it reaches the host.
 
+Use `server.with_bind_address` with an `http3/address.Address` when a listener
+must be restricted to one interface. Address parsing accepts literals only and
+does not turn a configuration value into a DNS lookup. TCP and UDP may use the
+same numeric port because they are distinct transports; advertise that mapping
+at the application layer only after the UDP listener is ready.
+
+For rate limits and audit identity, use `server.peer_endpoint`. It tracks only
+the peer path authenticated by QUIC path validation, including migration and
+NAT rebinding. Do not substitute untrusted forwarded headers for this value.
+
 ## Certificate reload
 
 Build and validate a complete replacement `server.Configuration`, then call

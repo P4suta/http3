@@ -4,7 +4,7 @@ import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
+import http3/internal/varint
 
 /// One SETTINGS identifier/value pair. Unknown identifiers are preserved.
 pub type Setting {

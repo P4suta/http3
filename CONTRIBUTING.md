@@ -31,7 +31,10 @@ the CI definition covers the complete supported range.
    before fixing a bug.
 4. Update public documentation and `CHANGELOG.md` when behavior changes.
 5. Review both canonical API snapshot diffs when public signatures change.
-6. Run `mise run check` before proposing the change.
+6. Never add an import of a package-private `gleam_quic` module; the
+   `api/boundary.allow` allowlist only shrinks, so edit it by deleting lines
+   and never by running `boundary --write-allowlist`.
+7. Run `mise run check` before proposing the change.
 
 For an intentional public API change, inspect the compiler interface and then
 run `mise run api-update`. Commit both resulting snapshot changes with the API

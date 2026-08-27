@@ -8,6 +8,141 @@ import gleam_quic/internal/udp
 @external(erlang, "gleam_quic_test_ffi", "inject_relay_connection_reset")
 fn inject_relay_connection_reset(relay: udp.Relay) -> Nil
 
+@external(erlang, "gleam_quic_test_ffi", "socket_buffer_bytes")
+fn socket_buffer_bytes(socket: udp.Socket) -> List(Int)
+
+@external(erlang, "gleam_quic_test_ffi", "socket_dont_fragment_values")
+fn socket_dont_fragment_values(socket: udp.Socket) -> List(Int)
+
+@external(erlang, "gleam_quic_test_ffi", "linux_platform")
+fn linux_platform() -> Bool
+
+/// The inet user-level receive buffer sizes the binary allocated for every
+/// received datagram, so it only has to cover the largest UDP payload.
+const expected_socket_buffer_bytes = 65_536
+
+/// Linux IP_PMTUDISC_DO and IP_PMTUDISC_PROBE. Both set the Don't-Fragment
+/// bit on every outgoing datagram, which RFC 8899 section 3 requires before an
+/// acknowledged probe may be read as proof the path carries that size; PROBE
+/// additionally ignores the kernel's cached path MTU, which is what a
+/// DPLPMTUD search wants.
+const dont_fragment_policies = [2, 3]
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn sets_dont_fragment_on_every_quic_socket_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(socket) = udp.open(ephemeral)
+  let policies = socket_dont_fragment_values(socket)
+  let assert Ok(Nil) = udp.close(socket)
+
+  let assert Ok(ipv6_loopback) = udp.ipv6(0, 0, 0, 0, 0, 0, 0, 1)
+  let assert Ok(ipv6_ephemeral) = udp.endpoint(ipv6_loopback, 0)
+  let assert Ok(ipv6_socket) = udp.open(ipv6_ephemeral)
+  let ipv6_policies = socket_dont_fragment_values(ipv6_socket)
+  let assert Ok(Nil) = udp.close(ipv6_socket)
+
+  let dual_policies = case udp.open_dual_stack(0) {
+    // nolint: thrown_away_error -- a host without IPv6 has nothing to measure.
+    Error(_) -> []
+    Ok(dual) -> {
+      let values = socket_dont_fragment_values(dual)
+      let assert Ok(Nil) = udp.close(dual)
+      values
+    }
+  }
+
+  // Only Linux exposes these two options through inet raw options, so only
+  // there can the test read the policy back.
+  case linux_platform() {
+    False -> Nil
+    True -> {
+      let observed = list.flatten([policies, ipv6_policies, dual_policies])
+      assert observed != []
+      assert list.all(observed, fn(policy) {
+        list.contains(dont_fragment_policies, policy)
+      })
+      Nil
+    }
+  }
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn classifies_an_oversized_datagram_as_a_probe_failure_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(socket) = udp.open(ephemeral)
+  let assert Ok(local) = udp.local_endpoint(socket)
+
+  // No IP datagram carries more than 65_507 bytes of UDP payload, so this send
+  // is refused by the kernel with EMSGSIZE - the same error a Don't-Fragment
+  // socket returns for a DPLPMTUD probe larger than the path. That is a probe
+  // result the PMTU search must own, so it is classified apart from a socket
+  // failure rather than folded into it.
+  let oversized =
+    udp.send(socket, local, <<0:size(65_527)-unit(8)>>, ecn.NotEct)
+  assert oversized == Error(udp.MessageTooLarge)
+
+  // The socket itself is untouched: it still carries a datagram the path fits.
+  let assert Ok(Nil) = udp.send(socket, local, <<"after-emsgsize">>, ecn.NotEct)
+  let assert Ok(udp.Datagram(_, <<"after-emsgsize">>, _)) =
+    udp.receive(socket, 1000)
+  let assert Ok(Nil) = udp.close(socket)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn classifies_every_send_result_for_the_send_paths_test() -> Nil {
+  // Every flush and every DPLPMTUD probe in this stack - both core runtimes
+  // and all three root native endpoints - routes its `udp.send` result through
+  // this one classifier, so this is the single place the three-way decision is
+  // pinned. EMSGSIZE is a path measurement: the datagram is dropped
+  // uncommitted, the path returns to the floor, the connection stays alive and
+  // its frames stay queued. Folding it into a socket failure instead would
+  // tear a healthy connection down for a path that merely shrank.
+  assert udp.classify_send(Ok(Nil)) == udp.Delivered
+  assert udp.classify_send(Error(udp.MessageTooLarge)) == udp.PathTooSmall
+
+  // Nothing else is a path measurement: a socket that is closed, unowned, or
+  // broken cannot be recovered by shrinking the path.
+  let fatal = [
+    udp.InvalidInput,
+    udp.Timeout,
+    udp.Closed,
+    udp.PermissionDenied,
+    udp.AddressInUse,
+    udp.AddressUnavailable,
+    udp.EcnUnavailable,
+    udp.SocketFailure,
+  ]
+  assert list.all(fatal, fn(error) {
+    udp.classify_send(Error(error)) == udp.SocketLost
+  })
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounds_socket_receive_buffer_to_one_datagram_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(socket) = udp.open(ephemeral)
+  let buffers = socket_buffer_bytes(socket)
+  let assert Ok(Nil) = udp.close(socket)
+  assert buffers == [expected_socket_buffer_bytes]
+
+  case udp.open_dual_stack(0) {
+    // nolint: thrown_away_error -- a host without IPv6 has nothing to measure.
+    Error(_) -> Nil
+    Ok(dual) -> {
+      let dual_buffers = socket_buffer_bytes(dual)
+      let assert Ok(Nil) = udp.close(dual)
+      assert dual_buffers
+        == [expected_socket_buffer_bytes, expected_socket_buffer_bytes]
+      Nil
+    }
+  }
+}
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn validates_ipv4_and_ipv6_endpoints_test() -> Nil {
   let assert Ok(ipv4) = udp.ipv4(127, 0, 0, 1)
@@ -99,24 +234,19 @@ pub fn active_once_delivers_exactly_one_bounded_mailbox_datagram_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
-
   let assert Ok(Nil) = udp.activate_once(receiver)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok(udp.Datagram(_, <<"first">>, _)) =
-    udp.receive_active(receiver, message)
-  assert process.selector_receive(selector, within: 10) == Error(Nil)
+    receive_active_until(receiver, udp.monotonic_millisecond() + 1000)
+  assert receive_active_until(receiver, udp.monotonic_millisecond() + 10)
+    == Error(Nil)
 
   let assert Ok(Nil) = udp.activate_once(receiver)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok(udp.Datagram(_, <<"second">>, _)) =
-    udp.receive_active(receiver, message)
+    receive_active_until(receiver, udp.monotonic_millisecond() + 1000)
   let assert Ok(Nil) = udp.close(sender)
   let assert Ok(Nil) = udp.close(receiver)
   Nil
@@ -129,25 +259,21 @@ pub fn relay_waits_for_credit_before_forwarding_another_batch_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
   let assert Ok(relay) = udp.start_relay(receiver)
 
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"first">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"first">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"second">>, ecn.NotEct)
-  assert process.selector_receive(selector, within: 10) == Error(Nil)
+  assert receive_relay_until(relay, udp.monotonic_millisecond() + 10)
+    == Error(Nil)
 
   let assert Ok(Nil) = udp.continue_relay(relay)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"second">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) = udp.stop_relay(relay)
   let assert Ok(Nil) = udp.close(sender)
@@ -161,17 +287,13 @@ pub fn relay_ignores_connection_local_icmp_reset_test() -> Nil {
   let assert Ok(sender) = udp.open(ephemeral)
   let assert Ok(receiver) = udp.open(ephemeral)
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
   let assert Ok(relay) = udp.start_relay(receiver)
 
   inject_relay_connection_reset(relay)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"still-listening">>, ecn.NotEct)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
   let assert Ok([udp.Datagram(_, <<"still-listening">>, _)]) =
-    udp.receive_relay_batch(relay, message)
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) = udp.stop_relay(relay)
   let assert Ok(Nil) = udp.close(sender)
@@ -291,17 +413,13 @@ pub fn dual_stack_relay_batches_ipv4_and_ipv6_datagrams_test() -> Nil {
   let #(_, port) = udp.endpoint_parts(local)
   let assert Ok(ipv4_receiver) = udp.endpoint(ipv4_loopback, port)
   let assert Ok(ipv6_receiver) = udp.endpoint(ipv6_loopback, port)
-  let selector =
-    process.new_selector()
-    |> process.select_other(fn(value) { value })
-
   let assert Ok(Nil) =
     udp.send(ipv4_sender, ipv4_receiver, <<"ipv4-relay">>, ecn.NotEct)
   let assert Ok(Nil) =
     udp.send(ipv6_sender, ipv6_receiver, <<"ipv6-relay">>, ecn.NotEct)
   let assert Ok(relay) = udp.start_relay(receiver)
-  let assert Ok(message) = process.selector_receive(selector, within: 1000)
-  let assert Ok(batch) = udp.receive_relay_batch(relay, message)
+  let assert Ok(batch) =
+    receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
   let payloads =
     list.map(batch, fn(datagram) {
       let udp.Datagram(_, payload, _) = datagram
@@ -314,4 +432,54 @@ pub fn dual_stack_relay_batches_ipv4_and_ipv6_datagrams_test() -> Nil {
   let assert Ok(Nil) = udp.close(ipv4_sender)
   let assert Ok(Nil) = udp.close(ipv6_sender)
   Nil
+}
+
+/// Ignore late active-mode messages owned by fixtures from earlier tests.
+fn receive_active_until(
+  socket: udp.Socket,
+  deadline: Int,
+) -> Result(udp.Datagram, Nil) {
+  let remaining = deadline - udp.monotonic_millisecond()
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False -> {
+      let selector =
+        process.new_selector()
+        |> process.select_other(fn(value) { value })
+      case process.selector_receive(selector, within: remaining) {
+        Error(Nil) -> Error(Nil)
+        Ok(message) ->
+          case udp.receive_active(socket, message) {
+            Ok(datagram) -> Ok(datagram)
+            Error(udp.InvalidInput) -> receive_active_until(socket, deadline)
+            Error(_) -> Error(Nil)
+          }
+      }
+    }
+  }
+}
+
+/// Ignore late relay messages whose capability belongs to another fixture.
+fn receive_relay_until(
+  relay: udp.Relay,
+  deadline: Int,
+) -> Result(List(udp.Datagram), Nil) {
+  let remaining = deadline - udp.monotonic_millisecond()
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False -> {
+      let selector =
+        process.new_selector()
+        |> process.select_other(fn(value) { value })
+      case process.selector_receive(selector, within: remaining) {
+        Error(Nil) -> Error(Nil)
+        Ok(message) ->
+          case udp.receive_relay_batch(relay, message) {
+            Ok(batch) -> Ok(batch)
+            Error(udp.InvalidInput) -> receive_relay_until(relay, deadline)
+            Error(_) -> Error(Nil)
+          }
+      }
+    }
+  }
 }

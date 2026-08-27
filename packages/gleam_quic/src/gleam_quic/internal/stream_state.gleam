@@ -270,6 +270,13 @@ pub fn buffered_send_bytes(state: State) -> Int {
   bit_array.byte_size(state.pending_send_data) + state.unacknowledged_send_bytes
 }
 
+/// Return the MAX_STREAM_DATA value currently advertised on this stream, so a
+/// connection whose credit advertisements were held back by the endpoint
+/// memory budget can re-state them once the hold lifts.
+pub fn advertised_receive_limit(state: State) -> Int {
+  flow_control.receiver_limit(state.receiver)
+}
+
 /// Highest unique STREAM offset reserved by this stream's sender.
 pub fn next_send_offset(state: State) -> Int {
   state.next_send_offset

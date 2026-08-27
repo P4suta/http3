@@ -12,8 +12,7 @@ import gleam_quic/internal/ecn
 import gleam_quic/internal/packet_space
 import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/anti_replay
-import gleam_quic/stream_id
-import gleam_quic/varint
+import gleam_quic/stream_id as quic_stream_id
 import http3/internal/native/connection_state as http3_state
 import http3/internal/native/datagram
 import http3/internal/native/drain
@@ -23,6 +22,8 @@ import http3/internal/native/stream_registry
 import http3/internal/qpack/header.{type Header}
 import http3/internal/qpack/instruction
 import http3/internal/qpack/instruction_stream
+import http3/internal/stream_id
+import http3/internal/varint
 
 const maximum_stream_read_bytes = 65_536
 
@@ -133,7 +134,7 @@ pub fn open_request(
   use #(connection, identifier) <- result.try(
     transport.open_stream(
       driver.connection(state.quic),
-      stream_id.Bidirectional,
+      quic_stream_id.Bidirectional,
     )
     |> map_transport_result,
   )
@@ -271,7 +272,7 @@ pub fn promise_push(
   use #(connection, push_stream_id) <- result.try(
     transport.open_stream(
       driver.connection(state.quic),
-      stream_id.Unidirectional,
+      quic_stream_id.Unidirectional,
     )
     |> map_transport_result,
   )
@@ -635,6 +636,16 @@ pub fn prepare_pmtu_probe(
   }
 }
 
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram this connection believed the path carried.
+///
+/// The socket sets Don't-Fragment, so the kernel will not split an oversized
+/// datagram: refusing it is a path measurement (RFC 8899 section 4.3), not a
+/// socket failure.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(..state, quic: driver.report_pmtu_black_hole(state.quic))
+}
+
 /// Bytes for one UDP send operation.
 pub fn prepared_bytes(prepared: PreparedDatagram) -> BitArray {
   driver.prepared_bytes(prepared.prepared)
@@ -759,7 +770,7 @@ fn start_established(
 fn open_unidirectional(
   connection: transport.State,
 ) -> Result(#(transport.State, Int), Error) {
-  transport.open_stream(connection, stream_id.Unidirectional)
+  transport.open_stream(connection, quic_stream_id.Unidirectional)
   |> map_transport_result
 }
 

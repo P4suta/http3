@@ -15,6 +15,7 @@ pub fn every_quic_actor_role_has_one_fixed_process_label_test() -> Nil {
   |> should.equal([
     "gleam_quic.client",
     "gleam_quic.listener",
+    "gleam_quic.connection",
     "gleam_quic.connect_candidate",
     "gleam_quic.dns_resolver",
     "gleam_quic.udp_relay",

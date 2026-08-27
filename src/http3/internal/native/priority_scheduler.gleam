@@ -3,8 +3,8 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
 import http3/internal/native/priority.{type Priority, Priority}
+import http3/internal/varint
 
 type Item {
   Item(priority: Priority, ready: Bool)

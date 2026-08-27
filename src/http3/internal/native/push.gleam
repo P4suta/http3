@@ -4,9 +4,9 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
 import http3/internal/native/header_semantics
 import http3/internal/qpack/header.{type Header}
+import http3/internal/varint
 
 /// Observable lifecycle of one Push ID.
 pub type Status {

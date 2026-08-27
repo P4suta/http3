@@ -53,6 +53,10 @@ limited to 8 MiB. Certificate-chain and service-identity verification are
 always enabled. `http3/config` provides complete finite phase deadlines and
 resource limits; there is no unlimited queue or deadline value.
 
+For a certificate-verified local health probe, `client.send_to` accepts an
+exact `http3/address.Address` as the UDP dial target while retaining the
+request host for SNI, certificate service identity, and HTTP authority.
+
 For connection reuse and streaming bodies, establish a connection, open one
 or more streams, send request chunks, and pull response events:
 
@@ -96,6 +100,17 @@ have independent limits. Streaming request events and response writes remain
 bounded; graceful drain, immediate shutdown, owner termination, and repeated
 stop calls clean up deterministically.
 
+Listeners can bind an exact IPv4 or IPv6 literal with `http3/address`.
+Accepted requests expose their HTTPS scheme, authority, and only the current
+QUIC-validated peer endpoint, including after migration or NAT rebinding.
+Content-Length-free response streams and pull-based client streams retain
+finite frame, queue, buffer, flow-control, and operation bounds without a
+cumulative lifetime body ceiling.
+
+`http3/websocket` adds RFC 9220 Extended CONNECT with RFC 6455 masking,
+fragmentation, UTF-8, Ping/Pong, Close, finite message/buffer limits, and
+cancellation. Compression is not negotiated.
+
 Advanced controls reuse opaque public connection and stream values:
 
 ```gleam
@@ -123,6 +138,8 @@ locally.
 | Capability | Status |
 | --- | --- |
 | Secure bounded/streaming HTTP/3 client and server paths | Implemented and tested |
+| Exact IPv4/IPv6 bind and validated request/peer context | Implemented and tested |
+| RFC 9220 WebSocket client/server with bounded RFC 6455 framing | Implemented and tested; compression excluded |
 | Event-driven UDP and finite per-stream event/Datagram queues | Implemented and tested |
 | Typed deadlines, role-specific live limits, runtime failures, reload, and ticket persistence | Implemented and tested except aggregate `EndpointMemory`, tracked below |
 | Physical HTTP/3/QPACK package ownership | Implemented; core archive contains transport only |
@@ -131,7 +148,7 @@ locally.
 | Bounded external 0-RTT replay guard with safe 1-RTT fallback | Implemented and tested |
 | P-256 key exchange and mTLS API | Implemented and directly tested; OTP/peer credential matrix remains open |
 | Complete conformance, qlog, CUBIC, coverage, security, interop, and package gates | Open release blockers |
-| Fixed performance thresholds | Not met by the retained baseline or 2026-08-25 diagnostic rerun |
+| Fixed performance thresholds | Benchmark (516) and load (344) met on the 2026-08-26 recorded host; soak (812) not rerun |
 | Public v1 source-tree gate | Reopened on 2026-08-25 |
 | Tag, hosted release, and Hex publication | Deliberately not performed |
 

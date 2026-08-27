@@ -25,15 +25,18 @@ import http3/internal/qpack/header.{type Header}
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
 
-// A 1452-byte UDP payload fits a 1500-byte IPv6 path without IP
-// fragmentation. DPLPMTUD starts at 1200 and confirms every larger size.
-const maximum_datagram_frame_bytes = 1452
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Connection policy after public input validation.
 pub type Config {
@@ -367,26 +370,48 @@ pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
     Ok(None) -> Ok(state)
     Ok(Some(prepared)) -> {
       let bytes = session.prepared_bytes(prepared)
-      use Nil <- result.try(
-        udp.send(state.socket, state.peer, bytes, ecn.NotEct) |> map_udp_send,
-      )
-      use next <- result.try(
-        session.commit_datagram(prepared, ecn.NotEct, now)
-        |> result.map_error(fn(error) {
-          Http3OperationFailed("commit PMTU probe", error)
-        }),
-      )
-      Ok(
-        State(
-          ..state,
-          session: next,
-          packets_sent: state.packets_sent + 1,
-          data_sent: state.data_sent + bit_array.byte_size(bytes),
-          flushes: state.flushes + 1,
-        ),
-      )
+      case
+        udp.classify_send(udp.send(state.socket, state.peer, bytes, ecn.NotEct))
+      {
+        // Don't-Fragment is set, so a probe the local interface cannot carry
+        // whole is refused rather than split. The probe is dropped
+        // uncommitted and the path returns to the floor.
+        udp.PathTooSmall ->
+          Ok(
+            State(
+              ..state,
+              session: session.report_pmtu_black_hole(state.session),
+            ),
+          )
+        udp.SocketLost -> Error(SocketUnavailable)
+        udp.Delivered -> commit_pmtu_probe(state, prepared, bytes, now)
+      }
     }
   }
+}
+
+/// Account for one DPLPMTUD probe the socket accepted.
+fn commit_pmtu_probe(
+  state: State,
+  prepared: session.PreparedDatagram,
+  bytes: BitArray,
+  now: Int,
+) -> Result(State, Error) {
+  use next <- result.try(
+    session.commit_datagram(prepared, ecn.NotEct, now)
+    |> result.map_error(fn(error) {
+      Http3OperationFailed("commit PMTU probe", error)
+    }),
+  )
+  Ok(
+    State(
+      ..state,
+      session: next,
+      packets_sent: state.packets_sent + 1,
+      data_sent: state.data_sent + bit_array.byte_size(bytes),
+      flushes: state.flushes + 1,
+    ),
+  )
 }
 
 /// Snapshot current path diagnostics.
@@ -937,6 +962,7 @@ fn establish_version(
         config.bidirectional_stream_limit,
         config.unidirectional_stream_limit,
         config.datagram_limit,
+        udp.dont_fragment(socket),
       ),
       tls,
       original_destination_connection_id,
@@ -1116,24 +1142,56 @@ fn flush_driver(
     _ ->
       case driver.prepare_datagram(state, maximum_frame_data_bytes, now) {
         Error(driver.ConnectionFailure(transport.PacingLimited(_))) -> Ok(state)
-        Error(driver.ConnectionFailure(transport.CongestionLimited)) ->
+        Error(driver.ConnectionFailure(transport.CongestionLimited))
+        | Error(driver.ConnectionFailure(transport.RecoveryLimited)) ->
           Ok(state)
         Error(error) -> Error(QuicTransportFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(socket, peer, driver.prepared_bytes(prepared), ecn.NotEct)
-            |> map_udp_send,
+        Ok(Some(prepared)) ->
+          send_prepared_handshake(
+            state,
+            prepared,
+            socket,
+            peer,
+            now,
+            remaining_packets,
           )
-          use state <- result.try(
-            driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              QuicTransportFailed("commit", error)
-            }),
-          )
-          flush_driver(state, socket, peer, now, remaining_packets - 1)
-        }
       }
+  }
+}
+
+/// Send one prepared handshake datagram and continue the flush.
+///
+/// The socket sets Don't-Fragment, so an outgoing device narrower than the
+/// path this connection believed in refuses the datagram instead of splitting
+/// it. That is a path measurement, not a broken socket: the datagram is
+/// dropped uncommitted, the frames it carried stay queued for the next flush,
+/// and the path returns to the 1200-byte floor.
+fn send_prepared_handshake(
+  state: driver.State,
+  prepared: driver.PreparedDatagram,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(driver.State, Error) {
+  case
+    udp.classify_send(udp.send(
+      socket,
+      peer,
+      driver.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall -> Ok(driver.report_pmtu_black_hole(state))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use state <- result.try(
+        driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { QuicTransportFailed("commit", error) }),
+      )
+      flush_driver(state, socket, peer, now, remaining_packets - 1)
+    }
   }
 }
 
@@ -1187,39 +1245,55 @@ fn flush(
         )))) -> Ok(state)
         Error(session.DriverFailure(driver.ConnectionFailure(
           transport.CongestionLimited,
-        ))) -> Ok(state)
+        )))
+        | Error(session.DriverFailure(driver.ConnectionFailure(
+            transport.RecoveryLimited,
+          ))) -> Ok(state)
         Error(error) -> Error(Http3OperationFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(
-              state.socket,
-              state.peer,
-              session.prepared_bytes(prepared),
-              ecn.NotEct,
-            )
-            |> map_udp_send,
-          )
-          use next <- result.try(
-            session.commit_datagram(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              Http3OperationFailed("commit", error)
-            }),
-          )
-          let bytes = bit_array.byte_size(session.prepared_bytes(prepared))
-          flush(
-            State(
-              ..state,
-              session: next,
-              packets_sent: state.packets_sent + 1,
-              data_sent: state.data_sent + bytes,
-              flushes: state.flushes + 1,
-            ),
-            now,
-            remaining_packets - 1,
-          )
-        }
+        Ok(Some(prepared)) ->
+          send_prepared(state, prepared, now, remaining_packets)
       }
+  }
+}
+
+/// Send one prepared datagram, account for it, and continue the flush.
+///
+/// A datagram the local stack refuses as too large is the path shrinking
+/// underneath a size DPLPMTUD had confirmed: the socket sets Don't-Fragment,
+/// so the kernel will not split it. It is dropped uncommitted - the frames it
+/// carried are still owed and go out on the next flush - and the path returns
+/// to the 1200-byte floor RFC 9000 section 14 guarantees.
+fn send_prepared(
+  state: State,
+  prepared: session.PreparedDatagram,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(State, Error) {
+  let bytes = session.prepared_bytes(prepared)
+  case
+    udp.classify_send(udp.send(state.socket, state.peer, bytes, ecn.NotEct))
+  {
+    udp.PathTooSmall ->
+      Ok(State(..state, session: session.report_pmtu_black_hole(state.session)))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use next <- result.try(
+        session.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { Http3OperationFailed("commit", error) }),
+      )
+      flush(
+        State(
+          ..state,
+          session: next,
+          packets_sent: state.packets_sent + 1,
+          data_sent: state.data_sent + bit_array.byte_size(bytes),
+          flushes: state.flushes + 1,
+        ),
+        now,
+        remaining_packets - 1,
+      )
+    }
   }
 }
 
@@ -1289,18 +1363,20 @@ fn client_transport_config(
   bidirectional_stream_limit: Int,
   unidirectional_stream_limit: Int,
   datagram_limit: Int,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let config = transport.default_config(transport.Client)
-  let maximum_datagram = int.min(datagram_limit, maximum_datagram_frame_bytes)
+  let maximum_datagram = int.min(datagram_limit, maximum_udp_payload_size)
   transport.Config(
     ..config,
     version: selected_version,
+    path_dont_fragment: dont_fragment,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
     maximum_peer_streams_bidirectional: bidirectional_stream_limit,
     maximum_peer_streams_unidirectional: unidirectional_stream_limit,
     maximum_total_streams: bidirectional_stream_limit
       + unidirectional_stream_limit,
-    maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
     maximum_datagram_frame_size: case http_datagrams {
       True -> maximum_datagram
@@ -1326,7 +1402,7 @@ fn client_transport_parameters(
   let parameters = [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1341,7 +1417,7 @@ fn client_transport_parameters(
     True -> [
       transport_parameter.MaxDatagramFrameSize(int.min(
         datagram_limit,
-        maximum_datagram_frame_bytes,
+        maximum_udp_payload_size,
       )),
       ..parameters
     ]
@@ -1407,10 +1483,6 @@ fn map_session_result(
   operation: String,
 ) -> Result(value, Error) {
   result.map_error(result, fn(error) { Http3OperationFailed(operation, error) })
-}
-
-fn map_udp_send(result: Result(Nil, udp.Error)) -> Result(Nil, Error) {
-  result.replace_error(result, SocketUnavailable)
 }
 
 fn same_endpoint(left: udp.Endpoint, right: udp.Endpoint) -> Bool {

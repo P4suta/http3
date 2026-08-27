@@ -1,5 +1,5 @@
-import gleam_quic/varint
 import http3/internal/native/drain
+import http3/internal/varint
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn peer_goaway_detaches_retryable_requests_and_stops_new_work_test() -> Nil {

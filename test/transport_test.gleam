@@ -77,6 +77,31 @@ pub fn server_keepalive_sends_ping_over_real_udp_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn loopback_path_mtu_grows_past_the_ethernet_ceiling_test() -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http3_test_support.server_credentials()
+  let listener =
+    server.new(certificate, private_key)
+    |> should.be_ok
+    |> server.start
+    |> should.be_ok
+  let port = server.port(listener) |> should.be_ok
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let controls = client.connection_transport(connection)
+  transport.ping(controls) |> should.be_ok
+
+  // Loopback carries far larger datagrams than an Ethernet path, and both ends
+  // advertise RFC 9000's 65_527-byte default max_udp_payload_size, so
+  // probe-before-use discovery has to climb past the 1452-byte ceiling the
+  // endpoints advertise today.
+  assert poll_path_mtu_above(controls, 1452, 200) > 1452
+  assert client.close(connection) == Ok(client.Closed)
+  assert server.stop(listener) == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn transport_backend_errors_are_normalized_test() -> Nil {
   assert transport_backend.normalize_error(#(1, 0, "ignored"))
     == transport_backend.ConnectionClosed
@@ -262,7 +287,14 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
         == Ok(transport.Capabilities(True, True, False, True))
       assert transport.maximum_datagram_size(stream_transport) |> should.be_ok
         > 0
-      assert await_stream_mtu(stream_transport, 100) > 1200
+      // DPLPMTUD stays at the RFC 9000 floor when a platform cannot apply a
+      // don't-fragment socket option. Growth above the floor is covered by
+      // the dedicated path-MTU tests on capable hosts.
+      let stream_mtu =
+        transport.stream_maximum_transmission_unit(stream_transport)
+        |> should.be_ok
+      assert stream_mtu >= 1200
+      assert stream_mtu <= 65_527
       let transport.PathStats(_, _, _, _, window, in_flight, _, _) =
         transport.stream_path_stats(stream_transport) |> should.be_ok
       assert window > 0
@@ -1131,15 +1163,20 @@ fn await_connection_mtu(
   }
 }
 
-fn await_stream_mtu(stream: transport.Stream, attempts: Int) -> Int {
-  let current =
-    transport.stream_maximum_transmission_unit(stream) |> should.be_ok
-  case current > 1200 {
+// Poll the discovered MTU for a bounded time, returning the last value seen
+// once it passes `floor` or the attempts run out.
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn poll_path_mtu_above(
+  connection: transport.Connection,
+  floor: Int,
+  attempts: Int,
+) -> Int {
+  let current = transport.maximum_transmission_unit(connection) |> should.be_ok
+  case current > floor || attempts <= 0 {
     True -> current
     False -> {
-      assert attempts > 0
       http3_test_support.pause_milliseconds(10)
-      await_stream_mtu(stream, attempts - 1)
+      poll_path_mtu_above(connection, floor, attempts - 1)
     }
   }
 }

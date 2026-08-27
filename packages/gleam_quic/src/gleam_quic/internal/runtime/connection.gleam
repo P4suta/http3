@@ -71,6 +71,26 @@ pub fn phase(state: State) -> transport.Phase {
   driver.phase(state.quic)
 }
 
+/// Hold this connection's advertised receive credit inside the endpoint memory
+/// it has been granted, so growth is funded before it happens, and report every
+/// byte it keeps resident.
+pub fn apply_memory_grant(
+  state: State,
+  granted_bytes: Int,
+  refused: Bool,
+) -> #(State, Int) {
+  let #(connection, retained) =
+    transport.apply_memory_grant(
+      driver.connection(state.quic),
+      granted_bytes,
+      refused,
+    )
+  #(
+    State(..state, quic: driver.put_connection(state.quic, connection)),
+    retained,
+  )
+}
+
 /// Whether TLS has installed authenticated 1-RTT keys.
 pub fn established(state: State) -> Bool {
   phase(state) == transport.Established
@@ -353,6 +373,12 @@ pub fn path_mtu(state: State) -> Int {
 /// Whether DPLPMTUD has reached this path's current ceiling.
 pub fn pmtu_discovery_complete(state: State) -> Bool {
   transport.pmtu_discovery_complete(driver.connection(state.quic))
+}
+
+/// Return the path to the 1200-byte floor after the local stack refused a
+/// datagram the connection believed the path carried.
+pub fn report_pmtu_black_hole(state: State) -> State {
+  State(..state, quic: driver.report_pmtu_black_hole(state.quic))
 }
 
 /// Prepare one exact-size DPLPMTUD probe.

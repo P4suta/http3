@@ -1133,6 +1133,12 @@ fn is_send_pressure(error: client_connection.Error) -> Bool {
         session.DriverFailure(driver.ConnectionFailure(
           transport.CongestionLimited,
         )),
+      )
+    | client_connection.Http3OperationFailed(
+        _,
+        session.DriverFailure(driver.ConnectionFailure(
+          transport.RecoveryLimited,
+        )),
       ) -> True
     _ -> False
   }
@@ -2058,7 +2064,11 @@ fn send_buffer_full(error: client_connection.Error) -> Bool {
     client_connection.Http3OperationFailed(
       "send_data",
       session.TransportFailure(transport.StreamFailure),
-    ) -> True
+    )
+    | client_connection.Http3OperationFailed(
+        "send_data",
+        session.TransportFailure(transport.StreamQueueFailure(_)),
+      ) -> True
     _ -> False
   }
 }

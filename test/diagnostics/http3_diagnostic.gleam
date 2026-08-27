@@ -9,18 +9,25 @@ import gleam/erlang/process
 import gleam/http
 import gleam/http/request
 import gleam/option.{type Option, None, Some}
+import http3/address
 import http3/client
+import http3/config
 import http3/server
 import http3/transport
+import http3/websocket
 import http3_test_support
 
-const operation_timeout_milliseconds = 5000
+const operation_timeout_milliseconds = 60_000
 
 const cleanup_timeout_milliseconds = 5000
 
 const cleanup_process_allowance = 8
 
 const cleanup_mailbox_allowance = 128
+
+const long_stream_chunk_bytes = 65_536
+
+const long_stream_chunks = 129
 
 /// Run one warm-up workload followed by the single traced root.
 pub fn main() -> Nil {
@@ -30,12 +37,12 @@ pub fn main() -> Nil {
         True -> scenario
         False ->
           fail(
-            "usage: http3_diagnostic <round-trip|connection-isolation|slow-consumer|cleanup>",
+            "usage: http3_diagnostic <round-trip|connection-isolation|slow-consumer|cleanup|notify-integration>",
           )
       }
     _ ->
       fail(
-        "usage: http3_diagnostic <round-trip|connection-isolation|slow-consumer|cleanup>",
+        "usage: http3_diagnostic <round-trip|connection-isolation|slow-consumer|cleanup|notify-integration>",
       )
   }
 
@@ -55,7 +62,13 @@ pub fn trace_root(scenario: String) -> Nil {
 
 /// Fixed scenario allowlist used by the runner and direct unit test.
 pub fn supported_scenarios() -> List(String) {
-  ["round-trip", "connection-isolation", "slow-consumer", "cleanup"]
+  [
+    "round-trip",
+    "connection-isolation",
+    "slow-consumer",
+    "cleanup",
+    "notify-integration",
+  ]
 }
 
 /// Return whether a scenario is safe and finitely bounded.
@@ -64,6 +77,7 @@ pub fn is_supported_scenario(scenario: String) -> Bool {
   || scenario == "connection-isolation"
   || scenario == "slow-consumer"
   || scenario == "cleanup"
+  || scenario == "notify-integration"
 }
 
 fn run_and_check_cleanup(scenario: String, qlog: Option(String)) -> Nil {
@@ -82,6 +96,7 @@ fn run_scenario(scenario: String, qlog: Option(String)) -> Nil {
     "connection-isolation" -> connection_isolation(qlog)
     "slow-consumer" -> slow_consumer(qlog)
     "cleanup" -> owner_cleanup(qlog)
+    "notify-integration" -> notify_integration(qlog)
     _ -> fail(#("unsupported diagnostic scenario", scenario))
   }
 }
@@ -151,14 +166,75 @@ fn owner_cleanup(qlog: Option(String)) -> Nil {
   })
 }
 
+fn notify_integration(qlog: Option(String)) -> Nil {
+  with_server(qlog, fn(port, ca_certificate) {
+    // A small finite queue is enough because the long-lived producer yields
+    // between chunks and the client continuously pulls events.
+    let configuration = client_configuration(ca_certificate, qlog, 262_144)
+    let assert Ok(connection) = client.connect(configuration, "localhost", port)
+
+    let first =
+      streaming_request(port, "/echo")
+      |> request.set_method(http.Post)
+    let assert Ok(first_stream) = client.open_stream(connection, first)
+    let assert Ok(Nil) =
+      client.send_chunk(first_stream, <<"before-migration":utf8>>)
+    let assert Ok(Nil) = client.finish(first_stream)
+    assert receive_response(first_stream, <<>>, False)
+      == <<"before-migration":utf8>>
+
+    let connection_transport = client.connection_transport(connection)
+    let assert Ok(Nil) = transport.migrate(connection_transport)
+    let migrated =
+      streaming_request(port, "/echo")
+      |> request.set_method(http.Post)
+    let assert Ok(migrated_stream) = client.open_stream(connection, migrated)
+    let assert Ok(Nil) =
+      client.send_chunk(migrated_stream, <<"after-migration":utf8>>)
+    let assert Ok(Nil) = client.finish(migrated_stream)
+    assert receive_response(migrated_stream, <<>>, False)
+      == <<"after-migration":utf8>>
+
+    let assert Ok(long_stream) =
+      client.open_stream(connection, streaming_request(port, "/long-stream"))
+    let assert Ok(Nil) = client.finish(long_stream)
+    assert receive_response_size(long_stream, 0, False)
+      == long_stream_chunk_bytes * long_stream_chunks
+
+    let assert Ok(socket) =
+      websocket.connect(
+        websocket.new(),
+        connection,
+        streaming_request(port, "/websocket"),
+      )
+    let assert Ok(socket) = websocket.send_text(socket, "diagnostic-websocket")
+    let assert Ok(#(socket, websocket.TextMessage("diagnostic-websocket"))) =
+      websocket.receive(socket)
+    let assert Ok(socket) = websocket.ping(socket, <<"ping":utf8>>)
+    let assert Ok(#(socket, websocket.Pong(<<"ping":utf8>>))) =
+      websocket.receive(socket)
+    let assert Ok(socket) =
+      websocket.close(socket, Some(1000), "diagnostic-complete")
+    let assert Ok(#(_, websocket.CloseReceived(Some(1000), _))) =
+      websocket.receive(socket)
+
+    let assert Ok(client.Closed) = client.close(connection)
+    Nil
+  })
+}
+
 fn with_server(qlog: Option(String), run: fn(Int, BitArray) -> Nil) -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
   let assert Ok(configuration) = server.new(certificate, private_key)
+  let assert Ok(bind_address) = address.parse("127.0.0.1")
+  let configuration = server.with_bind_address(configuration, bind_address)
   let assert Ok(configuration) =
     server.with_timeout(configuration, operation_timeout_milliseconds)
   let assert Ok(configuration) =
     server.with_stream_buffer_limit(configuration, 65_536)
+  let assert Ok(configuration) =
+    server.with_response_body_limit(configuration, 65_536)
   let configuration = case qlog {
     None -> configuration
     Some(directory) -> {
@@ -191,6 +267,9 @@ fn serve(listener: server.Listener) -> Nil {
 }
 
 fn handle_request(incoming: server.Request) -> Nil {
+  let assert Ok(peer) = server.peer_endpoint(incoming)
+  assert address.to_string(address.endpoint_address(peer)) == "127.0.0.1"
+  assert address.port(peer) > 0
   case server.path(incoming) {
     "/timeout" -> Nil
     "/large" -> {
@@ -203,6 +282,16 @@ fn handle_request(incoming: server.Request) -> Nil {
         )
       Nil
     }
+    "/long-stream" -> {
+      let assert Ok(Nil) =
+        server.send_response(incoming, 200, [
+          #("content-type", "application/octet-stream"),
+        ])
+      send_long_stream(incoming, long_stream_chunks)
+      let assert Ok(Nil) = server.finish_response(incoming)
+      Nil
+    }
+    "/websocket" -> serve_websocket(incoming)
     _ -> {
       let assert Ok(body) = server.read_body(incoming)
       let assert Ok(Nil) =
@@ -217,6 +306,32 @@ fn handle_request(incoming: server.Request) -> Nil {
   }
 }
 
+fn send_long_stream(incoming: server.Request, remaining: Int) -> Nil {
+  case remaining {
+    0 -> Nil
+    _ -> {
+      let assert Ok(Nil) =
+        server.send_chunk(
+          incoming,
+          http3_test_support.repeated_bytes(long_stream_chunk_bytes),
+        )
+      process.sleep(1)
+      send_long_stream(incoming, remaining - 1)
+    }
+  }
+}
+
+fn serve_websocket(incoming: server.Request) -> Nil {
+  let assert Ok(socket) = websocket.accept(websocket.new(), incoming)
+  let assert Ok(#(socket, websocket.TextMessage(message))) =
+    websocket.receive(socket)
+  let assert Ok(socket) = websocket.send_text(socket, message)
+  let assert Ok(#(socket, websocket.Ping(_))) = websocket.receive(socket)
+  let assert Ok(#(_, websocket.CloseReceived(Some(1000), _))) =
+    websocket.receive(socket)
+  Nil
+}
+
 fn client_configuration(
   ca_certificate: BitArray,
   qlog: Option(String),
@@ -226,6 +341,7 @@ fn client_configuration(
     client.with_timeout(client.new(), operation_timeout_milliseconds)
   let assert Ok(configuration) =
     client.with_stream_buffer_limit(configuration, stream_buffer_limit)
+  let configuration = client.with_address_family(configuration, config.Ipv4)
   let assert Ok(configuration) =
     client.with_ca_certificate(configuration, ca_certificate)
   case qlog {
@@ -234,6 +350,34 @@ fn client_configuration(
       let assert Ok(writer) = transport.qlog(directory)
       client.with_qlog(configuration, writer)
     }
+  }
+}
+
+fn receive_response_size(
+  stream: client.Stream,
+  received_bytes: Int,
+  response_seen: Bool,
+) -> Int {
+  case client.next_event(stream) {
+    Ok(client.InformationalResponse(_, _)) ->
+      receive_response_size(stream, received_bytes, response_seen)
+    Ok(client.Response(200, _)) ->
+      receive_response_size(stream, received_bytes, True)
+    Ok(client.Response(status, _)) -> fail(#("unexpected status", status))
+    Ok(client.Data(chunk)) ->
+      receive_response_size(
+        stream,
+        received_bytes + bit_array.byte_size(chunk),
+        response_seen,
+      )
+    Ok(client.Trailers(_)) ->
+      receive_response_size(stream, received_bytes, response_seen)
+    Ok(client.End) -> {
+      assert response_seen
+      received_bytes
+    }
+    Error(error) ->
+      fail(#("response receive failed", received_bytes, response_seen, error))
   }
 }
 

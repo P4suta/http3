@@ -25,13 +25,18 @@ import gleam_quic/version.{type Version}
 
 const maximum_packets_per_flush = 64
 
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
 
-const maximum_datagram_frame_bytes = 1452
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Validated client transport policy.
 pub type Config {
@@ -81,7 +86,9 @@ pub type Error {
   TotalTimeout
   TlsHandshakeFailed
   QuicFailure(driver.Error)
-  PeerClosed
+  /// The peer closed the connection during the handshake, with the close code
+  /// it named when one was carried.
+  PeerClosed(code: Option(Int))
   MigrationUnavailable
   VersionNegotiationReceived(List(Version))
   VersionNegotiationFailed
@@ -331,18 +338,31 @@ pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
     Ok(None) -> Ok(state)
     Ok(Some(prepared)) -> {
       let bytes = connection.prepared_bytes(prepared)
-      use Nil <- result.try(
-        udp.send(
+      case
+        udp.classify_send(udp.send(
           state.socket,
           connection.peer(state.connection),
           bytes,
           ecn.NotEct,
-        )
-        |> result.replace_error(SocketUnavailable),
-      )
-      connection.commit_datagram(prepared, ecn.NotEct, now)
-      |> result.map(fn(next) { State(..state, connection: next) })
-      |> result.map_error(QuicFailure)
+        ))
+      {
+        // The socket sets Don't-Fragment, so the kernel refuses a probe the
+        // local interface cannot carry whole. That is the probe's answer,
+        // not a broken socket: the probe is dropped uncommitted and the path
+        // returns to the floor.
+        udp.PathTooSmall ->
+          Ok(
+            State(
+              ..state,
+              connection: connection.report_pmtu_black_hole(state.connection),
+            ),
+          )
+        udp.SocketLost -> Error(SocketUnavailable)
+        udp.Delivered ->
+          connection.commit_datagram(prepared, ecn.NotEct, now)
+          |> result.map(fn(next) { State(..state, connection: next) })
+          |> result.map_error(QuicFailure)
+      }
     }
   }
 }
@@ -593,7 +613,7 @@ fn candidate_error_priority(error: Error) -> Int {
   case error {
     TlsHandshakeFailed -> 100
     VersionNegotiationFailed | VersionNegotiationReceived(_) -> 90
-    QuicFailure(_) | PeerClosed -> 80
+    QuicFailure(_) | PeerClosed(_) -> 80
     HandshakeTimeout -> 60
     ConnectTimeout -> 50
     DnsTimeout | ResolutionFailed -> 40
@@ -769,7 +789,11 @@ fn establish_version(
   )
   use quic <- result.try(
     driver.start_client_with_token(
-      client_transport_config(config, selected_version),
+      client_transport_config(
+        config,
+        selected_version,
+        udp.dont_fragment(socket),
+      ),
       tls,
       original_destination_connection_id,
       local_connection_id,
@@ -844,7 +868,11 @@ fn handshake(
 ) -> Result(State, Error) {
   case phase(state), remaining_milliseconds(deadline) {
     transport.Established, _ -> Ok(state)
-    transport.Closed, _ -> Error(PeerClosed)
+    // A peer that closes mid-handshake -- a server refusing this connection,
+    // say -- is reported with the code it sent rather than as a deadline this
+    // attempt would otherwise have to wait out.
+    transport.Closed, _ | transport.Draining, _ ->
+      Error(peer_close_error(state))
     _, remaining if remaining <= 0 -> Error(HandshakeTimeout)
     _, _ -> {
       use state <- result.try(drive(state))
@@ -857,6 +885,21 @@ fn handshake(
       ))
       handshake(state, deadline, ignore_version_negotiation)
     }
+  }
+}
+
+/// The close the peer named, if it named one. The events are taken from a
+/// connection this attempt is abandoning, so nothing else will read them.
+fn peer_close_error(state: State) -> Error {
+  let #(_discarded, events) = take_events(state)
+  PeerClosed(peer_close_code(events))
+}
+
+fn peer_close_code(events: List(transport.Event)) -> Option(Int) {
+  case events {
+    [] -> None
+    [transport.PeerClosed(code, _reason), ..] -> Some(code)
+    [_other, ..rest] -> peer_close_code(rest)
   }
 }
 
@@ -919,27 +962,52 @@ fn flush(
         )
       {
         Error(driver.ConnectionFailure(transport.PacingLimited(_)))
-        | Error(driver.ConnectionFailure(transport.CongestionLimited)) ->
+        | Error(driver.ConnectionFailure(transport.CongestionLimited))
+        | Error(driver.ConnectionFailure(transport.RecoveryLimited)) ->
           Ok(state)
         Error(error) -> Error(QuicFailure(error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(
-              state.socket,
-              connection.peer(state.connection),
-              connection.prepared_bytes(prepared),
-              ecn.NotEct,
-            )
-            |> result.replace_error(SocketUnavailable),
-          )
-          use next <- result.try(
-            connection.commit_datagram(prepared, ecn.NotEct, now)
-            |> result.map_error(QuicFailure),
-          )
-          flush(State(..state, connection: next), now, remaining_packets - 1)
-        }
+        Ok(Some(prepared)) ->
+          send_prepared(state, prepared, now, remaining_packets)
       }
+  }
+}
+
+/// Send one prepared datagram, then commit it and continue the flush.
+///
+/// A datagram the local stack refuses as too large is the path shrinking
+/// underneath a size DPLPMTUD had confirmed: the socket sets Don't-Fragment,
+/// so the kernel will not split it. It is dropped uncommitted, recovery
+/// retransmits its frames, and the next datagram is built for the floor.
+fn send_prepared(
+  state: State,
+  prepared: connection.PreparedDatagram,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(State, Error) {
+  case
+    udp.classify_send(udp.send(
+      state.socket,
+      connection.peer(state.connection),
+      connection.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall ->
+      Ok(
+        State(
+          ..state,
+          connection: connection.report_pmtu_black_hole(state.connection),
+        ),
+      )
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use next <- result.try(
+        connection.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(QuicFailure),
+      )
+      flush(State(..state, connection: next), now, remaining_packets - 1)
+    }
   }
 }
 
@@ -968,11 +1036,13 @@ fn process_received_datagram(
 fn client_transport_config(
   config: Config,
   selected: Version,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let defaults = transport.default_config(transport.Client)
   transport.Config(
     ..defaults,
     version: selected,
+    path_dont_fragment: dont_fragment,
     congestion_algorithm: config.congestion_control,
     idle_timeout_milliseconds: config.idle_timeout_milliseconds,
     maximum_peer_streams_bidirectional: config.bidirectional_stream_limit,
@@ -981,10 +1051,10 @@ fn client_transport_config(
     maximum_stream_send_buffer: config.stream_buffer_limit,
     maximum_total_streams: config.bidirectional_stream_limit
       + config.unidirectional_stream_limit,
-    maximum_udp_payload_size: maximum_datagram_frame_bytes,
+    maximum_udp_payload_size: maximum_udp_payload_size,
     maximum_datagram_frame_size: int.min(
       config.datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     ),
   )
 }
@@ -1005,7 +1075,7 @@ fn client_transport_parameters(
   [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(maximum_datagram_frame_bytes),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1017,7 +1087,7 @@ fn client_transport_parameters(
     transport_parameter.VersionInformation(selected_version, available_versions),
     transport_parameter.MaxDatagramFrameSize(int.min(
       datagram_limit,
-      maximum_datagram_frame_bytes,
+      maximum_udp_payload_size,
     )),
   ]
 }

@@ -9,6 +9,10 @@ import gleam_quic/internal/recovery
 import gleam_quic/internal/rtt
 import gleam_quic/varint
 
+// RFC 9000 section 16: eight bytes is the widest variable-length integer
+// encoding.
+const maximum_varint_bytes = 8
+
 /// QUIC maintains independent packet numbers and ACK state at each level.
 pub type Kind {
   Initial
@@ -219,6 +223,70 @@ pub fn take_ack(
   }
 }
 
+/// The bytes a packet must keep free for the acknowledgement this space is
+/// about to coalesce, and zero when none is scheduled.
+///
+/// The send path puts the acknowledgement it owes ahead of the frame it draws.
+/// A frame that can be split absorbs the difference, but an indivisible one -
+/// a QUIC DATAGRAM above all - has to be sized with this already subtracted or
+/// the two cannot share a packet at all.
+///
+/// This is an upper bound rather than the exact encoding. The ACK Delay field
+/// is a function of the clock rather than of retained state, so it is counted
+/// at its widest; every other field is measured from the ranges and ECN counts
+/// this space holds right now. Both can still grow before the packet is built,
+/// which is why the send path measures the finished acknowledgement rather
+/// than trusting this.
+pub fn scheduled_ack_bytes(state: State) -> Int {
+  case ack_deadline(state), state.received_ranges {
+    None, _ | _, [] -> 0
+    Some(_), [frame.AckRange(smallest, largest), ..additional] ->
+      1
+      + varint_bytes(largest)
+      + maximum_varint_bytes
+      + varint_bytes(list.length(additional))
+      + varint_bytes(largest - smallest)
+      + ack_range_bytes(additional, smallest, 0)
+      + ecn_counts_bytes(state)
+  }
+}
+
+/// The gap and length varints every retained range beyond the first encodes,
+/// walked exactly the way the encoder walks them.
+fn ack_range_bytes(
+  ranges: List(frame.AckRange),
+  previous_smallest: Int,
+  total: Int,
+) -> Int {
+  case ranges {
+    [] -> total
+    [frame.AckRange(smallest, largest), ..rest] ->
+      ack_range_bytes(
+        rest,
+        smallest,
+        total
+          + varint_bytes(previous_smallest - largest - 2)
+          + varint_bytes(largest - smallest),
+      )
+  }
+}
+
+/// The three counts an ACK_ECN frame appends, or nothing when this space has
+/// seen no marked packet.
+fn ecn_counts_bytes(state: State) -> Int {
+  case received_ecn_counts(state) {
+    None -> 0
+    Some(frame.EcnCounts(ect0, ect1, ce)) ->
+      varint_bytes(ect0) + varint_bytes(ect1) + varint_bytes(ce)
+  }
+}
+
+/// The encoded width of one variable-length integer, charging the widest
+/// encoding for a value no varint can hold.
+fn varint_bytes(value: Int) -> Int {
+  varint.encoded_size(value) |> result.unwrap(maximum_varint_bytes)
+}
+
 /// Return retained receive ranges in descending packet-number order.
 pub fn received_ranges(state: State) -> List(frame.AckRange) {
   state.received_ranges
@@ -424,6 +492,22 @@ pub fn expected_packet_number(state: State) -> Int {
 /// Largest packet number acknowledged by the peer in this space, if any.
 pub fn largest_acknowledged(state: State) -> Option(Int) {
   state.largest_acknowledged
+}
+
+/// Return the bytes this space's sent-packet history keeps resident.
+///
+/// The history is what recovery retransmits from, so it is memory the endpoint
+/// holds on the peer's behalf until the peer acknowledges it -- and therefore
+/// memory the endpoint's aggregate budget has to charge for.
+pub fn retained_bytes(state: State) -> Int {
+  sent_packet_bytes(state.sent_packets, 0)
+}
+
+fn sent_packet_bytes(packets: List(SentPacket), accumulated: Int) -> Int {
+  case packets {
+    [] -> accumulated
+    [packet, ..rest] -> sent_packet_bytes(rest, accumulated + packet.sent_bytes)
+  }
 }
 
 /// Return the number of retained ack-eliciting or in-flight packets.

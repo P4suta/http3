@@ -10,6 +10,27 @@ main(["update", RootPath, CorePath, RootSnapshotPath, CoreSnapshotPath]) ->
     ok = file:write_file(RootSnapshotPath, canonical_snapshot(Root)),
     ok = file:write_file(CoreSnapshotPath, canonical_snapshot(Core)),
     io:format("updated audited http3 and gleam_quic API snapshots~n");
+main(["boundary", "--write-allowlist" | Rest]) ->
+    {Directories, AllowlistPath} = split_boundary_arguments(Rest),
+    Entries = forbidden_imports(Directories),
+    Pairs = allowlist_pairs(Entries),
+    ok = file:write_file(AllowlistPath, allowlist_document(Pairs)),
+    io:format(
+        "wrote ~b boundary allowlist entries to ~s~n",
+        [length(Pairs), AllowlistPath]
+    );
+main(["boundary" | Rest]) ->
+    {Directories, AllowlistPath} = split_boundary_arguments(Rest),
+    Entries = forbidden_imports(Directories),
+    Allowed = read_allowlist(AllowlistPath),
+    Present = allowlist_pairs(Entries),
+    Violations = [
+        Entry
+     || Entry = {File, _Line, Module} <- Entries,
+        not lists:member({File, Module}, Allowed)
+    ],
+    Stale = [Pair || Pair <- Allowed, not lists:member(Pair, Present)],
+    report_boundary(Violations, Stale, AllowlistPath);
 main([RootPath, CorePath, RootSnapshotPath, CoreSnapshotPath]) ->
     Root = read(RootPath),
     Core = read(CorePath),
@@ -55,14 +76,7 @@ audit_root(Interface) ->
 audit_core(Interface) ->
     Decoded = json:decode(Interface),
     Modules = maps:get(<<"modules">>, Decoded),
-    Expected = [
-        <<"gleam_quic">>,
-        <<"gleam_quic/client">>,
-        <<"gleam_quic/config">>,
-        <<"gleam_quic/diagnostics">>,
-        <<"gleam_quic/failure">>,
-        <<"gleam_quic/server">>
-    ],
+    Expected = public_core_modules(),
     case lists:sort(maps:keys(Modules)) of
         Expected -> ok;
         Actual -> erlang:error({unexpected_gleam_quic_public_modules, Actual})
@@ -111,6 +125,16 @@ audit_core(Interface) ->
         <<"\"ClientIdentity\":{" >>,
         <<"\"Failure\":{" >>
     ]).
+
+public_core_modules() ->
+    [
+        <<"gleam_quic">>,
+        <<"gleam_quic/client">>,
+        <<"gleam_quic/config">>,
+        <<"gleam_quic/diagnostics">>,
+        <<"gleam_quic/failure">>,
+        <<"gleam_quic/server">>
+    ].
 
 canonical_snapshot(Path) when is_list(Path) ->
     canonical_snapshot(read(Path));
@@ -226,3 +250,160 @@ assert_present(Interface, [Pattern | Rest]) ->
         nomatch -> erlang:error({public_api_missing_expected_value, Pattern});
         _ -> assert_present(Interface, Rest)
     end.
+
+split_boundary_arguments(Arguments) ->
+    case lists:reverse(Arguments) of
+        [AllowlistPath | ReversedDirectories] when ReversedDirectories =/= [] ->
+            {lists:reverse(ReversedDirectories), AllowlistPath};
+        _ ->
+            erlang:error(public_api_audit_usage)
+    end.
+
+forbidden_imports(Directories) ->
+    Files = lists:sort(lists:flatmap(fun gleam_files/1, Directories)),
+    lists:flatmap(fun file_forbidden_imports/1, Files).
+
+gleam_files(Directory) ->
+    case file:list_dir(Directory) of
+        {error, Reason} ->
+            erlang:error({cannot_read, Directory, Reason});
+        {ok, Names} ->
+            lists:flatmap(
+                fun(Name) ->
+                    Path = filename:join(Directory, Name),
+                    case filelib:is_dir(Path) of
+                        true -> gleam_files(Path);
+                        false -> gleam_file(Path)
+                    end
+                end,
+                lists:sort(Names)
+            )
+    end.
+
+gleam_file(Path) ->
+    case filename:extension(Path) of
+        ".gleam" -> [Path];
+        _ -> []
+    end.
+
+file_forbidden_imports(Path) ->
+    Lines = binary:split(read(Path), <<"\n">>, [global]),
+    {Entries, _} = lists:foldl(
+        fun(Line, {Acc, Number}) ->
+            {line_forbidden_import(Path, Number, Line) ++ Acc, Number + 1}
+        end,
+        {[], 1},
+        Lines
+    ),
+    lists:reverse(Entries).
+
+line_forbidden_import(Path, Number, Line) ->
+    case imported_core_module(binary_to_list(Line)) of
+        none -> [];
+        {ok, Module} ->
+            case is_public_core_module(Module) of
+                true -> [];
+                false -> [{Path, Number, Module}]
+            end
+    end.
+
+imported_core_module("import gleam_quic" ++ Rest) ->
+    case Rest of
+        [] -> {ok, "gleam_quic"};
+        [Separator | _] when
+            Separator =:= $/; Separator =:= $.; Separator =:= $\s;
+            Separator =:= $\t; Separator =:= $\r
+        ->
+            {ok, "gleam_quic" ++ module_characters(Rest)};
+        _ ->
+            none
+    end;
+imported_core_module(_Line) ->
+    none.
+
+module_characters([Character | Rest]) ->
+    case is_module_character(Character) of
+        true -> [Character | module_characters(Rest)];
+        false -> []
+    end;
+module_characters([]) ->
+    [].
+
+is_module_character(Character) ->
+    (Character >= $a andalso Character =< $z) orelse
+        (Character >= $0 andalso Character =< $9) orelse
+        Character =:= $_ orelse
+        Character =:= $/.
+
+is_public_core_module(Module) ->
+    lists:member(list_to_binary(Module), public_core_modules()).
+
+allowlist_pairs(Entries) ->
+    lists:usort([{File, Module} || {File, _Number, Module} <- Entries]).
+
+allowlist_document(Pairs) ->
+    Header = [
+        <<"# Root imports of package-private gleam_quic modules that predate\n">>,
+        <<"# the three-layer boundary gate. Every line is a `path|module` pair.\n">>,
+        <<"# This file may only shrink: delete a line once the import is gone.\n">>,
+        <<"# Never add a line and never regenerate it with --write-allowlist.\n">>
+    ],
+    Lines = [
+        [File, <<"|">>, Module, <<"\n">>]
+     || {File, Module} <- Pairs
+    ],
+    iolist_to_binary([Header, Lines]).
+
+read_allowlist(Path) ->
+    case file:read_file(Path) of
+        {error, enoent} ->
+            [];
+        {error, Reason} ->
+            erlang:error({cannot_read, Path, Reason});
+        {ok, Contents} ->
+            Lines = binary:split(Contents, <<"\n">>, [global]),
+            lists:usort(lists:flatmap(fun allowlist_entry/1, Lines))
+    end.
+
+allowlist_entry(<<"#", _/binary>>) ->
+    [];
+allowlist_entry(<<>>) ->
+    [];
+allowlist_entry(Line) ->
+    case binary:split(Line, <<"|">>) of
+        [File, Module] -> [{binary_to_list(File), binary_to_list(Module)}];
+        _ -> erlang:error({malformed_boundary_allowlist_line, Line})
+    end.
+
+report_boundary([], [], AllowlistPath) ->
+    io:format(
+        "three-layer boundary ok (allowlist ~s)~n",
+        [AllowlistPath]
+    );
+report_boundary(Violations, Stale, AllowlistPath) ->
+    lists:foreach(
+        fun({File, Number, Module}) ->
+            io:format(
+                standard_error,
+                "~s:~b: forbidden import ~s~n",
+                [File, Number, Module]
+            )
+        end,
+        Violations
+    ),
+    lists:foreach(
+        fun({File, Module}) ->
+            io:format(
+                standard_error,
+                "~s: stale allowlist entry ~s|~s~n",
+                [AllowlistPath, File, Module]
+            )
+        end,
+        Stale
+    ),
+    io:format(
+        standard_error,
+        "boundary audit failed: ~b forbidden imports, ~b stale allowlist entries~n",
+        [length(Violations), length(Stale)]
+    ),
+    halt(1).

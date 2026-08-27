@@ -5,8 +5,8 @@ import gleam/http/response
 import gleam/list
 import gleam/option.{None}
 import gleam/string
-import gleam_quic/internal/tls/authentication
 import gleeunit/should
+import http3/address
 import http3/client
 import http3/config
 import http3/failure
@@ -17,14 +17,11 @@ import http3_test_support
 pub fn ipv6_literal_certificate_identity_is_verified_test() -> Nil {
   let #(certificate, _, ca_certificate) =
     http3_test_support.server_credentials()
-  let chain =
-    authentication.certificate_chain_from_pem(certificate) |> should.be_ok
-  let trust_store =
-    authentication.trust_store_from_der([ca_certificate]) |> should.be_ok
-  let _peer =
-    authentication.validate_server_certificate(chain, trust_store, "::1")
-    |> should.be_ok
-  Nil
+  assert http3_test_support.certificate_identity_verified(
+    certificate,
+    ca_certificate,
+    "::1",
+  )
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -232,6 +229,27 @@ pub fn bounded_client_round_trip_over_real_udp_test() -> Nil {
     assert response.get_header(reply, "x-received-test") == Ok("loopback")
     assert response.get_header(reply, ":status") == Error(Nil)
     assert reply.body == <<"hello over h3":utf8>>
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn bounded_client_can_dial_an_exact_address_without_changing_tls_identity_test() -> Nil {
+  http3_test_support.with_server(fn(port, ca_certificate) {
+    let configuration = client.with_timeout(client.new(), 3000) |> should.be_ok
+    let configuration =
+      client.with_ca_certificate(configuration, ca_certificate) |> should.be_ok
+    let loopback = address.parse("127.0.0.1") |> should.be_ok
+    let request =
+      request.new()
+      // The certificate is issued to localhost. The explicit address is only
+      // the UDP dial target and must not replace this verified identity.
+      |> request.set_host("localhost")
+      |> request.set_port(port)
+      |> request.set_path("/echo")
+      |> request.set_body(<<>>)
+
+    let reply = client.send_to(configuration, loopback, request) |> should.be_ok
+    assert reply.status == 200
   })
 }
 

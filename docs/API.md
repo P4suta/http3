@@ -20,6 +20,12 @@ pub fn fetch() {
 `send` owns and closes its connection. Request and response bodies default to
 8 MiB, and the default total deadline is 30 seconds.
 
+`client.send_to(configuration, address, request)` is the bounded exact-route
+variant for local health probes and controlled routing. Only the UDP dial
+address is overridden: the request host still drives SNI, certificate identity
+verification, and HTTP authority, so this API does not provide an insecure TLS
+bypass.
+
 ## Reuse one connection
 
 ```gleam
@@ -43,6 +49,12 @@ Pull `Response`, `Data`, `Trailers`, and `End` with `client.next_event`.
 Unconsumed data and event counts are bounded; request writes synchronously
 preserve transport backpressure. Close a reusable connection explicitly when
 finished. Closing and cancellation are idempotent.
+
+`client.send` and other bounded helpers enforce the configured cumulative
+request/response body limit. A stream opened with `client.open_stream` has no
+cumulative response ceiling: each frame, the unconsumed-data queue, and every
+operation remain finite, but a prompt pull consumer can remain subscribed for
+an arbitrarily long transfer.
 
 ## Tune finite policy once
 
@@ -105,12 +117,59 @@ configured deadline. Use `server.stop` for immediate, idempotent shutdown.
 Operational key and 0-RTT setup is covered in the
 [deployment guide](DEPLOYMENT.md).
 
+Bind to a specific IPv4 or IPv6 literal without DNS resolution through the
+public address API:
+
+```gleam
+import http3/address
+import http3/server
+
+let assert Ok(loopback) = address.parse("127.0.0.1")
+let configuration = server.with_bind_address(configuration, loopback)
+let assert Ok(listener) = server.start(configuration)
+```
+
+Port zero still requests an ephemeral port. `server.scheme` and
+`server.authority` expose the validated request pseudo-fields.
+`server.peer_endpoint` returns only the currently validated QUIC peer path;
+an unvalidated migration candidate is never exposed.
+
+A response sent with `server.respond`, or a streaming response declaring
+`Content-Length`, retains the configured cumulative response-body limit. A
+response started with `server.send_response` and no `Content-Length` has no
+cumulative lifetime ceiling. Individual frames, pending writes, flow control,
+mailboxes, and operations remain finite, and `server.finish_response` still
+terminates it explicitly.
+
 For a multi-node deployment, construct one finite `server.replay_guard`
 callback and attach it with `server.with_external_zero_rtt`. The callback sees
 only an opaque attempt with a domain-separated fingerprint and required
 retention interval. It returns `AcceptEarlyData` only after an atomic
 insert-if-absent succeeds in shared storage. Rejection, error, callback exit,
 or timeout automatically continues the authenticated connection at 1-RTT.
+
+## WebSockets over HTTP/3
+
+`http3/websocket` implements RFC 9220 Extended CONNECT and bounded RFC 6455
+framing. The server accepts an already validated request with
+`websocket.accept`; the client opens one on a reusable HTTP/3 connection with
+`websocket.connect`. The handshake status is 200, not the HTTP/1.1 upgrade
+status 101.
+
+```gleam
+import http3/websocket
+
+let assert Ok(socket) = websocket.accept(websocket.new(), incoming)
+let assert Ok(#(socket, websocket.TextMessage(message))) =
+  websocket.receive(socket)
+let assert Ok(socket) = websocket.send_text(socket, message)
+```
+
+Client frames are masked, server frames are not, fragmented messages are
+reassembled within the configured message limit, text and close reasons are
+UTF-8 validated, Ping receives Pong automatically, Close is echoed once, and
+`websocket.cancel` aborts the underlying stream. Compression and WebSocket
+extensions are deliberately not negotiated in this initial API.
 
 ## Diagnostics
 

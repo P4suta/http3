@@ -1,15 +1,15 @@
-//// Reproducible generated round-trip properties for core wire codecs.
+//// Reproducible generated round-trip properties for HTTP/3 and QPACK wire
+//// codecs. The QUIC transport codecs keep their own properties in the
+//// `gleam_quic` package.
 
 import gleam/bit_array
-import gleam_quic/frame as transport_frame
-import gleam_quic/varint
 import http3/internal/native/frame as http3_frame
 import http3/internal/qpack/integer as qpack_integer
+import http3/internal/varint
 
 const generator_modulus = 2_147_483_647
 
-/// Check generated varint, transport-frame, HTTP/3-frame, and QPACK integer
-/// round trips.
+/// Check generated varint, HTTP/3-frame, and QPACK integer round trips.
 pub fn exercise(cases: Int) -> Int {
   exercise_cases(982_451_653, cases)
   cases
@@ -27,12 +27,6 @@ fn exercise_cases(seed: Int, remaining: Int) -> Nil {
 
       let length = second % 65
       let #(seed, payload) = generate_bytes(second, length, <<>>)
-      assert_transport_frame_round_trip(transport_frame.Stream(
-        first % 1024,
-        second % 65_536,
-        payload,
-        first % 2 == 0,
-      ))
       assert_http3_frame_round_trip(http3_frame.Unknown(
         14 + second % 4096,
         payload,
@@ -55,12 +49,6 @@ fn assert_qpack_integer_round_trip(value: Int, prefix_bits: Int) -> Nil {
   let assert Ok(qpack_integer.Decoded(decoded, <<>>)) =
     qpack_integer.decode(encoded, prefix_bits)
   assert decoded == value
-}
-
-fn assert_transport_frame_round_trip(value: transport_frame.Frame) -> Nil {
-  let assert Ok(encoded) = transport_frame.encode(value)
-  assert transport_frame.decode_all(encoded, transport_frame.default_limits())
-    == Ok([value])
 }
 
 fn assert_http3_frame_round_trip(value: http3_frame.Frame) -> Nil {

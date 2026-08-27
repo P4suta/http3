@@ -33,6 +33,25 @@ pub fn new(
   }
 }
 
+/// Resize the burst for a new path MTU. Tokens are never gifted: a smaller
+/// burst clamps the balance, a larger one refills at the pacing rate.
+pub fn resize_burst(
+  state: State,
+  maximum_burst_bytes: Int,
+) -> Result(State, Error) {
+  case maximum_burst_bytes > 0 {
+    True ->
+      Ok(
+        State(
+          ..state,
+          maximum_burst_bytes: maximum_burst_bytes,
+          available_bytes: minimum(state.available_bytes, maximum_burst_bytes),
+        ),
+      )
+    False -> Error(InvalidInput)
+  }
+}
+
 /// Refill at 1.25*cwnd/smoothed_rtt and reserve one complete packet.
 pub fn reserve(
   state: State,

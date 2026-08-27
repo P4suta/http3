@@ -44,3 +44,35 @@ rules:
         - /packages/gleam_quic/src/gleam_quic.gleam
         - /packages/gleam_quic/src/gleam_quic/failure.gleam
     pattern-regex: '(?:BackendFailure|\bBbr\b)'
+
+  - id: http3.boundary.no-private-core-import
+    languages: [generic]
+    message: >-
+      Root modules must import only the six public gleam_quic modules. This
+      rule scans the root files that are already clean; its path include list
+      widens as each remaining file is migrated, and the boundary audit
+      (test/http3_public_api_audit.escript boundary) covers the rest through
+      the shrink-only api/boundary.allow allowlist.
+    severity: ERROR
+    paths:
+      include:
+        - /src/http3.gleam
+        - /src/http3/*.gleam
+        - /src/http3/internal/*.gleam
+        - /src/http3/internal/qpack/**
+        - /src/http3/internal/native/capsule.gleam
+        - /src/http3/internal/native/connection_state.gleam
+        - /src/http3/internal/native/control.gleam
+        - /src/http3/internal/native/datagram.gleam
+        - /src/http3/internal/native/drain.gleam
+        - /src/http3/internal/native/error_code.gleam
+        - /src/http3/internal/native/frame.gleam
+        - /src/http3/internal/native/frame_parser.gleam
+        - /src/http3/internal/native/header_semantics.gleam
+        - /src/http3/internal/native/message_stream.gleam
+        - /src/http3/internal/native/priority.gleam
+        - /src/http3/internal/native/priority_scheduler.gleam
+        - /src/http3/internal/native/push.gleam
+        - /src/http3/internal/native/stream_registry.gleam
+        - /src/http3/internal/native/terminal_registry.gleam
+    pattern-regex: '^import[[:space:]]+gleam_quic/(internal/|varint|stream_id|version|packet_number|packet|frame|transport_parameter)'

@@ -3,8 +3,8 @@
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/result
-import gleam_quic/varint
 import http3/internal/native/capsule
+import http3/internal/varint
 
 /// Validated negotiated HTTP extension protocol name.
 pub opaque type Extension {

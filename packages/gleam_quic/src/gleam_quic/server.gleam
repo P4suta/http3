@@ -17,7 +17,9 @@ import gleam_quic/failure
 import gleam_quic/internal/connection_state as transport
 import gleam_quic/internal/qlog
 import gleam_quic/internal/runtime/connection as runtime_connection
+import gleam_quic/internal/runtime/connection_worker
 import gleam_quic/internal/runtime/server_worker
+import gleam_quic/internal/stream_state
 import gleam_quic/internal/tls/authentication
 import gleam_quic/internal/tls/engine
 import gleam_quic/internal/tls/extension_value
@@ -94,12 +96,12 @@ pub opaque type Listener {
 
 /// One accepted generic QUIC connection.
 pub opaque type Connection {
-  Connection(handle: server_worker.Connection)
+  Connection(handle: connection_worker.Connection)
 }
 
 /// One bidirectional or unidirectional stream.
 pub opaque type Stream {
-  Stream(handle: server_worker.Stream)
+  Stream(handle: connection_worker.Stream)
 }
 
 /// One peer-initiated stream and its directionality.
@@ -424,6 +426,7 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     config.limit(server.limits, failure.BidirectionalStreams),
     config.limit(server.limits, failure.UnidirectionalStreams),
     config.limit(server.limits, failure.Datagram),
+    config.limit(server.limits, failure.EndpointMemory),
     server.certificate_chain,
     server.signing_key,
     server.signature_scheme,
@@ -458,23 +461,23 @@ pub fn accept(listener: Listener) -> Result(Connection, Error) {
 
 pub fn open_bidirectional(connection: Connection) -> Result(Stream, Error) {
   let Connection(handle) = connection
-  server_worker.open_bidirectional(handle)
+  connection_worker.open_bidirectional(handle)
   |> result.map(Stream)
   |> result.map_error(map_error)
 }
 
 pub fn open_unidirectional(connection: Connection) -> Result(Stream, Error) {
   let Connection(handle) = connection
-  server_worker.open_unidirectional(handle)
+  connection_worker.open_unidirectional(handle)
   |> result.map(Stream)
   |> result.map_error(map_error)
 }
 
 pub fn accept_stream(connection: Connection) -> Result(IncomingStream, Error) {
   let Connection(handle) = connection
-  server_worker.accept_stream(handle)
+  connection_worker.accept_stream(handle)
   |> result.map(fn(incoming) {
-    let server_worker.IncomingStream(stream, bidirectional) = incoming
+    let connection_worker.IncomingStream(stream, bidirectional) = incoming
     IncomingStream(Stream(stream), case bidirectional {
       True -> Bidirectional
       False -> Unidirectional
@@ -485,27 +488,28 @@ pub fn accept_stream(connection: Connection) -> Result(IncomingStream, Error) {
 
 pub fn send(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
   let Stream(handle) = stream
-  server_worker.send(handle, bytes) |> result.map_error(map_error)
+  connection_worker.send(handle, bytes) |> result.map_error(map_error)
 }
 
 pub fn finish(stream: Stream) -> Result(Nil, Error) {
   let Stream(handle) = stream
-  server_worker.finish(handle) |> result.map_error(map_error)
+  connection_worker.finish(handle) |> result.map_error(map_error)
 }
 
 pub fn send_and_finish(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
   let Stream(handle) = stream
-  server_worker.send_and_finish(handle, bytes) |> result.map_error(map_error)
+  connection_worker.send_and_finish(handle, bytes)
+  |> result.map_error(map_error)
 }
 
 pub fn receive(stream: Stream, maximum_bytes: Int) -> Result(Read, Error) {
   let Stream(handle) = stream
-  server_worker.receive(handle, maximum_bytes)
+  connection_worker.receive(handle, maximum_bytes)
   |> result.map(fn(read) {
     case read {
-      server_worker.Data(bytes, finished) -> Data(bytes, finished)
-      server_worker.Finished -> Finished
-      server_worker.Reset(code) -> Reset(code)
+      connection_worker.Data(bytes, finished) -> Data(bytes, finished)
+      connection_worker.Finished -> Finished
+      connection_worker.Reset(code) -> Reset(code)
     }
   })
   |> result.map_error(map_error)
@@ -516,7 +520,7 @@ pub fn reset(
   application_error_code: Int,
 ) -> Result(Nil, Error) {
   let Stream(handle) = stream
-  server_worker.reset(handle, application_error_code)
+  connection_worker.reset(handle, application_error_code)
   |> result.map_error(map_error)
 }
 
@@ -525,22 +529,31 @@ pub fn send_datagram(
   payload: BitArray,
 ) -> Result(Nil, Error) {
   let Connection(handle) = connection
-  server_worker.send_datagram(handle, payload) |> result.map_error(map_error)
+  connection_worker.send_datagram(handle, payload)
+  |> result.map_error(map_error)
 }
 
 pub fn receive_datagram(connection: Connection) -> Result(BitArray, Error) {
   let Connection(handle) = connection
-  server_worker.receive_datagram(handle) |> result.map_error(map_error)
+  connection_worker.receive_datagram(handle) |> result.map_error(map_error)
 }
 
+/// Return the largest QUIC Datagram payload this connection accepts right now.
+///
+/// The value is a point-in-time bound, not a fixed property of the connection:
+/// it grows as path MTU discovery confirms a larger path, drops back to the
+/// pre-validation floor when the path is reset, and shrinks while an
+/// acknowledgement is scheduled, because a Datagram is indivisible and has to
+/// leave room for the acknowledgement sharing its packet. Read it again after
+/// a `DatagramTooLarge` result rather than caching it.
 pub fn maximum_datagram_size(connection: Connection) -> Result(Int, Error) {
   let Connection(handle) = connection
-  server_worker.maximum_datagram_size(handle) |> result.map_error(map_error)
+  connection_worker.maximum_datagram_size(handle) |> result.map_error(map_error)
 }
 
 pub fn ping(connection: Connection) -> Result(Nil, Error) {
   let Connection(handle) = connection
-  server_worker.ping(handle) |> result.map_error(map_error)
+  connection_worker.ping(handle) |> result.map_error(map_error)
 }
 
 pub fn set_congestion_control(
@@ -548,7 +561,7 @@ pub fn set_congestion_control(
   algorithm: CongestionControl,
 ) -> Result(Nil, Error) {
   let Connection(handle) = connection
-  server_worker.set_congestion_control(
+  connection_worker.set_congestion_control(
     handle,
     to_transport_congestion(algorithm),
   )
@@ -559,7 +572,7 @@ pub fn path_stats(
   connection: Connection,
 ) -> Result(diagnostics.PathStats, Error) {
   let Connection(handle) = connection
-  server_worker.path_stats(handle)
+  connection_worker.path_stats(handle)
   |> result.map(fn(stats) {
     let transport.PathSnapshot(a, b, c, d, e, f, g, h) = stats
     diagnostics.PathStats(a, b, c, d, e, f, g, h)
@@ -571,10 +584,36 @@ pub fn connection_stats(
   connection: Connection,
 ) -> Result(diagnostics.ConnectionStats, Error) {
   let Connection(handle) = connection
-  server_worker.connection_stats(handle)
+  connection_worker.connection_stats(handle)
   |> result.map(fn(stats) {
-    let runtime_connection.Stats(a, b, c, d, e, f, g, h) = stats
+    let #(runtime_connection.Stats(a, b, c, d, e, f, g, h), _dropped) = stats
     diagnostics.ConnectionStats(a, b, c, d, e, f, g, h)
+  })
+  |> result.map_error(map_error)
+}
+
+/// Count the inbound datagrams this connection lost before its owner could see
+/// them, for want of room to hold them.
+///
+/// Two bounds drop datagrams here, and both are counted together because both
+/// are the same loss from the peer's side. The listener hands each connection
+/// only as many routed datagrams as that connection's delivery window admits,
+/// so one flooded connection can neither grow its own actor's mailbox nor delay
+/// any other connection. And a connection whose endpoint has refused it more
+/// memory drops an RFC 9221 Datagram frame that would take it past the room it
+/// was granted, which RFC 9221 permits precisely because a Datagram is
+/// droppable. QUIC is loss tolerant, so a datagram dropped either way is
+/// recovered exactly like one the network lost.
+///
+/// This counter is deliberately server-only: a client owns its own socket and
+/// its own connection, with no listener in front of it to route, credit, or
+/// drop for it, so there is no client counterpart to report.
+pub fn dropped_datagrams(connection: Connection) -> Result(Int, Error) {
+  let Connection(handle) = connection
+  connection_worker.connection_stats(handle)
+  |> result.map(fn(stats) {
+    let #(_counters, dropped) = stats
+    dropped
   })
   |> result.map_error(map_error)
 }
@@ -585,7 +624,7 @@ pub fn client_identity(
   connection: Connection,
 ) -> Result(Option(ClientIdentity), Error) {
   let Connection(handle) = connection
-  server_worker.client_identity(handle)
+  connection_worker.client_identity(handle)
   |> result.map(fn(identity) {
     case identity {
       None -> None
@@ -604,7 +643,7 @@ pub fn telemetry_stats(
   connection: Connection,
 ) -> Result(diagnostics.TelemetryStats, Error) {
   let Connection(handle) = connection
-  server_worker.telemetry_stats(handle)
+  connection_worker.telemetry_stats(handle)
   |> result.map(fn(stats) {
     let qlog.Stats(dropped, errors, queued) = stats
     diagnostics.TelemetryStats(dropped, errors, queued)
@@ -614,7 +653,7 @@ pub fn telemetry_stats(
 
 pub fn phase(connection: Connection) -> Result(diagnostics.Phase, Error) {
   let Connection(handle) = connection
-  server_worker.phase(handle)
+  connection_worker.phase(handle)
   |> result.map(fn(value) {
     case value {
       transport.Handshaking -> diagnostics.Handshaking
@@ -643,7 +682,7 @@ pub fn connection_info(
       early_accepted,
     )
   <- result.try(
-    server_worker.negotiated_protocol(handle) |> result.map_error(map_error),
+    connection_worker.negotiated_protocol(handle) |> result.map_error(map_error),
   )
   use protocol <- result.try(
     bit_array.to_string(protocol) |> result.replace_error(InvalidOperation),
@@ -716,10 +755,10 @@ pub fn reload_operational_keys(
 
 pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   let Connection(handle) = connection
-  case server_worker.close(handle) {
-    Ok(server_worker.Closed) -> Ok(Closed)
-    Ok(server_worker.AlreadyClosed) -> Ok(AlreadyClosed)
-    Error(server_worker.ConnectionClosed) -> Ok(AlreadyClosed)
+  case connection_worker.close(handle) {
+    Ok(connection_worker.Closed) -> Ok(Closed)
+    Ok(connection_worker.AlreadyClosed) -> Ok(AlreadyClosed)
+    Error(connection_worker.ConnectionClosed) -> Ok(AlreadyClosed)
     Error(error) -> Error(map_error(error))
   }
 }
@@ -729,7 +768,7 @@ pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   case server_worker.stop(handle) {
     Ok(server_worker.Stopped) -> Ok(Stopped)
     Ok(server_worker.AlreadyStopped) -> Ok(AlreadyStopped)
-    Error(server_worker.ListenerClosed) -> Ok(AlreadyStopped)
+    Error(connection_worker.ListenerClosed) -> Ok(AlreadyStopped)
     Error(error) -> Error(map_error(error))
   }
 }
@@ -824,35 +863,51 @@ fn from_transport_congestion(
   }
 }
 
-fn map_error(error: server_worker.Error) -> Error {
+fn map_error(error: connection_worker.Error) -> Error {
   case error {
-    server_worker.InvalidInput -> InvalidOperation
-    server_worker.StartFailed -> Failure(failure.Socket(failure.BindSocket))
-    server_worker.OperationTimeout ->
+    connection_worker.InvalidInput -> InvalidOperation
+    connection_worker.StartFailed -> Failure(failure.Socket(failure.BindSocket))
+    connection_worker.OperationTimeout ->
       Failure(failure.Timeout(failure.Operation))
-    server_worker.ListenerClosed -> Failure(failure.Closed(failure.Local, None))
-    server_worker.ConnectionClosed ->
+    connection_worker.ListenerClosed ->
+      Failure(failure.Closed(failure.Local, None))
+    connection_worker.ConnectionClosed ->
       Failure(failure.Closed(failure.Peer, None))
-    server_worker.StreamClosed -> StreamFinished
-    server_worker.InvalidDirection -> InvalidDirection
-    server_worker.ConcurrentSend
-    | server_worker.ConcurrentReceive
-    | server_worker.ConcurrentAccept
-    | server_worker.ConcurrentDatagramReceive -> ConcurrentOperation
-    server_worker.ConnectionLimitExceeded(maximum) ->
+    connection_worker.StreamClosed -> StreamFinished
+    connection_worker.InvalidDirection -> InvalidDirection
+    connection_worker.ConcurrentSend
+    | connection_worker.ConcurrentReceive
+    | connection_worker.ConcurrentAccept
+    | connection_worker.ConcurrentDatagramReceive -> ConcurrentOperation
+    connection_worker.ConnectionLimitExceeded(maximum) ->
       Failure(failure.Limit(failure.Connections, maximum))
-    server_worker.HandshakeLimitExceeded(maximum) ->
+    connection_worker.HandshakeLimitExceeded(maximum) ->
       Failure(failure.Limit(failure.Handshakes, maximum))
-    server_worker.AcceptQueueExceeded(maximum) ->
+    connection_worker.AcceptQueueExceeded(maximum) ->
       Failure(failure.Limit(failure.AcceptWaiters, maximum))
-    server_worker.IncomingStreamQueueExceeded(maximum) ->
+    connection_worker.IncomingStreamQueueExceeded(maximum) ->
       Failure(failure.Limit(failure.Queue, maximum))
-    server_worker.DatagramQueueExceeded(maximum)
-    | server_worker.DatagramTooLarge(maximum) ->
+    connection_worker.DatagramQueueExceeded(maximum)
+    | connection_worker.DatagramTooLarge(maximum) ->
       Failure(failure.Limit(failure.Datagram, maximum))
-    server_worker.DatagramsNotNegotiated | server_worker.QuicFailure ->
+    connection_worker.StreamQueueFailure(stream_state.WrongDirection) ->
+      InvalidDirection
+    connection_worker.StreamQueueFailure(stream_state.SendClosed) ->
+      StreamFinished
+    connection_worker.StreamQueueFailure(stream_state.SendBufferLimitExceeded(_)) ->
+      Failure(failure.Overload(failure.Queue))
+    connection_worker.StreamQueueFailure(stream_state.InvalidInput)
+    | connection_worker.StreamQueueFailure(stream_state.NonByteAligned) ->
+      InvalidOperation
+    connection_worker.DatagramsNotNegotiated
+    | connection_worker.QuicFailure
+    | connection_worker.StreamQueueFailure(_) ->
       Failure(failure.Quic(failure.Peer, None))
-    server_worker.CongestionLimited -> Failure(failure.Overload(failure.Queue))
-    server_worker.QlogUnavailable -> Failure(failure.Socket(failure.WriteFile))
+    connection_worker.CongestionLimited ->
+      Failure(failure.Overload(failure.Queue))
+    connection_worker.EndpointMemoryExceeded ->
+      Failure(failure.Overload(failure.EndpointMemory))
+    connection_worker.QlogUnavailable ->
+      Failure(failure.Socket(failure.WriteFile))
   }
 }

@@ -3,8 +3,8 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/stream_id
-import gleam_quic/varint
+import http3/internal/stream_id
+import http3/internal/varint
 
 /// Role of the peer that opens the streams tracked by this registry.
 pub type PeerRole {

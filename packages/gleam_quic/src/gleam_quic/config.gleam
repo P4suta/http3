@@ -27,9 +27,65 @@ pub opaque type Deadlines {
 
 /// Finite endpoint, stream, buffer, queue, Datagram, and telemetry limits.
 ///
-/// `EndpointMemory` is retained as an aggregate admission budget. Its
-/// listener-wide enforcement remains a pre-release gate while connections are
-/// still owned by one listener actor.
+/// `EndpointMemory` is the aggregate byte budget for one endpoint. What "one
+/// endpoint" means, and whether the budget is enforced, differs by role:
+///
+///   * server: the whole listener, and it is enforced. Every connection the
+///     listener admits is charged 48 KiB on its first valid Initial packet,
+///     before any per-connection state is built: a 16 KiB handshake working
+///     set, plus the 32 KiB of connection-level receive credit the server
+///     advertises to that peer in the handshake. Charging for the advertised
+///     credit is what makes this a bound rather than an aspiration, because a
+///     transport parameter cannot be retracted once the peer has read it. A
+///     connection the budget cannot cover is refused with CONNECTION_REFUSED
+///     rather than admitted. After that a connection asks the listener for
+///     room, in whole 16 KiB quanta and 256 KiB steps, before it advertises
+///     any further receive credit or takes an application's write into its
+///     send buffers. Growth the budget cannot fund is refused, and a refused
+///     connection stops raising the credit it advertises instead of growing
+///     anyway.
+///   * client: one connection, because a client endpoint is one connection --
+///     and the client role does not enforce this limit yet. Nothing on the
+///     client path reads it. What bounds a client connection today is the
+///     per-connection ceilings: `Buffer` for each stream direction, `Queue`
+///     for backlogs, and `Datagram` for RFC 9221 queueing.
+///
+/// Sizing rule for a server. `EndpointMemory` should cover
+/// `Connections * (48 KiB + Buffer)` for the load you actually expect to
+/// carry at once: the admission charge every connection pays, plus the buffer
+/// a connection whose owner has stopped reading comes to hold. The defaults
+/// deliberately do not satisfy that product -- 1024 connections at a 256 KiB
+/// `Buffer` would want 304 MiB, and the default budget is 64 MiB -- because
+/// refusing to grow is the intended behaviour beyond it, not a failure of it:
+/// connections past the budget keep the credit they were already advertised
+/// and stop being offered more, and new connections are refused rather than
+/// admitted into memory the endpoint does not have. Raise `EndpointMemory` to
+/// the product above if you would rather spend the memory than throttle, and
+/// lower it to cap what a peer population can make this endpoint hold.
+/// `Buffer` wants to be at least one 256 KiB growth step wide alongside it: a
+/// per-stream buffer narrower than the room a connection rests on makes that
+/// stream's own reassembly bound, rather than this budget, the first thing a
+/// flood meets.
+///
+/// How tight the bound is. It is exact at admission and soft afterwards, and
+/// the slack has exactly two sources. Credit already advertised is never
+/// retracted, so a connection whose grant has shrunk may still have
+/// outstanding receive credit sized for the grant it held a moment ago: at
+/// most one 256 KiB growth step per connection. And measurement is coarse on
+/// purpose -- a connection re-measures what it holds once per 16 KiB of
+/// traffic rather than once per datagram -- so the hold it is working against
+/// can be a quantum out of date, and no more than one of its own turns out of
+/// date. There is no third source: an application's write is admitted only as
+/// far as the grant reaches past what the connection holds, on every write
+/// rather than only after a refusal, and what it holds is counted
+/// conservatively, so the send side leaves no `Buffer`-sized hole. Treat the
+/// value as a bound with a per-connection margin of one growth step plus one
+/// quantum rather than as a byte-exact cap.
+///
+/// The value is a byte count, so it bounds memory rather than connections;
+/// `Connections` and `Handshakes` bound those separately, and the listener's
+/// per-connection delivery window bounds mailbox occupancy separately again:
+/// per connection by that window, and in aggregate by `Connections` times it.
 pub opaque type Limits {
   Limits(
     connections: Int,

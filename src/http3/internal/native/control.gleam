@@ -3,8 +3,8 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
 import http3/internal/native/frame
+import http3/internal/varint
 
 /// Endpoint that owns the peer control stream being processed.
 pub type PeerRole {

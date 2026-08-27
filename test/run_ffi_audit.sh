@@ -30,3 +30,4 @@ dialyzer \
 	build/dev/erlang/gleam_quic/ebin/gleam_quic_qlog_ffi.beam
 
 escript test/http3_ffi_xref.escript
+escript test/http3_ffi_xref.escript boundary api/boundary.allow

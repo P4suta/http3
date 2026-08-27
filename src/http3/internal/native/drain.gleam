@@ -3,7 +3,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam_quic/varint
+import http3/internal/varint
 
 /// Role of this endpoint on the HTTP/3 connection.
 pub type Role {

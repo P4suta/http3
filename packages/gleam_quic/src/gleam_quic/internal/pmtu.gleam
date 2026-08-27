@@ -4,6 +4,10 @@ import gleam/option.{type Option, None, Some}
 
 const minimum_quic_datagram_size = 1200
 
+// RFC 9000 section 18.2: the largest max_udp_payload_size an endpoint may
+// advertise, and therefore the highest ceiling discovery can be given.
+const maximum_udp_payload_size = 65_527
+
 /// One path's confirmed size, search ceiling, and outstanding probe.
 pub opaque type State {
   State(
@@ -27,7 +31,7 @@ pub type Error {
 pub fn new(maximum_datagram_size: Int) -> Result(State, Error) {
   case
     maximum_datagram_size >= minimum_quic_datagram_size
-    && maximum_datagram_size <= 65_527
+    && maximum_datagram_size <= maximum_udp_payload_size
   {
     True ->
       Ok(State(
@@ -41,14 +45,24 @@ pub fn new(maximum_datagram_size: Int) -> Result(State, Error) {
   }
 }
 
-/// Schedule the midpoint of the remaining search interval as a padded probe.
-pub fn start_probe(state: State) -> Result(#(State, Int), Error) {
+/// Schedule a padded probe at the midpoint of the remaining search interval,
+/// never larger than the caller's current send allowance. `NoLargerProbe`
+/// means the allowance leaves no room above the confirmed size yet.
+pub fn start_probe(
+  state: State,
+  maximum_probe_size: Int,
+) -> Result(#(State, Int), Error) {
   case state.probe {
     Some(_) -> Error(ProbeAlreadyOutstanding)
     None if state.upper_bound <= state.current -> Error(NoLargerProbe)
     None -> {
-      let size = state.current + { state.upper_bound - state.current + 1 } / 2
-      Ok(#(State(..state, probe: Some(size)), size))
+      let midpoint =
+        state.current + { state.upper_bound - state.current + 1 } / 2
+      let size = minimum(midpoint, maximum_probe_size)
+      case size > state.current {
+        True -> Ok(#(State(..state, probe: Some(size)), size))
+        False -> Error(NoLargerProbe)
+      }
     }
   }
 }
@@ -111,7 +125,9 @@ pub fn discovery_complete(state: State) -> Bool {
 
 /// Cap discovery by the peer's authenticated maximum UDP payload size.
 pub fn set_peer_maximum(state: State, maximum: Int) -> Result(State, Error) {
-  case maximum < minimum_quic_datagram_size || maximum > 65_527 {
+  case
+    maximum < minimum_quic_datagram_size || maximum > maximum_udp_payload_size
+  {
     True -> Error(InvalidMaximumSize)
     False -> {
       let upper_bound = minimum(state.configured_ceiling, maximum)

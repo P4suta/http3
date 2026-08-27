@@ -3,7 +3,7 @@
 import gleam/bit_array
 import gleam/int
 import gleam/result
-import gleam_quic/varint
+import http3/internal/varint
 
 /// A decoded value and the bytes following its representation.
 pub type Decoded {

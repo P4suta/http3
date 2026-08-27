@@ -27,6 +27,28 @@ pub fn grows_reduces_and_bounds_new_reno_window_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn floors_the_window_at_the_new_maximum_datagram_size_test() -> Nil {
+  let assert Ok(state) = new_reno.new(1200)
+  let assert Ok(state) = new_reno.set_maximum_datagram_size(state, 9000)
+
+  // Raising the size leaves the window exactly where it was: only the RFC 9002
+  // section 7.2 reductions follow the path.
+  assert new_reno.congestion_window(state) == 12_000
+
+  // A loss event now floors the window at two 9000-byte datagrams rather than
+  // two 1200-byte ones, so a single path-sized datagram still fits.
+  let assert Ok(state) = new_reno.on_packet_sent(state, 9000, True)
+  let assert Ok(state) = new_reno.on_packet_lost(state, 9000, 10, 20)
+  assert new_reno.congestion_window(state) == 18_000
+  assert new_reno.can_send(state, 9000)
+
+  let state = new_reno.on_persistent_congestion(state)
+  assert new_reno.congestion_window(state) == 18_000
+  assert new_reno.set_maximum_datagram_size(state, 1199)
+    == Error(new_reno.InvalidMaximumDatagramSize)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn enforces_flight_and_configuration_bounds_test() -> Nil {
   assert new_reno.new(1199) == Error(new_reno.InvalidMaximumDatagramSize)
   let assert Ok(state) = new_reno.new(1200)

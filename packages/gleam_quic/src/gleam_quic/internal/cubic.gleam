@@ -69,6 +69,25 @@ pub fn new(maximum_datagram_size: Int) -> Result(State, Error) {
   }
 }
 
+/// Follow the size the datagrams on this path are actually built at.
+///
+/// RFC 9002 section 7.2 derives the minimum window - the floor a loss event
+/// or persistent congestion reduces to - from `max_datagram_size`, and
+/// RFC 9438 scales the CUBIC curve by it. A controller left at the
+/// pre-validation size would floor the window below a single datagram once
+/// DPLPMTUD raises the path, stalling path-sized sends until the window
+/// regrew. The window itself is never changed here: it is the reductions and
+/// the curve that follow the new size.
+pub fn set_maximum_datagram_size(
+  state: State,
+  maximum_datagram_size: Int,
+) -> Result(State, Error) {
+  case maximum_datagram_size >= 1200 && maximum_datagram_size <= 65_527 {
+    False -> Error(InvalidMaximumDatagramSize)
+    True -> Ok(State(..state, maximum_datagram_size: maximum_datagram_size))
+  }
+}
+
 /// Add a congestion-controlled datagram to bytes in flight.
 pub fn on_packet_sent(
   state: State,

@@ -11,6 +11,8 @@ pub fn sequences_request_body_trailers_and_finish_test() -> Nil {
     message_stream.receive_headers(state, message_stream.Final)
   let assert Ok(state) = message_stream.receive_data(state, <<"body">>, 4)
   assert message_stream.body_bytes(state) == 4
+  assert message_stream.receive_data(state, <<1>>, 4)
+    == Error(message_stream.BodyLimitExceeded(4))
   let assert Ok(state) =
     message_stream.receive_headers(state, message_stream.Trailers)
   assert message_stream.receive_data(state, <<1>>, 16)
@@ -28,7 +30,11 @@ pub fn permits_informational_responses_and_bounds_body_test() -> Nil {
   let assert Ok(state) =
     message_stream.receive_headers(state, message_stream.Informational)
   let assert Ok(state) =
-    message_stream.receive_headers(state, message_stream.Final)
+    message_stream.receive_headers_with_length(
+      state,
+      message_stream.Final,
+      Some(3),
+    )
   assert message_stream.receive_headers(state, message_stream.Final)
     == Error(message_stream.DuplicateFinalHeaders)
   assert message_stream.receive_data(state, <<1, 2, 3>>, 2)
@@ -39,6 +45,17 @@ pub fn permits_informational_responses_and_bounds_body_test() -> Nil {
     == Error(message_stream.InformationalRequestHeaders)
   assert message_stream.finish(request)
     == Error(message_stream.MissingFinalHeaders)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn content_length_free_response_is_not_a_lifetime_quota_test() -> Nil {
+  let state = message_stream.new(message_stream.Response)
+  let assert Ok(state) =
+    message_stream.receive_headers(state, message_stream.Final)
+  let assert Ok(state) = message_stream.receive_data(state, <<1, 2>>, 2)
+  let assert Ok(state) = message_stream.receive_data(state, <<3, 4>>, 2)
+  assert message_stream.body_bytes(state) == 4
+  assert message_stream.finish(state) |> result.is_ok
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

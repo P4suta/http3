@@ -24,11 +24,22 @@ import http3/internal/qpack/header.{type Header, Header}
 
 const maximum_packets_per_flush = 64
 
+// Keep every HTTP DATA payload within the bounded HTTP/3 parser default.
+// A bounded request may be larger, but it must not become one oversized frame.
+const maximum_request_data_chunk_bytes = 65_535
+
+// Pre-validation floor for one packet's frame payload. The send path widens it
+// to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
 const connection_attempt_delay_milliseconds = 250
+
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
+// is willing to receive, and its default is 65_527. Sending stays governed by
+// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+const maximum_udp_payload_size = 65_527
 
 /// Validated inputs for one native request.
 pub type Config {
@@ -36,12 +47,14 @@ pub type Config {
     hostname: String,
     port: Int,
     address_family: AddressFamily,
+    connect_address: Option(BitArray),
     dns_timeout_milliseconds: Int,
     connect_timeout_milliseconds: Int,
     handshake_timeout_milliseconds: Int,
     timeout_milliseconds: Int,
     operation_timeout_milliseconds: Int,
     idle_timeout_milliseconds: Int,
+    maximum_request_body_bytes: Int,
     maximum_response_body_bytes: Int,
     trust_store: authentication.TrustStore,
     quic_version: Version,
@@ -110,22 +123,7 @@ pub fn send(
     Ok(Nil) -> {
       let started = udp.monotonic_millisecond()
       let deadline = started + config.timeout_milliseconds
-      use addresses <- result.try(
-        case
-          udp.resolve_with_timeout(
-            config.hostname,
-            udp_address_family(config.address_family),
-            int.min(
-              config.dns_timeout_milliseconds,
-              config.timeout_milliseconds,
-            ),
-          )
-        {
-          Ok(addresses) -> Ok(addresses)
-          Error(udp.Timeout) -> Error(DnsTimeout)
-          Error(_) -> Error(ResolutionFailed)
-        },
-      )
+      use addresses <- result.try(resolve_addresses(config))
       use headers <- result.try(encode_headers(fields))
       use established <- result.try(connect_addresses(
         config,
@@ -150,6 +148,27 @@ pub fn send(
         Error(error), _ -> Error(error)
       }
     }
+  }
+}
+
+fn resolve_addresses(config: Config) -> Result(List(udp.Address), Error) {
+  case config.connect_address {
+    Some(bytes) ->
+      udp.address_from_bytes(bytes)
+      |> result.map(fn(address) { [address] })
+      |> result.replace_error(ResolutionFailed)
+    None ->
+      case
+        udp.resolve_with_timeout(
+          config.hostname,
+          udp_address_family(config.address_family),
+          int.min(config.dns_timeout_milliseconds, config.timeout_milliseconds),
+        )
+      {
+        Ok(addresses) -> Ok(addresses)
+        Error(udp.Timeout) -> Error(DnsTimeout)
+        Error(_) -> Error(ResolutionFailed)
+      }
   }
 }
 
@@ -265,6 +284,7 @@ fn transfer_candidate(
     | Error(udp.AddressInUse)
     | Error(udp.AddressUnavailable)
     | Error(udp.EcnUnavailable)
+    | Error(udp.MessageTooLarge)
     | Error(udp.SocketFailure) -> {
       discard_established(established)
       process.send(completion, Error(SocketUnavailable))
@@ -414,7 +434,12 @@ fn establish_on_socket_version(
   use original_destination_connection_id <- result.try(random_connection_id())
   use local_connection_id <- result.try(random_connection_id())
   let transport_config =
-    client_transport_config(selected_version, config.idle_timeout_milliseconds)
+    client_transport_config(
+      selected_version,
+      config.idle_timeout_milliseconds,
+      config.maximum_request_body_bytes,
+      udp.dont_fragment(socket),
+    )
   let tls_config =
     engine.ClientConfig(
       version: selected_version,
@@ -496,12 +521,7 @@ fn request_after_handshake(
       Http3OperationFailed("open_request", error)
     }),
   )
-  use http3 <- result.try(case body {
-    <<>> -> Ok(http3)
-    _ ->
-      session.send_data(http3, stream_id, body)
-      |> result.map_error(fn(error) { Http3OperationFailed("send_data", error) })
-  })
+  use http3 <- result.try(send_request_body(http3, stream_id, body))
   use http3 <- result.try(
     session.finish_stream(http3, stream_id)
     |> result.map_error(fn(error) { Http3OperationFailed("finish", error) }),
@@ -526,6 +546,35 @@ fn request_after_handshake(
   ))
   graceful_close(http3, socket, peer)
   Ok(response)
+}
+
+fn send_request_body(
+  state: session.State,
+  stream_id: Int,
+  body: BitArray,
+) -> Result(session.State, Error) {
+  let size = bit_array.byte_size(body)
+  case size {
+    0 -> Ok(state)
+    _ -> {
+      let take = int.min(size, maximum_request_data_chunk_bytes)
+      use chunk <- result.try(
+        bit_array.slice(body, at: 0, take:)
+        |> result.replace_error(InvalidInput),
+      )
+      use rest <- result.try(
+        bit_array.slice(body, at: take, take: size - take)
+        |> result.replace_error(InvalidInput),
+      )
+      use state <- result.try(
+        session.send_data(state, stream_id, chunk)
+        |> result.map_error(fn(error) {
+          Http3OperationFailed("send_data", error)
+        }),
+      )
+      send_request_body(state, stream_id, rest)
+    }
+  }
 }
 
 fn handshake(
@@ -591,24 +640,55 @@ fn flush_driver(
     _ ->
       case driver.prepare_datagram(state, maximum_frame_data_bytes, now) {
         Error(driver.ConnectionFailure(transport.PacingLimited(_))) -> Ok(state)
-        Error(driver.ConnectionFailure(transport.CongestionLimited)) ->
+        Error(driver.ConnectionFailure(transport.CongestionLimited))
+        | Error(driver.ConnectionFailure(transport.RecoveryLimited)) ->
           Ok(state)
         Error(error) -> Error(QuicTransportFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(socket, peer, driver.prepared_bytes(prepared), ecn.NotEct)
-            |> map_udp_send,
+        Ok(Some(prepared)) ->
+          send_prepared_handshake(
+            state,
+            prepared,
+            socket,
+            peer,
+            now,
+            remaining_packets,
           )
-          use state <- result.try(
-            driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              QuicTransportFailed("commit", error)
-            }),
-          )
-          flush_driver(state, socket, peer, now, remaining_packets - 1)
-        }
       }
+  }
+}
+
+/// Send one prepared handshake datagram and continue the flush.
+///
+/// The socket sets Don't-Fragment, so a datagram an outgoing device cannot
+/// carry whole is refused rather than split. That is a path measurement, not a
+/// broken socket: it is dropped uncommitted, its frames stay queued, and the
+/// path returns to the 1200-byte floor.
+fn send_prepared_handshake(
+  state: driver.State,
+  prepared: driver.PreparedDatagram,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(driver.State, Error) {
+  case
+    udp.classify_send(udp.send(
+      socket,
+      peer,
+      driver.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall -> Ok(driver.report_pmtu_black_hole(state))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use state <- result.try(
+        driver.commit_datagram_with_ecn(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { QuicTransportFailed("commit", error) }),
+      )
+      flush_driver(state, socket, peer, now, remaining_packets - 1)
+    }
   }
 }
 
@@ -829,23 +909,54 @@ fn flush_session(
         )))) -> Ok(state)
         Error(session.DriverFailure(driver.ConnectionFailure(
           transport.CongestionLimited,
-        ))) -> Ok(state)
+        )))
+        | Error(session.DriverFailure(driver.ConnectionFailure(
+            transport.RecoveryLimited,
+          ))) -> Ok(state)
         Error(error) -> Error(Http3OperationFailed("prepare", error))
         Ok(None) -> Ok(state)
-        Ok(Some(prepared)) -> {
-          use Nil <- result.try(
-            udp.send(socket, peer, session.prepared_bytes(prepared), ecn.NotEct)
-            |> map_udp_send,
+        Ok(Some(prepared)) ->
+          send_prepared_session(
+            state,
+            prepared,
+            socket,
+            peer,
+            now,
+            remaining_packets,
           )
-          use state <- result.try(
-            session.commit_datagram(prepared, ecn.NotEct, now)
-            |> result.map_error(fn(error) {
-              Http3OperationFailed("commit", error)
-            }),
-          )
-          flush_session(state, socket, peer, now, remaining_packets - 1)
-        }
       }
+  }
+}
+
+/// Send one prepared HTTP/3 datagram and continue the flush.
+///
+/// The same path measurement as the handshake flush: a refused datagram is
+/// dropped uncommitted, its frames go out again inside the floor.
+fn send_prepared_session(
+  state: session.State,
+  prepared: session.PreparedDatagram,
+  socket: udp.Socket,
+  peer: udp.Endpoint,
+  now: Int,
+  remaining_packets: Int,
+) -> Result(session.State, Error) {
+  case
+    udp.classify_send(udp.send(
+      socket,
+      peer,
+      session.prepared_bytes(prepared),
+      ecn.NotEct,
+    ))
+  {
+    udp.PathTooSmall -> Ok(session.report_pmtu_black_hole(state))
+    udp.SocketLost -> Error(SocketUnavailable)
+    udp.Delivered -> {
+      use state <- result.try(
+        session.commit_datagram(prepared, ecn.NotEct, now)
+        |> result.map_error(fn(error) { Http3OperationFailed("commit", error) }),
+      )
+      flush_session(state, socket, peer, now, remaining_packets - 1)
+    }
   }
 }
 
@@ -984,13 +1095,20 @@ fn decode_headers(
 fn client_transport_config(
   selected_version: Version,
   idle_timeout_milliseconds: Int,
+  maximum_request_body_bytes: Int,
+  dont_fragment: Bool,
 ) -> transport.Config {
   let config = transport.default_config(transport.Client)
   transport.Config(
     ..config,
     version: selected_version,
+    path_dont_fragment: dont_fragment,
     idle_timeout_milliseconds: idle_timeout_milliseconds,
-    maximum_udp_payload_size: 1200,
+    maximum_stream_send_buffer: int.max(
+      config.maximum_stream_send_buffer,
+      maximum_request_body_bytes + 65_536,
+    ),
+    maximum_udp_payload_size: maximum_udp_payload_size,
     grease_quic_bit: True,
     maximum_datagram_frame_size: 0,
   )
@@ -1004,7 +1122,7 @@ fn client_transport_parameters(
   [
     transport_parameter.GreaseQuicBit,
     transport_parameter.MaxIdleTimeout(idle_timeout_milliseconds),
-    transport_parameter.MaxUdpPayloadSize(1200),
+    transport_parameter.MaxUdpPayloadSize(maximum_udp_payload_size),
     transport_parameter.InitialMaxData(1_048_576),
     transport_parameter.InitialMaxStreamDataBidiLocal(262_144),
     transport_parameter.InitialMaxStreamDataBidiRemote(262_144),
@@ -1074,13 +1192,6 @@ fn discard_driver_error(error: driver.Error) -> Bool {
   driver.discardable_receive_error(error)
 }
 
-fn map_udp_send(value: Result(Nil, udp.Error)) -> Result(Nil, Error) {
-  case value {
-    Ok(Nil) -> Ok(Nil)
-    Error(_) -> Error(SocketUnavailable)
-  }
-}
-
 fn same_endpoint(left: udp.Endpoint, right: udp.Endpoint) -> Bool {
   udp.endpoint_parts(left) == udp.endpoint_parts(right)
 }
@@ -1112,6 +1223,7 @@ fn validate(config: Config, body: BitArray) -> Result(Nil, Error) {
     && config.timeout_milliseconds > 0
     && config.operation_timeout_milliseconds > 0
     && config.idle_timeout_milliseconds > 0
+    && config.maximum_request_body_bytes >= bit_array.byte_size(body)
     && config.maximum_response_body_bytes > 0
     && {
       config.keepalive_milliseconds == 0

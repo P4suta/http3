@@ -62,10 +62,16 @@ successful function return as sufficient.
 
 ### Generated properties and parser fuzzing
 
+Each package owns the corpus for the decoders it implements, so both tasks run
+two runners: `test/native/gleam_quic_fuzz.gleam` and
+`test/native/gleam_quic_property.gleam` here, and
+`packages/gleam_quic/test/gleam_quic_fuzz.gleam` and
+`packages/gleam_quic/test/gleam_quic_property.gleam` in the core package.
+
 `mise run property` executes 10,000 deterministic generated round-trip and
-wire-codec properties. `mise run fuzz` executes 10,000 deterministic parser
-inputs plus 16 retained seeds across QUIC, transport parameters, TLS,
-HTTP/3, QPACK, and Capsule decoders.
+wire-codec properties per runner. `mise run fuzz` executes 10,000 deterministic
+parser inputs plus 16 retained seeds per runner, together covering QUIC,
+transport parameters, TLS, HTTP/3, QPACK, and Capsule decoders.
 
 These tasks are reproducible test generators, not a replacement for
 coverage-guided fuzzing under a native sanitizer. A crashing or divergent case
@@ -262,6 +268,14 @@ Shutdown and cancellation paths are idempotent. Tests use OS-assigned loopback
 ports, do not depend on execution order, and do not leave mailbox messages,
 qlogs, Python bytecode, or temporary peer artifacts in the working tree.
 
+The Erlang qlog fixtures in `test/http3_test_ffi.erl` and
+`packages/gleam_quic/test/qlog_test_ffi.erl` create their scratch directories
+under the first non-empty of the `TMPDIR`, `TEMP`, and `TMP` environment
+variables, falling back to `/tmp`, so they still run where `/tmp` is read-only
+or absent, and each fixture deletes the uniquely named subdirectory it created.
+The shell runners `test/interop/run.sh` and `test/diagnostics/run.sh` honour
+only `${TMPDIR:-/tmp}`.
+
 ## Local completion commands
 
 Run the reproducible local gate from the repository root:
@@ -281,11 +295,25 @@ mise run soak
 ```
 
 `mise run check` includes both package builds/tests/docs/lints, canonical API
-snapshots, FFI Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and
-the deterministic core-package archive gate. `mise run security` adds the
-online OSV lookup and generates
+snapshots, the three-layer package-private import boundary gate, FFI
+Dialyzer/xref, repository Semgrep rules, REUSE, gitleaks, and the
+deterministic core-package archive gate. The Semgrep task keeps its
+settings file and log under the gitignored `build/semgrep/` rather than `/tmp`,
+so the gate also runs where `/tmp` is read-only or absent.
+`mise run security` adds the online OSV lookup and generates
 `build/security/http3.cdx.json` as CycloneDX evidence. Expensive fault,
 interop, and performance tasks remain separate. Passing a normal gate means an
 edit is internally consistent; it does not close the release findings. A
 phase is complete only when its applicable separate gates pass, their evidence
 is retained, and the conformance matrix is updated honestly.
+
+Ten Phase 5 gates are declared but not implemented: `mise run coverage`,
+`coverage-full`, `model`, `hostile-peer`, `credential-matrix`, `release-sim`,
+`release-candidate`, `requirements-audit`, `qlog-validate`, and `examples`
+each exit non-zero naming the task, and none of them is part of
+`mise run check`, so the pull-request gate stays green and honest.
+`.github/workflows/nightly.yml` already schedules the long gates — state-model
+shards, full coverage, the peer and OTP interop matrix, network fault
+injection, an informational soak, qlog schema validation, requirement drift,
+and the release simulation — and starts producing dated
+[evidence files](evidence/README.md) as each task is implemented.
