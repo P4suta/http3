@@ -108,6 +108,14 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Measured the coverage capture's settle window instead of assuming it. An
+  unchanged http suite takes between 13 and 29 seconds to return the actors it
+  owns under `cover`, so the 20-second cap sat inside its own observed range
+  and no capture could ever finish: every run stopped at the first repetition
+  reporting that the runtime had not converged. At 60 seconds the http and
+  http3 captures converge to zero owned processes in every repetition and run
+  to saturation, which is the first time this repository has been able to
+  measure its own coverage.
 - Gave the unified package's own README a quickstart. It had no code at all,
   so the first thing a reader saw was a package list. There are now two
   examples the documentation gate extracts, builds, and runs: one request with

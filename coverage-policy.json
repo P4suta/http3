@@ -16,7 +16,7 @@
     "minimum_repetitions": 10,
     "maximum_repetitions": 30,
     "required_quiescent_repetitions": 3,
-    "runtime_settle_max_milliseconds": 20000,
+    "runtime_settle_max_milliseconds": 60000,
     "runtime_settle_interval_milliseconds": 100,
     "runtime_settle_quiet_samples": 3
   },
