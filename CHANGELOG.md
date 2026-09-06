@@ -108,6 +108,13 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Removed the last `let assert` expressions from `src` across all three
+  packages and dropped every `assert_ok_pattern` suppression that covered a
+  production module, so the lint gate now holds the whole production surface to
+  the rule. A chunk split is a bit-array pattern instead of a length comparison
+  guarding two slices that must not fail, a resolved key ring hands back its
+  current key so no caller takes a list head which cannot be missing, and the
+  Retry first byte matches its one random byte instead of asserting its shape.
 - Removed every `let assert` from the unified MASQUE runtime and re-enabled its
   `assert_ok_pattern` lint. A route range is now decoded once into a single
   address family, so the ordering and overlap scans read integers already known

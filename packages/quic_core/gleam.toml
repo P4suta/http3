@@ -68,14 +68,12 @@ unused_exports = "error"
 # cleanup results at a single owner-monitored process boundary. Glinter cannot
 # model that mailbox ownership; the public real-UDP tests exercise it.
 "src/quic_core/internal/runtime/client_worker.gleam" = [
-  "assert_ok_pattern",
   "deep_nesting",
   "discarded_result",
   "thrown_away_error",
   "unused_exports",
 ]
 "src/quic_core/internal/runtime/server_worker.gleam" = [
-  "assert_ok_pattern",
   "deep_nesting",
   "discarded_result",
   "thrown_away_error",

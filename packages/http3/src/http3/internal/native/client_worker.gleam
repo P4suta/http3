@@ -2329,25 +2329,18 @@ fn retry_pending_send_entries(
   }
 }
 
+/// Split off one chunk, or return everything when a whole chunk is not there.
+///
+/// The split is a pattern rather than a measured slice: a payload shorter than
+/// one chunk simply has no matching clause, so the short case is the fallback
+/// instead of a length comparison guarding two slices that must not fail.
 fn take_send_chunk(bytes: BitArray) -> #(BitArray, BitArray) {
-  let size = bit_array.byte_size(bytes)
-  case size <= maximum_request_data_chunk_bytes {
-    True -> #(bytes, <<>>)
-    False -> {
-      let assert Ok(chunk) =
-        bit_array.slice(
-          from: bytes,
-          at: 0,
-          take: maximum_request_data_chunk_bytes,
-        )
-      let assert Ok(rest) =
-        bit_array.slice(
-          from: bytes,
-          at: maximum_request_data_chunk_bytes,
-          take: size - maximum_request_data_chunk_bytes,
-        )
-      #(chunk, rest)
-    }
+  case bytes {
+    <<chunk:bytes-size(maximum_request_data_chunk_bytes), rest:bits>> -> #(
+      chunk,
+      rest,
+    )
+    _ -> #(bytes, <<>>)
   }
 }
 

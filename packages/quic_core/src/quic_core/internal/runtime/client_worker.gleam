@@ -2754,15 +2754,16 @@ fn queue_pop(queue: Queue(value)) -> Result(#(value, Queue(value)), Nil) {
   }
 }
 
+/// Split off `count` bytes, or return everything when that many are not there.
+///
+/// The split is a pattern rather than a measured slice: a payload shorter than
+/// `count`, and a negative `count`, simply have no matching clause, so both
+/// become the fallback instead of a comparison guarding two slices that must
+/// not fail.
 fn take_bytes(bytes: BitArray, count: Int) -> #(BitArray, BitArray) {
-  let size = bit_array.byte_size(bytes)
-  case count >= size {
-    True -> #(bytes, <<>>)
-    False -> {
-      let assert Ok(chunk) = bit_array.slice(bytes, 0, count)
-      let assert Ok(rest) = bit_array.slice(bytes, count, size - count)
-      #(chunk, rest)
-    }
+  case bytes {
+    <<chunk:bytes-size(count), rest:bits>> -> #(chunk, rest)
+    _ -> #(bytes, <<>>)
   }
 }
 

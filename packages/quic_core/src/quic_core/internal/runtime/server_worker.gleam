@@ -464,15 +464,15 @@ fn initialise(
       udp.local_endpoint(socket) |> result.replace_error(StartFailed),
     )
     let #(_, bound_port) = udp.endpoint_parts(local)
-    use ticket_keys <- result.try(
+    use #(ticket_key, ticket_keys) <- result.try(
       resolve_key_ring(configured_ticket_keys)
       |> result.replace_error(StartFailed),
     )
-    use address_token_keys <- result.try(
+    use #(_, address_token_keys) <- result.try(
       resolve_key_ring(configured_address_token_keys)
       |> result.replace_error(StartFailed),
     )
-    use reset_keys <- result.try(
+    use #(reset_key, reset_keys) <- result.try(
       resolve_key_ring(configured_stateless_reset_keys)
       |> result.replace_error(StartFailed),
     )
@@ -488,9 +488,9 @@ fn initialise(
       socket,
       relay,
       bound_port,
-      ticket_keys,
+      #(ticket_key, ticket_keys),
       address_token_keys,
-      reset_keys,
+      #(reset_key, reset_keys),
       replay_cache,
     ))
   }
@@ -500,13 +500,11 @@ fn initialise(
       socket,
       relay,
       bound_port,
-      ticket_keys,
+      #(ticket_key, ticket_keys),
       address_token_keys,
-      reset_keys,
+      #(reset_key, reset_keys),
       replay_cache,
     )) -> {
-      let assert [ticket_key, ..] = ticket_keys
-      let assert [reset_key, ..] = reset_keys
       let commands = process.new_subject()
       let notices = process.new_subject()
       let owner_monitor = process.monitor(owner)
@@ -1822,15 +1820,16 @@ fn send_retry_packet(
 
 fn retry_first_byte(protocol_version: Version) -> Result(Int, crypto.Error) {
   use random <- result.try(crypto.secure_random(1))
-  let assert <<random_low_bits>> = random
   let base = case protocol_version {
     version.Version1 -> 0xf0
     version.Version2 -> 0xc0
     _ -> 0
   }
-  case base {
-    0 -> Error(crypto.InvalidInput)
-    _ -> Ok(int.bitwise_or(base, int.bitwise_and(random_low_bits, 0x0f)))
+  case base, random {
+    0, _ -> Error(crypto.InvalidInput)
+    _, <<random_low_bits>> ->
+      Ok(int.bitwise_or(base, int.bitwise_and(random_low_bits, 0x0f)))
+    _, _ -> Error(crypto.InvalidInput)
   }
 }
 
@@ -1919,15 +1918,23 @@ fn close_qlog(writer: Option(qlog.Writer)) -> Nil {
   }
 }
 
-fn resolve_key_ring(keys: List(BitArray)) -> Result(List(BitArray), Nil) {
+/// Resolve a key ring and its current key together.
+///
+/// Returning the current key beside the ring is what carries the ring's
+/// non-emptiness to the caller. A ring is generated when none was configured
+/// and is otherwise validated, so it always has a current key; handing that key
+/// over here means no caller has to take a list head which cannot be missing.
+fn resolve_key_ring(
+  keys: List(BitArray),
+) -> Result(#(BitArray, List(BitArray)), Nil) {
   case keys {
     [] ->
       crypto.secure_random(32)
-      |> result.map(fn(key) { [key] })
+      |> result.map(fn(key) { #(key, [key]) })
       |> result.replace_error(Nil)
-    _ ->
+    [current, ..] ->
       case valid_key_ring(keys) {
-        True -> Ok(keys)
+        True -> Ok(#(current, keys))
         False -> Error(Nil)
       }
   }

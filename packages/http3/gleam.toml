@@ -88,13 +88,11 @@ unused_exports = "error"
 # results at a single supervised process boundary. Glinter cannot model that
 # message-loop ownership, while exhaustive runtime tests cover each boundary.
 "src/http3/internal/native/client_worker.gleam" = [
-  "assert_ok_pattern",
   "deep_nesting",
   "discarded_result",
   "thrown_away_error",
 ]
 "src/http3/internal/native/server_worker.gleam" = [
-  "assert_ok_pattern",
   "deep_nesting",
   "discarded_result",
   "thrown_away_error",
