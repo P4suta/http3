@@ -1,3 +1,4 @@
+import gleam/bool
 import gleam/erlang/process
 import gleam/http
 import gleam/http/request
@@ -2677,15 +2678,37 @@ pub fn rfc9298_packet_too_big_snapshot_is_atomic_under_race_test() -> Nil {
   assert cached == 10_000
 }
 
+/// Wait for a payload-free condition instead of guessing a sleep.
+///
+/// A fixed sleep is a guess about scheduling: too short and the assertion after
+/// it races, too long and every run pays for it. This polls until the condition
+/// holds or a finite deadline passes, and reports which happened.
+fn await_condition(
+  within deadline_milliseconds: Int,
+  until check: fn() -> Bool,
+) -> Bool {
+  use <- bool.guard(when: check(), return: True)
+  use <- bool.guard(when: deadline_milliseconds <= 0, return: False)
+  process.sleep(1)
+  await_condition(within: deadline_milliseconds - 1, until: check)
+}
+
 pub fn rfc9298_system_udp_receive_credit_timeout_and_mailbox_converge_test() -> Nil {
   let before = http_test_support.message_queue_length()
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
+  // The second pull is only refused while the first is still waiting, so the
+  // first deadline has to outlast the scheduling delay between them rather
+  // than merely exceed a sleep. A tenth of a second did not: under load the
+  // first pull expired before the second was issued and the refusal became a
+  // timeout.
   let waiting =
     http_test_support.start_task(fn() {
-      masque.receive_system_udp_datagram(session, 100)
+      masque.receive_system_udp_datagram(session, 1000)
     })
-  process.sleep(10)
+  assert await_condition(within: 1000, until: fn() {
+    masque.system_udp_socket_snapshot(session).receive_waiting
+  })
 
   let waiting_snapshot = masque.system_udp_socket_snapshot(session)
   assert waiting_snapshot.queued_commands == 0
@@ -2703,8 +2726,9 @@ pub fn rfc9298_system_udp_receive_credit_timeout_and_mailbox_converge_test() -> 
     == False
   assert masque.close_udp_proxy_session(session) == Ok(Nil)
   http_test_support.stop_udp_echo_server(echo_server)
-  process.sleep(10)
-  assert http_test_support.message_queue_length() == before
+  assert await_condition(within: 1000, until: fn() {
+    http_test_support.message_queue_length() == before
+  })
 }
 
 pub fn rfc9298_system_udp_fatal_event_closes_request_stream_once_test() -> Nil {

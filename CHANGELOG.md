@@ -108,6 +108,14 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Fixed a racing MASQUE receive-credit regression and put it under the
+  scheduling-sensitive matrix. The duplicate pull is only refused while the
+  first pull is still waiting, but the first pull's deadline was a tenth of a
+  second, so a loaded run could end it before the second was issued and turn
+  the expected refusal into a timeout. The deadline now outlasts that
+  scheduling delay, both fixed sleeps became bounded waits on the condition
+  they were guessing at, and the matrix repeats the test in 30 isolated fresh
+  BEAMs.
 - Removed the last `let assert` expressions from `src` across all three
   packages and dropped every `assert_ok_pattern` suppression that covered a
   production module, so the lint gate now holds the whole production surface to

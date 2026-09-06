@@ -204,6 +204,13 @@
       "repetitions": 30
     },
     {
+      "name": "masque-udp-receive-credit",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_receive_credit_timeout_and_mailbox_converge_test",
+      "repetitions": 30
+    },
+    {
       "name": "masque-udp-terminal-race",
       "package": "http",
       "module": "masque_test",
