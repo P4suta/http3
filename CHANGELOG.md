@@ -108,6 +108,13 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Made the shell linters discover what they check. The list was written by
+  hand and had drifted: `scripts/fresh_build.sh`, which every gate in this
+  repository runs, along with the idle-wakeup and qlog live harnesses, were
+  never passed to `shellcheck` or `shfmt`. All three were already clean, so
+  nothing was hiding behind the gap -- but a gate that has to be edited to
+  keep covering the tree is a gate that stops covering it. It now reads the
+  tracked `*.sh` set, so a script cannot be added without being checked.
 - Measured the coverage capture's settle window instead of assuming it. An
   unchanged http suite takes between 13 and 29 seconds to return the actors it
   owns under `cover`, so the 20-second cap sat inside its own observed range
