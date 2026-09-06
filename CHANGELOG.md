@@ -108,6 +108,13 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Made the documentation example gate discover the documentation. It read a
+  list of the places examples happened to live, so a `gleam` block written
+  anywhere else -- the contributing guide, the security policy, a package's
+  test README -- was extracted by nothing: never compiled, never run, and free
+  to rot while reading like verified documentation. It now scans every Markdown
+  file in the repository, skipping only build output, vendored dependencies,
+  and dot-directories.
 - Closed a naming escape hatch in the FFI audit. It compared the declared
   inventory against the Erlang modules whose names end in `_ffi.erl`, so a
   module named outside that convention was discovered by nothing: absent from

@@ -46,18 +46,25 @@ run() ->
               [length(Examples)]),
     ok.
 
+%% Every documented Markdown file in the repository, not a list of the places
+%% examples happen to live today. A `gleam` block outside such a list is
+%% extracted by nothing: it is never compiled, never run, and rots silently
+%% while reading like verified documentation. Build outputs, vendored
+%% dependencies, and dot-directories are the only things skipped.
 markdown_files() ->
-    Roots = ["README.md", "docs", "packages/http3/README.md",
-             "packages/http3/docs", "packages/quic_core/README.md",
-             "packages/quic_core/docs"],
-    lists:usort(lists:append([markdown_root(Root) || Root <- Roots])).
+    Files = filelib:fold_files(".", ".*\\.md$", true,
+                               fun(File, Acc) -> [File | Acc] end, []),
+    lists:usort([normalise(File) || File <- Files, documented(File)]).
 
-markdown_root(Path) ->
-    case filelib:is_regular(Path) of
-        true -> [Path];
-        false -> filelib:fold_files(Path, ".*\\.md$", true,
-                                    fun(File, Acc) -> [File | Acc] end, [])
-    end.
+normalise("./" ++ Path) -> Path;
+normalise(Path) -> Path.
+
+documented(Path) ->
+    Segments = filename:split(normalise(Path)),
+    not lists:any(fun(Segment) ->
+        Segment =:= "build" orelse Segment =:= "deps"
+            orelse (Segment =/= "." andalso hd(Segment) =:= $.)
+    end, Segments).
 
 extract(Path) ->
     Lines = binary:split(read(Path), <<"\n">>, [global]),
