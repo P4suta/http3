@@ -590,6 +590,11 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
       client.End,
     ]
   assert http3_test_support.await_task(drain_task) == Ok(server.Drained)
+
+  // The drained listener is gone, so an unclosed client here would be released
+  // only by its idle timeout, long after this test stopped observing it.
+  let _closed = client.close(connection)
+  Nil
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

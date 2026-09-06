@@ -44,6 +44,11 @@ const maximum_udp_payload_size = 65_527
 /// Validated client transport policy.
 pub type Config {
   Config(
+    /// The process this connection is being established for. Establishment
+    /// blocks, so the owner has to be watched from inside those waits: without
+    /// it an abandoned attempt keeps its candidate sockets until the handshake
+    /// deadline, long after anything could still use the connection.
+    owner: Pid,
     hostname: String,
     port: Int,
     address_family: AddressFamily,
@@ -96,11 +101,19 @@ pub type Error {
   MigrationUnavailable
   VersionNegotiationReceived(List(Version))
   VersionNegotiationFailed
+  /// The process this connection was being established for exited first, so
+  /// the attempt was abandoned rather than completed or timed out.
+  OwnerGone
 }
 
 type CandidateDecision {
   Select(Subject(Result(State, Error)))
   Cancel
+}
+
+type RaceEvent {
+  CandidateEvent(CandidateMessage)
+  OwnerExited
 }
 
 type CandidateMessage {
@@ -553,10 +566,24 @@ fn race_addresses(
   deadline: Int,
 ) -> Result(State, Error) {
   let results = process.new_subject()
-  let owner = process.self()
+  let racer = process.self()
   let candidates =
-    spawn_candidates(config, addresses, deadline, owner, results, 0, [])
-  await_candidate(results, candidates, list.length(candidates), deadline, None)
+    spawn_candidates(config, addresses, deadline, racer, results, 0, [])
+  let monitor = process.monitor(config.owner)
+  let selector =
+    process.new_selector()
+    |> process.select_map(results, CandidateEvent)
+    |> process.select_specific_monitor(monitor, fn(_) { OwnerExited })
+  let outcome =
+    await_candidate(
+      selector,
+      candidates,
+      list.length(candidates),
+      deadline,
+      None,
+    )
+  process.demonitor_process(monitor)
+  outcome
 }
 
 fn spawn_candidates(
@@ -631,8 +658,15 @@ fn transfer_candidate(
   }
 }
 
+/// Wait for the first candidate to offer itself, or for the owner to go.
+///
+/// Every candidate holds an open socket while it handshakes, and it holds it
+/// for the whole connect deadline whether or not anyone is still waiting for
+/// the connection. Watching the owner here is what keeps an abandoned attempt
+/// from outliving the process that asked for it: the candidates are cancelled
+/// at once instead of finishing a handshake nothing will read.
 fn await_candidate(
-  results: Subject(CandidateMessage),
+  selector: process.Selector(RaceEvent),
   candidates: List(Pid),
   remaining_candidates: Int,
   deadline: Int,
@@ -645,20 +679,24 @@ fn await_candidate(
       Error(option_error(last_error, TotalTimeout))
     }
     _, remaining ->
-      case process.receive(results, within: remaining) {
+      case process.selector_receive(selector, within: remaining) {
         Error(Nil) -> {
           cancel_candidates(candidates, None)
           Error(option_error(last_error, TotalTimeout))
         }
-        Ok(CandidateFailed(error)) ->
+        Ok(OwnerExited) -> {
+          cancel_candidates(candidates, None)
+          Error(OwnerGone)
+        }
+        Ok(CandidateEvent(CandidateFailed(error))) ->
           await_candidate(
-            results,
+            selector,
             candidates,
             remaining_candidates - 1,
             deadline,
             prefer_candidate_error(last_error, error),
           )
-        Ok(CandidateReady(candidate, decision)) ->
+        Ok(CandidateEvent(CandidateReady(candidate, decision))) ->
           select_candidate(candidate, decision, candidates, deadline)
       }
   }
@@ -720,6 +758,9 @@ fn candidate_error_priority(error: Error) -> Int {
     SocketUnavailable -> 30
     TotalTimeout -> 20
     MigrationUnavailable | InvalidInput -> 10
+    // Never reported by a candidate: the race ends on owner exit without
+    // preferring one candidate's reason over another.
+    OwnerGone -> 0
   }
 }
 

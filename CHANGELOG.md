@@ -108,6 +108,17 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Ended abandoned QUIC connection attempts with the process that asked for
+  them. Establishment blocks, so a client worker racing dual-stack candidates
+  could not see its owner exit, and every candidate kept an open UDP socket
+  until the connect deadline: a lost protocol race left one worker and two
+  sockets alive for the rest of that window. The candidate race now watches the
+  owner and cancels the candidates the moment it goes, which takes the release
+  of an abandoned attempt from 24 seconds to none, and `OwnerGone` states the
+  outcome as abandoned rather than as a timeout or a failure.
+- Closed the HTTP/3 client a graceful-stop regression left open. Its listener
+  had already drained, so nothing but the 30-second idle timeout could release
+  the connection, and the suite could not prove it converges.
 - Added the first independent-peer gate for the unified HTTP/1.1 and HTTP/2
   runtimes. A pinned curl drives the package's own TLS listeners and decides
   whether the wire behaviour is right: ALPN in both directions, including the

@@ -808,6 +808,7 @@ fn initialise(
   }
   let config =
     client_transport.Config(
+      owner,
       hostname,
       port,
       address_family,
@@ -2929,6 +2930,7 @@ fn map_transport_error(error: client_transport.Error) -> Error {
     client_transport.PeerClosed(None) -> ConnectionClosed
     client_transport.PeerClosed(Some(code)) -> PeerClosedWithCode(code)
     client_transport.MigrationUnavailable -> MigrationUnavailable
+    client_transport.OwnerGone -> ConnectionClosed
     client_transport.VersionNegotiationReceived(_)
     | client_transport.VersionNegotiationFailed -> VersionNegotiationFailed
     client_transport.QuicFailure(error) -> map_driver_error(error)
