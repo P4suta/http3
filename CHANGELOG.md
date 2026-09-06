@@ -108,6 +108,11 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Gave the unified package's own README a quickstart. It had no code at all,
+  so the first thing a reader saw was a package list. There are now two
+  examples the documentation gate extracts, builds, and runs: one request with
+  a bounded read, and a handler served over loopback and answered by this
+  package's own client, which is the whole path in twenty lines.
 - Ended abandoned QUIC connection attempts with the process that asked for
   them. Establishment blocks, so a client worker racing dual-stack candidates
   could not see its owner exit, and every candidate kept an open UDP socket
