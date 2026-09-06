@@ -6,8 +6,11 @@ rules:
     paths:
       include:
         - /src/*.erl
+        - /src/**/*.erl
         - /packages/http3/src/*.erl
+        - /packages/http3/src/**/*.erl
         - /packages/quic_core/src/*.erl
+        - /packages/quic_core/src/**/*.erl
     pattern-regex: '(?:binary_to_atom|list_to_atom|os:cmd|open_port)[[:space:]]*\('
 
   - id: http3.public.no-verification-bypass
@@ -21,7 +24,7 @@ rules:
         - /packages/http3/src/http3.gleam
         - /packages/http3/src/http3/*.gleam
         - /packages/quic_core/src/quic_core.gleam
-        - /packages/quic_core/src/quic_core/failure.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:verify_none|disable_verification|insecure_skip_verify)'
 
   - id: http3.public.no-secret-accessor
@@ -35,7 +38,7 @@ rules:
         - /packages/http3/src/http3.gleam
         - /packages/http3/src/http3/*.gleam
         - /packages/quic_core/src/quic_core.gleam
-        - /packages/quic_core/src/quic_core/failure.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:traffic_secret|private_key_bytes|ticket_key_bytes)'
 
   - id: http3.public.no-placeholder-error-or-bbr
@@ -49,7 +52,7 @@ rules:
         - /packages/http3/src/http3.gleam
         - /packages/http3/src/http3/*.gleam
         - /packages/quic_core/src/quic_core.gleam
-        - /packages/quic_core/src/quic_core/failure.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: '(?:BackendFailure|\bBbr\b)'
 
   - id: http3.boundary.no-private-core-import

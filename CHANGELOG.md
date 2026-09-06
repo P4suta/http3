@@ -108,6 +108,18 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Widened the static security rules to the public surface they are written
+  about. All three public-API rules scanned only `quic_core/failure.gleam` out
+  of the six public core modules, so `quic_core/client.gleam` -- the client
+  path this repository's first prohibition is about -- was never checked for a
+  certificate-verification bypass, and `quic_core/config.gleam`, where
+  credentials and the congestion-control choice live, was never checked for a
+  leaked key or an unimplemented BBR. A `pub fn verify_none` added to the
+  client module passed the gate before this change and fails it now. The FFI
+  rule likewise matched only Erlang modules directly under a source root, so a
+  nested one could call `os:cmd` unseen. Nothing in the tree violated either
+  rule, so both gaps are closed while they are still empty; the scan covers
+  103 files where it covered 92.
 - Made the documentation example gate discover the documentation. It read a
   list of the places examples happened to live, so a `gleam` block written
   anywhere else -- the contributing guide, the security policy, a package's
