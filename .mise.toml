@@ -201,6 +201,17 @@ dir = "{{ config_root }}/packages/http3"
 run = "bash test/diagnostics/run.sh"
 
 [tasks.interop]
+description = "Run every independent peer interoperability gate"
+run = [
+  "mise run interop-curl",
+  "mise run interop-http3",
+]
+
+[tasks.interop-curl]
+description = "Run independent curl HTTP/1.1 and HTTP/2 client interoperability"
+run = "bash test/interop/curl/run.sh"
+
+[tasks.interop-http3]
 description = "Run both independent HTTP/3 peer phase gates"
 dir = "{{ config_root }}/packages/http3"
 run = "bash test/interop/run.sh all"
@@ -304,8 +315,8 @@ run = [
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
-  "shellcheck packages/http3/test/diagnostics/run.sh packages/http3/test/interop/run.sh packages/http3/test/interop/campaign.sh scripts/ffi_audit.sh scripts/mix_package_test.sh scripts/performance_run.sh scripts/structured_fields_oracle_setup.sh",
-  "shfmt -d packages/http3/test/diagnostics/run.sh packages/http3/test/interop/run.sh packages/http3/test/interop/campaign.sh scripts/ffi_audit.sh scripts/mix_package_test.sh scripts/performance_run.sh scripts/structured_fields_oracle_setup.sh",
+  "shellcheck packages/http3/test/diagnostics/run.sh packages/http3/test/interop/run.sh packages/http3/test/interop/campaign.sh test/interop/curl/run.sh scripts/ffi_audit.sh scripts/mix_package_test.sh scripts/performance_run.sh scripts/structured_fields_oracle_setup.sh",
+  "shfmt -d packages/http3/test/diagnostics/run.sh packages/http3/test/interop/run.sh packages/http3/test/interop/campaign.sh test/interop/curl/run.sh scripts/ffi_audit.sh scripts/mix_package_test.sh scripts/performance_run.sh scripts/structured_fields_oracle_setup.sh",
   "typos",
   "reuse lint",
   "gitleaks dir . --redact --no-banner",

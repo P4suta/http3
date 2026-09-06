@@ -457,7 +457,7 @@
       "id": "PROD-013",
       "area": "External interoperability and platform matrix",
       "status": "Blocked",
-      "evidence": "aioquic 1.3.0 and quic-go 0.61.0 pins exist. curl, nghttp2, ngtcp2/nghttp3, quiche, Chromium, Firefox, independent MASQUE, and Go/TypeScript OHTTP evidence is missing. The local OTP 29 credential run passes 144 tests, including live RSA-PSS, ECDSA P-256/P-384, Ed25519, mTLS, HRR, rotation, resumption, and rejection rows; all six qualified OS/OTP attestations remain uncollected."
+      "evidence": "aioquic 1.3.0, quic-go 0.61.0, and curl 8.5.0 pins exist. The curl gate drives the package's own HTTP/1.1 and HTTP/2 TLS listeners from an independent client: ALPN selection in both directions including the downgrade an `http/1.1`-only listener must force, chunked and DATA request bodies, a non-2xx status, HEAD without a body, sequential HTTP/1.1 reuse, two multiplexed HTTP/2 streams, and a refusal when the pinned CA is withheld; the harness refuses to report against a curl other than the pinned one. nghttp2, ngtcp2/nghttp3, quiche, Chromium, Firefox, independent MASQUE, and Go/TypeScript OHTTP evidence is missing. The local OTP 29 credential run passes 144 tests, including live RSA-PSS, ECDSA P-256/P-384, Ed25519, mTLS, HRR, rotation, resumption, and rejection rows; all six qualified OS/OTP attestations remain uncollected."
     },
     {
       "id": "PROD-014",

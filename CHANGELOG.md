@@ -108,6 +108,16 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Added the first independent-peer gate for the unified HTTP/1.1 and HTTP/2
+  runtimes. A pinned curl drives the package's own TLS listeners and decides
+  whether the wire behaviour is right: ALPN in both directions, including the
+  downgrade an `http/1.1`-only listener must force on an HTTP/2-capable client;
+  chunked and DATA request bodies; a non-2xx status; HEAD without a body;
+  sequential HTTP/1.1 reuse; two multiplexed HTTP/2 streams; and a refusal when
+  the pinned CA is withheld. The harness reads its pin from the interoperability
+  profile and refuses to report against a different curl, so the evidence cannot
+  drift away from the peer that produced it. The interoperability matrix now has
+  eight unmet peer rows rather than nine.
 - Fixed a racing MASQUE receive-credit regression and put it under the
   scheduling-sensitive matrix. The duplicate pull is only refused while the
   first pull is still waiting, but the first pull's deadline was a tenth of a
