@@ -108,6 +108,14 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Closed a naming escape hatch in the FFI audit. It compared the declared
+  inventory against the Erlang modules whose names end in `_ffi.erl`, so a
+  module named outside that convention was discovered by nothing: absent from
+  the inventory, and therefore absent from Dialyzer, from the compiled xref,
+  and from the API leak checks that all read the same declared set. The audit
+  now discovers every Erlang module in the production trees, and since the
+  inventory accepts only `_ffi.erl` names, one that does not follow the
+  convention fails the audit rather than passing unseen.
 - Made the shell linters discover what they check. The list was written by
   hand and had drifted: `scripts/fresh_build.sh`, which every gate in this
   repository runs, along with the idle-wakeup and qlog live harnesses, were

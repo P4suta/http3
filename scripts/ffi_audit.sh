@@ -12,9 +12,16 @@ mapfile -t production_ffi_sources < <(
 	jq -r '.ffi_inventory.sources[]' qualification.json
 )
 
+# Every Erlang module in a production tree, not only the ones named like an
+# FFI module. A module named outside the convention would otherwise be
+# discovered by nothing: absent from the inventory, so absent from Dialyzer,
+# from the compiled xref, and from the API leak checks that all read the same
+# set. The inventory itself only accepts `_ffi.erl` names, so a module which
+# does not follow the convention now fails this comparison instead of passing
+# unseen.
 discovered_ffi_sources="$(
 	find src packages/http3/src packages/quic_core/src \
-		-type f -name '*_ffi.erl' -print | sort
+		-type f -name '*.erl' -print | sort
 )"
 declared_ffi_sources="$(printf '%s\n' "${production_ffi_sources[@]}" | sort)"
 manifest_ffi_sources="$(printf '%s\n' "${production_ffi_sources[@]}")"
