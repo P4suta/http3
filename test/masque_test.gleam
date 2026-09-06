@@ -4080,6 +4080,130 @@ pub fn permanent_ip_capsules_have_exact_wire_vectors_test() -> Nil {
     == Ok(Some(masque.RouteAdvertisement([route])))
 }
 
+// A route advertisement is peer input. Every bound the validator checks is
+// checked here, because the ordering and overlap scans read these ranges as
+// plain integers and cannot re-decide a malformed one.
+pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil {
+  let reversed =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 255>>),
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      17,
+    )
+  assert masque.encode_capsule(masque.RouteAdvertisement([reversed]), limits())
+    == Error(masque.InvalidRoute)
+
+  // A range whose bounds are in different address spaces has no decoding at
+  // all, so it is refused before any numeric comparison is reached.
+  let mixed_family =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      masque.Ipv6(<<255, 0:size(120)>>),
+      17,
+    )
+  assert masque.encode_capsule(
+      masque.RouteAdvertisement([mixed_family]),
+      limits(),
+    )
+    == Error(masque.InvalidRoute)
+
+  let unknown_protocol =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      masque.Ipv4(<<192, 0, 2, 255>>),
+      256,
+    )
+  assert masque.encode_capsule(
+      masque.RouteAdvertisement([unknown_protocol]),
+      limits(),
+    )
+    == Error(masque.InvalidRoute)
+
+  let earlier =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      masque.Ipv4(<<192, 0, 2, 255>>),
+      17,
+    )
+  let later =
+    masque.IpRoute(
+      masque.Ipv4(<<198, 51, 100, 0>>),
+      masque.Ipv4(<<198, 51, 100, 255>>),
+      17,
+    )
+  assert masque.encode_capsule(
+      masque.RouteAdvertisement([later, earlier]),
+      limits(),
+    )
+    == Error(masque.InvalidRoute)
+  let assert Ok(_) =
+    masque.encode_capsule(masque.RouteAdvertisement([earlier, later]), limits())
+
+  // Ordering across address families is decided before either range is read,
+  // so it needs a pair which the same-family comparison cannot also reject.
+  let ipv6 =
+    masque.IpRoute(
+      masque.Ipv6(<<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>),
+      masque.Ipv6(<<0x20, 0x01, 0x0d, 0xb8, 0xff, 0:size(88)>>),
+      17,
+    )
+  assert masque.encode_capsule(
+      masque.RouteAdvertisement([ipv6, earlier]),
+      limits(),
+    )
+    == Error(masque.InvalidRoute)
+  let assert Ok(_) =
+    masque.encode_capsule(masque.RouteAdvertisement([earlier, ipv6]), limits())
+
+  // A wildcard protocol sorts ahead of a numbered one, so this pair is
+  // correctly ordered and only the overlap scan can reject it. Without a case
+  // like this the ordering check answers for the overlap check as well.
+  let any_protocol =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      masque.Ipv4(<<192, 0, 2, 255>>),
+      0,
+    )
+  let inside =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 64>>),
+      masque.Ipv4(<<192, 0, 2, 128>>),
+      17,
+    )
+  assert masque.encode_capsule(
+      masque.RouteAdvertisement([any_protocol, inside]),
+      limits(),
+    )
+    == Error(masque.InvalidRoute)
+
+  let below =
+    masque.IpRoute(
+      masque.Ipv4(<<192, 0, 2, 0>>),
+      masque.Ipv4(<<192, 0, 2, 63>>),
+      0,
+    )
+  let assert Ok(_) =
+    masque.encode_capsule(masque.RouteAdvertisement([below, inside]), limits())
+
+  // Two address families share no address space even when their ranges read as
+  // overlapping integers. `::` to `::ffff:ffff` covers exactly the numbers an
+  // IPv4 range can hold, so an overlap scan which forgot the family would
+  // refuse this pair.
+  let low_ipv6 =
+    masque.IpRoute(
+      masque.Ipv6(<<0:size(128)>>),
+      masque.Ipv6(<<0:size(96), 255, 255, 255, 255>>),
+      17,
+    )
+  let assert Ok(_) =
+    masque.encode_capsule(
+      masque.RouteAdvertisement([earlier, low_ipv6]),
+      limits(),
+    )
+
+  Nil
+}
+
 pub fn capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test() -> Nil {
   let request =
     masque.RequestedAddress(

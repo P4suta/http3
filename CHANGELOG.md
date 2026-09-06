@@ -108,6 +108,18 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Removed every `let assert` from the unified MASQUE runtime and re-enabled its
+  `assert_ok_pattern` lint. A route range is now decoded once into a single
+  address family, so the ordering and overlap scans read integers already known
+  to exist instead of re-decoding the same four addresses on every comparison
+  of the quadratic scan. The receive model is built before a socket can be
+  attempted, so an invalid limit is a typed refusal rather than a socket opened
+  and abandoned; the successful response derives its own status beside the
+  fields it belongs to; and a Proxy-Status field which cannot be serialised is
+  dropped, because the advisory field must not turn a refusal into a crash.
+  Route advertisement tests now cover the reversed, mixed-family,
+  unknown-protocol, misordered, wildcard-overlap, and numerically overlapping
+  cross-family cases which the previous overlap test left to the ordering check.
 - Classified datagrams received after Closing, Draining, or Closed as stale
   terminal input instead of converting the state-machine
   `ConnectionUnavailable` signal into a misleading peer QUIC failure.

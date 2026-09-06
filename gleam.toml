@@ -153,7 +153,6 @@ unused_exports = "error"
 # transitions in one stable protocol module. Assertions occur only after public
 # address validation has established the internal route invariants.
 "src/http/masque.gleam" = [
-  "assert_ok_pattern",
   "deep_nesting",
   "label_possible",
   "prefer_guard_clause",

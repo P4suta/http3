@@ -1735,27 +1735,25 @@ fn cap_http3_udp_proxy_limits(
   }
 }
 
-/// Build successful response fields after proxy setup has opened its socket.
+/// Build the successful status and response fields after proxy setup has
+/// opened its socket.
 ///
 /// This helper is deliberately private: public successful response fields are
-/// obtainable only from `establish_udp_proxy`'s `UdpProxyReady` branch.
-fn successful_response_headers(
+/// obtainable only from `establish_udp_proxy`'s `UdpProxyReady` branch. The
+/// status is derived here beside the fields it belongs to rather than checked
+/// against a value the caller derived separately, so the two cannot disagree
+/// and the successful response has no failure case at all.
+fn successful_response(
   request: PreparedRequest,
-  status: Int,
-) -> Result(List(#(String, String)), Error) {
-  let successful = case request.protocol {
-    Http1 -> status == 101
-    Http2 | Http3 -> status >= 200 && status <= 299
-  }
-  use <- bool.guard(when: !successful, return: Error(UnexpectedStatus(status)))
-  Ok(case request.protocol {
-    Http1 -> [
+) -> #(Int, List(#(String, String))) {
+  case request.protocol {
+    Http1 -> #(101, [
       #("connection", "Upgrade"),
       #("upgrade", kind_protocol(request.kind)),
       #("capsule-protocol", "?1"),
-    ]
-    Http2 | Http3 -> [#("capsule-protocol", "?1")]
-  })
+    ])
+    Http2 | Http3 -> #(200, [#("capsule-protocol", "?1")])
+  }
 }
 
 /// Construct finite, supervised proxy limits with one shared socket deadline.
@@ -3575,6 +3573,10 @@ fn authorize_proxy_addresses(
   }
 }
 
+/// Refuse before the socket is attempted when the receive model cannot be
+/// built. It depends only on the prepared request's finite limits, so deciding
+/// it first means no socket can be opened and then abandoned, and the caller
+/// still sees a typed refusal rather than a crash.
 fn open_proxy_socket(
   request: PreparedRequest,
   endpoint: UdpEndpoint,
@@ -3582,6 +3584,31 @@ fn open_proxy_socket(
   open_socket: fn(UdpEndpoint, Int) ->
     Result(UdpSocketResource(socket), UdpSocketOpenFailure),
   snapshot: ProxySetupSnapshot,
+) -> UdpProxySetup(socket) {
+  case udp_receiver(request.limits) {
+    // nolint: thrown_away_error -- the typed refusal replaces the limit error.
+    Error(_) ->
+      reject_proxy_setup(config.proxy, ProxySocketUnavailable, snapshot)
+    Ok(receiver) ->
+      attempt_proxy_socket(
+        request,
+        endpoint,
+        config,
+        open_socket,
+        snapshot,
+        receiver,
+      )
+  }
+}
+
+fn attempt_proxy_socket(
+  request: PreparedRequest,
+  endpoint: UdpEndpoint,
+  config: ProxySetupConfig,
+  open_socket: fn(UdpEndpoint, Int) ->
+    Result(UdpSocketResource(socket), UdpSocketOpenFailure),
+  snapshot: ProxySetupSnapshot,
+  receiver: UdpReceiver,
 ) -> UdpProxySetup(socket) {
   let snapshot =
     ProxySetupSnapshot(
@@ -3668,13 +3695,7 @@ fn open_proxy_socket(
       reject_proxy_setup(config.proxy, failure, snapshot)
     }
     Ok(Ok(SocketResourceReady(resource))) -> {
-      let response_status = case request.protocol {
-        Http1 -> 101
-        Http2 | Http3 -> 200
-      }
-      let assert Ok(response_headers) =
-        successful_response_headers(request, response_status)
-      let assert Ok(receiver) = udp_receiver(request.limits)
+      let #(response_status, response_headers) = successful_response(request)
       let receiver = activate_udp_receiver(receiver)
       UdpProxyReady(
         tunnel: UdpProxyTunnel(
@@ -3716,10 +3737,17 @@ fn reject_proxy_setup(
   snapshot: ProxySetupSnapshot,
 ) -> UdpProxySetup(socket) {
   let #(response_status, error_type) = proxy_setup_failure_response(failure)
-  let assert Ok(proxy_status) = proxy_status_header(proxy, error_type)
+  // Proxy-Status is advisory. A field which cannot be serialised is dropped so
+  // that the refusal still reaches the caller with its typed failure and
+  // status, rather than the rejection path itself becoming a crash.
+  let response_headers = case proxy_status_header(proxy, error_type) {
+    Ok(header) -> [header]
+    // nolint: thrown_away_error -- the advisory field is dropped, not reported.
+    Error(_) -> []
+  }
   UdpProxyRejected(
     response_status: response_status,
-    response_headers: [proxy_status],
+    response_headers: response_headers,
     failure: failure,
     snapshot: append_proxy_setup_event(snapshot, ProxySetupFailed(failure)),
   )
@@ -5237,28 +5265,64 @@ fn validate_routes(
     list.length(routes),
     limits.maximum_route_entries,
   ))
-  case
-    list.all(routes, route_valid)
-    && routes_are_ordered(routes)
-    && !routes_have_forbidden_overlap(routes)
-  {
-    True -> Ok(Nil)
-    False -> Error(InvalidRoute)
+  case list.try_map(routes, parse_route) {
+    Error(_) -> Error(InvalidRoute)
+    Ok(parsed) ->
+      case
+        routes_are_ordered(parsed) && !routes_have_forbidden_overlap(parsed)
+      {
+        True -> Ok(Nil)
+        False -> Error(InvalidRoute)
+      }
   }
 }
 
-fn route_valid(route: IpRoute) -> Bool {
-  case address_number(route.start), address_number(route.end) {
-    Ok(#(start_version, start, _)), Ok(#(end_version, end, _)) ->
-      start_version == end_version
-      && start <= end
-      && route.ip_protocol >= 0
-      && route.ip_protocol <= 255
-    _, _ -> False
+/// One route whose bounds are already decoded into a single address family.
+///
+/// Parsing each route exactly once is what makes the ordering and overlap
+/// checks total: they read integers which are already known to exist instead of
+/// re-deciding a `Result` they would have to crash on. It is also what keeps
+/// the quadratic overlap scan from decoding the same four addresses on every
+/// comparison it makes.
+type ParsedRoute {
+  ParsedRoute(version: Int, start: Int, end: Int, ip_protocol: Int)
+}
+
+/// Decode both bounds of one range together.
+///
+/// Matching the pair in a single pattern is what makes the two bounds share an
+/// address family: a mixed range has no matching clause at all, so there is no
+/// separate family comparison which could be dropped and leave the numeric
+/// comparisons below reading two different address spaces.
+fn address_range(
+  start: IpAddress,
+  end: IpAddress,
+) -> Result(#(Int, Int, Int), Nil) {
+  case start, end {
+    Ipv4(<<low:size(32)>>), Ipv4(<<high:size(32)>>) -> Ok(#(4, low, high))
+    Ipv6(<<low:size(128)>>), Ipv6(<<high:size(128)>>) -> Ok(#(6, low, high))
+    _, _ -> Error(Nil)
   }
 }
 
-fn routes_are_ordered(routes: List(IpRoute)) -> Bool {
+fn parse_route(route: IpRoute) -> Result(ParsedRoute, Nil) {
+  case address_range(route.start, route.end) {
+    Error(_) -> Error(Nil)
+    Ok(#(version, start, end)) ->
+      case start <= end && route.ip_protocol >= 0 && route.ip_protocol <= 255 {
+        True ->
+          Ok(ParsedRoute(
+            version: version,
+            start: start,
+            end: end,
+            ip_protocol: route.ip_protocol,
+          ))
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn routes_are_ordered(routes: List(ParsedRoute)) -> Bool {
   case routes {
     [] | [_] -> True
     [first, second, ..rest] ->
@@ -5266,21 +5330,17 @@ fn routes_are_ordered(routes: List(IpRoute)) -> Bool {
   }
 }
 
-fn route_precedes(first: IpRoute, second: IpRoute) -> Bool {
-  let assert Ok(#(first_version, _, _)) = address_number(first.start)
-  let assert Ok(#(second_version, second_start, _)) =
-    address_number(second.start)
-  let assert Ok(#(_, first_end, _)) = address_number(first.end)
-  first_version < second_version
-  || first_version == second_version
+fn route_precedes(first: ParsedRoute, second: ParsedRoute) -> Bool {
+  first.version < second.version
+  || first.version == second.version
   && {
     first.ip_protocol < second.ip_protocol
     || first.ip_protocol == second.ip_protocol
-    && first_end < second_start
+    && first.end < second.start
   }
 }
 
-fn routes_have_forbidden_overlap(routes: List(IpRoute)) -> Bool {
+fn routes_have_forbidden_overlap(routes: List(ParsedRoute)) -> Bool {
   case routes {
     [] -> False
     [route, ..rest] ->
@@ -5289,20 +5349,15 @@ fn routes_have_forbidden_overlap(routes: List(IpRoute)) -> Bool {
   }
 }
 
-fn forbidden_overlap(first: IpRoute, second: IpRoute) -> Bool {
-  let assert Ok(#(first_version, first_start, _)) = address_number(first.start)
-  let assert Ok(#(_, first_end, _)) = address_number(first.end)
-  let assert Ok(#(second_version, second_start, _)) =
-    address_number(second.start)
-  let assert Ok(#(_, second_end, _)) = address_number(second.end)
-  first_version == second_version
+fn forbidden_overlap(first: ParsedRoute, second: ParsedRoute) -> Bool {
+  first.version == second.version
   && {
     first.ip_protocol == second.ip_protocol
     || first.ip_protocol == 0
     || second.ip_protocol == 0
   }
-  && first_start <= second_end
-  && second_start <= first_end
+  && first.start <= second.end
+  && second.start <= first.end
 }
 
 fn require_entry_limit(count: Int, maximum: Int) -> Result(Nil, Error) {
