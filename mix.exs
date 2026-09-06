@@ -1,23 +1,23 @@
-# SPDX-FileCopyrightText: 2026 the http3 contributors
+# SPDX-FileCopyrightText: 2026 the http contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-defmodule Http3.MixProject do
+defmodule Http.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :http3,
+      app: :http,
       version: "0.1.0",
       elixir: "~> 1.17",
       archives: [mix_gleam: "== 0.6.2"],
       compilers: [:gleam | Mix.compilers()],
       aliases: ["deps.get": ["deps.get", "gleam.deps.get"]],
       erlc_paths: [
-        "build/dev/erlang/http3/_gleam_artefacts",
-        "build/dev/erlang/http3/build",
+        "build/dev/erlang/http/_gleam_artefacts",
+        "build/dev/erlang/http/build",
         "src"
       ],
-      erlc_include_path: "build/dev/erlang/http3/include",
+      erlc_include_path: "build/dev/erlang/http/include",
       prune_code_paths: false,
       deps: deps()
     ]
@@ -31,8 +31,8 @@ defmodule Http3.MixProject do
     [
       {:gleam_erlang, "== 1.3.0"},
       {:gleam_http, "== 4.3.0"},
-      {:gleam_quic, path: "packages/gleam_quic"},
-      {:gleam_stdlib, "== 1.0.5"}
+      {:gleam_stdlib, "== 1.0.5"},
+      {:http3, path: "packages/http3"}
     ]
   end
 end

@@ -1,0 +1,669 @@
+{
+  "schema": 1,
+  "qualification_date": "2026-08-30",
+  "packages": [
+    {
+      "name": "http",
+      "manifest": "gleam.toml",
+      "tests": "test"
+    },
+    {
+      "name": "http3",
+      "manifest": "packages/http3/gleam.toml",
+      "tests": "packages/http3/test"
+    },
+    {
+      "name": "quic_core",
+      "manifest": "packages/quic_core/gleam.toml",
+      "tests": "packages/quic_core/test"
+    }
+  ],
+  "boundary": {
+    "allowlist": "api/boundary.allow",
+    "baseline_entries": 41,
+    "target_entries": 0,
+    "status": "Ready"
+  },
+  "ffi_inventory": {
+    "schema": 1,
+    "sources": [
+      "packages/http3/src/http3_address_ffi.erl",
+      "packages/http3/src/http3_internal_transport_ffi.erl",
+      "packages/http3/src/http3_process_label_ffi.erl",
+      "packages/http3/src/http3_websocket_ffi.erl",
+      "packages/quic_core/src/quic_core_crypto_ffi.erl",
+      "packages/quic_core/src/quic_core_process_label_ffi.erl",
+      "packages/quic_core/src/quic_core_qlog_ffi.erl",
+      "packages/quic_core/src/quic_core_tls_ffi.erl",
+      "packages/quic_core/src/quic_core_udp_ffi.erl",
+      "src/http_body_ffi.erl",
+      "src/http_client_ffi.erl",
+      "src/http_compression_ffi.erl",
+      "src/http_digest_ffi.erl",
+      "src/http_http1_listener_ffi.erl",
+      "src/http_http2_listener_ffi.erl",
+      "src/http_masque_listener_ffi.erl",
+      "src/http_masque_packet_too_big_ffi.erl",
+      "src/http_masque_udp_ffi.erl",
+      "src/http_ohttp_ffi.erl",
+      "src/http_server_ffi.erl",
+      "src/http_signature_ffi.erl",
+      "src/http_transport_ffi.erl",
+      "src/http_websocket_ffi.erl"
+    ]
+  },
+  "hostile_matrix": {
+    "schema": 1,
+    "output_tail_bytes": 16384,
+    "families": [
+      "stalled-peer-isolation",
+      "udp-mailbox-flood",
+      "actor-crash-release",
+      "aggregate-memory",
+      "handshake-connection-exhaustion",
+      "client-endpoint-memory",
+      "parser-bombs",
+      "slow-consumer-backpressure"
+    ],
+    "packages": [
+      {
+        "name": "quic_core",
+        "directory": "packages/quic_core",
+        "ebin": "packages/quic_core/build/dev/erlang/quic_core/ebin",
+        "tests": "packages/quic_core/test",
+        "modules": [
+          "budget_test",
+          "frame_test",
+          "public_client_memory_test",
+          "public_credit_test",
+          "public_flush_backlog_test",
+          "public_isolation_test",
+          "public_memory_test",
+          "runtime_black_hole_test",
+          "stream_test",
+          "tls_anti_replay_test"
+        ]
+      },
+      {
+        "name": "http3",
+        "directory": "packages/http3",
+        "ebin": "packages/http3/build/dev/erlang/http3/ebin",
+        "tests": "packages/http3/test",
+        "modules": [
+          "endpoint_memory_test",
+          "fault_injection_test",
+          "load_regression_test",
+          "native@http3_frame_parser_test",
+          "native@http3_frame_test",
+          "native@qpack_decoder_test",
+          "server_test",
+          "transport_test"
+        ]
+      },
+      {
+        "name": "http",
+        "directory": ".",
+        "ebin": "build/dev/erlang/http/ebin",
+        "tests": "test",
+        "modules": [
+          "bhttp_test",
+          "compression_test",
+          "http1_body_decoder_test",
+          "http1_exchange_test",
+          "http1_request_head_test",
+          "http1_server_test",
+          "http2_connection_write_test",
+          "http2_exchange_test",
+          "http2_hpack_decoder_test",
+          "http2_server_test",
+          "masque_test",
+          "websocket_test"
+        ]
+      }
+    ]
+  },
+  "stability_matrix": {
+    "schema": 1,
+    "output_tail_bytes": 16384,
+    "targets": [
+      {
+        "name": "http2-graceful-drain",
+        "package": "http",
+        "module": "http2_server_test",
+        "test": "drain_sends_goaway_before_waiting_for_inflight_streams_test",
+        "repetitions": 30
+      },
+      {
+        "name": "http2-listener-snapshot-atomicity",
+        "package": "http",
+        "module": "http2_server_test",
+        "test": "http2_listener_phase_snapshot_is_atomic_under_race_test",
+        "repetitions": 30
+      },
+      {
+        "name": "http2-listener-orphaned-writer",
+        "package": "http",
+        "module": "http2_server_test",
+        "test": "http2_listener_orphaned_writer_is_finite_and_observable_test",
+        "repetitions": 30
+      },
+      {
+        "name": "masque-udp-active-once",
+        "package": "http",
+        "module": "masque_test",
+        "test": "rfc9298_system_udp_active_once_holds_one_packet_until_credit_test",
+        "repetitions": 30
+      },
+      {
+        "name": "masque-udp-owner-crash",
+        "package": "http",
+        "module": "masque_test",
+        "test": "rfc9298_system_udp_actor_crash_converges_credit_and_both_resources_test",
+        "repetitions": 30
+      },
+    {
+      "name": "masque-udp-command-credit",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_command_flood_is_grant_before_growth_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-setup-deadline-trace",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_setup_trace_attributes_each_finite_adapter_deadline_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-setup-operation-deadlines",
+      "package": "http",
+      "module": "masque_test",
+      "test": "proxy_socket_setup_and_operation_deadlines_are_independent_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-udp-event-close",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_production_shaped_close_event_cleans_without_next_io_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-udp-waiter-independence",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_event_and_datagram_waiters_have_independent_credit_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-udp-event-credit",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_duplicate_event_waiter_is_busy_then_converges_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-udp-terminal-race",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_error_releases_both_waiters_and_cleans_once_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-session-terminal-race",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_concurrent_terminal_notifications_keep_first_reason_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-socket-close-race",
+      "package": "http",
+      "module": "masque_test",
+      "test": "proxy_cleanup_timeout_retry_and_concurrent_close_are_observable_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-idle-snapshot-atomicity",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_udp_idle_direction_snapshot_is_atomic_under_race_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-idle-activity",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_idle_activity_is_event_driven_bounded_and_atomic_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-idle-expiry",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_idle_owner_expires_without_activity_test",
+      "repetitions": 30
+    },
+    {
+      "name": "context-cancel-subscribe-race",
+      "package": "http",
+      "module": "context_test",
+      "test": "concurrent_cancel_and_subscribe_delivers_exactly_once_250_times_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http1-listener-readiness-trace",
+      "package": "http",
+      "module": "http1_server_test",
+      "test": "http1_listener_readiness_and_phase_snapshot_are_bounded_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http1-listener-snapshot-atomicity",
+      "package": "http",
+      "module": "http1_server_test",
+      "test": "http1_listener_phase_snapshot_is_atomic_under_race_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http1-listener-orphaned-writer",
+      "package": "http",
+      "module": "http1_server_test",
+      "test": "http1_listener_orphaned_writer_is_finite_and_observable_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http1-context-cancel",
+      "package": "http",
+      "module": "http1_server_test",
+      "test": "externally_cancelled_context_closes_only_its_http1_connection_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http2-context-cancel",
+      "package": "http",
+      "module": "http2_server_test",
+      "test": "externally_cancelled_context_resets_only_its_http2_stream_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http3-context-cancel",
+      "package": "http",
+      "module": "http3_server_adapter_test",
+      "test": "unified_server_context_cancellation_resets_http3_request_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-live-h3-socket-close",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_system_udp_error_cancels_live_http3_request_stream_test",
+      "repetitions": 30
+    },
+    {
+      "name": "quic-datagram-guaranteed-floor",
+      "package": "quic_core",
+      "module": "connection_state_test",
+      "test": "guarantees_a_datagram_bound_across_ack_debt_and_path_reset_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-default-listener-live",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_default_listener_establishes_before_2xx_and_relays_live_udp_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-listener-snapshot-atomicity",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_default_listener_setup_snapshot_is_atomic_under_race_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-listener-orphaned-writer",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_default_listener_orphaned_writer_is_finite_and_observable_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-packet-too-big-live-drop",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_target_oversize_is_dropped_before_mailbox_and_reports_ptb_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-packet-too-big-snapshot-atomicity",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_packet_too_big_snapshot_is_atomic_under_race_test",
+      "repetitions": 30
+    },
+    {
+      "name": "masque-packet-too-big-orphaned-seqlock",
+      "package": "http",
+      "module": "masque_test",
+      "test": "rfc9298_packet_too_big_orphaned_seqlock_is_finite_test",
+      "repetitions": 30
+    },
+    {
+      "name": "diagnostic-sequence-concurrency",
+      "package": "http",
+      "module": "diagnostics_test",
+      "test": "diagnostic_sequence_is_unique_under_250_concurrent_emitters_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http3-server-push-ordering",
+      "package": "http3",
+      "module": "transport_test",
+      "test": "server_push_round_trips_with_bounded_pull_api_test",
+      "repetitions": 30
+    },
+    {
+      "name": "http3-bursty-handshake-drain",
+      "package": "http3",
+      "module": "load_regression_test",
+      "test": "drains_bursty_concurrent_handshakes_over_real_udp_test",
+      "repetitions": 30
+    }
+    ]
+  },
+  "requirements": [
+    {
+      "id": "PROD-001",
+      "area": "Three-package ownership",
+      "status": "Ready",
+      "evidence": "Executable layout and compiler-interface audits enforce `http -> http3 -> quic_core` and reject the former package path."
+    },
+    {
+      "id": "PROD-002",
+      "area": "Common body and error types",
+      "status": "Ready",
+      "evidence": "Direct tests cover bounded reads, files, pull streams, replay, cancellation, trailers, length mismatches, stable categories, and redaction."
+    },
+    {
+      "id": "PROD-003",
+      "area": "Regression baselines",
+      "status": "Ready",
+      "evidence": "Source discovery currently finds {{http}} root, {{http3}} HTTP/3, and {{quic_core}} QUIC core tests; all three suites pass on the loopback-capable local runner."
+    },
+    {
+      "id": "PROD-004",
+      "area": "Public-only HTTP/3-to-QUIC boundary",
+      "status": "Ready",
+      "evidence": "The private import allowlist contains {{boundary}} entries; source scan, compiler-interface audit, and compiled xref all reject any HTTP/3 dependency on `quic_core/internal/**`."
+    },
+    {
+      "id": "PROD-005",
+      "area": "Isolation and admission",
+      "status": "Ready",
+      "evidence": "Each accepted QUIC connection has a supervised actor. Live tests cover stalled-peer isolation, bounded datagram and mailbox credit, aggregate grant-before-growth memory pressure, crash/release recovery, connection-slot reuse, client pre-admission refusal, and HTTP/3 client/server `EndpointMemory` failures. The aggregate-pressure test synchronizes on the listener refusal reaching actor state and retains a payload-free five-field accounting snapshot on its bounded timeout, so loaded-run failures distinguish a missing grant transition from a send-buffer overrun."
+    },
+    {
+      "id": "PROD-006",
+      "area": "Unified client and server",
+      "status": "Ready",
+      "evidence": "Common Body/Error, the bounded reusable client, protocol-neutral Handler/Context/middleware/resource/diagnostics executor, and HTTP/1.1, HTTP/2, and public-API HTTP/3 listener adapters have direct live tests. Context cancellation is event-driven rather than periodically polled: one-shot monitored subscriptions converge on cancellation, explicit removal, subscriber crash, and context-owner crash; 250-way cancel/subscribe races preserve exactly one notification. Live H1 maps cancellation to a finite 408 plus connection close, H2 resets only the affected stream while parallel and later streams progress, and H3 emits both reset directions with local provenance. HTTP/1 and HTTP/2 listener and accepted-socket owner transfers use explicit two-sided readiness handshakes. Public fixed-size, payload-free snapshots attribute H1 stalls to readiness, accept, connection start, head parse, handler dispatch, handler completion, or terminal connection phases and H2 stalls to readiness, accept, connection start, drain request, per-connection command, command receipt, GOAWAY attempt/outcome, drain completion, or terminal failure. Five concurrent writer families performing 20,000 updates each prove H2 multi-writer invariants, while H1 and H2 orphaned-writer tests prove finite inconsistent fallback. Diagnostic observations carry a payload-free request ID and reporter-local causal sequence; a forced out-of-order sink and 250 concurrent emitters prove trace reconstruction and uniqueness. Five hundred emit/stop races plus a deliberately blocked admitted sink verify that stop waits for accepted work and rejects later events. Verified Alt-Svc and authenticated HTTPS records select or race HTTP/3 only for replayable requests; the typed policy stores are finite, partitioned, expiring, and fail closed on adapter timeout."
+    },
+    {
+      "id": "PROD-007",
+      "area": "HTTP/1.1 runtime",
+      "status": "Blocked",
+      "evidence": "Strict heads/framing, verified active-once TCP/TLS client and server paths, ordered finite pipelining, deferred Expect, half-close and premature-EOF handling, bounded response-worker isolation, pooling, and post-handshake CONNECT/Upgrade streams are tested. Listener and connection actors acknowledge ownership before their constructors return, and a redacted atomic phase snapshot remains inspectable through Running, Draining, and Stopped states. The hostile-peer gate passes; standards mapping, independent-peer evidence, cross-protocol performance, and platform qualification remain open."
+    },
+    {
+      "id": "PROD-008",
+      "area": "HTTP/2 runtime",
+      "status": "Blocked",
+      "evidence": "The active-once TLS client/server runtime, explicit cleartext prior knowledge, bounded frame/HPACK/SETTINGS/flow-control/stream queues, per-stream worker isolation and deadlines, fair response scheduling, RST/GOAWAY/PING/ORIGIN/priority behavior, Extended CONNECT opt-in, graceful drain, and sequential common-pool reuse are directly tested. ORIGIN advertisements are structurally bounded, server writes are fixed to stream zero, pool authority defaults to an exact authenticated origin key, and a 421 response evicts the connection. RFC 8336 records three explicit advisory deviations because peer advertisements do not yet enable cross-origin coalescing. The hostile-peer gate passes; remaining standards mapping, interoperability, performance, and platform qualification remain open."
+    },
+    {
+      "id": "PROD-009",
+      "area": "HTTP/3, QUIC, TLS, and QPACK",
+      "status": "Blocked",
+      "evidence": "The relocated regression suites, public-core boundary, HyStart++ model, CUBIC oracle, and current aioquic/quic-go paths pass; the scheduling-sensitive aioquic migration/0-RTT path also passes ten isolated repetitions. The deterministic 10,000-transition congestion model reports independent CUBIC curve checks, ECN floor/backoff, HyStart++ CSS rounds, sparse-flight enforcement, and both fast-convergence topology modes. RFC 9002 live recovery now covers exact RTT sampling, persistent-congestion collapse and min_rtt refresh, key-discard flight convergence, pre-confirmation and amplification PTO suppression, client anti-deadlock probing, connection-wide PTO backoff, congestion bypass, and exactly two bounded recovery-reserve slots. RFC 8999 invariant parsing exhausts all 128 Version Negotiation unused-bit patterns and validates connection-ID reflection over real UDP. RFC 9368 has centralized pure version policy, exhaustive Version Information syntax boundaries, legacy-v1 fallback, authenticated downgrade validation, a wire-visible 0x11 close, fresh ALPN negotiation, and cross-version ticket rejection. RFC 9369 adds official v2 cryptographic vectors, protected v2 handshakes, live v2 Retry, version-bound ticket/NEW_TOKEN rejection, post-switch packet-version rejection, and an independently retained original version for 0-RTT; the server-side non-identity compatible-switch SHOULD remains an explicit deviation. HTTP/3 ORIGIN type 0x0c now has a bounded independent codec, typed control-stream role enforcement, and semantic connection events; RFC 9412 has no included uppercase BCP 14 clauses, which the auditor now represents explicitly instead of treating an empty map as a defect. A hash-locked pylsqpack 0.3.24 oracle differentially validates both QPACK directions. Live client/server qlog validates the pinned schema, RFC 7464 framing, redaction, exact one-trace-per-connection cardinality, and connectivity, transport, TLS, recovery, HTTP/3, and QPACK families independently in every trace; a connection-owned opaque sink adds only typed payload-free application metadata to the core-owned writer. {{mapped_standards}} RFC requirement maps and {{mapped_pinned_specifications}} pinned non-RFC maps are complete; {{incomplete_standards}} RFC maps and {{incomplete_pinned_specifications}} pinned maps, seven additional QUIC/HTTP/browser peers plus independent MASQUE/OHTTP peers, and remaining platform qualification are incomplete."
+    },
+    {
+      "id": "PROD-010",
+      "area": "Published extensions",
+      "status": "Blocked",
+      "evidence": "Stable modules and negative/vector tests exist for Structured Fields/status, digest/signature, bHTTP, HPKE/OHTTP roles, gzip/deflate/Brotli/Zstandard and dictionary policy, unified WebSocket, and CONNECT-UDP/IP MASQUE roles. CONNECT-UDP now has a supervised finite-deadline and finite-heap DNS/socket setup state machine, exact target plus resolved-prefix authorization, exact UDP source-address-and-port validation before payload inspection, typed Proxy-Status failures, and idempotent observable socket cleanup. Its fixed-size, payload-free setup trace records monotonic DNS/open/adoption/cleanup durations, phase-specific timeout bits, production adoption events, and separate bounded-worker queue/callback timings with callback-start and supervisor-expiry attribution; success, adapter-reported timeout, panic, malformed return, heap exhaustion, and hard expiry are tested without retaining adapter data. Isolated fresh-BEAM repetitions keep cold-start scheduling distinct from command-credit failures, while every generated MASQUE property/fuzz case verifies independent setup and operation deadlines. A typed first-reason lifetime owner binds each established UDP socket to one request stream, coordinates bounded cleanup in both directions, and rejects post-terminal packets before source or payload inspection. Its production OTP UDP adapter uses an adopted dedicated socket owner, eight-command admission, active-once receive credit, one retained packet, an independent one-slot terminal-event waiter, requested/effective finite kernel buffers, immediate non-batching sends, Not-ECT isolation, Don't-Fragment capability reporting, owner-death cleanup, and payload-free live counters. Loopback, waiter independence, timeout, duplicate-waiter busy, normal-close wakeup, production-shaped asynchronous close, oversize, unknown-context, typed fatal observation, orphan-owner, actor-crash, command-flood, malformed-adapter, abnormal-exit, heap-exhaustion, concurrent-terminal, rebinding, spoofing, and IPv6 policy paths are tested. A direct public-API H3 request-stream resource now composes a production-shaped UDP error through first-reason cleanup into wire-visible H3_REQUEST_CANCELLED reset and STOP_SENDING, with both waiters released and duplicate cleanup suppressed. The post-success supervisor permanently holds the terminal-event waiter for every bound tunnel, and the unified Context binder gives H1, H2, and H3 the same event-driven cancellation path. An optional typed idle policy uses one lock-protected monotonic deadline, one pending wake credit, no periodic polling, and payload-free race diagnostics; live tests cover activity floods, expiry, normal close, and every protocol context. Directional idle counters distinguish successful target sends from validated target receives, and a 40,000-update concurrent model verifies each snapshot atomically preserves total equals outbound plus inbound; terminal send and receive calls return before parsing or socket-owner I/O and leave all snapshots unchanged. Live IPv4 loopback evidence verifies Don't Fragment plus EMSGSIZE without fragmentation retry, and an ECN-aware peer proves the target-facing socket emits Not-ECT while ignoring received CE metadata. The stable default well-known HTTP/3 listener now forces HTTP Datagrams, validates the exact route and message semantics, rejects duplicate setup before resource growth, obtains a connection-lifetime Datagram guarantee before opening the target socket, performs authorization and socket open before 2xx, binds the request stream afterward, and exposes atomic payload-free acceptance/setup/lifecycle diagnostics including response-failure cleanup. The guarantee is independently observable beside the point-in-time maximum and budgets the QUIC 1200-byte path floor plus worst ACK share; pure state-machine and repeated live tests prove that ACK clearance, migration, and black-hole fallback cannot invalidate the fixed target ceiling. Oversized target payloads are dropped before entering the caller mailbox and become a typed payload-free Packet Too Big event; bounded IPv4/IPv6 ICMP builders have exact checksum/quote/MTU vectors, prohibited-address checks, a per-tunnel token bucket, a 100 ms raw-send ceiling, permanent permission/capability caching, and finite seqlock diagnostics with no retained payload bytes. Successful raw-socket delivery still requires a privileged six-platform qualification row; this unprivileged local run observes the typed permission-denied path rather than claiming delivery. The six-platform wire matrix, privileged ICMP delivery, general Brotli compressed meta-blocks, independent OHTTP/MASQUE peers, and extension-specific RFC maps remain incomplete. RateLimit is explicitly based on revision-pinned draft-ietf-httpapi-ratelimit-headers-11 rather than the unrelated RFC 9331; its bounded codec, header-only generation, client advice, Retry-After precedence, cache handling, and restrictive intermediary mutation tests pass."
+    },
+    {
+      "id": "PROD-011",
+      "area": "Requirements inventory",
+      "status": "Blocked",
+      "evidence": "The schema-4 inventory pins {{standards}} RFC rows and {{pinned_specifications}} immutable non-RFC specification revision(s), one IANA registry, qlog schema hashes, an official RFC catalog digest ({{rfc_catalog_sha256}}), official-source digests, role-specific BCP 14 dispositions (including REQUIRED/SHALL/RECOMMENDED aliases), per-document normative totals and level counts, evidence symbols, and reviewed errata counts. Twelve adversarial auditor cases reject false RFC identities, mutable draft names, undeclared empty maps, unknown roles, mandatory deviations, weak N/A rationales, normative count/level drift, errata-count drift, and missing symbols; two positive alias cases and an explicitly inventoried zero-clause RFC are also accepted. The inventory currently enumerates {{requirements}} atomic requirements and {{errata_reviewed}} reviewed errata across {{mapped_standards}} completed RFC maps and {{mapped_pinned_specifications}} completed pinned maps. {{requirement_breakdown}} `inventory_complete` is {{inventory_complete}}; {{incomplete_standards}} RFC maps and {{incomplete_pinned_specifications}} pinned maps remain incomplete."
+    },
+    {
+      "id": "PROD-012",
+      "area": "Coverage and hostile testing",
+      "status": "Blocked",
+      "evidence": "{{coverage_summary}} PR property/fuzz campaigns run 10,000 cases each for independently reported HTTP/3-wire, QUIC-core-wire, and unified-HTTP MASQUE families; every MASQUE property case checks the receive model, supervised DNS/socket setup/cleanup, exact UDP source forwarding, spoofed-source discard, seeded socket/stream/application termination, first-reason stability, duplicate convergence, and post-terminal discard. Every fuzz input crosses the resolver-answer boundary, and each valid address also crosses both source-validation branches plus an input-selected bound-lifetime termination; the corpus retains 18 malformed or boundary seeds. The campaign source digest recursively covers every production source tree plus manifests, harness, and corpora. Harness self-tests enforce that completeness and automatic minimal-prefix localization, retained/setup classification, transient-failure detection, bounded stack evidence, stale-report removal, and exact replay metadata. QUIC sender/stream/connection tests suppress immediate duplicate DATA_BLOCKED and STREAM_DATA_BLOCKED frames at an unchanged limit, rearm after credit growth, distinguish queue completion from FIN acknowledgement, and retain bounded timeout path/congestion snapshots; the live recovery case passes a 100-iteration local stress reproduction. Aggregate-memory backpressure uses a bounded refusal-state barrier and reports buffered, retained, unmeasured, granted, and refused state without payload when the causal pressure precondition is missed. The HTTP/2 graceful-drain regression waits on the public GOAWAY-sent phase as a causal barrier before a finite 10-second wire read, then records the public drain request, per-connection command, command receipt, GOAWAY attempt/outcome, body release receipt, and drain completion phases in one assertion. Five 20,000-update writer families stress its atomic snapshot invariants, and an abandoned odd-sequence writer proves the observer returns a finite explicit inconsistent fallback. The source-bound stability matrix repeats {{stability_targets}} scheduling-sensitive targets for {{stability_executions}} isolated fresh-BEAM executions and writes bounded first-failure evidence before returning nonzero. The hostile runner removes prior Ready evidence before execution, writes bounded first-failure output and exact completion totals before returning nonzero, and accepts Ready reports only after an independent current-source verifier checks every configured package, module, and test. The CUBIC model and source-discovered {{hostile_tests}}-test, {{hostile_families}}-family hostile matrix pass, but the million-case nightly evidence is not retained."
+    },
+    {
+      "id": "PROD-013",
+      "area": "External interoperability and platform matrix",
+      "status": "Blocked",
+      "evidence": "aioquic 1.3.0 and quic-go 0.61.0 pins exist. curl, nghttp2, ngtcp2/nghttp3, quiche, Chromium, Firefox, independent MASQUE, and Go/TypeScript OHTTP evidence is missing. The local OTP 29 credential run passes 144 tests, including live RSA-PSS, ECDSA P-256/P-384, Ed25519, mTLS, HRR, rotation, resumption, and rejection rows; all six qualified OS/OTP attestations remain uncollected."
+    },
+    {
+      "id": "PROD-014",
+      "area": "Performance and distribution qualification",
+      "status": "Blocked",
+      "evidence": "The OTP 29 release simulation produces each Hex v3 archive twice byte-identically, verifies exact 0.1.0 archive dependencies, builds and runs three empty consumers, and emits SBOM/provenance plus an ephemeral verified signature. H1/H2/H3 role measurements, resource-convergence fields, canonical-archive reruns, and OTP 28 evidence remain incomplete."
+    },
+    {
+      "id": "PROD-015",
+      "area": "Independent audit",
+      "status": "ExternalPending",
+      "evidence": "Independent cryptographic, protocol, parsing, and resource-exhaustion attestations are external conditions and have not been supplied."
+    }
+  ],
+  "gates": [
+    {
+      "name": "coverage",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Changed-source line and decision coverage."
+    },
+    {
+      "name": "coverage-full",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Whole-repository line and decision coverage thresholds."
+    },
+    {
+      "name": "model",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Deterministic randomized congestion search plus independent CUBIC, ECN, application-limited, HyStart++, and topology-mode oracles."
+    },
+    {
+      "name": "qpack-differential",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Pinned bidirectional RFC 9204 differential validation against pylsqpack, including dynamic blocking and decoder feedback."
+    },
+    {
+      "name": "hostile-peer",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Adversarial peer and resource-exhaustion matrix."
+    },
+    {
+      "name": "stability",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Fresh-BEAM repetition of scheduling-sensitive tests with source-bound, bounded first-failure evidence."
+    },
+    {
+      "name": "credential-matrix",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "OTP/platform credential, mTLS, rotation, resumption, and rejection matrix."
+    },
+    {
+      "name": "release-sim",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Exact-version empty-consumer and reproducible archive simulation."
+    },
+    {
+      "name": "release-candidate",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Source-candidate gates followed by explicit external-condition refusal."
+    },
+    {
+      "name": "requirements-audit",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Pinned RFC, errata, and requirement-evidence drift audit."
+    },
+    {
+      "name": "qlog-validate",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Pinned qlog schema, redaction, qvis compatibility, live client/server event breadth, and deterministic semantic evidence."
+    },
+    {
+      "name": "examples",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Extract, compile, and execute documented public examples."
+    },
+    {
+      "name": "property",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Ten-thousand-case generated properties for each HTTP/3, QUIC core, and unified HTTP state/wire family."
+    },
+    {
+      "name": "fuzz",
+      "implementation": "Implemented",
+      "status": "Ready",
+      "purpose": "Ten-thousand-case parser campaigns for HTTP/3, QUIC core, and unified HTTP plus retained failure seeds."
+    },
+    {
+      "name": "interop-audit",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Pinned bidirectional HTTP, QUIC, browser, MASQUE, and OHTTP peer evidence."
+    },
+    {
+      "name": "performance-audit",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Cross-protocol throughput, latency, memory, idle-wakeup, mailbox, process, and socket evidence."
+    },
+    {
+      "name": "source-candidate",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "All automated local gates and deterministic unpublished audit bundle from canonical source."
+    },
+    {
+      "name": "audit-bundle",
+      "implementation": "Implemented",
+      "status": "Blocked",
+      "purpose": "Deterministic bundle containing only current-source Ready qualification reports and static audit material."
+    }
+  ],
+  "findings": [
+    {
+      "id": "PRE-001",
+      "area": "Public QUIC core contract",
+      "status": "Closed",
+      "evidence": "The public core is limited to the audited quic_core, client, server, config, diagnostics, and failure modules with opaque connections and streams; API snapshots and public loopback tests cover the supported transport lifecycle.",
+      "closure": "Closed by the compiler-derived API audit, archive audit, and public-core behavior suites."
+    },
+    {
+      "id": "PRE-002",
+      "area": "HTTP/3 package ownership",
+      "status": "Closed",
+      "evidence": "HTTP/3 sessions, QPACK, Capsules, and workers are owned by the http3 package while QUIC packet, TLS, UDP, Retry, token, and connection state remain core-owned.",
+      "closure": "Closed by independent package builds, source/API boundary scans, compiled xref, and archive-content checks."
+    },
+    {
+      "id": "PRE-003",
+      "area": "Connection isolation and admission",
+      "status": "Closed",
+      "evidence": "Each accepted connection has a supervised labelled actor with per-connection datagram/byte credit and synchronous admission release; stalled, flooded, crashed, and neighbouring connections have live tests.",
+      "closure": "Closed by public live-path isolation, crash recovery, mailbox-credit, and stability gates."
+    },
+    {
+      "id": "PRE-004",
+      "area": "Endpoint aggregate memory",
+      "status": "Closed",
+      "evidence": "Server EndpointMemory funds admission and later receive, send, and routed-mailbox growth before allocation, returns reservations on release/crash, and the client rejects an undersized admission budget before actor or socket creation.",
+      "closure": "Closed by aggregate-pressure, backpressure, parallel-progress, release/crash recovery, and client-refusal tests."
+    },
+    {
+      "id": "PRE-005",
+      "area": "Credential and mTLS platform matrix",
+      "governing_gate": "credential-matrix",
+      "status": "Open",
+      "evidence": "Local RSA-PSS, ECDSA P-256/P-384, Ed25519, direct/HRR, Disabled/Optional/Required mTLS, rotation, resumption, identity mismatch, expiry, revocation, and 0-RTT fallback paths pass on the current OTP 29 host; the six qualified OS/OTP attestations are absent.",
+      "closure": "Collect current-source Ubuntu 24.04, macOS 15, and Windows 2025 attestations on OTP 28 and 29 and pass credential-matrix aggregate verification."
+    },
+    {
+      "id": "PRE-006",
+      "area": "External atomic replay guard",
+      "status": "Closed",
+      "evidence": "The finite monitored adapter receives only a domain-separated fingerprint and retention interval; rejection, error, exit, and timeout fail closed to authenticated 1-RTT fallback without losing PSK resumption.",
+      "closure": "Closed by direct adapter outcomes and public live accepted/rejected 0-RTT regressions."
+    },
+    {
+      "id": "PRE-007",
+      "area": "qlog schema, breadth, and qvis compatibility",
+      "governing_gate": "qlog-validate",
+      "status": "Closed",
+      "evidence": "The hash-pinned qlog gate validates RFC 7464 framing, redaction, deterministic semantics, qvis-compatible start/activity/close ordering, both vantage points, and complete configured QUIC, TLS, recovery, HTTP/3, and QPACK event families with no missing live or per-trace family.",
+      "closure": "Closed by the current-source Ready qlog-validate report and deterministic writer failure/teardown tests."
+    },
+    {
+      "id": "PRE-008",
+      "area": "CUBIC differential and HyStart++",
+      "governing_gate": "model",
+      "status": "Closed",
+      "evidence": "The RFC 9438 integer oracle, deterministic boundaries, randomized transition model, application-limited behavior, ECN interaction, topology modes, and live HyStart++ transitions pass.",
+      "closure": "Closed by mise run model and the sharded nightly million-transition configuration."
+    },
+    {
+      "id": "PRE-009",
+      "area": "Remaining automated qualification",
+      "governing_gate": "source-candidate",
+      "status": "Open",
+      "evidence": "Static security, API/boundary, reproducible package, campaign, hostile/stability, qlog, model, examples, and OTP 29 release-simulation gates exist; coverage thresholds, complete RFC maps, expanded peers, cross-protocol performance, OTP 28, and canonical-archive qualification remain incomplete.",
+      "closure": "Make every non-external source-candidate gate Ready and retain reproducible current-source evidence, including the adaptive coverage and raw capture artifacts."
+    },
+    {
+      "id": "PRE-010",
+      "area": "HTTP/3 fixed-workload performance",
+      "status": "Closed",
+      "evidence": "The fixed HTTP/3 benchmark/load/soak baseline was met with process/mailbox convergence; current hot-path profiling bounds 46 call-volume signals and current idle-wakeup evidence observes eight actors for 2.5 seconds with zero deadline wakeups.",
+      "closure": "Closed for the original HTTP/3 regression finding; cross-protocol release performance remains tracked by PRE-009 and PROD-014."
+    },
+    {
+      "id": "PRE-011",
+      "area": "Canonical archive and external handoff",
+      "governing_gate": "release-candidate",
+      "status": "Open",
+      "evidence": "The local OTP 29 release simulation is reproducible, but no passing canonical-source candidate, OTP 28 rerun, third-party audit attestation, signed local commit, or clean-worktree proof exists.",
+      "closure": "Pass every automated gate from the canonical source archive, then obtain the external attestation and signed commit without tagging, publishing, uploading, or pushing."
+    },
+    {
+      "id": "PRE-012",
+      "area": "Private core boundary",
+      "status": "Closed",
+      "evidence": "HTTP/3 consumes only the six public core modules and opaque connection/stream values; the allowlist contains comments only and source scan, package-interface audit, and compiled xref report zero private references.",
+      "closure": "Closed by the zero-entry three-layer boundary gate and public loopback coverage."
+    }
+  ]
+}

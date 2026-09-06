@@ -1,0 +1,58 @@
+{
+  "schema": 2,
+  "coordinate_methodology": {
+    "schema": 1,
+    "metric_coordinates": "generated_erlang_physical_lines",
+    "line_universe": "otp_cover_executable_lines",
+    "clause_alternative_universe": "beam_debug_abstract_multi_clause_alternatives",
+    "clause_alternative_coverage": "any_sibling_exclusive_otp_cover_artifact_line",
+    "gleam_source_attribution": "glance_name_arity_function_span_including_attached_attributes",
+    "erlang_source_attribution": "byte_identical_source_artifact_lines",
+    "changed_selection": "source_span_overlap_with_whole_module_fallback",
+    "generated_clause_exclusion": "none",
+    "unclaimed_control_flow": "short_circuit_guard_timeout_and_exception_outcomes"
+  },
+  "capture": {
+    "minimum_repetitions": 10,
+    "maximum_repetitions": 30,
+    "required_quiescent_repetitions": 3,
+    "runtime_settle_max_milliseconds": 20000,
+    "runtime_settle_interval_milliseconds": 100,
+    "runtime_settle_quiet_samples": 3
+  },
+  "thresholds_basis_points": {
+    "changed": {
+      "lines": 10000,
+      "branches": 10000
+    },
+    "full": {
+      "lines": 9500,
+      "branches": 9000
+    }
+  },
+  "source_files": [
+    ".mise.toml",
+    "coverage-policy.json",
+    "gleam.toml",
+    "manifest.toml",
+    "mix.exs",
+    "mix.lock",
+    "packages/http3/gleam.toml",
+    "packages/http3/manifest.toml",
+    "packages/http3/mix.exs",
+    "packages/http3/mix.lock",
+    "packages/quic_core/gleam.toml",
+    "packages/quic_core/manifest.toml",
+    "packages/quic_core/mix.exs",
+    "scripts/coverage.escript",
+    "scripts/fresh_build.sh"
+  ],
+  "source_trees": [
+    "src",
+    "test",
+    "packages/http3/src",
+    "packages/http3/test",
+    "packages/quic_core/src",
+    "packages/quic_core/test"
+  ]
+}

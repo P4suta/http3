@@ -1,6 +1,7 @@
 # Contributing
 
-Thank you for helping build `http3`. The project is pre-alpha, so changes to
+Thank you for helping build `http`, `http3`, and `quic_core`. The product is
+pre-release, so changes to
 the eventual public API should start from the constraints in
 [Architecture](docs/ARCHITECTURE.md) and the ordered work in
 [Roadmap](docs/ROADMAP.md). The
@@ -28,19 +29,20 @@ archive is used only by the runtime-only OTP application packaging check.
 
 1. Keep the public API free of backend PIDs, atoms, maps, references, and raw
    message formats.
-2. Put backend conversions in `src/http3/internal/` and keep Erlang FFI modules
-   small.
+2. Put backend conversions in the owning package's `internal` namespace and
+   keep Erlang FFI modules small.
 3. Start every behavior change with a failing test, and add a reproducing test
    before fixing a bug.
 4. Update public documentation and `CHANGELOG.md` when behavior changes.
-5. Review both canonical API snapshot diffs when public signatures change.
-6. Never add an import of a package-private `gleam_quic` module; the
+5. Review all three canonical API snapshot diffs when public signatures
+   change.
+6. Never add an import of a package-private `quic_core` module; the
    `api/boundary.allow` allowlist only shrinks, so edit it by deleting lines
    and never by running `boundary --write-allowlist`.
 7. Run `mise run check` before proposing the change.
 
 For an intentional public API change, inspect the compiler interface and then
-run `mise run api-update`. Commit both resulting snapshot changes with the API
+run `mise run api-update`. Commit the resulting snapshot changes with the API
 change; never refresh snapshots merely to silence an unexpected difference.
 
 Do not add placeholder exports. A client or server operation should be public

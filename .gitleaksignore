@@ -1,8 +1,23 @@
-# Public localhost-only Ed25519 fixture documented in test/fixtures/README.md.
-test/fixtures/server-key.pem:private-key:1
+# Public localhost-only Ed25519 fixtures documented in the package fixture
+# READMEs.
+packages/http3/test/fixtures/server-key.pem:private-key:1
+packages/quic_core/test/fixtures/server-key.pem:private-key:1
 
-# Public default.invalid fallback fixture documented in test/fixtures/README.md.
-test/fixtures/default-server-key.pem:private-key:1
+# Public default.invalid fallback fixtures.
+packages/http3/test/fixtures/default-server-key.pem:private-key:1
+packages/quic_core/test/fixtures/default-server-key.pem:private-key:1
 
-# Public mTLS client fixture documented in test/fixtures/README.md.
-test/fixtures/client-key.pem:private-key:1
+# Public mTLS client fixtures.
+packages/http3/test/fixtures/client-key.pem:private-key:1
+packages/quic_core/test/fixtures/client-key.pem:private-key:1
+
+# Public localhost-only algorithm-matrix credentials.
+packages/quic_core/test/fixtures/rsa-pss-server-key.pem:private-key:1
+packages/quic_core/test/fixtures/ecdsa-p256-server-key.pem:private-key:1
+packages/quic_core/test/fixtures/ecdsa-p384-server-key.pem:private-key:1
+
+# Literal marker used to reject private keys from generated release archives.
+scripts/release_sim.escript:private-key:207
+
+# Public RFC 6455 Section 1.3 handshake nonce test vector.
+test/websocket_test.gleam:generic-api-key:10

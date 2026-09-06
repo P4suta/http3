@@ -1,0 +1,570 @@
+{
+  "schema": 1,
+  "baseline_date": "2026-08-30",
+  "warmup_runs": 1,
+  "measured_runs": 5,
+  "h3_minimum_requests_per_second": {
+    "client": 516,
+    "server": 344,
+    "combined": 812
+  },
+  "fixed_http3_workloads": [
+    {
+      "mode": "benchmark",
+      "warmup_runs": 1,
+      "measured_trials": 5,
+      "concurrency": 4,
+      "requests_per_connection": 100,
+      "payload_bytes": 1024,
+      "minimum_requests_per_second": 516
+    },
+    {
+      "mode": "load",
+      "warmup_runs": 1,
+      "measured_trials": 3,
+      "concurrency": 32,
+      "requests_per_connection": 100,
+      "payload_bytes": 16384,
+      "minimum_requests_per_second": 344
+    },
+    {
+      "mode": "soak",
+      "warmup_runs": 1,
+      "measured_trials": 1,
+      "concurrency": 8,
+      "requests_per_connection": 10000,
+      "payload_bytes": 1024,
+      "minimum_requests_per_second": 812
+    }
+  ],
+  "performance_evidence": {
+    "report_schema": 3,
+    "host_snapshot_schema": 1,
+    "log_tail_bytes": 16384,
+    "fixed_http3_modes": ["benchmark", "load", "soak"],
+    "fixed_http3_satisfies": {
+      "roles": ["h3-client", "h3-server"],
+      "resource_assertions": [
+        "final-mailbox-zero",
+        "process-convergence",
+        "socket-convergence",
+        "memory-ceiling"
+      ]
+    },
+    "idle_wakeup": {
+      "fixture_schema": 2,
+      "artifact": "build/performance/current/idle-wakeup.json",
+      "raw_artifact": "build/performance/current/idle-wakeup.raw.json",
+      "log_artifact": "build/performance/current/idle-wakeup.log",
+      "minimum_observation_milliseconds": 2500,
+      "expected_actor_count": 8,
+      "quiescence_required_stable_samples": 5,
+      "quiescence_poll_milliseconds": 100,
+      "quiescence_maximum_attempts": 80,
+      "maximum_quiescence_milliseconds": 8000,
+      "trace_primitive": "gleam_erlang_ffi:select/1,2",
+      "required_roles": [
+        "http3.client",
+        "http3.listener",
+        "http3.acceptor",
+        "http3.connection",
+        "quic_core.client",
+        "quic_core.listener",
+        "quic_core.connection",
+        "quic_core.udp_relay"
+      ],
+      "required_liveness_roles": [
+        "http3.client",
+        "http3.connection",
+        "quic_core.client",
+        "quic_core.connection"
+      ],
+      "satisfies": ["idle-periodic-wakeup-zero"]
+    },
+    "source_files": [
+      ".mise.toml",
+      "gleam.toml",
+      "manifest.toml",
+      "packages/http3/gleam.toml",
+      "packages/http3/manifest.toml",
+      "packages/quic_core/gleam.toml",
+      "packages/quic_core/manifest.toml",
+      "standards/performance-profile.json",
+      "scripts/performance_run.sh",
+      "scripts/performance_run_report.escript",
+      "scripts/performance_idle_wakeup.sh",
+      "scripts/performance_idle_wakeup_report.escript",
+      "scripts/performance_host_snapshot.escript",
+      "scripts/performance_audit.escript",
+      "scripts/connection_barrier_self_test.escript",
+      "scripts/progress_trace_self_test.escript",
+      "packages/http3/test/http3_benchmark.gleam",
+      "packages/http3/test/http3_benchmark_ffi.erl",
+      "packages/http3/test/http3_benchmark_barrier_ffi.erl",
+      "packages/http3/test/http3_benchmark_trace_ffi.erl",
+      "packages/http3/test/http3_idle_wakeup.gleam",
+      "packages/http3/test/http3_idle_wakeup_ffi.erl"
+    ],
+    "production_source_roots": [
+      "src",
+      "packages/http3/src",
+      "packages/quic_core/src"
+    ]
+  },
+  "pinned_reference_limits": {
+    "minimum_median_throughput_basis_points": 7000,
+    "maximum_p99_latency_basis_points": 15000
+  },
+  "checked_in_baseline_limits": {
+    "minimum_throughput_basis_points": 9000,
+    "maximum_p99_latency_basis_points": 11000,
+    "maximum_peak_memory_basis_points": 11000
+  },
+  "hot_path_call_profile": {
+    "timeout_milliseconds": 120000,
+    "workload": {
+      "warmup_runs": 1,
+      "measured_trials": 1,
+      "concurrency": 4,
+      "requests_per_connection": 25,
+      "payload_bytes": 1024
+    },
+    "signals": [
+      {
+        "id": "supervised-connection-barrier-starts",
+        "purpose": "Each warm-up or measured trial creates one supervised all-connected barrier.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "start_connection_barrier",
+        "arity": 2,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "supervised-connection-barrier-arrivals",
+        "purpose": "Every workload client authenticates and arrives at the all-connected barrier exactly once.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "arrive_connection_barrier",
+        "arity": 2,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "supervised-connection-barrier-owner-awaits",
+        "purpose": "The trial owner waits once for complete authenticated admission in each trial.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "await_connection_barrier",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "supervised-connection-barrier-stops",
+        "purpose": "Each admitted trial explicitly stops its barrier after endpoint cleanup coordination.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "stop_connection_barrier",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "happy-path-connection-barrier-failures",
+        "purpose": "The fixed successful profile must not activate the connection-barrier failure path.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "fail_connection_barrier",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "supervised-completion-latch-starts",
+        "purpose": "Each trial creates one owner-supervised connection-lifetime latch.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "start_completion_latch",
+        "arity": 2,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "supervised-completion-latch-waiters",
+        "purpose": "Every workload client waits exactly once before closing its inspected connection.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "await_completion_latch",
+        "arity": 2,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "supervised-completion-latch-releases",
+        "purpose": "The owner releases clients only after the final server resource snapshot, once per trial.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "release_completion_latch",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "supervised-completion-latch-stops",
+        "purpose": "Each trial explicitly stops the connection-lifetime latch after client convergence.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "stop_completion_latch",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "happy-path-completion-latch-failures",
+        "purpose": "The fixed successful profile must not activate the connection-lifetime failure path.",
+        "module": "http3_benchmark_barrier_ffi",
+        "function": "fail_completion_latch",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "endpoint-resource-convergence-awaits",
+        "purpose": "Each trial performs one bounded combined process, port, and socket convergence wait.",
+        "module": "http3_benchmark_ffi",
+        "function": "await_cleanup_metrics",
+        "arity": 4,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "network-port-inventory-snapshots",
+        "purpose": "The fixed workload inventories legacy inet TCP/UDP/SCTP ports before every trial and throughout bounded cleanup.",
+        "module": "http3_benchmark_ffi",
+        "function": "network_port_count",
+        "arity": 0,
+        "minimum_calls": 4,
+        "maximum_calls": 200
+      },
+      {
+        "id": "socket-inventory-snapshots",
+        "purpose": "The fixed workload inventories OTP sockets before every trial and throughout bounded cleanup without per-request polling.",
+        "module": "http3_benchmark_ffi",
+        "function": "socket_count",
+        "arity": 0,
+        "minimum_calls": 4,
+        "maximum_calls": 200
+      },
+      {
+        "id": "terminal-http3-connection-stats",
+        "purpose": "Each workload client takes exactly one explicit terminal HTTP/3 traffic snapshot; disabled qlog adds none.",
+        "module": "http3@internal@native@client_connection",
+        "function": "stats",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "terminal-public-core-connection-stats",
+        "purpose": "Each explicit terminal HTTP/3 traffic snapshot reaches the public QUIC statistics API exactly once.",
+        "module": "quic_core@client",
+        "function": "connection_stats",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "terminal-core-connection-stats-command",
+        "purpose": "Each explicit terminal HTTP/3 traffic snapshot enqueues exactly one bounded QUIC actor command.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "connection_stats",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "initial-final-http3-path-stats",
+        "purpose": "The fixed workload takes one pre-request and one terminal path snapshot per client connection.",
+        "module": "http3@internal@native@client_connection",
+        "function": "path_stats",
+        "arity": 1,
+        "minimum_calls": 16,
+        "maximum_calls": 16
+      },
+      {
+        "id": "initial-final-public-core-path-stats",
+        "purpose": "Every explicit HTTP/3 path snapshot reaches the public QUIC path statistics API.",
+        "module": "quic_core@client",
+        "function": "path_stats",
+        "arity": 1,
+        "minimum_calls": 16,
+        "maximum_calls": 16
+      },
+      {
+        "id": "initial-final-core-path-stats-command",
+        "purpose": "Every explicit HTTP/3 path snapshot enqueues one bounded QUIC actor command.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "path_stats",
+        "arity": 1,
+        "minimum_calls": 16,
+        "maximum_calls": 16
+      },
+      {
+        "id": "supervised-server-connection-waits",
+        "purpose": "The listener admits benchmark connections through the lifecycle-monitored unbounded accept API.",
+        "module": "quic_core@server",
+        "function": "accept_next",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 16
+      },
+      {
+        "id": "retired-finite-server-connection-waits",
+        "purpose": "The HTTP/3 listener must not reissue operation-deadline QUIC accept calls.",
+        "module": "quic_core@server",
+        "function": "accept",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "supervised-client-stream-admission-waits",
+        "purpose": "Every client consumes peer unidirectional streams through a lifecycle-monitored wait.",
+        "module": "quic_core@client",
+        "function": "accept_stream_next",
+        "arity": 1,
+        "minimum_calls": 40,
+        "maximum_calls": 40
+      },
+      {
+        "id": "supervised-client-stream-read-waits",
+        "purpose": "Client control and QPACK readers use lifecycle-monitored waits without deadline polling.",
+        "module": "quic_core@client",
+        "function": "receive_next",
+        "arity": 2,
+        "minimum_calls": 40,
+        "maximum_calls": 900
+      },
+      {
+        "id": "default-disabled-client-datagram-waits",
+        "purpose": "The default-disabled Datagram policy creates no client receive waiter in the fixed benchmark workload.",
+        "module": "quic_core@client",
+        "function": "receive_datagram_next",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "supervised-client-ticket-waits",
+        "purpose": "Each client connection starts exactly one lifecycle-monitored resumption-ticket wait.",
+        "module": "quic_core@client",
+        "function": "resumption_ticket_next",
+        "arity": 1,
+        "minimum_calls": 10,
+        "maximum_calls": 10
+      },
+      {
+        "id": "retired-finite-client-stream-admission-waits",
+        "purpose": "HTTP/3 clients must not poll stream admission with operation deadlines.",
+        "module": "quic_core@client",
+        "function": "accept_stream",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-client-stream-read-waits",
+        "purpose": "HTTP/3 client background readers must not poll stream reads with operation deadlines.",
+        "module": "quic_core@client",
+        "function": "receive",
+        "arity": 2,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-client-datagram-waits",
+        "purpose": "HTTP/3 clients must not poll Datagram receipt with operation deadlines.",
+        "module": "quic_core@client",
+        "function": "receive_datagram",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-client-ticket-waits",
+        "purpose": "HTTP/3 clients must not poll resumption tickets with operation deadlines.",
+        "module": "quic_core@client",
+        "function": "resumption_ticket",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "supervised-server-stream-admission-waits",
+        "purpose": "Server connections consume control, QPACK, and request streams through lifecycle-monitored waits.",
+        "module": "quic_core@server",
+        "function": "accept_stream_next",
+        "arity": 1,
+        "minimum_calls": 240,
+        "maximum_calls": 240
+      },
+      {
+        "id": "supervised-server-stream-read-waits",
+        "purpose": "Server control, QPACK, and request readers use lifecycle-monitored waits without deadline polling.",
+        "module": "quic_core@server",
+        "function": "receive_next",
+        "arity": 2,
+        "minimum_calls": 240,
+        "maximum_calls": 900
+      },
+      {
+        "id": "default-disabled-server-datagram-waits",
+        "purpose": "The default-disabled Datagram policy creates no server receive waiter in the fixed benchmark workload.",
+        "module": "quic_core@server",
+        "function": "receive_datagram_next",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-server-stream-admission-waits",
+        "purpose": "HTTP/3 servers must not poll stream admission with operation deadlines.",
+        "module": "quic_core@server",
+        "function": "accept_stream",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-server-stream-read-waits",
+        "purpose": "HTTP/3 server background readers must not poll stream reads with operation deadlines.",
+        "module": "quic_core@server",
+        "function": "receive",
+        "arity": 2,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-finite-server-datagram-waits",
+        "purpose": "HTTP/3 servers must not poll Datagram receipt with operation deadlines.",
+        "module": "quic_core@server",
+        "function": "receive_datagram",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-pmtu-public-phase",
+        "purpose": "HTTP/3 must not poll the public QUIC phase for retired PMTU compatibility work.",
+        "module": "quic_core@client",
+        "function": "phase",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "retired-pmtu-core-command",
+        "purpose": "HTTP/3 must not enqueue QUIC phase commands for retired PMTU compatibility work.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "phase",
+        "arity": 1,
+        "minimum_calls": 0,
+        "maximum_calls": 0
+      },
+      {
+        "id": "settled-handshake-refresh",
+        "purpose": "Handshake status may be queried at connection setup but not on every event drain.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "handshake_attempt",
+        "arity": 1,
+        "minimum_calls": 10,
+        "maximum_calls": 20
+      },
+      {
+        "id": "core-client-command-volume",
+        "purpose": "The fixed workload bounds synchronous commands sent to each QUIC client actor.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "handle_command",
+        "arity": 2,
+        "minimum_calls": 1000,
+        "maximum_calls": 2500
+      },
+      {
+        "id": "core-client-drive-volume",
+        "purpose": "The fixed workload bounds client actor drive turns caused by commands and UDP input.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "drive_and_loop",
+        "arity": 1,
+        "minimum_calls": 1000,
+        "maximum_calls": 3000
+      },
+      {
+        "id": "transport-stream-poll-volume",
+        "purpose": "The fixed workload detects a return to whole-stream scanning in QUIC output polling.",
+        "module": "quic_core@internal@connection_state",
+        "function": "poll_stream_frame",
+        "arity": 2,
+        "minimum_calls": 2000,
+        "maximum_calls": 10000
+      },
+      {
+        "id": "retained-resource-assertion-sentinel",
+        "purpose": "Every client and server trial endpoint must execute the all-layer resource bound assertion.",
+        "module": "http3_benchmark",
+        "function": "resources_are_bounded",
+        "arity": 1,
+        "minimum_calls": 10,
+        "maximum_calls": 10
+      },
+      {
+        "id": "http3-client-resource-snapshots",
+        "purpose": "Each of eight workload client connections takes one payload-free terminal snapshot.",
+        "module": "http3@internal@native@client_connection",
+        "function": "resource_stats",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "http3-server-resource-snapshots",
+        "purpose": "Each warm-up or measured server takes one payload-free terminal snapshot.",
+        "module": "http3@internal@native@server_connection",
+        "function": "resource_stats",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      },
+      {
+        "id": "core-client-resource-snapshots",
+        "purpose": "Every HTTP/3 client snapshot reaches the public QUIC actor and transport counts.",
+        "module": "quic_core@internal@runtime@client_worker",
+        "function": "resource_stats",
+        "arity": 1,
+        "minimum_calls": 8,
+        "maximum_calls": 8
+      },
+      {
+        "id": "core-server-resource-snapshots",
+        "purpose": "Every HTTP/3 server snapshot reaches the public QUIC actor and transport counts.",
+        "module": "quic_core@internal@runtime@connection_worker",
+        "function": "resource_stats",
+        "arity": 1,
+        "minimum_calls": 2,
+        "maximum_calls": 2
+      }
+    ],
+    "source_files": [
+      "scripts/hot_path_profile.escript",
+      "scripts/connection_barrier_self_test.escript",
+      "scripts/progress_trace_self_test.escript",
+      "standards/performance-profile.json",
+      "packages/http3/test/http3_benchmark.gleam",
+      "packages/http3/test/http3_benchmark_ffi.erl",
+      "packages/http3/test/http3_benchmark_barrier_ffi.erl",
+      "packages/http3/test/http3_benchmark_trace_ffi.erl",
+      "packages/http3/src/http3/internal/native/diagnostic_capture.gleam",
+      "packages/http3/src/http3/internal/native/client_connection.gleam",
+      "packages/http3/src/http3/internal/native/client_worker.gleam",
+      "packages/http3/src/http3/internal/native/server_connection.gleam",
+      "packages/http3/src/http3/internal/native/server_worker.gleam",
+      "packages/quic_core/src/quic_core/internal/runtime/client_worker.gleam",
+      "packages/quic_core/src/quic_core/internal/runtime/connection_worker.gleam",
+      "packages/quic_core/src/quic_core/internal/runtime/stream_lifetime.gleam",
+      "packages/quic_core/src/quic_core/internal/connection_state.gleam"
+    ]
+  },
+  "required_protocol_roles": ["h1-client", "h1-server", "h2-client", "h2-server", "h3-client", "h3-server"],
+  "required_resource_assertions": ["idle-periodic-wakeup-zero", "final-mailbox-zero", "process-convergence", "socket-convergence", "memory-ceiling"]
+}

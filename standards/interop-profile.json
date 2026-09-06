@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "baseline_date": "2026-08-30",
+  "peers": [
+    {"id": "curl-h1-h2", "roles": ["client", "server"], "pin": null, "evidence": null},
+    {"id": "nghttp2-h2", "roles": ["client", "server"], "pin": null, "evidence": null},
+    {"id": "aioquic-h3", "roles": ["client", "server"], "pin": "aioquic==1.3.0", "lock_sha256": "0cce722bbb9c75cf2ef792a210f72f9cd79b49db223744c15367274331280b5e", "evidence": "packages/http3/test/interop/run.sh"},
+    {"id": "quic-go-h3", "roles": ["client", "server"], "pin": "github.com/quic-go/quic-go@v0.61.0", "lock_sha256": "0aaaf2c6ff51fe9ed8fca58ad72cb2f6ac7ec6c9776a5ae10c30a43b6ef50945", "evidence": "packages/http3/test/interop/run.sh"},
+    {"id": "ngtcp2-nghttp3-h3", "roles": ["client", "server"], "pin": null, "evidence": null},
+    {"id": "quiche-h3", "roles": ["client", "server"], "pin": null, "evidence": null},
+    {"id": "chromium", "roles": ["client"], "pin": null, "evidence": null},
+    {"id": "firefox", "roles": ["client"], "pin": null, "evidence": null},
+    {"id": "masque-independent", "roles": ["client", "proxy"], "pin": null, "evidence": null},
+    {"id": "ohttp-go", "roles": ["client", "relay", "gateway"], "pin": null, "evidence": null},
+    {"id": "ohttp-typescript", "roles": ["client", "relay", "gateway"], "pin": null, "evidence": null}
+  ]
+}
