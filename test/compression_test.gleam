@@ -286,13 +286,18 @@ pub fn rfc1952_minimal_and_optional_header_vectors_test() -> Nil {
     0,
     0,
   >>
-  assert compression.encode(
-      compression.Gzip,
-      hello,
-      None,
-      compression.defaults(),
-    )
-    == Ok(minimal)
+  // RFC 1952 section 2.3.1 leaves the OS byte to the platform the compression
+  // ran on, and Erlang's zlib reports 3 where this vector was taken but 19 on
+  // macOS. The encoder is therefore checked around that one byte rather than
+  // through it: the magic, the deflate method, the absent flags, the zeroed
+  // MTIME, the extra flags, and the deflate stream are all this product's to
+  // decide and stay fixed.
+  let assert Ok(<<encoded_header:bytes-size(9), _encoded_os, encoded_body:bits>>) =
+    compression.encode(compression.Gzip, hello, None, compression.defaults())
+  let assert <<vector_header:bytes-size(9), _vector_os, vector_body:bits>> =
+    minimal
+  assert encoded_header == vector_header
+  assert encoded_body == vector_body
   assert compression.decode(
       compression.Gzip,
       minimal,

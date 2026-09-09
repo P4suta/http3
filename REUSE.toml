@@ -6,6 +6,7 @@ path = [
   ".gitleaks*",
   ".osv-scanner.toml",
   ".semgrep.yml",
+  ".gitattributes",
   ".gitignore",
   ".markdownlint-cli2.yaml",
   ".mise.toml",

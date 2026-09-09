@@ -108,6 +108,16 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Fixed three things continuous integration found that a Linux checkout could
+  not. The gzip vector asserted the header's OS byte, which RFC 1952 section
+  2.3.1 leaves to the platform the compression ran on: Erlang's zlib reports 3
+  on Linux and 19 on macOS, so the encoder is now checked around that one byte
+  and through every byte this product decides. There was no `.gitattributes`,
+  so a Windows checkout rewrote a byte-exact body fixture's line endings and
+  changed its length, and would have done the same to two lock files that are
+  compared by digest against a pin. And `golang.org/x/crypto` in the quic-go
+  interoperability harness carried two advisories fixed in v0.56.0; it is
+  bumped, with the pinned lock digest updated to match.
 - Widened the static security rules to the public surface they are written
   about. All three public-API rules scanned only `quic_core/failure.gleam` out
   of the six public core modules, so `quic_core/client.gleam` -- the client
