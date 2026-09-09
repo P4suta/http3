@@ -251,6 +251,51 @@ pub fn server_accepts_a_zero_length_initial_peer_connection_id_test() -> Nil {
   assert driver.peer_connection_id(server) == <<>>
 }
 
+// RFC 9000 section 8.2.1 expands the datagram carrying a PATH_CHALLENGE to at
+// least 1200 bytes, and section 8.2.2 the one carrying its PATH_RESPONSE. The
+// expansion proves the path carries a full-size datagram, and it funds the
+// reply: a peer answering across a path it has not validated may send only
+// three times what it received there, so a challenge sent small leaves it
+// unable to send the expanded response, and validation stalls with neither
+// endpoint at fault. An independent peer showed exactly that.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn expands_a_live_path_validation_datagram_to_the_path_floor_test() -> Nil {
+  let #(client_tls_config, server_tls_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_tls_config)
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(Peers(client, _, now)) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+
+  let assert Ok(client) =
+    driver.update_connection(client, fn(connection) {
+      connection_state.begin_path_validation(
+        connection,
+        <<1, 2, 3, 4, 5, 6, 7, 8>>,
+        True,
+        now,
+      )
+    })
+  let assert Ok(Some(prepared)) = driver.prepare_datagram(client, 1200, now)
+  assert bit_array.byte_size(driver.prepared_bytes(prepared)) == 1200
+}
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn prepares_and_commits_exact_size_live_pmtu_probe_test() -> Nil {
   let #(client_tls_config, server_tls_config) = tls_configs()

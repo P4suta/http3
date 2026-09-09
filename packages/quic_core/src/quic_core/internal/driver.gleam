@@ -544,27 +544,121 @@ fn protect_prepared(
       use bytes <- result.try(protect_long(state, level, packet_number, frames))
       make_prepared(state, level, packet_number, frames, bytes, now_ms)
     }
-    engine.OneRtt -> {
-      use #(connection, bytes) <- result.try(
-        connection_state.protect_short_packet(
+    engine.OneRtt ->
+      case
+        list.any(frames, is_path_validation_frame)
+        && connection_state.amplification_permits(
           state.connection,
-          state.peer_connection_id,
-          packet_number,
-          False,
-          frames,
-          now_ms,
+          path_validation_datagram_bytes,
         )
-        |> map_connection_result,
-      )
+      {
+        True ->
+          protect_expanded_path_validation(
+            state,
+            packet_number,
+            frames,
+            0,
+            maximum_padding_adjustments,
+            now_ms,
+          )
+        False -> {
+          use #(connection, bytes) <- result.try(
+            connection_state.protect_short_packet(
+              state.connection,
+              state.peer_connection_id,
+              packet_number,
+              False,
+              frames,
+              now_ms,
+            )
+            |> map_connection_result,
+          )
+          make_prepared(
+            State(..state, connection: connection),
+            level,
+            packet_number,
+            frames,
+            bytes,
+            now_ms,
+          )
+        }
+      }
+  }
+}
+
+/// The floor every QUIC path carries, and the size RFC 9000 section 8.2.1
+/// expands a datagram carrying PATH_CHALLENGE to, section 8.2.2 the same for
+/// its PATH_RESPONSE.
+const path_validation_datagram_bytes = 1200
+
+fn is_path_validation_frame(value: frame.Frame) -> Bool {
+  case value {
+    frame.PathChallenge(_) | frame.PathResponse(_) -> True
+    _ -> False
+  }
+}
+
+/// Protect a path validation packet inside a datagram that reaches the floor.
+///
+/// The expansion proves the path carries a full-size datagram, and it is also
+/// what funds the reply. An endpoint answering across a path it has not
+/// validated may send only three times what it received there, so a challenge
+/// sent small leaves the peer unable to send the expanded response section
+/// 8.2.2 requires of it: validation then stalls with neither endpoint at
+/// fault. The exact datagram size is known only after protection, so the
+/// padding is measured and adjusted exactly the way a DPLPMTUD probe's is.
+fn protect_expanded_path_validation(
+  state: State,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  padding: Int,
+  attempts: Int,
+  now_ms: Int,
+) -> Result(Option(PreparedDatagram), Error) {
+  let padded = case padding > 0 {
+    True -> list.append(frames, [frame.Padding(padding)])
+    False -> frames
+  }
+  use #(connection, bytes) <- result.try(
+    connection_state.protect_short_packet(
+      state.connection,
+      state.peer_connection_id,
+      packet_number,
+      False,
+      padded,
+      now_ms,
+    )
+    |> map_connection_result,
+  )
+  let size = bit_array.byte_size(bytes)
+  case size >= path_validation_datagram_bytes, attempts {
+    True, _ ->
       make_prepared(
         State(..state, connection: connection),
-        level,
+        engine.OneRtt,
         packet_number,
-        frames,
+        padded,
         bytes,
         now_ms,
       )
-    }
+    False, 0 ->
+      make_prepared(
+        State(..state, connection: connection),
+        engine.OneRtt,
+        packet_number,
+        padded,
+        bytes,
+        now_ms,
+      )
+    False, _ ->
+      protect_expanded_path_validation(
+        state,
+        packet_number,
+        frames,
+        padding + path_validation_datagram_bytes - size,
+        attempts - 1,
+        now_ms,
+      )
   }
 }
 

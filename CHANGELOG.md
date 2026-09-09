@@ -108,6 +108,15 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Expanded path validation datagrams to the floor every QUIC path carries. RFC
+  9000 section 8.2.1 requires the datagram holding a PATH_CHALLENGE, and section
+  8.2.2 the one holding its PATH_RESPONSE, to reach 1200 bytes. This endpoint
+  sent 43 of them. The expansion proves the new path carries a full-size
+  datagram, and it funds the reply, because a peer answering across a path it
+  has not validated may send only three times what it received there. The exact
+  size is known only after protection, so the padding is measured and adjusted
+  the way a DPLPMTUD probe's already was, and a live driver test pins the
+  finished datagram at 1200 bytes.
 - Fixed three things continuous integration found that a Linux checkout could
   not. The gzip vector asserted the header's OS byte, which RFC 1952 section
   2.3.1 leaves to the platform the compression ran on: Erlang's zlib reports 3

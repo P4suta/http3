@@ -5014,6 +5014,16 @@ fn frame_ack_eliciting(value: frame.Frame) -> Bool {
   }
 }
 
+/// Whether the anti-amplification budget permits one datagram of this size.
+///
+/// RFC 9000 section 8.2.1 expands a path validation datagram to the floor every
+/// path carries "unless the anti-amplification limit for the path does not
+/// permit sending a datagram of this size", so the send path asks before it
+/// expands one.
+pub fn amplification_permits(state: State, datagram_bytes: Int) -> Bool {
+  amplification.can_send(state.amplification, datagram_bytes)
+}
+
 fn frames_have_padding(frames: List(frame.Frame)) -> Bool {
   list.any(frames, fn(value) {
     case value {
