@@ -54,6 +54,51 @@ jobs:
           path: build/model/
           if-no-files-found: ignore
 
+  generated-campaigns:
+    name: ${{ matrix.mode }} million-case shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - property
+          - fuzz
+        shard:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run generated campaign shard
+        run: mise run "${{ matrix.mode }}" -- --shard "${{ matrix.shard }}" --shards 8
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::nightly ${{ matrix.mode }} shard ${{ matrix.shard }} failed"
+
+      - name: Upload generated campaign evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-${{ matrix.mode }}-shard-${{ matrix.shard }}
+          path: build/campaign/${{ matrix.mode }}/
+          if-no-files-found: ignore
+
   coverage-full:
     name: Whole-repository coverage
     runs-on: ubuntu-24.04
@@ -128,6 +173,97 @@ jobs:
           path: build/interop/
           if-no-files-found: ignore
 
+  credential-matrix:
+    name: Credentials / ${{ matrix.platform }} / OTP ${{ matrix.otp }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: ubuntu-24.04
+            otp: "28"
+          - os: ubuntu-24.04
+            platform: ubuntu-24.04
+            otp: "29"
+          - os: macos-15
+            platform: macos-15
+            otp: "28"
+          - os: macos-15
+            platform: macos-15
+            otp: "29"
+          - os: windows-2025
+            platform: windows-2025
+            otp: "28"
+          - os: windows-2025
+            platform: windows-2025
+            otp: "29"
+    env:
+      MISE_ERLANG_VERSION: ${{ matrix.otp }}
+      QUALIFICATION_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Run live credential matrix row
+        run: mise run credential-matrix-local
+
+      - name: Annotate failure
+        if: failure()
+        run: echo "::error::credential row ${{ matrix.platform }} / OTP ${{ matrix.otp }} failed"
+
+      - name: Upload credential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-credential-${{ matrix.platform }}-otp-${{ matrix.otp }}
+          path: build/credential-matrix/local/
+          if-no-files-found: ignore
+
+  credential-aggregate:
+    name: Aggregate credential attestations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs:
+      - credential-matrix
+    if: always()
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.10
+
+      - name: Download credential rows
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nightly-credential-*
+          path: build/credential-matrix/local
+          merge-multiple: true
+
+      - name: Require every platform and OTP row
+        run: mise run credential-matrix-aggregate
+
+      - name: Upload aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-credential-aggregate
+          path: build/credential-matrix/report.json
+          if-no-files-found: ignore
+
   faults-netem:
     name: Network fault injection
     runs-on: ubuntu-24.04
@@ -148,6 +284,9 @@ jobs:
 
       - name: Run hostile-peer gate
         run: mise run hostile-peer
+
+      - name: Repeat scheduling-sensitive tests in fresh BEAM VMs
+        run: mise run stability
 
       - name: Annotate failure
         if: failure()
@@ -190,7 +329,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-soak
-          path: benchmarks/results/
+          path: packages/http3/benchmarks/results/
           if-no-files-found: ignore
 
   qlog-cddl:
@@ -254,7 +393,7 @@ jobs:
           if-no-files-found: ignore
 
   release-sim:
-    name: Release simulation on OTP ${{ matrix.otp }}
+    name: Three-package release simulation on OTP ${{ matrix.otp }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -276,7 +415,7 @@ jobs:
         with:
           version: 2026.8.10
 
-      - name: Simulate the two-package release
+      - name: Simulate the three-package release
         run: mise run release-sim
 
       - name: Annotate failure

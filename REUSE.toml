@@ -6,12 +6,15 @@ path = [
   ".gitleaks*",
   ".osv-scanner.toml",
   ".semgrep.yml",
+  ".gitattributes",
   ".gitignore",
   ".markdownlint-cli2.yaml",
   ".mise.toml",
   ".taplo.toml",
   "_typos.toml",
   "*.md",
+  "coverage-*.json",
+  "qualification.json",
   "*.toml",
   "mix.lock",
   "LICENSE",
@@ -19,9 +22,11 @@ path = [
   "benchmarks/**",
   "docs/**",
   "packages/**",
+  "scripts/**",
+  "standards/**",
   "src/**",
   "test/**",
 ]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 the http3 contributors"
+SPDX-FileCopyrightText = "2026 the http contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

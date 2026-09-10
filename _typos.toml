@@ -5,3 +5,7 @@ extend-exclude = ["LICENSES/", "build/"]
 gleeunit = "gleeunit"
 ect = "ect"
 QPACK = "QPACK"
+# Additive-increase/multiplicative-decrease congestion control.
+AIMD = "AIMD"
+# ASCII prefix in a byte-level `caf` + 0xe9 non-UTF-8 fixture.
+caf = "caf"

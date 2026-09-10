@@ -1,216 +1,113 @@
-# http3
+# http
 
-`http3` is an HTTP/3-only Gleam library for the Erlang target. It includes a
-repository-owned QUIC v1/v2, TLS 1.3, HTTP/3, and QPACK implementation. The
-public API exposes typed HTTP and transport concepts while keeping processes,
-sockets, protocol state, cryptographic material, and Erlang message formats
-private.
+`http` is the unified Gleam HTTP product for the Erlang target. The repository
+contains exactly three publishable packages:
 
-This is not a multi-protocol HTTP client. HTTP/1.1, HTTP/2, automatic protocol
-fallback, and the JavaScript target are outside this package's scope. A
-project that needs those capabilities should compose them above `http3`.
+- `http`: the common API and HTTP/1.1/HTTP/2 runtime;
+- `http3`: HTTP/3, QPACK, Capsules, Datagrams, and WebSocket over HTTP/3; and
+- `quic_core`: application-protocol-independent QUIC v1/v2 and TLS 1.3.
 
-> [!WARNING]
-> This source tree is unpublished and has not had an independent third-party
-> security audit. The former v1-complete decision was reopened on 2026-08-25;
-> known transport, TLS, conformance, performance, security-tooling, and package
-> distribution gates remain open. It is not a release candidate or a supported
-> production release. The version in `gleam.toml` is tool metadata, not a tag,
-> release, or publication milestone.
+The root public surface includes bounded `http/body` and `http/error` values,
+the reusable `http/client`, and the protocol-neutral `http/server`,
+`http/context`, `http/middleware`, `http/resource`, and `http/diagnostics`
+contracts. See the [server guide](docs/SERVER.md) for the common Handler and
+lifecycle model. Bounded active-once HTTP/1.1 and HTTP/2 runtimes, the public
+HTTP/3 adapter, guarded CONNECT/Upgrade streams, verified protocol discovery,
+and finite policy stores are implemented. Structured Fields/status,
+digest/signature, bHTTP/OHTTP, compression, WebSocket, and MASQUE modules are
+also present; their remaining standards, live-adapter, peer, coverage, and
+platform qualification is tracked in the generated
+[conformance status](docs/CONFORMANCE.md).
 
-## API overview
+## Quickstart
 
-The capability probe checks whether the Erlang runtime supplies the mandatory
-cryptographic primitives. It does not open a socket or contact a peer:
+Send one request and read a bounded response body. Nothing here is unbounded:
+the read has an explicit ceiling, and the client owns a finite pool which is
+released when it is closed.
 
-```gleam
-import http3
-
-pub fn main() -> Nil {
-  let supported = http3.is_supported()
-  // Use `supported` to decide whether HTTP/3 may be enabled.
-}
-```
-
-The bounded client accepts `gleam/http` requests and returns `gleam/http`
-responses with `BitArray` bodies:
-
+<!-- example: package=http id=quickstart_client -->
 ```gleam
 import gleam/http/request
-import http3/client
+import http/body
+import http/client
 
-pub fn fetch() {
-  let assert Ok(request) = request.to("https://example.com/")
-  let request = request.set_body(request, <<>>)
+/// Fetch one resource and return its status and bounded body.
+pub fn fetch(url: String) -> #(Int, BitArray) {
+  let assert Ok(outgoing) = request.to(url)
+  let assert Ok(running) = client.start(client.defaults())
+  let assert Ok(incoming) =
+    client.fetch(client: running, outgoing: request.set_body(outgoing, <<>>))
+  let assert Ok(#(bytes, _trailers)) =
+    body.read_all(incoming.body, 1024 * 1024)
+  let assert Ok(Nil) = client.close(running)
+  #(incoming.status, bytes)
+}
 
-  client.send(client.new(), request)
+pub fn main() -> Nil {
+  let _example = fetch
+  Nil
 }
 ```
 
-Each `send` call owns and closes one HTTP/3 connection. The default total
-timeout is 30 seconds, and buffered request and response bodies are each
-limited to 8 MiB. Certificate-chain and service-identity verification are
-always enabled. `http3/config` provides complete finite phase deadlines and
-resource limits; there is no unlimited queue or deadline value.
+Serve one. A handler is a plain function from a request and its context to a
+response, so the same handler runs behind HTTP/1.1, HTTP/2, and HTTP/3. This
+example completes a real request over loopback and then releases both ends.
 
-For a certificate-verified local health probe, `client.send_to` accepts an
-exact `http3/address.Address` as the UDP dial target while retaining the
-request host for SNI, certificate service identity, and HTTP authority.
-
-For connection reuse and streaming bodies, establish a connection, open one
-or more streams, send request chunks, and pull response events:
-
+<!-- example: package=http id=quickstart_server -->
 ```gleam
-let assert Ok(connection) = client.connect(configuration, "example.com", 443)
-let request =
-  request.new()
-  |> request.set_host("example.com")
-  |> request.set_body(Nil)
-let assert Ok(stream) = client.open_stream(connection, request)
-let assert Ok(Nil) = client.finish(stream)
+import gleam/http/request
+import gleam/http/response
+import http/body
+import http/client
+import http/context
+import http/server
 
-case client.next_event(stream) {
-  Ok(client.Response(_, _)) -> Nil
-  Ok(client.Data(_)) -> Nil
-  Ok(client.End) -> Nil
-  // InformationalResponse and Trailers are also observable events.
-  _ -> Nil
+pub fn main() -> Nil {
+  let assert Ok(running) =
+    server.start(server.defaults(), fn(_request, _context) {
+      Ok(
+        response.new(200)
+        |> response.set_body(body.from_text("hello from http")),
+      )
+    })
+  let assert Ok(listener) =
+    server.listen_http1(
+      running,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http1_defaults() |> server.allow_http1_cleartext,
+    )
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+
+  let assert Ok(outgoing) = request.to("http://127.0.0.1/")
+  let outgoing =
+    request.set_port(outgoing, port) |> request.set_body(<<>>)
+  let assert Ok(fetching) =
+    client.start(client.defaults() |> client.allow_plain_http)
+  let assert Ok(incoming) = client.fetch(client: fetching, outgoing: outgoing)
+  let assert Ok(#(bytes, _trailers)) = body.read_all(incoming.body, 65_536)
+  assert incoming.status == 200
+  assert bytes == <<"hello from http":utf8>>
+
+  let assert Ok(Nil) = client.close(fetching)
+  let assert Ok(Nil) = server.stop_listener(listener)
+  let assert Ok(Nil) = server.stop(running)
+  Nil
 }
 ```
 
-Request writes synchronously preserve QUIC flow-control pressure. Response
-events are pulled one at a time, and unconsumed data is bounded by both bytes
-and event count per stream. Cancellation and connection close are observable
-and idempotent.
+Cleartext is an explicit opt-in on both sides, as it is above. A TLS listener
+takes a certificate, a private key, and the service identity it must present,
+and the client verifies that identity with no way to turn verification off.
 
-The server requires PEM certificate and private-key bytes, owns its listener
-and connections, and pulls request heads and body events with fixed timeouts:
+All three packages remain unpublished `0.1.0` development packages. They are
+not release candidates or supported production releases until every
+conformance, resource, interoperability, performance, documentation, and
+independent-audit gate is complete.
 
-```gleam
-let assert Ok(configuration) = server.new(certificate, private_key)
-let assert Ok(listener) = server.start(configuration)
-let assert Ok(incoming) = server.accept(listener)
-let assert Ok(body) = server.read_body(incoming)
-let assert Ok(Nil) = server.respond(incoming, 200, [], body)
-let assert Ok(server.Stopped) = server.stop(listener)
-```
-
-Additional certificates can be selected by SNI. Request and response bodies
-have independent limits. Streaming request events and response writes remain
-bounded; graceful drain, immediate shutdown, owner termination, and repeated
-stop calls clean up deterministically.
-
-Listeners can bind an exact IPv4 or IPv6 literal with `http3/address`.
-Accepted requests expose their HTTPS scheme, authority, and only the current
-QUIC-validated peer endpoint, including after migration or NAT rebinding.
-Content-Length-free response streams and pull-based client streams retain
-finite frame, queue, buffer, flow-control, and operation bounds without a
-cumulative lifetime body ceiling.
-
-`http3/websocket` adds RFC 9220 Extended CONNECT with RFC 6455 masking,
-fragmentation, UTF-8, Ping/Pong, Close, finite message/buffer limits, and
-cancellation. Compression is not negotiated.
-
-Advanced controls reuse opaque public connection and stream values:
-
-```gleam
-let connection_transport = client.connection_transport(connection)
-let assert Ok(capabilities) = transport.capabilities(connection_transport)
-let assert Ok(Nil) = transport.ping(connection_transport)
-
-let stream_transport = client.stream_transport(stream)
-let assert Ok(priority) = transport.priority(1, True)
-let assert Ok(Nil) = transport.set_priority(stream_transport, priority)
-```
-
-The current source exercises QUIC v1/v2, compatible version negotiation, HTTP
-Datagrams on Extended CONNECT, RFC 9218 priority, connection migration,
-NewReno and CUBIC, ECN, PMTU discovery, statistics, ping, opt-in bounded qlog,
-origin-bound resumption, and explicit 0-RTT. HTTP/3 informational responses,
-trailers, server push, GOAWAY, graceful drain, Capsules, and QPACK have live
-paths and tests. These are implementation facts, not a complete conformance or
-release-readiness claim. A 0-RTT connection accepts only GET, HEAD, and OPTIONS
-until its early-data outcome is known; replay-unsafe methods are rejected
-locally.
-
-## Status
-
-| Capability | Status |
-| --- | --- |
-| Secure bounded/streaming HTTP/3 client and server paths | Implemented and tested |
-| Exact IPv4/IPv6 bind and validated request/peer context | Implemented and tested |
-| RFC 9220 WebSocket client/server with bounded RFC 6455 framing | Implemented and tested; compression excluded |
-| Event-driven UDP and finite per-stream event/Datagram queues | Implemented and tested |
-| Typed deadlines, role-specific live limits, runtime failures, reload, and ticket persistence | Implemented and tested except aggregate `EndpointMemory`, tracked below |
-| Physical HTTP/3/QPACK package ownership | Implemented; core archive contains transport only |
-| Generic public `gleam_quic` transport API | Implemented and directly tested over real UDP; root HTTP/3 migration to it remains open |
-| Per-connection actor isolation and complete global admission budgets | Open release blocker |
-| Bounded external 0-RTT replay guard with safe 1-RTT fallback | Implemented and tested |
-| P-256 key exchange and mTLS API | Implemented and directly tested; OTP/peer credential matrix remains open |
-| Complete conformance, qlog, CUBIC, coverage, security, interop, and package gates | Open release blockers |
-| Fixed performance thresholds | Benchmark (516) and load (344) met on the 2026-08-26 recorded host; soak (812) not rerun |
-| Public v1 source-tree gate | Reopened on 2026-08-25 |
-| Tag, hosted release, and Hex publication | Deliberately not performed |
-
-No external QUIC implementation is a production dependency. Independent
-aioquic and quic-go programs are retained only as reproducible test peers.
-HTTP/3 sessions, QPACK, Capsules, and workers are owned by `http3`. Raw
-packet/frame/TLS codecs remain private to `gleam_quic`. Compiler-derived
-semantic API snapshots for both packages are part of the local check.
-
-Git-SHA-pinned MixGleam/Burrito consumers can use the committed `mix.exs`
-descriptors to build `http3` and the nested `gleam_quic` package as separate
-OTP applications. Because MixGleam 0.6.2 compiles every source tree present in
-a package checkout, production consumers must stage or retain only `src/` and
-the package descriptors before compilation; `mise run mix-package` exercises
-that runtime-only layout without publishing an artifact.
-
-## Development
-
-The supported runtime range is Erlang/OTP 28 and 29, matching
-[`Gleam 1.18`'s supported Erlang range][gleam-compatibility]. The development
-baseline is pinned to Gleam 1.18.1, Erlang/OTP 29.0.5, and rebar3 3.27.0 with
-[`mise`](https://mise.jdx.dev/).
-
-```sh
-mise install
-mise run check
-mise run fault
-mise run fuzz
-mise run property
-mise run interop-setup
-mise run interop
-```
-
-`mise run check` verifies formatting, warnings-as-errors builds, both test
-suites, documentation, the compiler-exported public API, source and prose
-linting, workflow syntax, spelling, shell scripts, REUSE compliance, and a
-byte-reproducible, content-audited `gleam_quic` Hex archive. The separate
-commands run expensive or environment-sensitive network, fuzz, property, and
-independent-peer qualification gates. CI defines OTP 28–29 and Linux, macOS,
-and Windows build/test matrices.
-
-Start with the [API guide](docs/API.md). See also
-[Architecture](docs/ARCHITECTURE.md), the [pre-release v1 gate](docs/V1.md),
-the [conformance matrix](docs/CONFORMANCE.md),
-[Deployment and key rotation](docs/DEPLOYMENT.md),
-[Migration](docs/MIGRATION.md), [Testing](docs/TESTING.md), the
-[security review](docs/SECURITY_REVIEW.md), [Support](SUPPORT.md),
-[Performance](benchmarks/README.md), and the reopened
+Development is test-driven. Every behavior change starts with a failing test,
+is implemented with the smallest bounded change, and is followed by the full
+affected regression suites. See [Testing](docs/TESTING.md) and the current
 [Roadmap](docs/ROADMAP.md).
 
-## Security
-
-Client certificate-chain and hostname verification are enabled by default and
-cannot be disabled through the public API. The server validates credential
-material before startup. qlog is opt-in because traces can contain sensitive
-metadata. See [SECURITY.md](SECURITY.md) for invariants and reporting guidance.
-
-## Licence
-
-Copyright 2026 the `http3` contributors.
-
-Licensed under either the MIT License or the Apache License, Version 2.0, at
-your option. See [LICENSE](LICENSE) for details.
-
-[gleam-compatibility]: https://gleam.run/documentation/compatibility-reference/
+No tag, publication, push, or hosted release is performed by repository tasks.

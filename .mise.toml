@@ -19,46 +19,95 @@ semgrep = "1.174.0"
 syft = "1.51.0"
 
 [tasks.format]
-description = "Check Gleam source formatting"
+description = "Check all three Gleam packages"
 run = [
   "gleam format --check src test",
+  "mise run http3-format",
   "mise run core-format",
 ]
 
+[tasks.http3-format]
+description = "Check HTTP/3 package source formatting"
+dir = "{{ config_root }}/packages/http3"
+run = "gleam format --check src test"
+
 [tasks.core-format]
 description = "Check the native QUIC core source formatting"
-dir = "{{ config_root }}/packages/gleam_quic"
+dir = "{{ config_root }}/packages/quic_core"
 run = "gleam format --check src test"
 
 [tasks.core-check]
 description = "Run every native QUIC core package check"
-dir = "{{ config_root }}/packages/gleam_quic"
+dir = "{{ config_root }}/packages/quic_core"
 run = [
   "gleam format --check src test",
-  "gleam build --warnings-as-errors",
+  "bash ../../scripts/fresh_build.sh core",
   "gleam test",
   "gleam docs build",
-  "gleam run -m glinter",
+  "gleam run -m glinter -- --stats",
 ]
+
+[tasks.http3-check]
+description = "Run every HTTP/3 package check"
+dir = "{{ config_root }}/packages/http3"
+run = [
+  "gleam format --check src test",
+  "bash ../../scripts/fresh_build.sh http3",
+  "gleam test",
+  "escript ../../scripts/connection_barrier_self_test.escript",
+  "escript ../../scripts/progress_trace_self_test.escript",
+  "gleam docs build",
+  "gleam run -m glinter -- --stats",
+]
+
+[tasks.http-check]
+description = "Run every unified HTTP package check"
+run = [
+  "gleam format --check src test",
+  "bash scripts/fresh_build.sh http",
+  "gleam test",
+  "gleam docs build",
+  "gleam run -m glinter -- --stats",
+]
+
+[tasks.package-layout]
+description = "Audit the three-package dependency layout"
+run = "escript scripts/package_layout_audit.escript"
+
+[tasks.status-audit]
+description = "Audit machine-readable qualification truth and generated status"
+run = "escript scripts/status_audit.escript"
+
+[tasks.status-update]
+description = "Regenerate qualification status from executable repository state"
+run = "escript scripts/status_audit.escript update"
 
 [tasks.core-package]
 description = "Build, audit, and reproduce the native QUIC Hex archive"
-dir = "{{ config_root }}/packages/gleam_quic"
+dir = "{{ config_root }}/packages/quic_core"
 run = [
   "gleam export hex-tarball",
-  "escript ../../test/gleam_quic_hex_package.escript normalize-export . build/gleam_quic-repro-reference.tar",
+  "escript ../../scripts/quic_core_hex_package.escript normalize-export . build/quic_core-repro-reference.tar",
   "gleam export hex-tarball",
-  "escript ../../test/gleam_quic_hex_package.escript normalize-export .",
-  "escript ../../test/gleam_quic_hex_package.escript compare-export build/gleam_quic-repro-reference.tar .",
+  "escript ../../scripts/quic_core_hex_package.escript normalize-export .",
+  "escript ../../scripts/quic_core_hex_package.escript compare-export build/quic_core-repro-reference.tar .",
 ]
 
 [tasks.build]
 description = "Build with compiler warnings treated as errors"
 run = "gleam build --warnings-as-errors"
 
+[tasks.fresh-build]
+description = "Discard stale dev codegen and record source/artifact digests"
+run = "bash scripts/fresh_build.sh all"
+
+[tasks.fresh-build-audit]
+description = "Reject stale or modified production build artifacts"
+run = "escript scripts/fresh_build_manifest.escript verify all"
+
 [tasks.mix-package]
-description = "Build runtime-only http3 and gleam_quic OTP applications with MixGleam"
-run = "sh test/run_mix_gleam_package.sh"
+description = "Build all runtime-only OTP applications with MixGleam"
+run = "sh scripts/mix_package_test.sh"
 
 [tasks.test]
 description = "Run the gleeunit test suite"
@@ -66,44 +115,110 @@ run = "gleam test"
 
 [tasks.fault]
 description = "Run deterministic real-UDP network fault injection"
+dir = "{{ config_root }}/packages/http3"
 run = "gleam run -m http3_fault"
 
 [tasks.fuzz]
-description = "Run 10,000 deterministic parser fuzz cases plus retained seeds"
+description = "Run 10,000 deterministic parser fuzz cases per package plus retained seeds"
 run = [
-  "gleam run -m native/gleam_quic_fuzz",
-  "cd packages/gleam_quic && gleam run -m gleam_quic_fuzz",
+  "escript scripts/campaign.escript --self-test",
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/campaign.escript fuzz",
 ]
 
 [tasks.property]
-description = "Run 10,000 reproducible generated wire-codec properties"
+description = "Run 10,000 reproducible generated properties per package"
 run = [
-  "gleam run -m native/gleam_quic_property",
-  "cd packages/gleam_quic && gleam run -m gleam_quic_property",
+  "escript scripts/campaign.escript --self-test",
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/campaign.escript property",
 ]
 
 [tasks.benchmark]
 description = "Run one warm-up and five repeatable local benchmark trials"
-run = "gleam run -m http3_benchmark -- benchmark"
+run = "bash scripts/performance_run.sh benchmark"
 
 [tasks.load]
 description = "Run the controlled high-concurrency HTTP/3 load workload"
-run = "gleam run -m http3_benchmark -- load"
+run = "bash scripts/performance_run.sh load"
 
 [tasks.soak]
 description = "Run a sustained 160,000-stream HTTP/3 soak workload"
-run = "gleam run -m http3_benchmark -- soak"
+run = "bash scripts/performance_run.sh soak"
+
+[tasks.hot-path-profile]
+description = "Fail on bounded HTTP/3/QUIC hot-path call-count regressions"
+run = [
+  "escript scripts/hot_path_profile.escript --self-test",
+  "bash scripts/fresh_build.sh http3",
+  "escript scripts/hot_path_profile.escript",
+]
+
+[tasks.idle-wakeup]
+description = "Prove quiescent HTTP/3 and QUIC actors have no periodic deadline wakeups"
+run = [
+  "bash scripts/fresh_build.sh http3",
+  "bash scripts/performance_idle_wakeup.sh",
+]
+
+[tasks.progress-trace-self-test]
+description = "Prove bounded payload-free HTTP/3 performance stall capture"
+run = [
+  "bash scripts/fresh_build.sh http3",
+  "escript scripts/progress_trace_self_test.escript",
+]
+
+[tasks.connection-barrier-self-test]
+description = "Prove supervised HTTP/3 performance admission and inspected-connection lifetime"
+run = [
+  "bash scripts/fresh_build.sh http3",
+  "escript scripts/connection_barrier_self_test.escript",
+]
+
+[tasks.load-diagnose]
+description = "Run one traced 32-connection HTTP/3 load trial"
+dir = "{{ config_root }}/packages/http3"
+run = [
+  "gleam build --warnings-as-errors",
+  "escript ../../scripts/connection_barrier_self_test.escript",
+  "escript ../../scripts/progress_trace_self_test.escript",
+  'HTTP3_BENCHMARK_TRACE_DIR="{{ config_root }}/build/diagnostics/http3-load/progress" gleam run -m http3_benchmark -- load 1 32 100 16384',
+]
+
+[tasks.load-diagnose-qlog]
+description = "Run one traced 32-connection load trial with sensitive qlog"
+dir = "{{ config_root }}/packages/http3"
+run = [
+  "gleam build --warnings-as-errors",
+  "escript ../../scripts/connection_barrier_self_test.escript",
+  "escript ../../scripts/progress_trace_self_test.escript",
+  'HTTP3_BENCHMARK_TRACE_DIR="{{ config_root }}/build/diagnostics/http3-load/progress" HTTP3_BENCHMARK_QLOG_DIR="{{ config_root }}/build/diagnostics/http3-load/qlog" gleam run -m http3_benchmark -- load 1 32 100 16384',
+]
 
 [tasks.diagnose]
 description = "Record one optional BeamTrace diagnostic scenario"
+dir = "{{ config_root }}/packages/http3"
 run = "bash test/diagnostics/run.sh"
 
 [tasks.interop]
+description = "Run every independent peer interoperability gate"
+run = [
+  "mise run interop-curl",
+  "mise run interop-http3",
+]
+
+[tasks.interop-curl]
+description = "Run independent curl HTTP/1.1 and HTTP/2 client interoperability"
+run = "bash test/interop/curl/run.sh"
+
+[tasks.interop-http3]
 description = "Run both independent HTTP/3 peer phase gates"
+dir = "{{ config_root }}/packages/http3"
 run = "bash test/interop/run.sh all"
 
 [tasks.interop-setup]
 description = "Install the hash-locked aioquic interoperability peer"
+dir = "{{ config_root }}/packages/http3"
 run = [
   "uv venv --clear --python 3.12.13 build/interop-venv",
   "uv pip sync --python build/interop-venv/bin/python --require-hashes --strict test/interop/requirements.lock",
@@ -111,15 +226,23 @@ run = [
 
 [tasks.interop-lock]
 description = "Regenerate the hash-locked aioquic peer dependency set"
+dir = "{{ config_root }}/packages/http3"
 run = "uv pip compile test/interop/requirements.txt --output-file test/interop/requirements.lock --generate-hashes --universal --python-version 3.12 --exclude-newer 2026-08-24 --custom-compile-command 'mise run interop-lock'"
 
 [tasks.interop-aioquic]
 description = "Run bidirectional advanced aioquic interoperability"
+dir = "{{ config_root }}/packages/http3"
 run = "bash test/interop/run.sh aioquic"
 
 [tasks.interop-quicgo]
 description = "Run bidirectional QUIC v1/v2 quic-go interoperability"
+dir = "{{ config_root }}/packages/http3"
 run = "bash test/interop/run.sh quicgo"
+
+[tasks.interop-campaign]
+description = "Repeat isolated bidirectional aioquic interop ten times"
+dir = "{{ config_root }}/packages/http3"
+run = "bash test/interop/campaign.sh aioquic"
 
 [tasks.docs]
 description = "Build package documentation"
@@ -127,24 +250,24 @@ run = "gleam docs build"
 
 [tasks.ffi-audit]
 description = "Run Dialyzer and xref over every production Erlang FFI"
-run = "bash test/run_ffi_audit.sh"
+run = "bash scripts/ffi_audit.sh"
 
 [tasks.secret-scan]
-description = "Reject secrets except the two fingerprinted public test keys"
+description = "Reject secrets except the fingerprinted public test fixtures"
 run = "gitleaks dir . --redact --no-banner"
 
 [tasks.semgrep]
 description = "Run repository-owned FFI and public-boundary security rules"
 run = [
   "mkdir -p build/semgrep",
-  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/gleam_quic/src",
+  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
 ]
 
 [tasks.sbom]
 description = "Generate the release-input CycloneDX SBOM"
 run = [
   "mkdir -p build/security",
-  "syft scan dir:. --exclude './build/**' --exclude './packages/gleam_quic/build/**' --output cyclonedx-json=build/security/http3.cdx.json --quiet",
+  "syft scan dir:. --exclude './build/**' --exclude './packages/http3/build/**' --exclude './packages/quic_core/build/**' --output cyclonedx-json=build/security/http.cdx.json --quiet",
 ]
 
 [tasks.dependency-audit]
@@ -163,101 +286,260 @@ run = [
 ]
 
 [tasks.api]
-description = "Audit both compiler-exported API boundaries and snapshots"
+description = "Audit all compiler-exported API boundaries and snapshots"
 run = [
-  "gleam export package-interface --out build/http3-package-interface.json",
-  "cd packages/gleam_quic && gleam export package-interface --out build/gleam-quic-package-interface.json",
-  "escript test/http3_public_api_audit.escript build/http3-package-interface.json packages/gleam_quic/build/gleam-quic-package-interface.json api/http3.snapshot api/gleam_quic.snapshot",
-  "escript test/http3_public_api_audit.escript boundary src test api/boundary.allow",
+  "gleam export package-interface --out build/http-package-interface.json",
+  "cd packages/http3 && gleam export package-interface --out build/http3-package-interface.json",
+  "cd packages/quic_core && gleam export package-interface --out build/quic-core-package-interface.json",
+  "escript scripts/public_api_audit.escript build/http-package-interface.json packages/http3/build/http3-package-interface.json packages/quic_core/build/quic-core-package-interface.json api/http.snapshot api/http3.snapshot api/quic_core.snapshot",
+  "escript scripts/public_api_audit.escript boundary packages/http3/src packages/http3/test api/boundary.allow",
+  "escript scripts/package_layout_audit.escript",
 ]
 
 [tasks.api-update]
-description = "Intentionally refresh both audited canonical API snapshots"
+description = "Intentionally refresh all audited canonical API snapshots"
 run = [
-  "gleam export package-interface --out build/http3-package-interface.json",
-  "cd packages/gleam_quic && gleam export package-interface --out build/gleam-quic-package-interface.json",
-  "escript test/http3_public_api_audit.escript update build/http3-package-interface.json packages/gleam_quic/build/gleam-quic-package-interface.json api/http3.snapshot api/gleam_quic.snapshot",
+  "gleam export package-interface --out build/http-package-interface.json",
+  "cd packages/http3 && gleam export package-interface --out build/http3-package-interface.json",
+  "cd packages/quic_core && gleam export package-interface --out build/quic-core-package-interface.json",
+  "escript scripts/public_api_audit.escript update build/http-package-interface.json packages/http3/build/http3-package-interface.json packages/quic_core/build/quic-core-package-interface.json api/http.snapshot api/http3.snapshot api/quic_core.snapshot",
 ]
 
 [tasks.lint]
 description = "Run source, prose, configuration, workflow, spelling, and licence linters"
 run = [
-  "gleam run -m glinter",
-  "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#packages/gleam_quic/build/**\"",
+  "gleam run -m glinter -- --stats",
+  "cd packages/http3 && gleam run -m glinter -- --stats",
+  "cd packages/quic_core && gleam run -m glinter -- --stats",
+  "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#deps/**\" \"#packages/http3/build/**\" \"#packages/http3/deps/**\" \"#packages/quic_core/build/**\" \"#packages/quic_core/deps/**\"",
   "taplo fmt --check",
   "taplo lint",
   "actionlint",
-  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
-  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
+  "git ls-files -z '*.sh' | xargs -0 shellcheck",
+  "git ls-files -z '*.sh' | xargs -0 shfmt -d",
   "typos",
   "reuse lint",
   "gitleaks dir . --redact --no-banner",
 ]
 
 [tasks.coverage]
-description = "Report line and branch coverage for changed source (not implemented yet)"
-run = "bash -c 'echo \"coverage: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Measure changed-source artifact-line and compiled clause-alternative coverage at 100/100"
+run = [
+  "mise run coverage-capture",
+  "escript scripts/coverage.escript report changed",
+]
 
 [tasks.coverage-full]
-description = "Report whole-repository coverage against the release thresholds (not implemented yet)"
-run = "bash -c 'echo \"coverage-full: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Measure production artifact-line and compiled clause-alternative coverage at 95/90"
+run = [
+  "mise run coverage-capture",
+  "escript scripts/coverage.escript report full",
+]
+
+[tasks.coverage-coordinate-audit]
+description = "Reject source, generated-artifact, BEAM-clause, and OTP-cover coordinate drift"
+run = [
+  "escript scripts/coverage.escript --self-test",
+  "escript scripts/fresh_build_manifest.escript verify all",
+  "escript scripts/coverage.escript audit-coordinates quic_core packages/quic_core packages/quic_core/build/dev/erlang/quic_core/ebin",
+  "escript scripts/coverage.escript audit-coordinates http3 packages/http3 packages/http3/build/dev/erlang/http3/ebin",
+  "escript scripts/coverage.escript audit-coordinates http . build/dev/erlang/http/ebin",
+]
+
+[tasks.coverage-capture]
+description = "Run bounded adaptive same-VM suites with audited coverage coordinates and runtime-convergence diagnostics"
+run = [
+  "escript scripts/coverage.escript reset",
+  "bash scripts/fresh_build.sh all",
+  "mise run coverage-coordinate-audit",
+  "escript scripts/coverage.escript capture http . build/dev/erlang/http/ebin build/coverage/http.cover",
+  "escript scripts/coverage.escript capture http3 packages/http3 packages/http3/build/dev/erlang/http3/ebin build/coverage/http3.cover",
+  "escript scripts/coverage.escript capture quic_core packages/quic_core packages/quic_core/build/dev/erlang/quic_core/ebin build/coverage/quic_core.cover",
+]
+
+[tasks.coverage-closing-diagnose]
+description = "Repeat the 32-connection HTTP/3 close path with per-wave actor/socket settlement evidence"
+run = [
+  "bash scripts/fresh_build.sh http3",
+  "escript scripts/coverage.escript diagnose http3-closing-settle packages/http3 packages/http3/build/dev/erlang/http3/ebin load_regression_test drains_bursty_concurrent_handshakes_over_real_udp_test 10",
+]
 
 [tasks.model]
-description = "Run the long randomized protocol state-model search (not implemented yet)"
-run = "bash -c 'echo \"model: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Run the RFC 9438 oracle and randomized QUIC congestion model"
+run = [
+  "bash scripts/fresh_build.sh core",
+  "escript scripts/model.escript",
+]
+
+[tasks.qpack-differential]
+description = "Run the pinned bidirectional RFC 9204 QPACK differential oracle"
+run = [
+  "bash scripts/fresh_build.sh http3",
+  "test -x packages/http3/build/interop-venv/bin/python",
+  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py --self-test",
+  "escript scripts/qpack_differential.escript --self-test",
+  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py generate build/qpack-differential/oracle.json",
+  "escript scripts/qpack_differential.escript exercise build/qpack-differential/oracle.json build/qpack-differential/implementation.json",
+  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py verify build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
+  "escript scripts/qpack_differential.escript finalize build/qpack-differential/oracle.json build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
+]
+
+[tasks.structured-fields-oracle-setup]
+description = "Fetch the hash-locked HTTP WG RFC 9651 test corpus"
+run = "bash scripts/structured_fields_oracle_setup.sh"
+
+[tasks.structured-fields-oracle]
+description = "Run all hash-locked HTTP WG RFC 9651 parse vectors"
+run = [
+  "bash scripts/fresh_build.sh http",
+  "escript scripts/structured_fields_oracle.escript --self-test",
+  "escript scripts/structured_fields_oracle.escript run standards/structured-fields-oracle.json build/structured-fields-oracle/upstream",
+]
 
 [tasks.hostile-peer]
-description = "Run the adversarial peer and resource-exhaustion gate (not implemented yet)"
-run = "bash -c 'echo \"hostile-peer: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Run the adversarial peer and finite-resource test matrix"
+run = [
+  "escript scripts/test_matrix.escript --self-test",
+  "escript scripts/audit_bundle.escript --self-test",
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/test_matrix.escript hostile",
+  "escript scripts/audit_bundle.escript --verify-report build/fault/hostile-peer.json",
+]
+
+[tasks.stability]
+description = "Repeat scheduling-sensitive tests in isolated fresh BEAM VMs"
+run = [
+  "escript scripts/test_matrix.escript --self-test",
+  "escript scripts/audit_bundle.escript --self-test",
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/test_matrix.escript stability",
+  "escript scripts/audit_bundle.escript --verify-report build/fault/stability.json",
+]
 
 [tasks.credential-matrix]
-description = "Run the TLS and mTLS credential and rejection matrix (not implemented yet)"
-run = "bash -c 'echo \"credential-matrix: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Run local TLS credentials then require all OS and OTP attestations"
+run = [
+  "mise run credential-matrix-local",
+  "mise run credential-matrix-aggregate",
+]
+
+[tasks.credential-matrix-local]
+description = "Run and record the credential matrix on this OS and OTP"
+run = [
+  "escript scripts/test_matrix.escript --self-test",
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/test_matrix.escript credential-local",
+]
+
+[tasks.credential-matrix-aggregate]
+description = "Require Ubuntu, macOS, and Windows reports on OTP 28 and 29"
+run = [
+  "escript scripts/test_matrix.escript --self-test",
+  "escript scripts/test_matrix.escript credential-aggregate",
+  "escript scripts/audit_bundle.escript --verify-report build/credential-matrix/report.json",
+]
 
 [tasks.release-sim]
-description = "Simulate a two-package release into a temporary registry (not implemented yet)"
-run = "bash -c 'echo \"release-sim: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Reproduce three exact-version archives and archive-only consumers"
+run = [
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/release_sim.escript",
+]
 
 [tasks.release-candidate]
-description = "Run every gate required to qualify a release candidate (not implemented yet)"
-run = "bash -c 'echo \"release-candidate: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Run source-candidate then enforce external audit and signed commit"
+run = [
+  "mise run source-candidate",
+  "escript scripts/release_candidate.escript",
+]
 
 [tasks.requirements-audit]
-description = "Audit RFC requirements and errata coverage for drift (not implemented yet)"
-run = "bash -c 'echo \"requirements-audit: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Audit pinned RFC, errata, registry, and requirement evidence"
+run = [
+  "escript scripts/requirements_audit.escript --self-test",
+  "escript scripts/requirements_audit.escript",
+]
 
 [tasks.qlog-validate]
-description = "Validate emitted qlog traces against the published schema (not implemented yet)"
-run = "bash -c 'echo \"qlog-validate: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Validate emitted JSON-SEQ qlog and required event families"
+run = [
+  "escript scripts/qlog_preserve.escript --self-test",
+  "escript scripts/qlog_validate.escript --self-test",
+  "bash scripts/fresh_build.sh http3",
+  "bash scripts/qlog_live.sh",
+  "escript scripts/qlog_validate.escript",
+]
 
 [tasks.examples]
-description = "Build and run the documented public API examples (not implemented yet)"
-run = "bash -c 'echo \"examples: not implemented yet (see docs/ROADMAP.md)\" >&2; exit 1'"
+description = "Extract, compile offline, and execute every documented Gleam example"
+run = [
+  "bash scripts/fresh_build.sh all",
+  "escript scripts/examples.escript",
+]
+
+[tasks.interop-audit]
+description = "Audit pinned bidirectional HTTP, QUIC, browser, MASQUE, and OHTTP peers"
+run = "escript scripts/interop_audit.escript"
+
+[tasks.performance-audit]
+description = "Audit cross-protocol throughput, latency, memory, and convergence evidence"
+run = [
+  "escript scripts/performance_audit.escript --self-test",
+  "escript scripts/performance_audit.escript",
+]
+
+[tasks.audit-bundle]
+description = "Verify and assemble the deterministic qualification evidence bundle"
+run = [
+  "escript scripts/audit_bundle.escript --self-test",
+  "escript scripts/audit_bundle.escript",
+]
+
+[tasks.source-candidate]
+description = "Run every automated local gate and assemble an unpublished source bundle"
+run = [
+  "mise run check",
+  "mise run security",
+  "mise run coverage",
+  "mise run coverage-full",
+  "mise run property",
+  "mise run fuzz",
+  "mise run model",
+  "mise run structured-fields-oracle-setup",
+  "mise run structured-fields-oracle",
+  "mise run qpack-differential",
+  "mise run hostile-peer",
+  "mise run credential-matrix",
+  "mise run requirements-audit",
+  "mise run qlog-validate",
+  "mise run examples",
+  "mise run interop",
+  "mise run interop-audit",
+  "mise run hot-path-profile",
+  "mise run idle-wakeup",
+  "mise run benchmark",
+  "mise run load",
+  "mise run soak",
+  "mise run performance-audit",
+  "mise run release-sim",
+  "mise run audit-bundle",
+]
 
 [tasks.check]
 description = "Run every required local verification"
 run = [
+  "mise run status-audit",
+  "mise run package-layout",
+  "mise run http-check",
+  "mise run http3-check",
   "mise run core-check",
+  "mise run stability",
+  "mise run fresh-build-audit",
+  "mise run coverage-coordinate-audit",
   "mise run core-package",
   "mise run mix-package",
-  "gleam format --check src test",
-  "gleam build --warnings-as-errors",
-  "bash test/run_ffi_audit.sh",
-  "gleam test",
-  "gleam docs build",
-  "gleam export package-interface --out build/http3-package-interface.json",
-  "cd packages/gleam_quic && gleam export package-interface --out build/gleam-quic-package-interface.json",
-  "escript test/http3_public_api_audit.escript build/http3-package-interface.json packages/gleam_quic/build/gleam-quic-package-interface.json api/http3.snapshot api/gleam_quic.snapshot",
-  "escript test/http3_public_api_audit.escript boundary src test api/boundary.allow",
-  "gleam run -m glinter",
-  "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#packages/gleam_quic/build/**\"",
-  "taplo fmt --check",
-  "taplo lint",
-  "actionlint",
-  "shellcheck test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
-  "shfmt -d test/diagnostics/run.sh test/interop/run.sh test/run_ffi_audit.sh test/run_mix_gleam_package.sh",
-  "typos",
-  "reuse lint",
+  "mise run ffi-audit",
+  "mise run api",
+  "mise run lint",
   "mise run semgrep",
-  "gitleaks dir . --redact --no-banner",
 ]

@@ -1,180 +1,244 @@
 # Changelog
 
-All notable changes to this project will be documented in this file. The
-format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-The version in `gleam.toml` is tool metadata; a changelog heading does not
-imply a tag, a hosted release, or publication to Hex.
-
 ## Unreleased
 
-### Added
-
-- A repository-owned live UDP QUIC v1/v2 core with authenticated compatible
-  version negotiation, frames, transport parameters, flow control, recovery,
-  NewReno, CUBIC, pacing, ECN, anti-amplification, tokens, connection IDs,
-  stateless reset, IPv4/IPv6, PMTU discovery, rebinding, and active migration.
-- A native TLS 1.3 coordinator with certificate/path/identity authentication,
-  AES-GCM and ChaCha20-Poly1305 packet protection, Retry, key updates,
-  encrypted origin-bound tickets, resumption, replay-constrained 0-RTT, and
-  rejection fallback.
-- Native RFC 9114 HTTP/3 and RFC 9204 QPACK client/server sessions, including
-  informational responses, trailers, server push, GOAWAY, graceful drain,
-  dynamic-table feedback, blocked-stream limits, and Huffman coding.
-- Typed RFC 9218 priority, Extended CONNECT, bounded Capsules, associated HTTP
-  Datagrams, qlog, keepalive, congestion selection, and connection/path
-  statistics.
-- Bounded one-shot and reusable streaming public clients and servers with
-  opaque handles, synchronous backpressure, pull events, cancellation,
-  independent body/queue limits, total deadlines, SNI certificate selection,
-  and deterministic cleanup.
-- Reproducible 10,000-case property and parser-fuzz runners, retained fuzz
-  seeds, deterministic real-UDP fault injection, and RFC/vector/negative
-  conformance tests.
-- A hermetic bidirectional interoperability runner for hash-locked aioquic
-  1.3.0 and module-pinned quic-go 0.61.0, including explicit QUIC v1/v2,
-  RFC 9368, Datagram, migration, qlog, resumption, and observed 0-RTT.
-- Fixed benchmark, 32-connection load, and 160,000-stream soak workloads with
-  body verification, bounded cleanup, process/mailbox convergence,
-  environment metadata, and retained native-core raw results.
-- A pre-release conformance matrix with explicit open findings, API,
-  deployment/key-rotation, migration, and support guides.
-- Compiler-derived semantic API snapshots for both packages and an audit that
-  rejects raw codec, HTTP/3 adapter, BBR, backend-string, and native-handle
-  leakage.
-- A deterministic `gleam_quic` Hex-archive gate that validates the Hex
-  checksum and declared file set, rejects tests, build output, interop peers,
-  private keys, and HTTP/3/QPACK modules, and canonicalizes nondeterministic
-  dependency ordering and tar attributes before proving byte identity.
-- A finite external 0-RTT replay guard with opaque fingerprint/retention input,
-  atomic caller-store decisions, and fail-closed 1-RTT fallback on rejection,
-  callback error, exit, or timeout.
-- End-to-end `Telemetry` limit wiring for client/server qlog writers, with one
-  bounded active write, configurable waiting capacity, and drop/error/queue
-  counters.
-- End-to-end stream, frame, Datagram, QPACK, and accept-waiter limit wiring,
-  including finite FIFO accept capacity and live transport/SETTINGS values.
-- A generic `gleam_quic` public client/server API with opaque connections and
-  streams, finite configuration, typed failures, redacted negotiated
-  diagnostics, encrypted restart-safe tickets, and direct real-UDP coverage.
-- P-256 key exchange with direct and HelloRetryRequest paths, plus public
-  disabled/optional/required mTLS, one-call client credentials, redacted
-  verified-client fingerprints, resumed reauthentication, and safe 0-RTT
-  fallback.
-- An optional external BeamTrace diagnostic runner with fixed non-secret actor
-  labels, warm-up-before-root scenarios, strict qlog redaction, clock-domain
-  validation, finite cleanup checks, and review-before-sharing artifacts.
-- A three-layer boundary gate (a Semgrep rule, a `boundary` verb in the public
-  API audit with the shrink-only `api/boundary.allow`, and an xref mode) that
-  fails any root import of a package-private `gleam_quic` module; the root
-  package now owns its RFC 9000 varint and stream-identifier helpers.
-- `CLAUDE.md`, a dated evidence convention under `docs/evidence/`, stub tasks
-  for the remaining qualification gates, and a nightly workflow skeleton.
-- Runtime-only MixGleam 0.6.2 descriptors and a locked packaging gate that
-  produces separate `http3` and `gleam_quic` OTP applications for
-  Git-SHA-pinned Burrito consumers.
-
-### Changed
-
-- Replaced the external Erlang QUIC backend with the local `gleam_quic` path
-  package and removed all external QUIC production dependencies and runtime
-  calls.
-- Restricted production Erlang FFI to opaque wrapping, UDP/time, runtime
-  cryptography/X.509, and qlog file I/O; all wire protocols and state machines
-  are Gleam code.
-- Reopened the former v1-complete decision and made the open architecture,
-  TLS, conformance, qlog, performance, security, interop, and packaging gates
-  explicit.
-- Hid raw QUIC wire modules and transitional HTTP/3 adapters from the
-  `gleam_quic` package interface.
-- Moved HTTP/3 sessions, QPACK, Capsules, workers, and their 102 direct tests
-  into `http3`; the `gleam_quic` archive now contains transport-only source.
-- Aligned the runtime matrix with Gleam 1.18's supported OTP 28/29 range and
-  verified both root and native suites at the lower bound.
-- Expanded `mise run check` with native-core checks, compiler-interface
-  auditing, pinned workflow validation, shell formatting/linting, spelling,
-  and REUSE compliance.
-- Core-only driver, fuzz, and property tests moved into
-  `packages/gleam_quic/test`; `mise run fuzz` and `mise run property` run both
-  packages' generators with unchanged case counts.
-
-### Fixed
-
-- Authenticated QUIC Version Negotiation and rejected downgrade or inconsistent
-  compatible-version information.
-- Drained bursty handshake UDP input without command-path polling latency.
-- Bounded terminal stream state and isolated qlog files per connection.
-- Preserved valid coalesced HTTP/3 frames across QUIC read boundaries while
-  retaining a finite parser buffer and enforcing each frame payload limit.
-- Preserved resumption across Retry while correctly rejecting early data and
-  waiting for 1-RTT before a request when no viable early key exists.
-- Accepted peer zero-length source connection IDs and order-independent reset
-  tokens required by independent QUIC implementations.
-- Removed the non-functional public BBR option; only implemented NewReno and
-  CUBIC remain.
-- Replaced 10 ms UDP polling with active-once delivery and protocol-deadline
-  timers, including finite relay batches and credit.
-- Coalesced duplicate `PATH_CHALLENGE` values and bounded pending responses to
-  prevent the reported response-amplification queue attack.
-- Replaced backend-formatted failure strings with typed resolution, socket,
-  TLS, QUIC, HTTP/3, timeout, close, limit, and overload failures.
-- Bounded client and server request/response/Datagram event queues by count as
-  well as bytes using amortized O(1) FIFO operations.
-- Added atomic certificate and operational-key reload, current/previous key
-  rings, and encrypted versioned ticket import/export across restarts.
-- Preserved an actual wire-level 0-RTT send for single-address connections while
-  retaining authenticated candidate selection for dual-stack racing.
-- Replaced per-turn all-connection send polling with a finite dirty-connection
-  set; protocol timer expiry still advances every live connection.
-- Wired authenticated Retry and reusable `NEW_TOKEN` issuance into the generic
-  listener, added an independently rotated address-token key ring, and made
-  ticket snapshots include the token before returning so restart 0-RTT is
-  deterministic.
-- Replaced three interchangeable operational-ring arguments in the generic
-  server API with one validated, named `OperationalKeys` bundle that rejects
-  cross-purpose key reuse.
-- Reissued `NEW_TOKEN` to established generic QUIC and HTTP/3 peers after an
-  address-token key reload, allowing operators to retire the previous key
-  generation without forcing a Retry on refreshed clients.
-- Rejected mismatched certificate/private-key pairs during endpoint
-  configuration instead of deferring the failure to a network handshake.
-- Rejected client credentials whose leaf certificate is not valid for client
-  authentication before opening a socket.
-- Kept qlog device-writer failure isolated from transport work, retained
-  bounded drop/error counters, and made teardown idempotent after failure.
-- Removed raw Hex-archive checksum drift caused by unstable dependency order
-  in consecutive Gleam exports; the checked release input now has a stable
-  canonical checksum without changing package metadata semantics.
-- Made repeated server-side connection close calls report `AlreadyClosed` as
-  soon as the first call enters closing or draining, instead of depending on
-  packet-flush timing.
-- A pacing-limited QUIC connection now derives its wake-up from the congestion
-  window and smoothed RTT current at each deadline computation and arms it only
-  while output is pending, so queued data no longer stalls until an unrelated
-  timer, PTO, or idle timeout.
-- QUIC datagrams grow with the DPLPMTUD-validated path MTU: both roles
-  advertise the RFC 9000 default `max_udp_payload_size` (65527), 1-RTT packets
-  take their frame budget from the path after the coalesced ACK and the exact
-  packet-protection overhead, DATAGRAM frames reserve room for the
-  acknowledgement they share a packet with, the pacer burst and the
-  NewReno/CUBIC `max_datagram_size` follow the path, and Initial, Handshake,
-  0-RTT, and ACK-only packets are all measured against the path.
-- QUIC UDP sockets request Don't-Fragment at open (Linux
-  `IP(V6)_MTU_DISCOVER`, macOS/FreeBSD `IP(V6)_DONTFRAG`, Windows
-  `IP_DONTFRAGMENT`); DPLPMTUD stays at the 1200-byte floor when a platform
-  refuses it, an oversized send is classified as a path black hole on every
-  send path instead of a socket failure, and peer-chosen Initial tokens are
-  bounded so no Initial exceeds the floor.
-- Test fixtures create qlog scratch directories under `TMPDIR`/`TEMP`/`TMP`
-  instead of a hard-coded `/tmp`, and the Semgrep task writes its settings and
-  log under `build/semgrep/`.
-
-## 0.1.0 - 2026-08-23
-
-### Added
-
-- An Erlang-target Gleam package with `quic` 1.8.1 as the minimum backend.
-- The `http3.is_supported()` backend capability probe.
-- A private Gleam adapter and Erlang FFI boundary around `quic:is_available/0`.
-- Architecture, roadmap, security, contribution, and licence documentation.
-- Reproducible development tools, a complete local check task, and hardened CI
-  definitions for OTP and operating-system compatibility.
+- Began the TDD migration to the three-package `http`, `http3`, and
+  `quic_core` architecture without a compatibility namespace.
+- Added the common bounded Body and typed/redacted Error contracts, strict
+  HTTP/1.1 parsing and active-once transport, and the bounded HTTP/2 protocol
+  foundation.
+- Added a reusable unified client with finite policies, pooling, streaming
+  exchange, safe redirects, and secret-free redirect history.
+- Reduced the temporary HTTP/3-to-QUIC private-import allowlist and exposed a
+  public nonnegative monotonic diagnostic clock from `quic_core`.
+- Moved high-level HTTP/3 server, persisted-ticket, and client-actor behavior
+  behind opaque QUIC adapter values, reducing the shrink-only boundary
+  allowlist without changing their public APIs.
+- Replaced the duplicate one-shot HTTP/3 transport with the shared opaque
+  connection path, preserving exact-address dialing, QUIC v2, finite total
+  deadlines, response limits, and socket cleanup while reducing the boundary
+  allowlist.
+- Hid server-side transport events, ECN markings, send outcomes, Datagram
+  failures, credentials, replay caches, and external replay guards behind
+  typed opaque connection contracts, reducing the shrink-only boundary
+  allowlist to 41 entries.
+- Completed the public-only HTTP/3-to-QUIC migration: the boundary allowlist is
+  empty and source, compiler-interface, and compiled-xref gates reject private
+  core imports.
+- Isolated accepted QUIC connections into supervised actors and enforced
+  grant-before-growth endpoint memory plus bounded routed-mailbox credit,
+  including typed client and HTTP/3 live-path admission failures.
+- Added the protocol-neutral server contract: standard streaming
+  Request/Response handlers, typed Context keys, ordered middleware, atomic
+  worker/memory leases, bounded payload-free diagnostics, panic/exit isolation,
+  cancellation, atomic handler reload, and graceful drain.
+- Added the active-once HTTP/1.1 TCP/TLS listener with isolated connection and
+  response-pull workers, ordered finite pipelining, strict framing, deferred
+  `100 Continue`, half-close and premature-EOF handling, plus post-handshake
+  CONNECT and Upgrade client byte streams with optimistic payload denial.
+- Added two-sided HTTP/1 listener/socket-owner readiness handshakes and a
+  fixed-size, payload-free phase snapshot with bounded multi-writer reads,
+  lifecycle retention, 20,000-update invariant races, and orphaned-writer
+  fallback evidence.
+- Added two-sided HTTP/2 listener/connection-owner readiness handshakes and a
+  fixed-size drain snapshot that separates command delivery, GOAWAY write, and
+  completion. Its live regression uses a causal write barrier, typed bounded
+  wire trace, 20,000-update multi-writer model, and orphaned-writer fallback.
+- Added manifest-scoped single-target stability replay with fresh-VM
+  repetitions and non-qualifying bounded reports. The MASQUE duplicate event
+  waiter regression now separates Busy admission from timeout scheduling and
+  emits one payload-free registration-to-close counter trace on failure.
+- Made generated test totals include public Gleam tests and exported Erlang
+  EUnit `_test`/`_test_` entrypoints. A synthetic auditor contract fixes
+  visibility and arity rules so FFI-side tests cannot silently disappear from
+  conformance evidence.
+- Made coverage discover tests from package test-source provenance plus
+  compiled EUnit exports, retaining the entrypoint total in each capture. This
+  includes Erlang test modules whose module name itself does not end in
+  `_test`.
+- Strengthened adaptive coverage capture from a 3..10/two-quiescent window to
+  a bounded 10..30/three-quiescent window after the tenth repeated root suite
+  still exposed new scheduling-dependent production paths. Stop-decision
+  self-tests now derive their boundaries from the machine-readable policy.
+- Replaced the bound MASQUE session's sleep-based concurrent-termination test
+  with an owner-correct two-sided barrier, a bounded payload-free causal trace,
+  and a dedicated fresh-VM stability target after coverage instrumentation
+  exposed the cleanup deadline race.
+- Separated the MASQUE socket's intentional five-millisecond cleanup timeout
+  from its concurrent-close test, which now uses an owner-created release
+  barrier, typed resource snapshots, and its own fresh-VM stability target.
+- Split live MASQUE idle activity from no-activity expiry so instrumented sends
+  cannot race the deadline being tested. Both paths now retain bounded causal
+  traces, use dedicated stability targets, and redact unexpected I/O down to a
+  typed transition kind and resource states.
+- Made the production FFI inventory executable and expanded Dialyzer/xref to
+  cover the same manifest-declared set of every discovered root, HTTP/3, and
+  QUIC FFI module.
+- Added distinct live and connection-lifetime Datagram capacity queries. The
+  latter budgets path fallback and worst-case ACK debt, and the default
+  CONNECT-UDP listener now fixes its target socket and Packet Too Big ceiling
+  from that guarantee before sending 2xx.
+- Added non-gating, same-VM instrumented target diagnostics to the coverage
+  harness. Schema 2 reports retain every passed attempt plus the first failed
+  attempt, full payload-free runtime deltas, bounded failure output, warm-up
+  exclusion, nearest-rank p50/p95/p99 timings, and deterministic slowest-run
+  attribution across as many as 1,000 repetitions.
+- Strengthened opt-in qlog lifecycle evidence: one-shot and reusable HTTP/3
+  clients now both honor the configured directory, every client and server
+  connection owns exactly one trace, fixture failures retain their directory,
+  and filenames are opened exclusively with bounded collision recovery. A
+  connection-owned opaque application sink adds typed HTTP/3 frame and QPACK
+  metadata to the same core trace without exposing close, statistics, text,
+  headers, or payload bytes; the live validator now requires all configured
+  protocol families independently in both vantage points.
+- Hardened QUIC recovery around scheduling-sensitive loss. Early undecryptable
+  1-RTT input no longer erases coalesced Handshake progress; PTO probes prefer
+  queued delivery work, then transfer one reliable outstanding frame, and use
+  PING only when no delivery work exists; amplification exhaustion retains
+  prepared work as backpressure instead of failing the connection.
+- Made pacing wake decisions observable as bounded scalar snapshots and fixed
+  the lost-wakeup interval where work became pacing-ready between a bounded
+  flush and deadline selection. Ready work now arms an immediate wake only
+  while congestion credit exists, preserving the recovery-timer wait for a
+  full window and preventing a zero-delay actor loop.
+- Preserved authenticated, acknowledged stream bytes when peer connection
+  close wins the application-read mailbox race. New work fails immediately,
+  while already bounded receive buffers remain drainable behind the existing
+  finite tombstone; the UDP socket and qlog writer still close immediately.
+  A terminal read hands over only an outcome which is already decided, because
+  no further bytes can arrive, and it advertises no receive credit: RFC 9000
+  section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Moved the connection ID with the path when migrating. RFC 9000 section 9.5
+  forbids sending from a second local address under the identifier the first
+  one used, and this endpoint kept using one: a peer that had offered three
+  NEW_CONNECTION_ID values saw its own identifier arrive from a new address,
+  read that as a rebinding rather than a migration, and never answered the path
+  validation. An active migration now takes an unused identifier the peer
+  supplied and asks for the previous one to be retired, which is what makes
+  migration complete against an independent peer. When the peer supplied none
+  the attempt continues on the current identifier as before, because this
+  endpoint issues no identifiers of its own and refusing outright would make
+  migration impossible between two of these endpoints; issuing them is the
+  remaining half.
+- Expanded path validation datagrams to the floor every QUIC path carries. RFC
+  9000 section 8.2.1 requires the datagram holding a PATH_CHALLENGE, and section
+  8.2.2 the one holding its PATH_RESPONSE, to reach 1200 bytes. This endpoint
+  sent 43 of them. The expansion proves the new path carries a full-size
+  datagram, and it funds the reply, because a peer answering across a path it
+  has not validated may send only three times what it received there. The exact
+  size is known only after protection, so the padding is measured and adjusted
+  the way a DPLPMTUD probe's already was, and a live driver test pins the
+  finished datagram at 1200 bytes.
+- Fixed three things continuous integration found that a Linux checkout could
+  not. The gzip vector asserted the header's OS byte, which RFC 1952 section
+  2.3.1 leaves to the platform the compression ran on: Erlang's zlib reports 3
+  on Linux and 19 on macOS, so the encoder is now checked around that one byte
+  and through every byte this product decides. There was no `.gitattributes`,
+  so a Windows checkout rewrote a byte-exact body fixture's line endings and
+  changed its length, and would have done the same to two lock files that are
+  compared by digest against a pin. And `golang.org/x/crypto` in the quic-go
+  interoperability harness carried two advisories fixed in v0.56.0; it is
+  bumped, with the pinned lock digest updated to match.
+- Widened the static security rules to the public surface they are written
+  about. All three public-API rules scanned only `quic_core/failure.gleam` out
+  of the six public core modules, so `quic_core/client.gleam` -- the client
+  path this repository's first prohibition is about -- was never checked for a
+  certificate-verification bypass, and `quic_core/config.gleam`, where
+  credentials and the congestion-control choice live, was never checked for a
+  leaked key or an unimplemented BBR. A `pub fn verify_none` added to the
+  client module passed the gate before this change and fails it now. The FFI
+  rule likewise matched only Erlang modules directly under a source root, so a
+  nested one could call `os:cmd` unseen. Nothing in the tree violated either
+  rule, so both gaps are closed while they are still empty; the scan covers
+  103 files where it covered 92.
+- Made the documentation example gate discover the documentation. It read a
+  list of the places examples happened to live, so a `gleam` block written
+  anywhere else -- the contributing guide, the security policy, a package's
+  test README -- was extracted by nothing: never compiled, never run, and free
+  to rot while reading like verified documentation. It now scans every Markdown
+  file in the repository, skipping only build output, vendored dependencies,
+  and dot-directories.
+- Closed a naming escape hatch in the FFI audit. It compared the declared
+  inventory against the Erlang modules whose names end in `_ffi.erl`, so a
+  module named outside that convention was discovered by nothing: absent from
+  the inventory, and therefore absent from Dialyzer, from the compiled xref,
+  and from the API leak checks that all read the same declared set. The audit
+  now discovers every Erlang module in the production trees, and since the
+  inventory accepts only `_ffi.erl` names, one that does not follow the
+  convention fails the audit rather than passing unseen.
+- Made the shell linters discover what they check. The list was written by
+  hand and had drifted: `scripts/fresh_build.sh`, which every gate in this
+  repository runs, along with the idle-wakeup and qlog live harnesses, were
+  never passed to `shellcheck` or `shfmt`. All three were already clean, so
+  nothing was hiding behind the gap -- but a gate that has to be edited to
+  keep covering the tree is a gate that stops covering it. It now reads the
+  tracked `*.sh` set, so a script cannot be added without being checked.
+- Measured the coverage capture's settle window instead of assuming it. An
+  unchanged http suite takes between 13 and 29 seconds to return the actors it
+  owns under `cover`, so the 20-second cap sat inside its own observed range
+  and no capture could ever finish: every run stopped at the first repetition
+  reporting that the runtime had not converged. At 60 seconds the http and
+  http3 captures converge to zero owned processes in every repetition and run
+  to saturation, which is the first time this repository has been able to
+  measure its own coverage.
+- Gave the unified package's own README a quickstart. It had no code at all,
+  so the first thing a reader saw was a package list. There are now two
+  examples the documentation gate extracts, builds, and runs: one request with
+  a bounded read, and a handler served over loopback and answered by this
+  package's own client, which is the whole path in twenty lines.
+- Ended abandoned QUIC connection attempts with the process that asked for
+  them. Establishment blocks, so a client worker racing dual-stack candidates
+  could not see its owner exit, and every candidate kept an open UDP socket
+  until the connect deadline: a lost protocol race left one worker and two
+  sockets alive for the rest of that window. The candidate race now watches the
+  owner and cancels the candidates the moment it goes, which takes the release
+  of an abandoned attempt from 24 seconds to none, and `OwnerGone` states the
+  outcome as abandoned rather than as a timeout or a failure.
+- Closed the HTTP/3 client a graceful-stop regression left open. Its listener
+  had already drained, so nothing but the 30-second idle timeout could release
+  the connection, and the suite could not prove it converges.
+- Added the first independent-peer gate for the unified HTTP/1.1 and HTTP/2
+  runtimes. A pinned curl drives the package's own TLS listeners and decides
+  whether the wire behaviour is right: ALPN in both directions, including the
+  downgrade an `http/1.1`-only listener must force on an HTTP/2-capable client;
+  chunked and DATA request bodies; a non-2xx status; HEAD without a body;
+  sequential HTTP/1.1 reuse; two multiplexed HTTP/2 streams; and a refusal when
+  the pinned CA is withheld. The harness reads its pin from the interoperability
+  profile and refuses to report against a different curl, so the evidence cannot
+  drift away from the peer that produced it. The interoperability matrix now has
+  eight unmet peer rows rather than nine.
+- Fixed a racing MASQUE receive-credit regression and put it under the
+  scheduling-sensitive matrix. The duplicate pull is only refused while the
+  first pull is still waiting, but the first pull's deadline was a tenth of a
+  second, so a loaded run could end it before the second was issued and turn
+  the expected refusal into a timeout. The deadline now outlasts that
+  scheduling delay, both fixed sleeps became bounded waits on the condition
+  they were guessing at, and the matrix repeats the test in 30 isolated fresh
+  BEAMs.
+- Removed the last `let assert` expressions from `src` across all three
+  packages and dropped every `assert_ok_pattern` suppression that covered a
+  production module, so the lint gate now holds the whole production surface to
+  the rule. A chunk split is a bit-array pattern instead of a length comparison
+  guarding two slices that must not fail, a resolved key ring hands back its
+  current key so no caller takes a list head which cannot be missing, and the
+  Retry first byte matches its one random byte instead of asserting its shape.
+- Removed every `let assert` from the unified MASQUE runtime and re-enabled its
+  `assert_ok_pattern` lint. A route range is now decoded once into a single
+  address family, so the ordering and overlap scans read integers already known
+  to exist instead of re-decoding the same four addresses on every comparison
+  of the quadratic scan. The receive model is built before a socket can be
+  attempted, so an invalid limit is a typed refusal rather than a socket opened
+  and abandoned; the successful response derives its own status beside the
+  fields it belongs to; and a Proxy-Status field which cannot be serialised is
+  dropped, because the advisory field must not turn a refusal into a crash.
+  Route advertisement tests now cover the reversed, mixed-family,
+  unknown-protocol, misordered, wildcard-overlap, and numerically overlapping
+  cross-family cases which the previous overlap test left to the ordering check.
+- Classified datagrams received after Closing, Draining, or Closed as stale
+  terminal input instead of converting the state-machine
+  `ConnectionUnavailable` signal into a misleading peer QUIC failure.
+- Added fixed-size, payload-free CONNECT-UDP setup phase timings and timeout
+  attribution, including callback-start, scheduler-queue, callback-execution,
+  and supervisor-expiry observations; independent finite setup/operation socket
+  deadlines, production socket-adoption events, and fresh-BEAM stability
+  coverage.

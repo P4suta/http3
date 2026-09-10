@@ -37,8 +37,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: http3-cyclonedx-sbom
-          path: build/security/http3.cdx.json
+          name: http-cyclonedx-sbom
+          path: build/security/http.cdx.json
           if-no-files-found: error
 
   quality:
@@ -112,14 +112,22 @@ jobs:
         run: gleam build --warnings-as-errors
 
       - name: Build native QUIC core with warnings as errors
-        working-directory: packages/gleam_quic
+        working-directory: packages/quic_core
+        run: gleam build --warnings-as-errors
+
+      - name: Build HTTP/3 with warnings as errors
+        working-directory: packages/http3
         run: gleam build --warnings-as-errors
 
       - name: Run tests
         run: gleam test
 
+      - name: Test HTTP/3
+        working-directory: packages/http3
+        run: gleam test
+
       - name: Test native QUIC core
-        working-directory: packages/gleam_quic
+        working-directory: packages/quic_core
         run: gleam test
 
   smoke:
@@ -151,12 +159,20 @@ jobs:
         run: gleam build --warnings-as-errors
 
       - name: Build native QUIC core with warnings as errors
-        working-directory: packages/gleam_quic
+        working-directory: packages/quic_core
+        run: gleam build --warnings-as-errors
+
+      - name: Build HTTP/3 with warnings as errors
+        working-directory: packages/http3
         run: gleam build --warnings-as-errors
 
       - name: Run tests
         run: gleam test
 
+      - name: Test HTTP/3
+        working-directory: packages/http3
+        run: gleam test
+
       - name: Test native QUIC core
-        working-directory: packages/gleam_quic
+        working-directory: packages/quic_core
         run: gleam test

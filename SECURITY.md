@@ -2,11 +2,10 @@
 
 ## Project status
 
-`http3` is unpublished. The former v1 completion decision was reopened on
-2026-08-25 because known architecture, TLS, conformance, performance,
-security-tooling, and distribution findings remain. The code has not had an
-independent third-party security audit and is not a supported production
-release.
+`http`, `http3`, and `quic_core` are unpublished. Known architecture, TLS,
+HTTP parsing, conformance, performance, security-tooling, and distribution
+findings remain. The code has not had an independent third-party security
+audit and is not a supported production release.
 
 The version in `gleam.toml` is tool metadata and does not indicate that a tag
 or release exists.

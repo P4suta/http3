@@ -6,7 +6,11 @@ rules:
     paths:
       include:
         - /src/*.erl
-        - /packages/gleam_quic/src/*.erl
+        - /src/**/*.erl
+        - /packages/http3/src/*.erl
+        - /packages/http3/src/**/*.erl
+        - /packages/quic_core/src/*.erl
+        - /packages/quic_core/src/**/*.erl
     pattern-regex: '(?:binary_to_atom|list_to_atom|os:cmd|open_port)[[:space:]]*\('
 
   - id: http3.public.no-verification-bypass
@@ -15,10 +19,12 @@ rules:
     severity: ERROR
     paths:
       include:
-        - /src/http3.gleam
-        - /src/http3/*.gleam
-        - /packages/gleam_quic/src/gleam_quic.gleam
-        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+        - /src/http.gleam
+        - /src/http/*.gleam
+        - /packages/http3/src/http3.gleam
+        - /packages/http3/src/http3/*.gleam
+        - /packages/quic_core/src/quic_core.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:verify_none|disable_verification|insecure_skip_verify)'
 
   - id: http3.public.no-secret-accessor
@@ -27,10 +33,12 @@ rules:
     severity: ERROR
     paths:
       include:
-        - /src/http3.gleam
-        - /src/http3/*.gleam
-        - /packages/gleam_quic/src/gleam_quic.gleam
-        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+        - /src/http.gleam
+        - /src/http/*.gleam
+        - /packages/http3/src/http3.gleam
+        - /packages/http3/src/http3/*.gleam
+        - /packages/quic_core/src/quic_core.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: 'pub[[:space:]]+fn[[:space:]]+[^\n]*(?:traffic_secret|private_key_bytes|ticket_key_bytes)'
 
   - id: http3.public.no-placeholder-error-or-bbr
@@ -39,40 +47,42 @@ rules:
     severity: ERROR
     paths:
       include:
-        - /src/http3.gleam
-        - /src/http3/*.gleam
-        - /packages/gleam_quic/src/gleam_quic.gleam
-        - /packages/gleam_quic/src/gleam_quic/failure.gleam
+        - /src/http.gleam
+        - /src/http/*.gleam
+        - /packages/http3/src/http3.gleam
+        - /packages/http3/src/http3/*.gleam
+        - /packages/quic_core/src/quic_core.gleam
+        - /packages/quic_core/src/quic_core/*.gleam
     pattern-regex: '(?:BackendFailure|\bBbr\b)'
 
   - id: http3.boundary.no-private-core-import
     languages: [generic]
     message: >-
-      Root modules must import only the six public gleam_quic modules. This
-      rule scans the root files that are already clean; its path include list
+      HTTP/3 modules must import only the six public quic_core modules. This
+      rule scans the HTTP/3 files that are already clean; its path include list
       widens as each remaining file is migrated, and the boundary audit
-      (test/http3_public_api_audit.escript boundary) covers the rest through
+      (scripts/public_api_audit.escript boundary) covers the rest through
       the shrink-only api/boundary.allow allowlist.
     severity: ERROR
     paths:
       include:
-        - /src/http3.gleam
-        - /src/http3/*.gleam
-        - /src/http3/internal/*.gleam
-        - /src/http3/internal/qpack/**
-        - /src/http3/internal/native/capsule.gleam
-        - /src/http3/internal/native/connection_state.gleam
-        - /src/http3/internal/native/control.gleam
-        - /src/http3/internal/native/datagram.gleam
-        - /src/http3/internal/native/drain.gleam
-        - /src/http3/internal/native/error_code.gleam
-        - /src/http3/internal/native/frame.gleam
-        - /src/http3/internal/native/frame_parser.gleam
-        - /src/http3/internal/native/header_semantics.gleam
-        - /src/http3/internal/native/message_stream.gleam
-        - /src/http3/internal/native/priority.gleam
-        - /src/http3/internal/native/priority_scheduler.gleam
-        - /src/http3/internal/native/push.gleam
-        - /src/http3/internal/native/stream_registry.gleam
-        - /src/http3/internal/native/terminal_registry.gleam
-    pattern-regex: '^import[[:space:]]+gleam_quic/(internal/|varint|stream_id|version|packet_number|packet|frame|transport_parameter)'
+        - /packages/http3/src/http3.gleam
+        - /packages/http3/src/http3/*.gleam
+        - /packages/http3/src/http3/internal/*.gleam
+        - /packages/http3/src/http3/internal/qpack/**
+        - /packages/http3/src/http3/internal/native/capsule.gleam
+        - /packages/http3/src/http3/internal/native/connection_state.gleam
+        - /packages/http3/src/http3/internal/native/control.gleam
+        - /packages/http3/src/http3/internal/native/datagram.gleam
+        - /packages/http3/src/http3/internal/native/drain.gleam
+        - /packages/http3/src/http3/internal/native/error_code.gleam
+        - /packages/http3/src/http3/internal/native/frame.gleam
+        - /packages/http3/src/http3/internal/native/frame_parser.gleam
+        - /packages/http3/src/http3/internal/native/header_semantics.gleam
+        - /packages/http3/src/http3/internal/native/message_stream.gleam
+        - /packages/http3/src/http3/internal/native/priority.gleam
+        - /packages/http3/src/http3/internal/native/priority_scheduler.gleam
+        - /packages/http3/src/http3/internal/native/push.gleam
+        - /packages/http3/src/http3/internal/native/stream_registry.gleam
+        - /packages/http3/src/http3/internal/native/terminal_registry.gleam
+    pattern-regex: '^import[[:space:]]+quic_core/(internal/|varint|stream_id|version|packet_number|packet|frame|transport_parameter)'

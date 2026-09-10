@@ -1,0 +1,2095 @@
+//// Event-driven generic QUIC listener actor.
+////
+//// The listener owns the UDP relay, connection-ID routing, the unknown-route
+//// responses (Retry, Version Negotiation, address tokens), anti-replay, the
+//// operational key rings, admission control, and the accept queue. Each
+//// admitted connection is owned by its own supervised
+//// `connection_worker` actor, which the listener spawns, monitors, and
+//// forwards routed datagram batches to.
+////
+//// A connection actor outlives neither its transport nor this listener. When
+//// one ends it sends `Released` and exits, and the listener drops its route,
+//// its connection ID, every alias for it, its place in the accept queue, and
+//// the admission slot it held. The monitor `Down` for the same actor runs the
+//// identical release, so whichever of the two arrives first does the work and
+//// the second finds no route and does nothing. Dropping the identifier and
+//// its aliases in that same step is what keeps a datagram naming a released
+//// connection from reaching a dead actor: it resolves to no route at all, so
+//// a long header takes the unknown-route path and a short header is dropped.
+////
+//// The inbound path is credit bounded end to end, in four stages, so no peer
+//// can grow any mailbox on it without bound:
+////
+////   1. relay to listener: the socket relay holds one batch of receive credit
+////      and delivers nothing more until `udp.continue_relay` returns it. The
+////      listener returns that credit as soon as it has decoded a batch, before
+////      it routes it, so the listener itself never blocks and never queues.
+////   2. listener to connection: each route carries the window in its `Entry`
+////      -- `datagram_credit` datagrams and `byte_credit` bytes. A batch is
+////      grouped by connection ID and each connection is sent exactly one
+////      message carrying only what its remaining window admits; the rest is
+////      dropped and counted for that connection alone. Every such message
+////      costs the window at least one datagram, so the mailbox is bounded in
+////      messages too, by the window's datagrams plus the single drop report
+////      the listener sends only when nothing else is outstanding.
+////   3. connection to owner: the connection actor answers each delivered
+////      message with `Consumed`, reporting what it took off its mailbox, and
+////      the listener refills that connection's window by exactly that much.
+////      A connection whose actor stalls therefore stops being sent to rather
+////      than accumulating a backlog.
+////   4. owner to connection: the owner's own commands are the only other
+////      source of messages for that actor, and an owner is one process issuing
+////      one bounded call at a time.
+////
+//// Stage 2 is what makes a stalled connection structurally unable to delay
+//// another: a flooded actor's mailbox is bounded by its window plus its
+//// owner's commands, and the drop is protocol correct because QUIC recovers a
+//// dropped datagram exactly as it recovers one the network lost.
+
+import gleam/bit_array
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import quic_core.{type AddressFamily, DualStack, Ipv4, Ipv6}
+import quic_core/frame
+import quic_core/internal/address_token
+import quic_core/internal/connection_state as transport
+import quic_core/internal/crypto
+import quic_core/internal/ecn
+import quic_core/internal/initial_crypto
+import quic_core/internal/packet_space
+import quic_core/internal/process_label
+import quic_core/internal/qlog
+import quic_core/internal/retry_integrity
+import quic_core/internal/runtime/budget
+import quic_core/internal/runtime/connection_worker.{
+  type Connection, type Error, type Queue, AcceptQueueExceeded, InvalidInput,
+  ListenerClosed, OperationTimeout, QlogUnavailable, StartFailed,
+}
+import quic_core/internal/runtime/server_transport
+import quic_core/internal/tls/anti_replay
+import quic_core/internal/tls/authentication
+import quic_core/internal/tls/engine
+import quic_core/internal/tls/extension_value
+import quic_core/internal/tls/replay_guard
+import quic_core/internal/tls/resumption
+import quic_core/internal/udp
+import quic_core/internal/version_negotiation
+import quic_core/internal/wire_packet
+import quic_core/packet
+import quic_core/version.{type Version}
+
+const connection_id_bytes = 8
+
+const replay_window_milliseconds = 10_000
+
+const replay_cache_capacity = 4096
+
+const ticket_age_tolerance_milliseconds = 10_000
+
+const retry_token_lifetime_milliseconds = 10_000
+
+const new_token_lifetime_milliseconds = 86_400_000
+
+const worker_reply_grace_milliseconds = 100
+
+/// The QUIC transport error code for CONNECTION_REFUSED (RFC 9000 section 20).
+const connection_refused_code = 0x02
+
+/// The smallest plaintext an Initial packet may carry here, padded with
+/// PADDING frames. Header protection samples 16 bytes from four bytes past the
+/// packet-number field, so a bare CONNECTION_CLOSE is too short to protect.
+const minimum_initial_plaintext_bytes = 32
+
+// The listener-to-connection delivery window (stage 2 above): one connection
+// may hold at most this many routed datagrams, and this many routed bytes, in
+// its actor's mailbox at once, and its `Consumed` acknowledgement refills
+// exactly what it took off that mailbox. Both halves bind, and the byte half
+// is what bounds delivered memory: the listener sockets impose no packet-size
+// cap, so a peer can spoof multi-kilobyte datagrams that the datagram half
+// alone would admit 192 of.
+//
+// The window is sized against the relay batch, which is what keeps it safe
+// for a healthy connection as well as binding on a flooding one. The relay
+// hands the listener a whole batch in one message, the listener routes that
+// batch in a single step, and it can route the next batch before the
+// `Consumed` for the previous one is handled, so no acknowledgement can widen
+// a window part way through a batch. A window narrower than two batches would
+// therefore shed part of a burst a perfectly healthy connection is keeping up
+// with: lost throughput for loss recovery to repair, rather than a flooding
+// peer held to its share.
+//
+// No configured `Limits` resource fits this window. `Queue` counts accepted
+// work, `Buffer` counts stream bytes, and `Datagram` bounds RFC 9221
+// DATAGRAM-frame queueing inside an established connection rather than the
+// UDP delivery window in front of it -- and, being application tunable, it
+// must not be able to widen a denial-of-service bound. Both halves are
+// therefore fixed constants, documented in the architecture notes.
+
+/// The datagram half: three whole relay batches, 3 * 64, three times the batch
+/// size `quic_core_udp_ffi:maximum_relay_batch/0` reports.
+///
+/// Two batches is the floor, and it is the floor the credit suite pins: the
+/// listener can route a second batch before the first batch's `Consumed` is
+/// handled, so a connection that is merely one acknowledgement behind has to
+/// absorb two full batches back to back. The third batch is slack above that
+/// floor, so an ordinary datagram of the peer's own -- an acknowledgement, a
+/// probe -- arriving inside the same unrefilled window cannot eat into it.
+///
+/// The slack is free in memory terms: the byte half below is unchanged, and
+/// the byte half is what bounds delivered memory. Widening the datagram half
+/// admits more small datagrams per window, never more bytes.
+const datagram_credit = 192
+
+/// The byte half: two whole relay batches at 2 KiB a datagram, 2 * 64 * 2048.
+/// 2 KiB is above the 1500-byte Ethernet MTU and well above the 1200-byte
+/// floor RFC 9000 section 14 guarantees, so at the sizes a conventional path
+/// actually delivers this half carries slack of its own above the two-batch
+/// floor: 218 datagrams at that 1200-byte floor, 174 at the Ethernet MTU,
+/// both beyond the 128 the floor requires.
+///
+/// What that costs, stated plainly: 256 KiB of delivered-but-unconsumed
+/// memory per connection, and 256 MiB across the default 1024-connection
+/// admission limit, where the narrower 64 KiB window this replaces totalled
+/// 64 MiB. That aggregate is four times the 64 MiB `EndpointMemory` value
+/// `config.default_limits` carries, and the two bounds are separate on
+/// purpose rather than by omission. `EndpointMemory` charges what a
+/// connection actor holds once it has taken a datagram off its mailbox --
+/// reassembly, backlogs, send buffers, sent-packet histories -- and this
+/// window bounds what is still in the mailbox, delivered to the actor but not
+/// yet consumed by it. Mailbox occupancy is therefore bounded per connection
+/// by this window and in aggregate by `Connections` times this window; the
+/// endpoint budget does not hold that total down, and never claimed to.
+/// Reaching the aggregate also takes 1024 connections flooded at once whose
+/// owners have all stalled, because a connection that keeps up holds a full
+/// window only momentarily.
+///
+/// The byte half is deliberately narrower than two batches of the largest
+/// datagram the transport can carry, and the socket receive buffer is what
+/// justifies the smaller bound: two batches of the largest datagram this
+/// implementation will ever send -- 2 * 64 * 61_440 -- would be 7.5 MiB per
+/// connection, while the listener socket's whole receive buffer is 4 MiB, so
+/// a burst that large cannot even be queued for the relay. Datagrams larger
+/// than 2 KiB are still delivered -- the byte half simply becomes what bounds
+/// them, which is what keeps a peer spoofing 8 KiB datagrams from putting
+/// 1.5 MiB in one actor's mailbox.
+const byte_credit = 262_144
+
+/// The delivery window this listener ships, as `#(datagrams, bytes)`.
+/// Published so the public credit suite pins the shipped window against the
+/// relay's own batch size rather than against a copy of these two numbers.
+pub fn delivery_window() -> #(Int, Int) {
+  #(datagram_credit, byte_credit)
+}
+
+/// Running owner-bound listener.
+pub opaque type Listener {
+  Listener(commands: Subject(Command), worker: Pid, timeout_milliseconds: Int)
+}
+
+/// Idempotent listener stop outcome.
+pub type StopResult {
+  Stopped
+  AlreadyStopped
+}
+
+type Command {
+  Port(reply: Subject(Result(Int, Error)))
+  AcceptConnection(
+    reply: Subject(Result(Connection, Error)),
+    deadline: Option(Int),
+  )
+  ReloadCertificates(
+    certificate_chain: List(BitArray),
+    signing_key: authentication.SigningKey,
+    signature_scheme: extension_value.SignatureScheme,
+    alternatives: List(engine.ServerCredential),
+    reply: Subject(Result(Nil, Error)),
+  )
+  ReloadKeys(
+    ticket_keys: List(BitArray),
+    address_token_keys: List(BitArray),
+    stateless_reset_keys: List(BitArray),
+    reply: Subject(Result(Nil, Error)),
+  )
+  Stop(reply: Subject(Result(StopResult, Error)))
+}
+
+type LoopMessage {
+  ReceivedCommand(Command)
+  ReceivedNotice(connection_worker.ConnectionToListener)
+  ConnectionExited(process.Down)
+  ReceivedNetwork(Dynamic)
+  OwnerExited
+}
+
+type ConnectionWaiter {
+  ConnectionWaiter(
+    reply: Subject(Result(Connection, Error)),
+    deadline: Option(Int),
+  )
+}
+
+/// One admitted connection, the actor that owns it, and the delivery window
+/// the listener still holds open for it. `datagram_credit` and `byte_credit`
+/// are what the next message to this connection may carry; `dropped` counts
+/// the datagrams already dropped for it that its actor has not been told
+/// about yet; `outstanding` counts the messages already sent to it that it has
+/// not acknowledged, which is what keeps the mailbox bounded in messages as
+/// well as in datagrams and bytes.
+///
+///
+/// This connection's share of the endpoint memory budget is not kept here. The
+/// ledger in `endpoint_memory` already holds what every connection was granted
+/// and which requests it could not meet, keyed by the same identifier this
+/// `Dict` is keyed by, so a second copy here could only ever disagree with it.
+type Entry {
+  Entry(
+    connection: Connection,
+    established: Bool,
+    datagram_credit: Int,
+    byte_credit: Int,
+    dropped: Int,
+    outstanding: Int,
+  )
+}
+
+type Worker {
+  Worker(
+    socket: udp.Socket,
+    relay: udp.Relay,
+    port: Int,
+    commands: Subject(Command),
+    notices: Subject(connection_worker.ConnectionToListener),
+    selector: process.Selector(LoopMessage),
+    server_config: server_transport.Config,
+    ticket_keys: List(BitArray),
+    address_token_keys: List(BitArray),
+    stateless_reset_keys: List(BitArray),
+    replay_cache: anti_replay.Cache,
+    replay_guard: Option(replay_guard.Guard),
+    allow_zero_rtt: Bool,
+    connections: Dict(BitArray, Entry),
+    routes: Dict(Pid, BitArray),
+    aliases: Dict(BitArray, BitArray),
+    endpoint_memory: budget.Budget,
+    handshaking: Int,
+    pending_connections: Queue(BitArray),
+    connection_waiters: Queue(ConnectionWaiter),
+    operation_timeout_milliseconds: Int,
+    stream_buffer_limit: Int,
+    queue_limit: Int,
+    datagram_limit: Int,
+    connection_limit: Int,
+    handshake_limit: Int,
+    accept_waiter_limit: Int,
+    telemetry_limit: Int,
+    qlog_directory: String,
+  )
+}
+
+type CallOutcome(value) {
+  CallReply(Result(value, Error))
+  WorkerExited
+}
+
+/// Start a bounded listener actor.
+pub fn start(
+  owner: Pid,
+  port: Int,
+  address_family: AddressFamily,
+  bind_address: Option(BitArray),
+  operation_timeout_milliseconds: Int,
+  idle_timeout_milliseconds: Int,
+  stream_buffer_limit: Int,
+  queue_limit: Int,
+  telemetry_limit: Int,
+  connection_limit: Int,
+  handshake_limit: Int,
+  accept_waiter_limit: Int,
+  bidirectional_stream_limit: Int,
+  unidirectional_stream_limit: Int,
+  datagram_limit: Int,
+  endpoint_memory_limit: Int,
+  certificate_chain: List(BitArray),
+  signing_key: authentication.SigningKey,
+  signature_scheme: extension_value.SignatureScheme,
+  alternative_credentials: List(engine.ServerCredential),
+  client_authentication: engine.ClientAuthentication,
+  application_protocols: List(BitArray),
+  congestion_control: transport.CongestionAlgorithm,
+  qlog_directory: String,
+  allow_zero_rtt: Bool,
+  external_replay_guard: Option(replay_guard.Guard),
+  configured_ticket_keys: List(BitArray),
+  configured_address_token_keys: List(BitArray),
+  configured_stateless_reset_keys: List(BitArray),
+) -> Result(Listener, Error) {
+  let bootstrap = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      process_label.set(process_label.Listener)
+      initialise(
+        owner,
+        bootstrap,
+        port,
+        address_family,
+        bind_address,
+        operation_timeout_milliseconds,
+        idle_timeout_milliseconds,
+        stream_buffer_limit,
+        queue_limit,
+        telemetry_limit,
+        connection_limit,
+        handshake_limit,
+        accept_waiter_limit,
+        bidirectional_stream_limit,
+        unidirectional_stream_limit,
+        datagram_limit,
+        endpoint_memory_limit,
+        certificate_chain,
+        signing_key,
+        signature_scheme,
+        alternative_credentials,
+        client_authentication,
+        application_protocols,
+        congestion_control,
+        qlog_directory,
+        allow_zero_rtt,
+        external_replay_guard,
+        configured_ticket_keys,
+        configured_address_token_keys,
+        configured_stateless_reset_keys,
+      )
+    })
+  await_bootstrap(worker, bootstrap, operation_timeout_milliseconds)
+}
+
+pub fn port(listener: Listener) -> Result(Int, Error) {
+  call(listener, Port)
+}
+
+pub fn accept(listener: Listener) -> Result(Connection, Error) {
+  call(listener, fn(reply) {
+    AcceptConnection(
+      reply,
+      Some(udp.monotonic_millisecond() + listener.timeout_milliseconds),
+    )
+  })
+}
+
+/// Wait without a polling deadline for the next authenticated connection.
+/// Listener stop, listener-owner exit, or listener failure still releases the
+/// caller. This exists for supervised protocol adapters which continuously
+/// consume listener events; ordinary application calls should use `accept`.
+pub fn accept_next(listener: Listener) -> Result(Connection, Error) {
+  call_forever(listener, fn(reply) { AcceptConnection(reply, None) })
+}
+
+pub fn reload_certificates(
+  listener: Listener,
+  certificate_chain: List(BitArray),
+  signing_key: authentication.SigningKey,
+  signature_scheme: extension_value.SignatureScheme,
+  alternatives: List(engine.ServerCredential),
+) -> Result(Nil, Error) {
+  call(listener, fn(reply) {
+    ReloadCertificates(
+      certificate_chain,
+      signing_key,
+      signature_scheme,
+      alternatives,
+      reply,
+    )
+  })
+}
+
+pub fn reload_keys(
+  listener: Listener,
+  ticket_keys: List(BitArray),
+  address_token_keys: List(BitArray),
+  stateless_reset_keys: List(BitArray),
+) -> Result(Nil, Error) {
+  call(listener, fn(reply) {
+    ReloadKeys(ticket_keys, address_token_keys, stateless_reset_keys, reply)
+  })
+}
+
+pub fn stop(listener: Listener) -> Result(StopResult, Error) {
+  call(listener, Stop)
+}
+
+fn initialise(
+  owner: Pid,
+  bootstrap: Subject(Result(Listener, Error)),
+  port: Int,
+  address_family: AddressFamily,
+  bind_address: Option(BitArray),
+  operation_timeout_milliseconds: Int,
+  idle_timeout_milliseconds: Int,
+  stream_buffer_limit: Int,
+  queue_limit: Int,
+  telemetry_limit: Int,
+  connection_limit: Int,
+  handshake_limit: Int,
+  accept_waiter_limit: Int,
+  bidirectional_stream_limit: Int,
+  unidirectional_stream_limit: Int,
+  datagram_limit: Int,
+  endpoint_memory_limit: Int,
+  certificate_chain: List(BitArray),
+  signing_key: authentication.SigningKey,
+  signature_scheme: extension_value.SignatureScheme,
+  alternative_credentials: List(engine.ServerCredential),
+  client_authentication: engine.ClientAuthentication,
+  application_protocols: List(BitArray),
+  congestion_control: transport.CongestionAlgorithm,
+  qlog_directory: String,
+  allow_zero_rtt: Bool,
+  external_replay_guard: Option(replay_guard.Guard),
+  configured_ticket_keys: List(BitArray),
+  configured_address_token_keys: List(BitArray),
+  configured_stateless_reset_keys: List(BitArray),
+) -> Nil {
+  let startup = {
+    use socket <- result.try(
+      open_listener(address_family, bind_address, port)
+      |> result.replace_error(StartFailed),
+    )
+    use local <- result.try(
+      udp.local_endpoint(socket) |> result.replace_error(StartFailed),
+    )
+    let #(_, bound_port) = udp.endpoint_parts(local)
+    use #(ticket_key, ticket_keys) <- result.try(
+      resolve_key_ring(configured_ticket_keys)
+      |> result.replace_error(StartFailed),
+    )
+    use #(_, address_token_keys) <- result.try(
+      resolve_key_ring(configured_address_token_keys)
+      |> result.replace_error(StartFailed),
+    )
+    use #(reset_key, reset_keys) <- result.try(
+      resolve_key_ring(configured_stateless_reset_keys)
+      |> result.replace_error(StartFailed),
+    )
+    use replay_cache <- result.try(
+      anti_replay.new(replay_window_milliseconds, replay_cache_capacity)
+      |> result.replace_error(StartFailed),
+    )
+    use Nil <- result.try(validate_qlog_directory(qlog_directory))
+    use relay <- result.try(
+      udp.start_relay(socket) |> result.replace_error(StartFailed),
+    )
+    Ok(#(
+      socket,
+      relay,
+      bound_port,
+      #(ticket_key, ticket_keys),
+      address_token_keys,
+      #(reset_key, reset_keys),
+      replay_cache,
+    ))
+  }
+  case startup {
+    Error(error) -> process.send(bootstrap, Error(error))
+    Ok(#(
+      socket,
+      relay,
+      bound_port,
+      #(ticket_key, ticket_keys),
+      address_token_keys,
+      #(reset_key, reset_keys),
+      replay_cache,
+    )) -> {
+      let commands = process.new_subject()
+      let notices = process.new_subject()
+      let owner_monitor = process.monitor(owner)
+      let selector =
+        process.new_selector()
+        |> process.select_map(commands, ReceivedCommand)
+        |> process.select_map(notices, ReceivedNotice)
+        |> process.select_specific_monitor(owner_monitor, fn(_) { OwnerExited })
+        |> process.select_monitors(ConnectionExited)
+        |> process.select_other(ReceivedNetwork)
+      let server_config =
+        server_transport.Config(
+          certificate_chain,
+          signing_key,
+          signature_scheme,
+          alternative_credentials,
+          client_authentication,
+          application_protocols,
+          ticket_key,
+          reset_key,
+          allow_zero_rtt,
+          idle_timeout_milliseconds,
+          congestion_control,
+          bidirectional_stream_limit,
+          unidirectional_stream_limit,
+          stream_buffer_limit,
+          datagram_limit,
+          udp.dont_fragment(socket),
+        )
+      let listener =
+        Listener(commands, process.self(), operation_timeout_milliseconds)
+      process.send(bootstrap, Ok(listener))
+      loop(Worker(
+        socket,
+        relay,
+        bound_port,
+        commands,
+        notices,
+        selector,
+        server_config,
+        ticket_keys,
+        address_token_keys,
+        reset_keys,
+        replay_cache,
+        external_replay_guard,
+        allow_zero_rtt,
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        budget.new(endpoint_memory_limit),
+        0,
+        connection_worker.queue_new(),
+        connection_worker.queue_new(),
+        operation_timeout_milliseconds,
+        stream_buffer_limit,
+        queue_limit,
+        datagram_limit,
+        connection_limit,
+        handshake_limit,
+        accept_waiter_limit,
+        telemetry_limit,
+        qlog_directory,
+      ))
+    }
+  }
+}
+
+fn loop(worker: Worker) -> Nil {
+  let now = udp.monotonic_millisecond()
+  wait_for_work(expire_waiters(worker, now), now)
+}
+
+fn wait_for_work(worker: Worker, now: Int) -> Nil {
+  let received = case connection_waiter_deadline(worker.connection_waiters) {
+    None -> Ok(process.selector_receive_forever(worker.selector))
+    Some(value) ->
+      process.selector_receive(worker.selector, within: int.max(0, value - now))
+  }
+  case received {
+    Ok(OwnerExited) -> shutdown(worker, ListenerClosed)
+    Ok(ReceivedCommand(command)) ->
+      case handle_command(worker, command) {
+        Error(Nil) -> Nil
+        Ok(next) -> loop(next)
+      }
+    Ok(ReceivedNotice(notice)) -> loop(handle_notice(worker, notice))
+    Ok(ConnectionExited(down)) -> loop(release_connection(worker, down))
+    Ok(ReceivedNetwork(message)) -> network_step(worker, message)
+    Error(Nil) -> loop(worker)
+  }
+}
+
+fn network_step(worker: Worker, message: Dynamic) -> Nil {
+  case udp.receive_relay_batch(worker.relay, message) {
+    Ok(datagrams) ->
+      case udp.continue_relay(worker.relay) {
+        Ok(Nil) -> loop(route_batch(worker, datagrams))
+        Error(_) -> shutdown(worker, ListenerClosed)
+      }
+    Error(udp.InvalidInput) -> loop(worker)
+    Error(_) -> shutdown(worker, ListenerClosed)
+  }
+}
+
+fn route_batch(worker: Worker, datagrams: List(udp.Datagram)) -> Worker {
+  let #(worker, routed) = route_datagrams(worker, datagrams, dict.new())
+  deliver_routed(worker, dict.to_list(routed))
+}
+
+/// Send one message per connection per batch, carrying only what that
+/// connection's remaining credit admits. Everything beyond the window is
+/// dropped and counted for that connection alone, which is what keeps one
+/// flooded connection from growing its actor's mailbox -- or delaying any
+/// other connection -- without bound. QUIC is loss tolerant, so a dropped
+/// datagram is recovered exactly like one the network lost.
+fn deliver_routed(
+  worker: Worker,
+  routed: List(#(BitArray, List(connection_worker.ListenerToConnection))),
+) -> Worker {
+  case routed {
+    [] -> worker
+    [#(identifier, deliveries), ..rest] ->
+      deliver_routed(
+        deliver_credited(worker, identifier, list.reverse(deliveries)),
+        rest,
+      )
+  }
+}
+
+fn deliver_credited(
+  worker: Worker,
+  identifier: BitArray,
+  deliveries: List(connection_worker.ListenerToConnection),
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let admission =
+        take_within_credit(
+          deliveries,
+          entry.datagram_credit,
+          entry.byte_credit,
+          Admission([], 0, 0, 0),
+        )
+      let pending = entry.dropped + admission.dropped
+      case admission.deliveries {
+        // The window is shut, so this connection is sent nothing at all and
+        // its drops wait for the message that reopens it.
+        [] -> put_entry(worker, identifier, Entry(..entry, dropped: pending))
+        admitted -> {
+          connection_worker.deliver(entry.connection, admitted, pending)
+          put_entry(
+            worker,
+            identifier,
+            Entry(
+              ..entry,
+              datagram_credit: entry.datagram_credit - admission.datagrams,
+              byte_credit: entry.byte_credit - admission.bytes,
+              dropped: 0,
+              outstanding: entry.outstanding + 1,
+            ),
+          )
+        }
+      }
+    }
+  }
+}
+
+/// One connection's share of a batch, split against its window: the datagrams
+/// the window admits, what carrying them costs the window, and how many
+/// datagrams were dropped because they did not fit.
+type Admission {
+  Admission(
+    deliveries: List(connection_worker.ListenerToConnection),
+    datagrams: Int,
+    bytes: Int,
+    dropped: Int,
+  )
+}
+
+/// Split one connection's share of a batch against its remaining window. Both
+/// halves of the window bind: a datagram is admitted only while it fits under
+/// the datagram count and the byte total alike.
+fn take_within_credit(
+  deliveries: List(connection_worker.ListenerToConnection),
+  remaining_datagrams: Int,
+  remaining_bytes: Int,
+  admission: Admission,
+) -> Admission {
+  case deliveries {
+    [] -> Admission(..admission, deliveries: list.reverse(admission.deliveries))
+    [connection_worker.RoutedDatagram(_, datagram, _) as delivery, ..rest] -> {
+      let size = bit_array.byte_size(datagram)
+      let next = case
+        admission.datagrams + 1 <= remaining_datagrams
+        && admission.bytes + size <= remaining_bytes
+      {
+        True ->
+          Admission(
+            ..admission,
+            deliveries: [delivery, ..admission.deliveries],
+            datagrams: admission.datagrams + 1,
+            bytes: admission.bytes + size,
+          )
+        False -> Admission(..admission, dropped: admission.dropped + 1)
+      }
+      take_within_credit(rest, remaining_datagrams, remaining_bytes, next)
+    }
+  }
+}
+
+/// Refill one connection's window by exactly what its actor reported taking
+/// off its mailbox, never above the fixed window, and release the one message
+/// that acknowledgement accounts for.
+///
+/// A credited message already carries the drops taken for this connection, so
+/// the only drops left to report are those taken while the window was shut. A
+/// single empty message reports them once the actor has acknowledged
+/// everything else the listener sent it: it costs the window nothing, it keeps
+/// the counter converging even if no further datagram ever names this
+/// connection, and sending it only when nothing else is outstanding is what
+/// keeps the mailbox bounded in messages -- at most one message per datagram
+/// of the window, plus that one report.
+fn refill_credit(
+  worker: Worker,
+  identifier: BitArray,
+  datagrams: Int,
+  bytes: Int,
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let refilled =
+        Entry(
+          ..entry,
+          datagram_credit: int.min(
+            datagram_credit,
+            entry.datagram_credit + int.max(0, datagrams),
+          ),
+          byte_credit: int.min(
+            byte_credit,
+            entry.byte_credit + int.max(0, bytes),
+          ),
+          outstanding: int.max(0, entry.outstanding - 1),
+        )
+      case
+        refilled.dropped > 0
+        && refilled.datagram_credit > 0
+        && refilled.outstanding == 0
+      {
+        False -> put_entry(worker, identifier, refilled)
+        True -> {
+          connection_worker.deliver(refilled.connection, [], refilled.dropped)
+          put_entry(
+            worker,
+            identifier,
+            Entry(..refilled, dropped: 0, outstanding: 1),
+          )
+        }
+      }
+    }
+  }
+}
+
+/// Return one connection's whole reservation after admission failed part way,
+/// and offer the room straight to any connection waiting on it.
+fn release_reservation(worker: Worker, identifier: BitArray) -> Worker {
+  Worker(
+    ..worker,
+    endpoint_memory: budget.release_all(worker.endpoint_memory, identifier),
+  )
+  |> retry_withheld_requests
+}
+
+fn put_entry(worker: Worker, identifier: BitArray, entry: Entry) -> Worker {
+  Worker(
+    ..worker,
+    connections: dict.insert(worker.connections, identifier, entry),
+  )
+}
+
+type Routed =
+  Dict(BitArray, List(connection_worker.ListenerToConnection))
+
+fn route_datagrams(
+  worker: Worker,
+  datagrams: List(udp.Datagram),
+  routed: Routed,
+) -> #(Worker, Routed) {
+  case datagrams {
+    [] -> #(worker, routed)
+    [udp.Datagram(peer, bytes, marking), ..rest] -> {
+      let #(worker, routed) =
+        route_datagram(worker, peer, bytes, marking, routed)
+      route_datagrams(worker, rest, routed)
+    }
+  }
+}
+
+fn route_datagram(
+  worker: Worker,
+  peer: udp.Endpoint,
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+  routed: Routed,
+) -> #(Worker, Routed) {
+  case datagram {
+    <<first, _rest:bits>> if first >= 0x80 ->
+      route_long_datagram(worker, peer, datagram, marking, routed)
+    <<_first, destination:bytes-size(connection_id_bytes), _rest:bits>> -> #(
+      worker,
+      route_existing(worker, destination, peer, datagram, marking, routed),
+    )
+    _ -> #(worker, routed)
+  }
+}
+
+fn route_long_datagram(
+  worker: Worker,
+  peer: udp.Endpoint,
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+  routed: Routed,
+) -> #(Worker, Routed) {
+  case packet.parse_long(datagram) {
+    Error(_) -> #(worker, routed)
+    Ok(#(parsed, _)) -> {
+      let packet.LongHeader(_, protocol_version, destination, source) =
+        packet_header(parsed)
+      case resolve_alias(worker, destination) {
+        Some(identifier) -> #(
+          worker,
+          route_existing(worker, identifier, peer, datagram, marking, routed),
+        )
+        None ->
+          case parsed, protocol_version {
+            packet.Initial(_, token, _), version.Version1
+            | packet.Initial(_, token, _), version.Version2
+            -> #(
+              route_initial(
+                worker,
+                peer,
+                protocol_version,
+                destination,
+                source,
+                token,
+                datagram,
+                marking,
+              ),
+              routed,
+            )
+            packet.UnknownVersion(_, _), _ -> #(
+              send_version_negotiation(worker, peer, destination, source),
+              routed,
+            )
+            _, _ -> #(worker, routed)
+          }
+      }
+    }
+  }
+}
+
+fn route_initial(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  destination: BitArray,
+  peer_connection_id: BitArray,
+  token: BitArray,
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+) -> Worker {
+  case token {
+    <<>> ->
+      send_retry(
+        worker,
+        peer,
+        protocol_version,
+        destination,
+        peer_connection_id,
+      )
+    _ -> {
+      let #(address, port) = udp.endpoint_parts(peer)
+      let now = udp.monotonic_millisecond()
+      case
+        open_address_token(
+          worker.address_token_keys,
+          token,
+          protocol_version,
+          address,
+          port,
+          now,
+          new_token_lifetime_milliseconds,
+        )
+      {
+        Ok(address_token.Token(
+          address_token.Retry,
+          original_destination,
+          retry_source,
+          issued_at,
+        ))
+          if retry_source == destination
+          && now - issued_at <= retry_token_lifetime_milliseconds
+        ->
+          accept_connection(
+            worker,
+            peer,
+            protocol_version,
+            original_destination,
+            Some(retry_source),
+            peer_connection_id,
+            Some(retry_source),
+            datagram,
+            marking,
+          )
+        Ok(address_token.Token(address_token.NewToken, <<>>, <<>>, _)) ->
+          accept_connection(
+            worker,
+            peer,
+            protocol_version,
+            destination,
+            None,
+            peer_connection_id,
+            None,
+            datagram,
+            marking,
+          )
+        _ ->
+          send_retry(
+            worker,
+            peer,
+            protocol_version,
+            destination,
+            peer_connection_id,
+          )
+      }
+    }
+  }
+}
+
+fn route_existing(
+  worker: Worker,
+  identifier: BitArray,
+  peer: udp.Endpoint,
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+  routed: Routed,
+) -> Routed {
+  case dict.has_key(worker.connections, identifier) {
+    False -> routed
+    True -> {
+      let queued = case dict.get(routed, identifier) {
+        Ok(existing) -> existing
+        Error(_) -> []
+      }
+      dict.insert(routed, identifier, [
+        connection_worker.RoutedDatagram(peer, datagram, marking),
+        ..queued
+      ])
+    }
+  }
+}
+
+fn accept_connection(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  original_destination: BitArray,
+  selected_local_connection_id: Option(BitArray),
+  peer_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+) -> Worker {
+  case
+    dict.size(worker.connections) >= worker.connection_limit,
+    worker.handshaking >= worker.handshake_limit,
+    bit_array.byte_size(original_destination) >= 8,
+    bit_array.byte_size(datagram) >= 1200
+  {
+    True, _, _, _ | _, True, _, _ | _, _, False, _ | _, _, _, False -> worker
+    False, False, True, True ->
+      case
+        case selected_local_connection_id {
+          Some(value) -> Ok(value)
+          None -> unique_connection_id(worker, 8)
+        }
+      {
+        Error(_) -> worker
+        Ok(local_connection_id) ->
+          // Decision D1. One handshake working set is charged to the endpoint
+          // memory budget before any per-connection state is built, so a
+          // connection the endpoint has no room for is refused here rather
+          // than admitted into memory that has already been spent. A refusal
+          // charges nothing, and every step that fails after this point
+          // returns the working set with `worker` unchanged.
+          case
+            budget.reserve(
+              worker.endpoint_memory,
+              local_connection_id,
+              budget.admission_quanta() * budget.quantum(),
+            )
+          {
+            Error(_) ->
+              send_connection_refused(
+                worker,
+                peer,
+                protocol_version,
+                initial_destination(
+                  original_destination,
+                  selected_local_connection_id,
+                ),
+                peer_connection_id,
+              )
+            Ok(endpoint_memory) ->
+              admit_connection(
+                worker,
+                Worker(..worker, endpoint_memory: endpoint_memory),
+                peer,
+                protocol_version,
+                original_destination,
+                local_connection_id,
+                peer_connection_id,
+                retry_source_connection_id,
+                datagram,
+                marking,
+              )
+          }
+      }
+  }
+}
+
+/// Build one admitted connection's transport state and spawn its actor.
+///
+/// Two listeners are passed deliberately: `unreserved` is the listener as it
+/// was before D1 charged the handshake working set, and `reserved` is the same
+/// listener holding that charge. Only the path that reaches `spawn_connection`
+/// keeps the charge; every failure below returns `unreserved`, so a connection
+/// that is never admitted leaves the budget exactly as it found it.
+fn admit_connection(
+  unreserved: Worker,
+  reserved: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  original_destination: BitArray,
+  local_connection_id: BitArray,
+  peer_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
+  datagram: BitArray,
+  marking: packet_space.ReceivedCodepoint,
+) -> Worker {
+  let now = udp.monotonic_millisecond()
+  case replay_policy(unreserved, now) {
+    Error(_) -> unreserved
+    Ok(policy) ->
+      case
+        server_transport.accept_initial(
+          unreserved.server_config,
+          protocol_version,
+          original_destination,
+          local_connection_id,
+          peer_connection_id,
+          retry_source_connection_id,
+          peer,
+          datagram,
+          marking,
+          now,
+          policy,
+        )
+      {
+        Error(_) -> unreserved
+        Ok(connection) ->
+          spawn_connection(
+            reserved,
+            connection,
+            protocol_version,
+            original_destination,
+            local_connection_id,
+            retry_source_connection_id,
+            bit_array.byte_size(datagram),
+            now,
+          )
+      }
+  }
+}
+
+/// The Destination Connection ID the peer's Initial packet carried, which is
+/// what its Initial keys are derived from: the Retry source connection ID once
+/// a Retry has been answered, and the peer's own first choice otherwise.
+fn initial_destination(
+  original_destination: BitArray,
+  selected_local_connection_id: Option(BitArray),
+) -> BitArray {
+  case selected_local_connection_id {
+    Some(value) -> value
+    None -> original_destination
+  }
+}
+
+/// Refuse one connection the endpoint has no memory for, in the packet space
+/// the peer can already read.
+///
+/// RFC 9000 section 5.2.2 lets a server refuse a new connection with a
+/// CONNECTION_CLOSE carrying CONNECTION_REFUSED (0x02), and refusing it in the
+/// Initial space is what makes the refusal cheap: no handshake is run, no
+/// connection state is kept, and the peer learns immediately rather than
+/// waiting out its own connect deadline. The packet is built here rather than
+/// through a transport state because no transport state is created for a
+/// connection that is never admitted.
+fn send_connection_refused(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  initial_destination_connection_id: BitArray,
+  peer_connection_id: BitArray,
+) -> Worker {
+  case
+    initial_crypto.derive_initial(
+      protocol_version,
+      initial_destination_connection_id,
+    ),
+    frame.encode(frame.ConnectionCloseTransport(connection_refused_code, 0, ""))
+  {
+    Ok(keys), Ok(close_frame) ->
+      case
+        wire_packet.protect_long(
+          wire_packet.Initial(<<>>),
+          protocol_version,
+          peer_connection_id,
+          initial_destination_connection_id,
+          0,
+          None,
+          padded_plaintext(close_frame),
+          wire_packet.InitialPacketKeys(keys.server),
+        )
+      {
+        Error(_) -> worker
+        Ok(bytes) -> {
+          let _sent = udp.send(worker.socket, peer, bytes, ecn.NotEct)
+          worker
+        }
+      }
+    _, _ -> worker
+  }
+}
+
+/// Pad one Initial payload with PADDING frames until header protection has a
+/// long enough sample to draw from.
+fn padded_plaintext(plaintext: BitArray) -> BitArray {
+  case bit_array.byte_size(plaintext) >= minimum_initial_plaintext_bytes {
+    True -> plaintext
+    False -> padded_plaintext(<<plaintext:bits, 0>>)
+  }
+}
+
+fn spawn_connection(
+  worker: Worker,
+  connection: server_transport.State,
+  protocol_version: Version,
+  original_destination: BitArray,
+  local_connection_id: BitArray,
+  retry_source_connection_id: Option(BitArray),
+  datagram_bytes: Int,
+  now: Int,
+) -> Worker {
+  case open_qlog(worker.qlog_directory, worker.telemetry_limit, now) {
+    Error(_) -> release_reservation(worker, local_connection_id)
+    Ok(writer) -> {
+      case writer {
+        Some(value) -> {
+          qlog.connection_started(value, now)
+          qlog.datagram_received(value, now, datagram_bytes)
+          // The listener owns the first Initial before the per-connection
+          // actor exists. Preserve that observation as a strictly redacted
+          // packet event so a server trace has no blind spot at admission.
+          qlog.packet_received(value, now, 1, datagram_bytes)
+        }
+        None -> Nil
+      }
+      let worker = update_replay_cache(worker, connection)
+      case current_key(worker.address_token_keys) {
+        Error(_) -> {
+          close_qlog(writer)
+          release_reservation(worker, local_connection_id)
+        }
+        Ok(address_token_key) ->
+          case
+            connection_worker.start(connection_worker.Bootstrap(
+              process.self(),
+              worker.notices,
+              worker.socket,
+              local_connection_id,
+              connection,
+              protocol_version,
+              worker.server_config.congestion_control,
+              writer,
+              worker.server_config.application_protocols,
+              worker.ticket_keys,
+              address_token_key,
+              worker.replay_cache,
+              worker.replay_guard,
+              worker.allow_zero_rtt,
+              worker.operation_timeout_milliseconds,
+              worker.stream_buffer_limit,
+              worker.queue_limit,
+              worker.datagram_limit,
+              now,
+            ))
+          {
+            Error(_) -> {
+              close_qlog(writer)
+              release_reservation(worker, local_connection_id)
+            }
+            Ok(handle) -> {
+              let pid = connection_worker.worker_pid(handle)
+              let _monitor = process.monitor(pid)
+              Worker(
+                ..worker,
+                connections: dict.insert(
+                  worker.connections,
+                  local_connection_id,
+                  Entry(handle, False, datagram_credit, byte_credit, 0, 0),
+                ),
+                routes: dict.insert(worker.routes, pid, local_connection_id),
+                handshaking: worker.handshaking + 1,
+                aliases: case retry_source_connection_id {
+                  Some(_) -> worker.aliases
+                  None ->
+                    dict.insert(
+                      worker.aliases,
+                      original_destination,
+                      local_connection_id,
+                    )
+                },
+              )
+            }
+          }
+      }
+    }
+  }
+}
+
+fn handle_notice(
+  worker: Worker,
+  notice: connection_worker.ConnectionToListener,
+) -> Worker {
+  case notice {
+    connection_worker.Established(identifier) ->
+      handle_established(worker, identifier)
+    connection_worker.Consumed(identifier, datagrams, bytes) ->
+      refill_credit(worker, identifier, datagrams, bytes)
+    connection_worker.Request(identifier, sequence, quanta) ->
+      handle_request(worker, identifier, sequence, quanta)
+    connection_worker.Released(identifier, pid, acknowledged) -> {
+      let worker = release_reported_connection(worker, identifier, pid)
+      process.send(acknowledged, Nil)
+      worker
+    }
+  }
+}
+
+/// Decision D2, listener side. One connection actor asks for the room it is
+/// about to need, and the listener answers before that room is used.
+///
+/// A request names the whole quanta the connection wants to hold in total, not
+/// the growth it wants on top, and the answer echoes the request's sequence
+/// number, so an answer that races a later request is recognised as stale by
+/// the actor rather than installed over a newer one.
+///
+/// The arithmetic is the ledger's own: it already knows what this connection
+/// was granted, it fills growth as far as the budget reaches rather than
+/// refusing it whole, and it keeps a request it could not meet so that room
+/// released later can be offered to it. All this function adds is the message
+/// back, and the retry that a request for less than the connection holds --
+/// memory coming back -- makes possible.
+fn handle_request(
+  worker: Worker,
+  identifier: BitArray,
+  sequence: Int,
+  quanta: Int,
+) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(entry) -> {
+      let held = budget.used(worker.endpoint_memory)
+      let #(endpoint_memory, answer) =
+        budget.answer_request(
+          worker.endpoint_memory,
+          identifier,
+          sequence,
+          quanta,
+        )
+      case answer {
+        budget.Met(granted) ->
+          connection_worker.grant(entry.connection, sequence, granted)
+        budget.Short(granted) ->
+          connection_worker.refuse(entry.connection, sequence, granted)
+      }
+      let worker = Worker(..worker, endpoint_memory: endpoint_memory)
+      case budget.used(endpoint_memory) < held {
+        False -> worker
+        True -> retry_withheld_requests(worker)
+      }
+    }
+  }
+}
+
+/// Decision D3, listener side. Offer released memory to the connections whose
+/// requests could not be met, oldest first.
+///
+/// Every path that returns memory runs this. A refused connection does not ask
+/// again -- it would only be refused again, and a busy endpoint would spend
+/// itself answering the same refusals -- so the listener owes it the retry,
+/// and a refusal lifted only by traffic is a refusal that never lifts on a
+/// steady connection. The ordering, the head-of-line fairness, and the
+/// bookkeeping are the ledger's; what happens here is the message back.
+fn retry_withheld_requests(worker: Worker) -> Worker {
+  let #(endpoint_memory, retries) =
+    budget.retry_withheld(worker.endpoint_memory)
+  list.each(retries, fn(retry) {
+    case dict.get(worker.connections, retry.connection) {
+      Error(Nil) -> Nil
+      Ok(entry) ->
+        connection_worker.grant(entry.connection, retry.sequence, retry.quanta)
+    }
+  })
+  Worker(..worker, endpoint_memory: endpoint_memory)
+}
+
+/// Free a connection the actor itself reported as ended, before its monitor
+/// `Down` arrives. The identifier has to still be the one this process routes,
+/// so a notice that outlived its route -- or names a connection already
+/// replaced -- releases nothing.
+fn release_reported_connection(
+  worker: Worker,
+  identifier: BitArray,
+  pid: Pid,
+) -> Worker {
+  case dict.get(worker.routes, pid) == Ok(identifier) {
+    False -> worker
+    True -> release_connection_pid(worker, pid)
+  }
+}
+
+/// Take one connection whose handshake completed off the handshake budget and
+/// hand it to an accept waiter or the accept queue. A connection already
+/// established, or already released, is left alone.
+fn handle_established(worker: Worker, identifier: BitArray) -> Worker {
+  case dict.get(worker.connections, identifier) {
+    Error(_) -> worker
+    Ok(Entry(established: True, ..)) -> worker
+    Ok(entry) ->
+      enqueue_connection(
+        Worker(
+          ..worker,
+          connections: dict.insert(
+            worker.connections,
+            identifier,
+            Entry(..entry, established: True),
+          ),
+          handshaking: int.max(0, worker.handshaking - 1),
+        ),
+        identifier,
+        entry.connection,
+      )
+  }
+}
+
+fn enqueue_connection(
+  worker: Worker,
+  identifier: BitArray,
+  connection: Connection,
+) -> Worker {
+  case connection_worker.queue_pop(worker.connection_waiters) {
+    Ok(#(ConnectionWaiter(reply, _), rest)) -> {
+      process.send(reply, Ok(connection))
+      Worker(..worker, connection_waiters: rest)
+    }
+    Error(Nil) ->
+      case
+        connection_worker.queue_count(worker.pending_connections)
+        >= worker.queue_limit
+      {
+        True -> {
+          connection_worker.terminate(connection)
+          worker
+        }
+        False ->
+          Worker(
+            ..worker,
+            pending_connections: connection_worker.queue_push(
+              worker.pending_connections,
+              identifier,
+            ),
+          )
+      }
+  }
+}
+
+/// Free a connection whose actor the monitor reports as gone. An actor that
+/// reported `Released` first has no route left, so this finds nothing to do.
+fn release_connection(worker: Worker, down: process.Down) -> Worker {
+  case down {
+    process.ProcessDown(_, pid, _) -> release_connection_pid(worker, pid)
+    process.PortDown(_, _, _) -> worker
+  }
+}
+
+/// Drop everything the listener held for one connection actor: its route, its
+/// connection ID, every alias pointing at that ID, its place in the accept
+/// queue, and the admission slot it occupied. Releasing a process that owns no
+/// route is a no-op, which is what makes the two release paths idempotent.
+fn release_connection_pid(worker: Worker, pid: Pid) -> Worker {
+  case dict.get(worker.routes, pid) {
+    Error(_) -> worker
+    Ok(identifier) -> {
+      let handshaking = case dict.get(worker.connections, identifier) {
+        Ok(Entry(established: False, ..)) -> int.max(0, worker.handshaking - 1)
+        _ -> worker.handshaking
+      }
+      Worker(
+        ..worker,
+        connections: dict.delete(worker.connections, identifier),
+        routes: dict.delete(worker.routes, pid),
+        aliases: remove_aliases(worker.aliases, identifier),
+        // Decision D6: the whole reservation comes back here, on whichever of
+        // the two release paths arrives first, and `release_all` makes the
+        // second one free.
+        endpoint_memory: budget.release_all(worker.endpoint_memory, identifier),
+        handshaking: handshaking,
+        pending_connections: connection_worker.queue_filter(
+          worker.pending_connections,
+          fn(value) { value != identifier },
+        ),
+      )
+      // The memory this connection held is now free, so the connections whose
+      // requests it was crowding out are offered it before anything else runs.
+      |> retry_withheld_requests
+    }
+  }
+}
+
+fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
+  case command {
+    Port(reply) -> {
+      process.send(reply, Ok(worker.port))
+      Ok(worker)
+    }
+    AcceptConnection(reply, deadline) ->
+      handle_accept_connection(worker, reply, deadline)
+    ReloadCertificates(chain, key, scheme, alternatives, reply) -> {
+      process.send(reply, Ok(Nil))
+      Ok(
+        Worker(
+          ..worker,
+          server_config: server_transport.Config(
+            ..worker.server_config,
+            certificate_chain: chain,
+            signing_key: key,
+            signature_scheme: scheme,
+            alternative_credentials: alternatives,
+          ),
+        ),
+      )
+    }
+    ReloadKeys(ticket_keys, address_token_keys, reset_keys, reply) ->
+      handle_reload_keys(
+        worker,
+        ticket_keys,
+        address_token_keys,
+        reset_keys,
+        reply,
+      )
+    Stop(reply) -> {
+      shutdown(worker, ListenerClosed)
+      process.send(reply, Ok(Stopped))
+      Error(Nil)
+    }
+  }
+}
+
+fn handle_reload_keys(
+  worker: Worker,
+  ticket_keys: List(BitArray),
+  address_token_keys: List(BitArray),
+  reset_keys: List(BitArray),
+  reply: Subject(Result(Nil, Error)),
+) -> Result(Worker, Nil) {
+  case
+    valid_key_ring(ticket_keys)
+    && valid_key_ring(address_token_keys)
+    && valid_key_ring(reset_keys)
+  {
+    False -> reply_error(worker, reply, InvalidInput)
+    True ->
+      case ticket_keys, address_token_keys, reset_keys {
+        [ticket_key, ..], [address_token_key, ..], [reset_key, ..] -> {
+          list.each(dict.values(worker.connections), fn(entry) {
+            connection_worker.reload_keys(
+              entry.connection,
+              ticket_keys,
+              address_token_key,
+            )
+          })
+          process.send(reply, Ok(Nil))
+          Ok(
+            Worker(
+              ..worker,
+              ticket_keys: ticket_keys,
+              address_token_keys: address_token_keys,
+              stateless_reset_keys: reset_keys,
+              server_config: server_transport.Config(
+                ..worker.server_config,
+                ticket_key: ticket_key,
+                stateless_reset_key: reset_key,
+              ),
+            ),
+          )
+        }
+        _, _, _ -> reply_error(worker, reply, InvalidInput)
+      }
+  }
+}
+
+fn handle_accept_connection(
+  worker: Worker,
+  reply: Subject(Result(Connection, Error)),
+  deadline: Option(Int),
+) -> Result(Worker, Nil) {
+  case pop_pending(worker) {
+    Ok(#(connection, worker)) -> {
+      process.send(reply, Ok(connection))
+      Ok(worker)
+    }
+    Error(Nil) ->
+      case
+        connection_worker.queue_count(worker.connection_waiters)
+        >= worker.accept_waiter_limit
+      {
+        True ->
+          reply_error(
+            worker,
+            reply,
+            AcceptQueueExceeded(worker.accept_waiter_limit),
+          )
+        False ->
+          Ok(
+            Worker(
+              ..worker,
+              connection_waiters: connection_worker.queue_push(
+                worker.connection_waiters,
+                ConnectionWaiter(reply, deadline),
+              ),
+            ),
+          )
+      }
+  }
+}
+
+fn pop_pending(worker: Worker) -> Result(#(Connection, Worker), Nil) {
+  case connection_worker.queue_pop(worker.pending_connections) {
+    Error(Nil) -> Error(Nil)
+    Ok(#(identifier, rest)) -> {
+      let worker = Worker(..worker, pending_connections: rest)
+      case dict.get(worker.connections, identifier) {
+        Ok(entry) -> Ok(#(entry.connection, worker))
+        Error(_) -> pop_pending(worker)
+      }
+    }
+  }
+}
+
+fn expire_waiters(worker: Worker, now: Int) -> Worker {
+  let #(waiters, expired) =
+    partition_connection_waiters(
+      worker.connection_waiters,
+      now,
+      connection_worker.queue_new(),
+      [],
+    )
+  list.each(expired, fn(waiter) {
+    let ConnectionWaiter(reply, _) = waiter
+    process.send(reply, Error(OperationTimeout))
+  })
+  Worker(..worker, connection_waiters: waiters)
+}
+
+fn partition_connection_waiters(
+  source: Queue(ConnectionWaiter),
+  now: Int,
+  kept: Queue(ConnectionWaiter),
+  expired: List(ConnectionWaiter),
+) -> #(Queue(ConnectionWaiter), List(ConnectionWaiter)) {
+  case connection_worker.queue_pop(source) {
+    Error(Nil) -> #(kept, expired)
+    Ok(#(waiter, rest)) -> {
+      let ConnectionWaiter(_, deadline) = waiter
+      case deadline {
+        Some(value) if now >= value ->
+          partition_connection_waiters(rest, now, kept, [waiter, ..expired])
+        None | Some(_) ->
+          partition_connection_waiters(
+            rest,
+            now,
+            connection_worker.queue_push(kept, waiter),
+            expired,
+          )
+      }
+    }
+  }
+}
+
+fn shutdown(worker: Worker, error: Error) -> Nil {
+  let remaining_waiters =
+    connection_worker.queue_values(worker.connection_waiters)
+  list.each(remaining_waiters, fn(waiter) {
+    let ConnectionWaiter(reply, _) = waiter
+    process.send(reply, Error(error))
+  })
+  // Listener stop is a synchronous public operation. Wait for every owned
+  // connection to flush and close its qlog writer before replying, otherwise
+  // a caller can observe only a prefix of the promised connection_closed
+  // events immediately after `stop` returns.
+  list.each(dict.values(worker.connections), fn(entry) {
+    let _ = connection_worker.terminate_and_wait(entry.connection)
+    Nil
+  })
+  let _stopped = udp.stop_relay(worker.relay)
+  Nil
+}
+
+fn replay_policy(
+  worker: Worker,
+  now: Int,
+) -> Result(resumption.ServerPolicy, resumption.Error) {
+  use policy <- result.try(resumption.server_policy_with_keys(
+    worker.ticket_keys,
+    now,
+    ticket_age_tolerance_milliseconds,
+    worker.replay_cache,
+  ))
+  Ok(case worker.allow_zero_rtt, worker.replay_guard {
+    False, _ -> resumption.reject_early_data(policy)
+    True, None -> policy
+    True, Some(guard) -> resumption.with_external_replay_guard(policy, guard)
+  })
+}
+
+fn update_replay_cache(
+  worker: Worker,
+  connection: server_transport.State,
+) -> Worker {
+  case server_transport.replay_cache(connection) {
+    Some(cache) -> Worker(..worker, replay_cache: cache)
+    None -> worker
+  }
+}
+
+fn reply_error(
+  worker: Worker,
+  reply: Subject(Result(value, Error)),
+  error: Error,
+) -> Result(Worker, Nil) {
+  process.send(reply, Error(error))
+  Ok(worker)
+}
+
+fn unique_connection_id(
+  worker: Worker,
+  attempts: Int,
+) -> Result(BitArray, Nil) {
+  case attempts {
+    0 -> Error(Nil)
+    _ ->
+      case crypto.secure_random(connection_id_bytes) {
+        Error(_) -> unique_connection_id(worker, attempts - 1)
+        Ok(value) ->
+          case dict.has_key(worker.connections, value) {
+            True -> unique_connection_id(worker, attempts - 1)
+            False -> Ok(value)
+          }
+      }
+  }
+}
+
+fn resolve_alias(worker: Worker, destination: BitArray) -> Option(BitArray) {
+  case dict.has_key(worker.connections, destination) {
+    True -> Some(destination)
+    False ->
+      case dict.get(worker.aliases, destination) {
+        Ok(identifier) -> Some(identifier)
+        Error(_) -> None
+      }
+  }
+}
+
+fn remove_aliases(
+  aliases: Dict(BitArray, BitArray),
+  identifier: BitArray,
+) -> Dict(BitArray, BitArray) {
+  dict.filter(aliases, fn(_, value) { value != identifier })
+}
+
+fn packet_header(parsed: packet.Packet) -> packet.LongHeader {
+  case parsed {
+    packet.Initial(header, _, _)
+    | packet.ZeroRtt(header, _)
+    | packet.Handshake(header, _)
+    | packet.Retry(header, _, _)
+    | packet.VersionNegotiation(header, _)
+    | packet.UnknownVersion(header, _) -> header
+  }
+}
+
+fn send_retry(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  original_destination: BitArray,
+  peer_connection_id: BitArray,
+) -> Worker {
+  case
+    bit_array.byte_size(original_destination) >= connection_id_bytes,
+    unique_connection_id(worker, 8)
+  {
+    False, _ | _, Error(_) -> worker
+    True, Ok(retry_source) -> {
+      let #(address, port) = udp.endpoint_parts(peer)
+      let now = udp.monotonic_millisecond()
+      case current_key(worker.address_token_keys) {
+        Error(_) -> worker
+        Ok(key) ->
+          case
+            address_token.seal(
+              key,
+              address_token.Retry,
+              protocol_version,
+              address,
+              port,
+              original_destination,
+              retry_source,
+              now,
+            ),
+            retry_first_byte(protocol_version)
+          {
+            Ok(token), Ok(first_byte) ->
+              send_retry_packet(
+                worker,
+                peer,
+                protocol_version,
+                original_destination,
+                peer_connection_id,
+                retry_source,
+                first_byte,
+                token,
+              )
+            _, _ -> worker
+          }
+      }
+    }
+  }
+}
+
+fn send_retry_packet(
+  worker: Worker,
+  peer: udp.Endpoint,
+  protocol_version: Version,
+  original_destination: BitArray,
+  peer_connection_id: BitArray,
+  retry_source: BitArray,
+  first_byte: Int,
+  token: BitArray,
+) -> Worker {
+  let placeholder =
+    packet.Retry(
+      packet.LongHeader(
+        first_byte,
+        protocol_version,
+        peer_connection_id,
+        retry_source,
+      ),
+      token,
+      <<0:128>>,
+    )
+  case packet.encode_long(placeholder) {
+    Error(_) -> worker
+    Ok(encoded) ->
+      case bit_array.slice(encoded, 0, bit_array.byte_size(encoded) - 16) {
+        Error(_) -> worker
+        Ok(retry_without_tag) ->
+          case
+            retry_integrity.tag(
+              protocol_version,
+              original_destination,
+              retry_without_tag,
+            )
+          {
+            Error(_) -> worker
+            Ok(tag) -> {
+              let _sent =
+                udp.send(
+                  worker.socket,
+                  peer,
+                  <<retry_without_tag:bits, tag:bits>>,
+                  ecn.NotEct,
+                )
+              worker
+            }
+          }
+      }
+  }
+}
+
+fn retry_first_byte(protocol_version: Version) -> Result(Int, crypto.Error) {
+  use random <- result.try(crypto.secure_random(1))
+  let base = case protocol_version {
+    version.Version1 -> 0xf0
+    version.Version2 -> 0xc0
+    _ -> 0
+  }
+  case base, random {
+    0, _ -> Error(crypto.InvalidInput)
+    _, <<random_low_bits>> ->
+      Ok(int.bitwise_or(base, int.bitwise_and(random_low_bits, 0x0f)))
+    _, _ -> Error(crypto.InvalidInput)
+  }
+}
+
+fn send_version_negotiation(
+  worker: Worker,
+  peer: udp.Endpoint,
+  original_destination: BitArray,
+  peer_connection_id: BitArray,
+) -> Worker {
+  let response =
+    packet.VersionNegotiation(
+      packet.LongHeader(
+        0x80,
+        version.Negotiation,
+        peer_connection_id,
+        original_destination,
+      ),
+      version_negotiation.offered_versions(),
+    )
+  case packet.encode_long(response) {
+    Error(_) -> worker
+    Ok(bytes) -> {
+      let _sent = udp.send(worker.socket, peer, bytes, ecn.NotEct)
+      worker
+    }
+  }
+}
+
+fn open_listener(
+  address_family: AddressFamily,
+  bind_address: Option(BitArray),
+  port: Int,
+) -> Result(udp.Socket, udp.Error) {
+  case bind_address {
+    Some(bytes) -> {
+      use address <- result.try(udp.address_from_bytes(bytes))
+      use endpoint <- result.try(udp.endpoint(address, port))
+      udp.open(endpoint)
+    }
+    None ->
+      case address_family {
+        DualStack -> udp.open_dual_stack(port)
+        Ipv4 -> {
+          use wildcard <- result.try(udp.ipv4(0, 0, 0, 0))
+          use endpoint <- result.try(udp.endpoint(wildcard, port))
+          udp.open(endpoint)
+        }
+        Ipv6 -> {
+          use wildcard <- result.try(udp.ipv6(0, 0, 0, 0, 0, 0, 0, 0))
+          use endpoint <- result.try(udp.endpoint(wildcard, port))
+          udp.open(endpoint)
+        }
+      }
+  }
+}
+
+fn validate_qlog_directory(directory: String) -> Result(Nil, Error) {
+  case directory {
+    "" -> Ok(Nil)
+    value -> qlog.validate_directory(value) |> result.replace_error(StartFailed)
+  }
+}
+
+fn open_qlog(
+  directory: String,
+  telemetry_limit: Int,
+  now: Int,
+) -> Result(Option(qlog.Writer), Error) {
+  case directory {
+    "" -> Ok(None)
+    value ->
+      qlog.open(value, qlog.Server, now, telemetry_limit)
+      |> result.map(Some)
+      |> result.replace_error(QlogUnavailable)
+  }
+}
+
+fn close_qlog(writer: Option(qlog.Writer)) -> Nil {
+  case writer {
+    None -> Nil
+    Some(value) -> {
+      qlog.connection_closed(value, udp.monotonic_millisecond())
+      let _closed = qlog.close(value)
+      Nil
+    }
+  }
+}
+
+/// Resolve a key ring and its current key together.
+///
+/// Returning the current key beside the ring is what carries the ring's
+/// non-emptiness to the caller. A ring is generated when none was configured
+/// and is otherwise validated, so it always has a current key; handing that key
+/// over here means no caller has to take a list head which cannot be missing.
+fn resolve_key_ring(
+  keys: List(BitArray),
+) -> Result(#(BitArray, List(BitArray)), Nil) {
+  case keys {
+    [] ->
+      crypto.secure_random(32)
+      |> result.map(fn(key) { #(key, [key]) })
+      |> result.replace_error(Nil)
+    [current, ..] ->
+      case valid_key_ring(keys) {
+        True -> Ok(#(current, keys))
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn current_key(keys: List(BitArray)) -> Result(BitArray, Nil) {
+  case keys {
+    [current, ..] -> Ok(current)
+    [] -> Error(Nil)
+  }
+}
+
+fn open_address_token(
+  keys: List(BitArray),
+  token: BitArray,
+  protocol_version: Version,
+  address: BitArray,
+  port: Int,
+  now: Int,
+  maximum_age: Int,
+) -> Result(address_token.Token, address_token.Error) {
+  case keys {
+    [] -> Error(address_token.AuthenticationFailed)
+    [key, ..rest] ->
+      case
+        address_token.open(
+          key,
+          token,
+          protocol_version,
+          address,
+          port,
+          now,
+          maximum_age,
+        )
+      {
+        Ok(value) -> Ok(value)
+        Error(error) ->
+          case rest {
+            [] -> Error(error)
+            _ ->
+              open_address_token(
+                rest,
+                token,
+                protocol_version,
+                address,
+                port,
+                now,
+                maximum_age,
+              )
+          }
+      }
+  }
+}
+
+fn valid_key_ring(keys: List(BitArray)) -> Bool {
+  case keys {
+    [current] -> valid_key(current)
+    [current, previous] ->
+      current != previous && valid_key(current) && valid_key(previous)
+    _ -> False
+  }
+}
+
+fn valid_key(key: BitArray) -> Bool {
+  bit_array.bit_size(key) % 8 == 0 && bit_array.byte_size(key) == 32
+}
+
+fn connection_waiter_deadline(waiters: Queue(ConnectionWaiter)) -> Option(Int) {
+  connection_waiter_deadline_loop(connection_worker.queue_values(waiters), None)
+}
+
+fn connection_waiter_deadline_loop(
+  waiters: List(ConnectionWaiter),
+  earliest: Option(Int),
+) -> Option(Int) {
+  case waiters {
+    [] -> earliest
+    [ConnectionWaiter(_, deadline), ..rest] ->
+      connection_waiter_deadline_loop(
+        rest,
+        connection_worker.earlier_deadline(earliest, deadline),
+      )
+  }
+}
+
+fn await_bootstrap(
+  worker: Pid,
+  bootstrap: Subject(Result(Listener, Error)),
+  timeout: Int,
+) -> Result(Listener, Error) {
+  let monitor = process.monitor(worker)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(bootstrap, fn(reply) { CallReply(reply) })
+    |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
+    |> process.selector_receive(within: timeout)
+  process.demonitor_process(monitor)
+  case outcome {
+    Ok(CallReply(reply)) -> reply
+    Ok(WorkerExited) -> Error(StartFailed)
+    Error(Nil) -> {
+      process.kill(worker)
+      Error(OperationTimeout)
+    }
+  }
+}
+
+fn call(
+  listener: Listener,
+  make_command: fn(Subject(Result(value, Error))) -> Command,
+) -> Result(value, Error) {
+  case process.is_alive(listener.worker) {
+    False -> Error(ListenerClosed)
+    True -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(listener.worker)
+      process.send(listener.commands, make_command(reply))
+      let outcome =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { CallReply(value) })
+        |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
+        |> process.selector_receive(
+          within: listener.timeout_milliseconds
+          + worker_reply_grace_milliseconds,
+        )
+      process.demonitor_process(monitor)
+      case outcome {
+        Ok(CallReply(result)) -> result
+        Ok(WorkerExited) -> Error(ListenerClosed)
+        Error(Nil) -> Error(OperationTimeout)
+      }
+    }
+  }
+}
+
+fn call_forever(
+  listener: Listener,
+  make_command: fn(Subject(Result(value, Error))) -> Command,
+) -> Result(value, Error) {
+  case process.is_alive(listener.worker) {
+    False -> Error(ListenerClosed)
+    True -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(listener.worker)
+      process.send(listener.commands, make_command(reply))
+      let outcome =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { CallReply(value) })
+        |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
+        |> process.selector_receive_forever
+      process.demonitor_process(monitor)
+      case outcome {
+        CallReply(result) -> result
+        WorkerExited -> Error(ListenerClosed)
+      }
+    }
+  }
+}

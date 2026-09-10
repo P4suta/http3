@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "name": "HTTP WG Structured Field Tests",
+  "repository": "https://github.com/httpwg/structured-field-tests.git",
+  "commit": "1e280c3ed9ffe0ca5fdb1d97219dddc389007677",
+  "commit_date": "2026-06-09T13:02:45+10:00",
+  "reviewed_on": "2026-08-30",
+  "license": "IETF Trust BSD-3-Clause",
+  "expected": {
+    "cases": 1591,
+    "must_fail": 864,
+    "can_fail": 6,
+    "mandatory_valid": 721
+  },
+  "fixtures": [
+    {"path": "binary.json", "sha256": "f308666c10602eb970d8179fec0d6231639e0b885fa3428f6034bb7cb43b7fce", "cases": 15, "must_fail": 10, "can_fail": 2},
+    {"path": "boolean.json", "sha256": "0413a8dd07dae5a794e9c968cce11dd913d448892a6ff0b102c6530fa4b9446f", "cases": 12, "must_fail": 10, "can_fail": 0},
+    {"path": "date.json", "sha256": "187b13bc54e017a26a18fe0270792fc2b9a3819faac3cfbc7490c38d8a7653b3", "cases": 17, "must_fail": 7, "can_fail": 2},
+    {"path": "dictionary.json", "sha256": "3e7626a312b6463bbbf6d4cface0492e8880029b33bbdcf0c5691c137862059a", "cases": 26, "must_fail": 7, "can_fail": 0},
+    {"path": "display-string.json", "sha256": "c1fc712bfdba7b0bcdf8d3c62a3f9f4aff2fbd33931b6eeb8c9d68d6beb3cded", "cases": 22, "must_fail": 15, "can_fail": 1},
+    {"path": "examples.json", "sha256": "f180e525adcb8bf0199e6fdae3e915e030aef28529de138ad2967d2115fd6835", "cases": 21, "must_fail": 0, "can_fail": 0},
+    {"path": "item.json", "sha256": "6104e2be2fdc269071973a577ae5460e55c25e40ee138a064a3dabcacf9d99a0", "cases": 5, "must_fail": 3, "can_fail": 0},
+    {"path": "key-generated.json", "sha256": "7cf177687eadfa15e8aafe158788348e067dbadc675987823a2a08a414ebeafc", "cases": 640, "must_fail": 474, "can_fail": 0},
+    {"path": "large-generated.json", "sha256": "ade790e9425083bb8e8f5082a6c0b7565877feefdd59d37ed76b4dbfab14d3c4", "cases": 11, "must_fail": 0, "can_fail": 0},
+    {"path": "list.json", "sha256": "d8d21cac1f5814363a5cfe56b1bd80963bce36cacbb0c1a59d59c14ae7622ba7", "cases": 11, "must_fail": 3, "can_fail": 0},
+    {"path": "listlist.json", "sha256": "82b961c02b55753d122a8f72bffde93d178575f03a43154818afb73091f688cf", "cases": 12, "must_fail": 7, "can_fail": 0},
+    {"path": "number-generated.json", "sha256": "32b672b3cc61bc0b26d9d7da4b2d86508e05bab029bfce43a65afc8fd355c922", "cases": 193, "must_fail": 4, "can_fail": 0},
+    {"path": "number.json", "sha256": "fe5cab144d9cd76ba465ed6222eea68e19d7d8679c0e1499ca7f9c7af34f420d", "cases": 37, "must_fail": 18, "can_fail": 0},
+    {"path": "param-dict.json", "sha256": "3dcc8fc0977072d542e34f13dcfe5fe22e520a5abc2220f86ffcbbcc8b409bdb", "cases": 14, "must_fail": 5, "can_fail": 0},
+    {"path": "param-list.json", "sha256": "232e87b307051619055262cd6ac550790961db11ed1f58d8139186b872afca17", "cases": 20, "must_fail": 10, "can_fail": 0},
+    {"path": "param-listlist.json", "sha256": "fde5860376f2be0d2d497fb2e2c5a36ee2bdace0ecfc511ba474ec14e6852321", "cases": 3, "must_fail": 0, "can_fail": 0},
+    {"path": "string-generated.json", "sha256": "99c4d3dac05e0452a0b8bee2b6b1d78898cfb6ccda2cc34aa6d1fcf1dfd2864a", "cases": 256, "must_fail": 161, "can_fail": 0},
+    {"path": "string.json", "sha256": "247080f284048c5931c49e6b63064fd3caa49e737b565084b5efa3ccace33137", "cases": 14, "must_fail": 8, "can_fail": 1},
+    {"path": "token-generated.json", "sha256": "33f8cb0f15958126f682608efb99eea8214ce92a04d5fb56999c3c5f01046439", "cases": 256, "must_fail": 122, "can_fail": 0},
+    {"path": "token.json", "sha256": "9fd251e8ac0cb3ef71533b6063affb09c6faef1cdefa9568ce8c94a0041381ef", "cases": 6, "must_fail": 0, "can_fail": 0}
+  ]
+}
