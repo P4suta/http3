@@ -217,6 +217,11 @@ pub fn generic_quic_public_api_round_trip_over_real_udp_test() -> Nil {
   server.send_datagram(peer, <<"server datagram":utf8>>) |> should.be_ok
   assert client.receive_datagram(connection) == Ok(<<"server datagram":utf8>>)
 
+  // This endpoint issues no connection IDs of its own, so a peer connected to
+  // it holds no unused identifier to move to and migrates on the one it has.
+  // RFC 9000 section 9.5 wants a different identifier for a second local
+  // address, and the client takes one whenever the peer supplied it; migration
+  // against a peer which does is covered by the interoperability gate.
   assert client.path_validation_in_progress(connection) == Ok(False)
   client.migrate(connection) |> should.be_ok
   assert client.path_validation_in_progress(connection) == Ok(False)

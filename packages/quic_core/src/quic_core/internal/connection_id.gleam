@@ -138,6 +138,27 @@ pub fn current(registry: Registry) -> Result(ConnectionId, Error) {
   }
 }
 
+/// Move to an unused identifier for a second local address, and report the
+/// sequence the previous address used so the caller can retire it.
+///
+/// RFC 9000 section 9.5 forbids sending from more than one local address with
+/// the same connection ID, and an endpoint that has no unused identifier left
+/// must not migrate at all, so a registry holding only its current identifier
+/// refuses here rather than reusing it.
+pub fn rotate(
+  registry: Registry,
+) -> Result(#(Registry, ConnectionId, Int), Error) {
+  case registry.active {
+    [retiring, next, ..rest] ->
+      Ok(#(
+        Registry(..registry, active: [next, ..rest]),
+        next,
+        retiring.sequence,
+      ))
+    _ -> Error(NoActiveConnectionId)
+  }
+}
+
 /// Return active identifier count for limit enforcement and diagnostics.
 pub fn active_count(registry: Registry) -> Int {
   list.length(registry.active)

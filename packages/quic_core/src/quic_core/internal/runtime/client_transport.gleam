@@ -345,9 +345,25 @@ pub fn migrate(state: State) -> Result(State, Error) {
         open_for_peer(connection.peer(state.connection))
         |> result.replace_error(MigrationUnavailable),
       )
+      // RFC 9000 section 9.5: a second local address must not send under the
+      // identifier the first one used. A peer which sees its own identifier
+      // arrive from a new address reads that as a rebinding rather than a
+      // migration and never validates the new path, which is what an
+      // independent peer showed. The identifier therefore moves with the path
+      // whenever the peer has supplied an unused one.
+      //
+      // When it has not, the attempt continues on the current identifier as it
+      // did before. Section 9.5 asks for a refusal there instead, and that is
+      // the right end state, but this endpoint issues no identifiers of its
+      // own: refusing would make migration impossible between two of these
+      // endpoints while leaving the reuse in place for every peer that does
+      // issue them. Issuing identifiers is what closes it.
+      let rotated =
+        connection.rotate_peer_connection_id(state.connection)
+        |> result.unwrap(state.connection)
       case
         connection.begin_path_validation(
-          state.connection,
+          rotated,
           challenge,
           True,
           udp.monotonic_millisecond(),

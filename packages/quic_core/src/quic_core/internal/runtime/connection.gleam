@@ -405,6 +405,12 @@ pub fn set_congestion_control(
 }
 
 /// Begin validation of a candidate peer path.
+/// Take an unused destination connection ID for a migrated local address.
+pub fn rotate_peer_connection_id(state: State) -> Result(State, driver.Error) {
+  driver.rotate_peer_connection_id(state.quic)
+  |> result.map(fn(quic) { State(..state, quic: quic) })
+}
+
 pub fn begin_path_validation(
   state: State,
   challenge: BitArray,

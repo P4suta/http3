@@ -1861,6 +1861,46 @@ pub fn local_close_atomically_rejects_new_application_output_test() -> Nil {
     == Error(connection_state.ConnectionUnavailable)
 }
 
+// RFC 9000 section 9.5: a second local address must not send under the
+// identifier the first one used, so a migration takes an unused identifier the
+// peer supplied and asks for the previous one to be retired. A peer which sees
+// its own identifier arrive from a new address reads that as a rebinding rather
+// than a migration and never validates the new path, which is what an
+// independent peer showed before this moved with the path.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn migration_takes_an_unused_peer_connection_id_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.observe_peer_initial_connection_id(connection, <<
+      1, 1, 1, 1, 1, 1, 1, 1,
+    >>)
+  let assert Ok(before) =
+    connection_state.current_peer_connection_id(connection)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [
+        frame.NewConnectionId(1, 0, <<9, 9, 9, 9, 9, 9, 9, 9>>, <<
+          7:size(128),
+        >>),
+      ],
+      packet_space.NotEct,
+      10,
+    )
+  let #(connection, _) = connection_state.take_events(connection)
+
+  let assert Ok(#(connection, after)) =
+    connection_state.rotate_peer_connection_id(connection)
+  assert after != before
+  assert connection_state.current_peer_connection_id(connection) == Ok(after)
+
+  let assert Ok(connection_state.PacketPrepared(_, engine.OneRtt, _, frames)) =
+    connection_state.prepare_packet(connection, engine.OneRtt, 1200, 10)
+  assert list.contains(frames, frame.RetireConnectionId(0))
+}
+
 // A terminal phase stops wire input, not delivery of bytes this endpoint had
 // already authenticated and acknowledged. RFC 9000 section 10.2.2 still permits
 // no frame beside the retained CONNECTION_CLOSE, so the drain may not revive

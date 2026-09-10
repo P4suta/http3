@@ -1025,6 +1025,31 @@ pub fn current_peer_connection_id(state: State) -> Result(BitArray, Error) {
   }
 }
 
+/// Take an unused destination connection ID for a second local address.
+///
+/// RFC 9000 section 9.5: an endpoint must not reuse a connection ID when it
+/// sends from more than one local address, so an active migration moves to an
+/// unused identifier and asks the peer to retire the one the old path used. A
+/// peer which sees its own identifier arrive from a new address reads that as a
+/// rebinding rather than a migration, and never validates the new path.
+pub fn rotate_peer_connection_id(
+  state: State,
+) -> Result(#(State, BitArray), Error) {
+  case state.peer_connection_ids {
+    None -> Error(ConnectionUnavailable)
+    Some(registry) ->
+      case connection_id.rotate(registry) {
+        Error(error) -> Error(ConnectionIdFailure(error))
+        Ok(#(rotated, connection_id.ConnectionId(_, value, _), retired)) ->
+          Ok(#(
+            State(..state, peer_connection_ids: Some(rotated))
+              |> queue_application_frame(frame.RetireConnectionId(retired)),
+            value,
+          ))
+      }
+  }
+}
+
 /// Check an undecryptable short packet for a peer stateless reset and enter
 /// draining without transmitting a response when its active token matches.
 pub fn handle_stateless_reset_candidate(

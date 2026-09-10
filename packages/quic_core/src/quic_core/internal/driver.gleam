@@ -455,6 +455,25 @@ pub fn update_connection(
   Ok(State(..state, connection: connection))
 }
 
+/// Take an unused destination connection ID for a migrated local address.
+///
+/// RFC 9000 section 9.5 forbids sending from two local addresses under one
+/// connection ID, so the identifier this driver protects packets with moves
+/// with the path, and the peer is asked to retire the one the old path used.
+pub fn rotate_peer_connection_id(state: State) -> Result(State, Error) {
+  use #(connection, peer_connection_id) <- result.try(
+    connection_state.rotate_peer_connection_id(state.connection)
+    |> map_connection_result,
+  )
+  Ok(
+    State(
+      ..state,
+      connection: connection,
+      peer_connection_id: peer_connection_id,
+    ),
+  )
+}
+
 /// Inspect the core connection for HTTP/3 stream orchestration.
 pub fn connection(state: State) -> connection_state.State {
   state.connection

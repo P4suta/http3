@@ -108,6 +108,18 @@
   A terminal read hands over only an outcome which is already decided, because
   no further bytes can arrive, and it advertises no receive credit: RFC 9000
   section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+- Moved the connection ID with the path when migrating. RFC 9000 section 9.5
+  forbids sending from a second local address under the identifier the first
+  one used, and this endpoint kept using one: a peer that had offered three
+  NEW_CONNECTION_ID values saw its own identifier arrive from a new address,
+  read that as a rebinding rather than a migration, and never answered the path
+  validation. An active migration now takes an unused identifier the peer
+  supplied and asks for the previous one to be retired, which is what makes
+  migration complete against an independent peer. When the peer supplied none
+  the attempt continues on the current identifier as before, because this
+  endpoint issues no identifiers of its own and refusing outright would make
+  migration impossible between two of these endpoints; issuing them is the
+  remaining half.
 - Expanded path validation datagrams to the floor every QUIC path carries. RFC
   9000 section 8.2.1 requires the datagram holding a PATH_CHALLENGE, and section
   8.2.2 the one holding its PATH_RESPONSE, to reach 1200 bytes. This endpoint
