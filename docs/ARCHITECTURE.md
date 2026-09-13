@@ -175,6 +175,15 @@ native clients, and the native server -- and `default_config` fails closed with
 Don't-Fragment absent, so a connection built without that answer stays on the
 floor instead of assuming a capability it has not checked.
 
+The Windows half of that policy is measured rather than assumed. Both
+`IP_DONTFRAGMENT` and `IPV6_DONTFRAG` are option 14 in the Windows SDK, the
+kernel stores the value it is given rather than accepting and discarding it,
+and on a real 1500-byte-MTU path an IPv4 send flips from accepted to
+`EMSGSIZE` exactly at the 1472-byte boundary, so `classify_send` receives the
+path measurement it expects. The IPv6 half rests on the stored value alone,
+because the measuring host had no reachable IPv6 neighbour
+([evidence](evidence/2026-09-14-windows-socket-policy.md)).
+
 With the option active the kernel refuses an oversized send with `EMSGSIZE`.
 Every send that carries connection data routes its result through one shared
 classifier, `udp.classify_send`, which is the only place the three-way decision

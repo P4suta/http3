@@ -65,7 +65,12 @@ mTLS with redacted verified identity access are implemented.
 Still required:
 
 - local bind, complete socket buffer/traffic-class policy, and listener
-  dual-stack behavior across supported operating systems;
+  dual-stack behavior across supported operating systems. The Windows half is
+  now measured ([evidence](evidence/2026-09-14-windows-socket-policy.md)):
+  same-port dual-stack bind works, a 4 MiB buffer request is honoured exactly,
+  a bound port stays unstealable under `SO_REUSEADDR`, and the runtime refuses
+  both traffic-class options, which is why ECN is excluded there. Linux,
+  macOS, and FreeBSD are still unmeasured, as is local bind;
 - OTP 28/29 and external-peer credential interoperability for RSA-PSS,
   ECDSA P-256/P-384, Ed25519, and mTLS resumption;
 - complete redacted peer/local address diagnostics. Negotiated version,
