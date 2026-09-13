@@ -34,10 +34,13 @@
     stop_exclusive_udp_port_guard/1,
     suspend_system_udp_owner/1,
     udp_ecn_echo_snapshot/1,
-    udp_loopback_packet/1
+    udp_loopback_packet/1,
+    with_blackhole_first_host/1
 ]).
 
 -define(TASK_TIMEOUT, 10000).
+-define(BLACKHOLE_ADDRESS, {192, 0, 2, 1}).
+-define(LOOPBACK_ADDRESS, {127, 0, 0, 1}).
 
 -spec http1_listener_snapshot_race(pos_integer()) ->
     {non_neg_integer(), non_neg_integer(), non_neg_integer(),
@@ -677,6 +680,29 @@ await_task({http_test_task, Pid, Monitor, Reference}) ->
         exit(Pid, kill),
         await_process_down(Pid, Monitor),
         erlang:error(test_task_timeout)
+    end.
+
+%% Resolve one fixed test name to a black-holed address followed by loopback.
+%%
+%% RFC 5737 reserves 192.0.2.0/24 for documentation, so nothing routes it and a
+%% connection attempt to it stalls until its own deadline rather than being
+%% refused. That is the shape a dual-stack client meets when the first address
+%% a name resolves to is unreachable, and it is what the bounded connect walk
+%% has to survive. The entries and the resolver order are restored on every exit
+%% path, including a failed assertion inside `Run'.
+-spec with_blackhole_first_host(fun((binary()) -> term())) -> term().
+with_blackhole_first_host(Run) when is_function(Run, 1) ->
+    Name = "http-blackhole-first.test",
+    PreviousLookup = inet_db:res_option(lookup),
+    ok = inet_db:set_lookup([file | lists:delete(file, PreviousLookup)]),
+    ok = inet_db:add_host(?BLACKHOLE_ADDRESS, [Name]),
+    ok = inet_db:add_host(?LOOPBACK_ADDRESS, [Name]),
+    try
+        Run(list_to_binary(Name))
+    after
+        inet_db:del_host(?BLACKHOLE_ADDRESS),
+        inet_db:del_host(?LOOPBACK_ADDRESS),
+        inet_db:set_lookup(PreviousLookup)
     end.
 
 -spec server_credentials() -> {binary(), binary(), binary()}.

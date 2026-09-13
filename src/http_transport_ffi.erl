@@ -23,6 +23,8 @@
 ]).
 
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
+%% RFC 8305 section 8: the recommended Connection Attempt Delay.
+-define(CONNECTION_ATTEMPT_DELAY, 250).
 
 -type family() :: inet | inet6.
 -type listener() :: #{
@@ -607,6 +609,24 @@ resolved_family(Host, Family) ->
         {error, _Reason} -> []
     end.
 
+%% Attempt every resolved address under one shared connect deadline.
+%%
+%% A single address is attempted directly with the whole remaining budget. Two
+%% or more are walked twice. The first walk bounds each attempt by the RFC 8305
+%% Connection Attempt Delay, so one address that answers nothing costs that
+%% delay instead of the entire budget, and the next address is reached
+%% immediately when an attempt is refused rather than stalled. Addresses that
+%% stalled are then walked again with the budget that is left, so a path whose
+%% handshake is genuinely slower than the delay is still reached.
+%%
+%% The walk is sequential on purpose. Racing candidates concurrently is what
+%% RFC 8305 section 5 describes, but it opens a connection per candidate, and a
+%% server that answers one connect would see several.
+%%
+%% What this replaces gave the first address every remaining millisecond and
+%% then abandoned the rest of the list on a timeout, so a name whose first
+%% address is black-holed was unreachable even when a later address answered
+%% immediately.
 -spec connect_addresses(
     [{family(), inet:ip_address()}],
     inet:port_number(),
@@ -625,44 +645,173 @@ connect_addresses(
 ) ->
     {error, LastCode};
 connect_addresses(
-    [{Family, Address} | Rest],
+    [Candidate],
     Port,
     SendTimeout,
     Deadline,
     TimeoutCode,
     _LastCode
 ) ->
-    case remaining_milliseconds(Deadline) of
-        0 ->
+    case connect_candidate(Candidate, Port, SendTimeout, Deadline, deadline) of
+        {ok, Socket} ->
+            {ok, stream(Socket)};
+        timeout ->
             {error, TimeoutCode};
+        {failed, Code} ->
+            {error, Code}
+    end;
+connect_addresses(
+    Candidates,
+    Port,
+    SendTimeout,
+    Deadline,
+    TimeoutCode,
+    LastCode
+) ->
+    case
+        walk_candidates(
+            Candidates,
+            Port,
+            SendTimeout,
+            Deadline,
+            ?CONNECTION_ATTEMPT_DELAY,
+            [],
+            none
+        )
+    of
+        {ok, Socket} ->
+            {ok, stream(Socket)};
+        {exhausted, [], HardCode} ->
+            {error, attempt_error(HardCode, false, TimeoutCode, LastCode)};
+        {exhausted, Stalled, HardCode} ->
+            case
+                walk_candidates(
+                    Stalled,
+                    Port,
+                    SendTimeout,
+                    Deadline,
+                    deadline,
+                    [],
+                    HardCode
+                )
+            of
+                {ok, Socket} ->
+                    {ok, stream(Socket)};
+                {exhausted, _Remaining, PatientCode} ->
+                    {error,
+                        attempt_error(
+                            PatientCode,
+                            true,
+                            TimeoutCode,
+                            LastCode
+                        )}
+            end
+    end.
+
+%% Walk the candidates once, retaining the ones that stalled in resolution
+%% order so a later walk can give them the budget that is left.
+-spec walk_candidates(
+    [{family(), inet:ip_address()}],
+    inet:port_number(),
+    pos_integer(),
+    integer(),
+    pos_integer() | deadline,
+    [{family(), inet:ip_address()}],
+    none | integer()
+) ->
+    {ok, gen_tcp:socket()}
+    | {exhausted, [{family(), inet:ip_address()}], none | integer()}.
+walk_candidates(
+    [],
+    _Port,
+    _SendTimeout,
+    _Deadline,
+    _AttemptBudget,
+    Stalled,
+    HardCode
+) ->
+    {exhausted, lists:reverse(Stalled), HardCode};
+walk_candidates(
+    [Candidate | Rest],
+    Port,
+    SendTimeout,
+    Deadline,
+    AttemptBudget,
+    Stalled,
+    HardCode
+) ->
+    case
+        connect_candidate(Candidate, Port, SendTimeout, Deadline, AttemptBudget)
+    of
+        {ok, Socket} ->
+            {ok, Socket};
+        timeout ->
+            case remaining_milliseconds(Deadline) of
+                0 ->
+                    {exhausted, lists:reverse([Candidate | Stalled]), HardCode};
+                _ ->
+                    walk_candidates(
+                        Rest,
+                        Port,
+                        SendTimeout,
+                        Deadline,
+                        AttemptBudget,
+                        [Candidate | Stalled],
+                        HardCode
+                    )
+            end;
+        {failed, Code} ->
+            walk_candidates(
+                Rest,
+                Port,
+                SendTimeout,
+                Deadline,
+                AttemptBudget,
+                Stalled,
+                first_code(HardCode, Code)
+            )
+    end.
+
+-spec connect_candidate(
+    {family(), inet:ip_address()},
+    inet:port_number(),
+    pos_integer(),
+    integer(),
+    pos_integer() | deadline
+) -> {ok, gen_tcp:socket()} | timeout | {failed, integer()}.
+connect_candidate({Family, Address}, Port, SendTimeout, Deadline, Budget) ->
+    case attempt_milliseconds(Deadline, Budget) of
+        0 ->
+            timeout;
         Remaining ->
             Options = stream_options(Family, SendTimeout),
             try gen_tcp:connect(Address, Port, Options, Remaining) of
-                {ok, Socket} ->
-                    {ok, stream(Socket)};
-                {error, timeout} ->
-                    {error, TimeoutCode};
-                {error, Reason} ->
-                    connect_addresses(
-                        Rest,
-                        Port,
-                        SendTimeout,
-                        Deadline,
-                        TimeoutCode,
-                        connect_error_code(Reason)
-                    )
+                {ok, Socket} -> {ok, Socket};
+                {error, timeout} -> timeout;
+                {error, Reason} -> {failed, connect_error_code(Reason)}
             catch
-                _Class:_Reason ->
-                    connect_addresses(
-                        Rest,
-                        Port,
-                        SendTimeout,
-                        Deadline,
-                        TimeoutCode,
-                        5
-                    )
+                _Class:_Reason -> {failed, 5}
             end
     end.
+
+-spec attempt_milliseconds(integer(), pos_integer() | deadline) ->
+    non_neg_integer().
+attempt_milliseconds(Deadline, deadline) ->
+    remaining_milliseconds(Deadline);
+attempt_milliseconds(Deadline, Budget) ->
+    erlang:min(remaining_milliseconds(Deadline), Budget).
+
+%% Report a refusal ahead of a stall: a peer that answered says more about the
+%% attempt than an address that answered nothing.
+-spec attempt_error(none | integer(), boolean(), integer(), integer()) ->
+    integer().
+attempt_error(none, true, TimeoutCode, _LastCode) -> TimeoutCode;
+attempt_error(none, false, _TimeoutCode, LastCode) -> LastCode;
+attempt_error(HardCode, _Stalled, _TimeoutCode, _LastCode) -> HardCode.
+
+-spec first_code(none | integer(), integer()) -> integer().
+first_code(none, Code) -> Code;
+first_code(Existing, _Code) -> Existing.
 
 -spec timeout_code(integer(), integer(), integer()) -> integer().
 timeout_code(Deadline, TotalDeadline, _PhaseCode)

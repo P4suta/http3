@@ -1568,7 +1568,7 @@
     },
     {"id":"RFC7838","title":"HTTP Alternative Services","map_complete":false,"evidence":["src/http/internal/alt_svc.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC7932","title":"Brotli Compressed Data Format","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
-    {"id":"RFC8305","title":"Happy Eyeballs Version 2: Better Connectivity Using Concurrency","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/runtime/client_transport.gleam","packages/quic_core/test/public_loopback_test.gleam"]},
+    {"id":"RFC8305","title":"Happy Eyeballs Version 2: Better Connectivity Using Concurrency","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/runtime/client_transport.gleam","packages/quic_core/test/public_loopback_test.gleam","src/http_transport_ffi.erl","test/transport_test.gleam"]},
     {
       "id": "RFC8336",
       "title": "The ORIGIN HTTP/2 Frame",

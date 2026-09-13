@@ -207,3 +207,8 @@ pub fn message_queue_length() -> Int
 /// Return the public loopback certificate PEM, private-key PEM, and CA DER.
 @external(erlang, "http_test_ffi", "server_credentials")
 pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
+
+/// Run `body` with one fixed host name resolving to an unroutable address
+/// followed by loopback, restoring the resolver on every exit path.
+@external(erlang, "http_test_ffi", "with_blackhole_first_host")
+pub fn with_blackhole_first_host(body: fn(String) -> value) -> value

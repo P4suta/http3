@@ -242,3 +242,11 @@
   and supervisor-expiry observations; independent finite setup/operation socket
   deadlines, production socket-adoption events, and fresh-BEAM stability
   coverage.
+- Bounded every TCP connect attempt by the RFC 8305 Connection Attempt Delay
+  and carried the resolved-address list past an attempt that answered nothing.
+  One black-holed address used to take the whole connect budget and then end
+  the attempt outright, so a dual-stack name whose first address stalls was
+  unreachable even when a later address answered at once; addresses that
+  stalled are now walked again with the budget that is left, so a path slower
+  than the delay is still reached. The walk stays sequential, so a server that
+  answers one connect still sees one connection.

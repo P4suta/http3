@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/result
 import gleeunit
 import http/internal/transport
+import http_test_support
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -98,4 +99,34 @@ fn read_exact(
       }
     }
   }
+}
+
+pub fn a_stalled_first_candidate_does_not_consume_the_connect_deadline_test() -> Nil {
+  use host <- http_test_support.with_blackhole_first_host
+
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+
+  let mailbox_before = http_test_support.message_queue_length()
+  let started = transport.monotonic_millisecond()
+  let connected = transport.connect(host, port, 2000, 1000)
+  let elapsed = transport.monotonic_millisecond() - started
+
+  let assert Ok(client) = connected
+  let assert Ok(server) = transport.accept(listener, 1000)
+
+  // The first resolved address is unroutable, so a connect path that hands one
+  // candidate the whole budget never reaches loopback, and one that abandons
+  // the list on a stall never tries it. Bounding each attempt by the RFC 8305
+  // Connection Attempt Delay reaches it one delay in.
+  assert elapsed < 1000
+
+  // Abandoning an attempt leaves nothing behind for the caller to receive, so
+  // the connect path adds no message to its owner's mailbox.
+  assert http_test_support.message_queue_length() == mailbox_before
+
+  let assert Ok(Nil) = transport.close(client)
+  let assert Ok(Nil) = transport.close(server)
+  let assert Ok(Nil) = transport.stop(listener)
+  Nil
 }
