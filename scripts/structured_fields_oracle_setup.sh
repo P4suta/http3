@@ -54,9 +54,16 @@ fi
 # Older versions of this script cloned with --no-checkout. Recover only the
 # mechanically recognizable state where every tracked path is staged deleted
 # and HEAD is already the pinned commit. Any other modification remains fatal.
-mapfile -t checkout_status < <(git -C "$checkout_path" status --porcelain)
+# See scripts/ffi_audit.sh: `mapfile` is a bash 4 builtin and macOS ships 3.2.
+checkout_status=()
+while IFS= read -r status_entry; do
+	checkout_status+=("$status_entry")
+done < <(git -C "$checkout_path" status --porcelain)
 if ((${#checkout_status[@]} > 0)); then
-	mapfile -t tracked_paths < <(git -C "$checkout_path" ls-tree -r --name-only HEAD)
+	tracked_paths=()
+	while IFS= read -r tracked_path; do
+		tracked_paths+=("$tracked_path")
+	done < <(git -C "$checkout_path" ls-tree -r --name-only HEAD)
 	all_tracked_paths_missing=true
 	for entry in "${checkout_status[@]}"; do
 		if [[ ${entry:0:3} != "D  " ]]; then

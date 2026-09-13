@@ -8,9 +8,13 @@ jq -e '
 	and all(.ffi_inventory.sources[]; type == "string" and endswith("_ffi.erl"))
 ' qualification.json >/dev/null
 
-mapfile -t production_ffi_sources < <(
-	jq -r '.ffi_inventory.sources[]' qualification.json
-)
+# `mapfile` is a bash 4 builtin and macOS still ships bash 3.2, where the gate
+# would otherwise fail before it read anything. A read loop is what every shell
+# this repository supports has.
+production_ffi_sources=()
+while IFS= read -r ffi_source; do
+	production_ffi_sources+=("$ffi_source")
+done < <(jq -r '.ffi_inventory.sources[]' qualification.json)
 
 # Every Erlang module in a production tree, not only the ones named like an
 # FFI module. A module named outside the convention would otherwise be

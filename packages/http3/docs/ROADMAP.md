@@ -41,7 +41,12 @@ Status: blocked.
   protocol adapters for extensions. Retain independent OHTTP and MASQUE
   vectors and peer evidence.
 - Keep local bind/socket policy and every remaining platform-specific behavior
-  typed, bounded, and default-safe.
+  typed, bounded, and default-safe. The Windows row is measured
+  ([evidence](evidence/2026-09-14-windows-socket-policy.md)): same-port
+  dual-stack bind works, a 4 MiB buffer request is honoured exactly, a bound
+  port stays unstealable under `SO_REUSEADDR`, and the runtime refuses both
+  traffic-class options, which is why ECN is excluded there. Linux, macOS, and
+  FreeBSD are still unmeasured, as is local bind.
 
 ## 2. Adversarial and interoperability qualification
 

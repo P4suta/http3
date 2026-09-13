@@ -22,6 +22,9 @@ stage="$build_directory/source"
 
 cleanup() {
 	if [ -d "$build_directory" ]; then
+		# The staged build leaves the working directory inside this tree, and
+		# a find that cannot restore its initial directory fails on Windows.
+		cd "$root" 2>/dev/null || return 0
 		find "$build_directory" -depth -delete
 	fi
 }

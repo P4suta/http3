@@ -255,3 +255,16 @@
   its sentinel instead of discarding the datagram. The RFC 9298 wire test now
   proves the relay round trip on every platform and the Not-ECT wire byte on
   the platforms that can read it back.
+- Declared `bash` as the shell for the `semgrep` and `sbom` tasks and moved the
+  MixGleam package cleanup out of the directory tree it deletes, so the
+  pull-request gate runs on Windows, where mise uses `cmd.exe` and a `find`
+  that cannot restore its initial working directory fails.
+- Recorded the first direct measurement of the Windows UDP socket policy:
+  Don't-Fragment constants, storage, and the 1472-byte IPv4 boundary on a real
+  path, same-port dual-stack bind, honoured 4 MiB buffers, an unstealable bound
+  port under `SO_REUSEADDR`, and the refused traffic-class options that justify
+  excluding ECN there.
+- Replaced the two `mapfile` reads in the shell gates with a loop every
+  supported shell has, so the FFI audit and the structured-fields oracle setup
+  run under the bash 3.2 that macOS ships instead of failing before they read
+  anything, and recorded the `libmagic` the REUSE gate needs there.

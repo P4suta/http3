@@ -258,6 +258,10 @@ run = "gitleaks dir . --redact --no-banner"
 
 [tasks.semgrep]
 description = "Run repository-owned FFI and public-boundary security rules"
+# mise runs task commands through cmd.exe on Windows, which answers neither
+# `mkdir -p` nor a POSIX inline environment assignment. The gate already
+# requires bash for the shell scripts it runs and lints.
+shell = "bash -c"
 run = [
   "mkdir -p build/semgrep",
   "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
@@ -265,6 +269,8 @@ run = [
 
 [tasks.sbom]
 description = "Generate the release-input CycloneDX SBOM"
+# See the semgrep task: `mkdir -p` is not a cmd.exe builtin.
+shell = "bash -c"
 run = [
   "mkdir -p build/security",
   "syft scan dir:. --exclude './build/**' --exclude './packages/http3/build/**' --exclude './packages/quic_core/build/**' --output cyclonedx-json=build/security/http.cdx.json --quiet",

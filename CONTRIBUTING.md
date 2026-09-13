@@ -21,6 +21,10 @@ mix archive.install hex mix_gleam 0.6.2 --force
 mise run check
 ```
 
+The REUSE licence gate reads file encodings through `libmagic`. Linux
+distributions install it with `file`; macOS ships the `file` binary without the
+library, so `brew install libmagic` is required there before `mise run check`.
+
 The package supports Erlang/OTP 28 and 29. Local development uses OTP 29;
 the CI definition covers the complete supported range. The exact MixGleam
 archive is used only by the runtime-only OTP application packaging check.
