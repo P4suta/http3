@@ -250,3 +250,8 @@
   stalled are now walked again with the budget that is left, so a path slower
   than the delay is still reached. The walk stays sequential, so a server that
   answers one connect still sees one connection.
+- Echoed and re-armed a received datagram in the UDP traffic-class fixture on
+  hosts that deliver no ancillary data, and recorded the unobserved class as
+  its sentinel instead of discarding the datagram. The RFC 9298 wire test now
+  proves the relay round trip on every platform and the Not-ECT wire byte on
+  the platforms that can read it back.

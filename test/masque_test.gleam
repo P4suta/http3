@@ -2415,12 +2415,24 @@ pub fn rfc9298_system_udp_live_wire_ignores_target_ecn_and_sends_not_ect_test() 
   let #(received_packets, proxy_to_target_tos, target_to_proxy_tos) =
     http_test_support.udp_ecn_echo_snapshot(echo_server)
   assert received_packets == 1
-  assert proxy_to_target_tos == 0
-  assert target_to_proxy_tos == 3
   let socket = masque.system_udp_socket_snapshot(session)
   assert socket.not_ect == True
   assert socket.sent_packets == 1
   assert socket.received_packets == 1
+
+  case proxy_to_target_tos {
+    // A host that delivers the received traffic class proves the wire byte
+    // directly: the proxy marks Not-ECT however the target marked its reply.
+    0 -> {
+      assert target_to_proxy_tos == 3
+    }
+    // Windows refuses `recvtos` on a UDP socket, so the fixture records its
+    // sentinel rather than a class it never read, and the relay round trip
+    // above is the whole wire observation that platform can make.
+    unobserved -> {
+      assert unobserved == -1
+    }
+  }
 
   assert masque.close_udp_proxy_session(session) == Ok(Nil)
   http_test_support.stop_udp_echo_server(echo_server)

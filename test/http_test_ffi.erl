@@ -823,19 +823,8 @@ start_udp_ecn_echo_server() ->
     atomics:put(Counters, 2, -1),
     atomics:put(Counters, 3, -1),
     {Pid, Monitor} = spawn_monitor(fun() ->
-        {ok, Socket} = gen_udp:open(
-            0,
-            [
-                binary,
-                inet,
-                {active, once},
-                {ip, {127, 0, 0, 1}},
-                {recvtos, true},
-                {tos, 3}
-            ]
-        ),
-        {ok, [{tos, ReplyTos}]} = inet:getopts(Socket, [tos]),
-        atomics:put(Counters, 3, ReplyTos),
+        {Socket, ReplyTrafficClass} = open_ecn_echo_socket(),
+        atomics:put(Counters, 3, ReplyTrafficClass),
         {ok, {{127, 0, 0, 1}, Port}} = inet:sockname(Socket),
         Caller ! {Reference, udp_ecn_echo_ready, Port},
         udp_ecn_echo_loop(Socket, Reference, Counters)
@@ -1171,19 +1160,61 @@ observe_packet_too_big_snapshot(Diagnostics, Reference, Violations) ->
         )
     end.
 
+%% Open the echo socket asking for the received and sent traffic class, and
+%% fall back to a plain socket where the runtime refuses those options. Windows
+%% is the platform that refuses them, and the fallback is what lets the relay
+%% round trip still be observed there.
+-spec open_ecn_echo_socket() -> {gen_udp:socket(), integer()}.
+open_ecn_echo_socket() ->
+    Base = [binary, inet, {active, once}, {ip, {127, 0, 0, 1}}],
+    case gen_udp:open(0, Base ++ [{recvtos, true}, {tos, 3}]) of
+        {ok, Socket} ->
+            {Socket, reply_traffic_class(Socket)};
+        {error, _Reason} ->
+            {ok, Socket} = gen_udp:open(0, Base),
+            {Socket, -1}
+    end.
+
+-spec reply_traffic_class(gen_udp:socket()) -> integer().
+reply_traffic_class(Socket) ->
+    case inet:getopts(Socket, [tos]) of
+        {ok, [{tos, Value}]} when is_integer(Value) -> Value;
+        _Other -> -1
+    end.
+
+-spec echo_ecn_datagram(
+    gen_udp:socket(),
+    inet:ip_address(),
+    inet:port_number(),
+    binary(),
+    atomics:atomics_ref(),
+    integer()
+) -> ok.
+echo_ecn_datagram(Socket, Address, Port, Payload, Counters, TrafficClass) ->
+    atomics:add(Counters, 1, 1),
+    atomics:put(Counters, 2, TrafficClass),
+    ok = gen_udp:send(Socket, Address, Port, Payload),
+    ok = inet:setopts(Socket, [{active, once}]),
+    ok.
+
 -spec udp_ecn_echo_loop(gen_udp:socket(), reference(), atomics:atomics_ref()) ->
     no_return().
 udp_ecn_echo_loop(Socket, Reference, Counters) ->
     receive
         {udp, Socket, Address, Port, Ancillary, Payload} ->
-            IncomingTos = case lists:keyfind(tos, 1, Ancillary) of
+            IncomingTrafficClass = case lists:keyfind(tos, 1, Ancillary) of
                 {tos, Value} when is_integer(Value) -> Value;
                 false -> -1
             end,
-            atomics:add(Counters, 1, 1),
-            atomics:put(Counters, 2, IncomingTos),
-            ok = gen_udp:send(Socket, Address, Port, Payload),
-            ok = inet:setopts(Socket, [{active, once}]),
+            echo_ecn_datagram(
+                Socket, Address, Port, Payload, Counters, IncomingTrafficClass
+            ),
+            udp_ecn_echo_loop(Socket, Reference, Counters);
+        %% A host that delivers no ancillary data sends the plain form. Echoing
+        %% it and re-arming is what keeps the relay itself observable where the
+        %% traffic class is not; the recorded class stays at its -1 sentinel.
+        {udp, Socket, Address, Port, Payload} ->
+            echo_ecn_datagram(Socket, Address, Port, Payload, Counters, -1),
             udp_ecn_echo_loop(Socket, Reference, Counters);
         {Reference, stop_udp_echo} ->
             gen_udp:close(Socket),
