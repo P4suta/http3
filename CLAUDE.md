@@ -1,100 +1,77 @@
 # Agent guide
 
-`http3` is a Gleam-native HTTP/3 library for the Erlang target: QUIC v1/v2,
-TLS 1.3, HTTP/3, and QPACK are implemented in this repository, with no NIF,
-port driver, or external protocol backend.
+This repository develops three Erlang-target Gleam packages: the unified
+`http` package at the root, `packages/http3`, and `packages/quic_core`.
 
-Read [Architecture](docs/ARCHITECTURE.md) before changing structure,
-[Testing](docs/TESTING.md) before changing behavior, and
-[Conformance](docs/CONFORMANCE.md) before making a readiness claim.
+Read [Architecture](docs/ARCHITECTURE.md) before structural work and
+[Testing](docs/TESTING.md) before behavior changes. Package-specific HTTP/3
+qualification evidence remains under `packages/http3/docs`.
 
-## Packages and their boundary
+## Packages and boundary
 
-- `packages/gleam_quic` is the application-protocol-independent QUIC/TLS core.
-  Run its own suite from that directory with `gleam test`.
-- The repository root is the `http3` package: HTTP/3 sessions, QPACK, Capsules,
-  and the public client and server.
-- The root may import only these six public core modules: `gleam_quic`,
-  `gleam_quic/client`, `gleam_quic/config`, `gleam_quic/diagnostics`,
-  `gleam_quic/failure`, `gleam_quic/server`.
-- `api/boundary.allow` lists pre-existing package-private imports. It only
-  shrinks: delete a line once its import is gone, never add one and never
-  regenerate it.
-- Three gates enforce this: the `boundary` verb of
-  `test/http3_public_api_audit.escript`, the `http3.boundary.*` Semgrep rule in
-  `.semgrep.yml`, and the boundary mode of `test/http3_ffi_xref.escript`.
+- `http` owns common Body, Error, client/server policy, HTTP/1.1, and HTTP/2.
+- `http3` owns HTTP/3, QPACK, Capsules, request Datagrams, and WebSocket over
+  HTTP/3.
+- `quic_core` owns application-independent QUIC v1/v2 and TLS 1.3.
+- Dependencies flow only `http -> http3 -> quic_core`.
+- `http3` may ultimately import only `quic_core`, `quic_core/client`,
+  `quic_core/config`, `quic_core/diagnostics`, `quic_core/failure`, and
+  `quic_core/server`. `api/boundary.allow` is shrink-only until it is empty.
+- `scripts/package_layout_audit.escript`,
+  `scripts/public_api_audit.escript`, Semgrep, and compiled xref enforce the
+  physical and semantic boundaries.
+
+## TDD loop
+
+All phases use Red-Green-Refactor:
+
+1. add the smallest failing executable contract or regression;
+2. verify that it fails for the intended reason;
+3. make the smallest bounded implementation change;
+4. run the affected package and every upstream package; and
+5. refactor only while all those suites remain green.
+
+Configuration and documentation changes use executable layout, API, archive,
+lint, or example gates rather than invented protocol tests.
 
 ## Local gates
 
-`mise run check` is the pull-request gate and must be green at every commit.
-Run whole-gate commands outside any sandbox that makes `/tmp` read-only.
+`mise run check` is the pull-request gate. Network suites need permission to
+bind loopback sockets.
 
 ```sh
-mise install
-mise run check
+mise run http-check
+mise run http3-check
+mise run core-check
+mise run api
 mise run security
-mise run fault
 mise run property
 mise run fuzz
-mise run interop-setup
-mise run interop
 ```
 
-`mise run benchmark`, `mise run load`, and `mise run soak` are performance
-gates: run them only when the task asks for them.
-
-Phase 5 tasks (`coverage`, `coverage-full`, `model`, `hostile-peer`,
-`credential-matrix`, `release-sim`, `release-candidate`, `requirements-audit`,
-`qlog-validate`, `examples`) are declared stubs that exit non-zero until they
-are implemented. They are not part of `check`.
-
-## Development loop
-
-Follow Red-Green-Refactor from [Testing](docs/TESTING.md):
-
-1. Write the smallest failing test and confirm it fails for the expected
-   reason. A bug fix starts with a reproducing regression that is kept.
-2. Make the smallest change that turns it green without breaking other suites.
-3. Refactor with every suite green.
-
-Every wait has a fixed upper bound; a timeout is a test failure, not a
-successful cancellation. Every fixture owns and cleans up its processes,
-connections, listeners, sockets, files, and temporary directories. Tests use
-OS-assigned loopback ports and never depend on execution order.
-
-Documentation-only and configuration-only changes need no invented protocol
-test, but they still run the complete local check.
+Performance gates run only when requested. Release-candidate tasks remain
+failing stubs until implemented; no stub may be presented as a passing gate.
 
 ## Prohibitions
 
-- Never add a way to bypass certificate-chain or service-identity
-  verification on the normal client path.
-- Never add an unlimited queue, buffer, or deadline value. Every
-  peer-controlled allocation is bounded.
-- Never expose a PID, `Subject`, socket, reference, atom, raw map, mailbox
-  message, key, or traffic secret through a public value.
-- No new `let assert` in `src/` (tests may use it), no `panic`, no `todo`;
-  `glinter` treats them as errors.
-- No unused exports and no placeholder exports.
-- No new Erlang FFI module beyond those listed in
-  [Architecture](docs/ARCHITECTURE.md), and no new dependency unless the task
-  says so.
-- Stage explicit paths. Never run `git add -A` or `git add .`: the repository
-  root can hold untracked local files.
-- Never tag, publish, push, or change a package version.
+- Never expose a certificate-verification bypass on a normal client path.
+- Never add an unlimited queue, buffer, allocation, or deadline.
+- Never expose a PID, `Subject`, socket, reference, atom, backend term, key,
+  or traffic secret through public values.
+- No new `let assert` in `src`, no `panic`, and no `todo`.
+- No unused or placeholder exports.
+- Do not add an Erlang FFI module without documenting and auditing its narrow
+  runtime responsibility.
+- Never tag, publish, push, create a hosted release, or change package versions
+  without a separate explicit request.
 
 ## Public API changes
 
-An intentional public signature change requires `mise run api-update` followed
-by a reviewed diff of `api/http3.snapshot` and `api/gleam_quic.snapshot`.
-Never hand-edit a snapshot and never refresh one to silence an unexpected
-difference.
+Intentional signatures require `mise run api-update`, review of all three
+files under `api`, and then `mise run api`. Snapshots are compiler-derived and
+must never be hand-edited to hide an unexpected difference.
 
-## Documents to keep honest
+## User-owned changes
 
-- [Conformance](docs/CONFORMANCE.md) is the source of truth for release
-  findings; it is updated only with evidence.
-- `CHANGELOG.md` records behavior changes under `Unreleased`.
-- [`docs/evidence/`](docs/evidence/README.md) holds one dated file per gate
-  run; performance rows stay in `benchmarks/results/`.
-- [Roadmap](docs/ROADMAP.md) gives the dependency order of the open work.
+The worktree may contain local performance evidence and hot-path changes.
+Preserve unrelated modifications and stage only explicit paths.

@@ -1,0 +1,12 @@
+module,function,baseline_calls,candidate_calls,reduction_percent
+http3/internal/native/server_worker,handle_command,1204,804,33.2
+http3/internal/native/server_worker,handle_respond,0,200,not_applicable
+http3/internal/native/server_worker,handle_send_response,200,0,100.0
+http3/internal/native/server_worker,handle_send_chunk,200,0,100.0
+http3/internal/native/server_worker,handle_finish_response,200,0,100.0
+http3/internal/native/server_worker,drive_and_loop,1633,1155,29.3
+quic_core/internal/connection_state,poll_stream_frame,5645,4084,27.7
+quic_core/internal/connection_state,poll_streams,43010,0,100.0
+quic_core/internal/connection_state,pending_stream_bytes,0,0,not_applicable
+quic_core/internal/connection_state,has_pending_output,8785,6380,27.4
+quic_core/internal/connection_state,stream_would_emit,61379,0,100.0

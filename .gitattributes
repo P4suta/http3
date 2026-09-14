@@ -1,0 +1,13 @@
+# Line endings are part of this repository's evidence, not a local preference.
+# A byte-exact fixture decides a test's expected length, and two lock files are
+# compared by digest against a pin, so a checkout that rewrote their line
+# endings would fail those checks on that platform alone. Normalise everything
+# to LF in the working tree, and mark the files whose bytes are compared so no
+# future attribute can translate them.
+* text=auto eol=lf
+
+test/fixtures/** -text
+packages/http3/test/fixtures/** -text
+packages/quic_core/test/fixtures/** -text
+packages/http3/test/interop/requirements.lock -text
+packages/http3/test/interop/quicgo/go.sum -text

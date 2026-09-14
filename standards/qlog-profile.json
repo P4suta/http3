@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "baseline_date": "2026-08-30",
+  "documents": [
+    {
+      "id": "draft-ietf-quic-qlog-main-schema-14",
+      "published": "2026-07-06",
+      "url": "https://www.ietf.org/archive/id/draft-ietf-quic-qlog-main-schema-14.txt",
+      "sha256": "e1f1ed92bdcc62ed3ea25118bdc863c38bbff70974d8d714b2fa11c24f1a211b"
+    },
+    {
+      "id": "draft-ietf-quic-qlog-quic-events-13",
+      "published": "2026-07-06",
+      "url": "https://www.ietf.org/archive/id/draft-ietf-quic-qlog-quic-events-13.txt",
+      "sha256": "9a5014a22223943cc435c6ff67eaf959538fd6697c3ef988477b1eebea64ac55"
+    },
+    {
+      "id": "draft-ietf-quic-qlog-h3-events-13",
+      "published": "2026-07-06",
+      "url": "https://www.ietf.org/archive/id/draft-ietf-quic-qlog-h3-events-13.txt",
+      "sha256": "52778c7e8f271fab5de85f19fc06d9e585967fd442994f19193fea327f9ede6c"
+    }
+  ],
+  "file_schema": "urn:ietf:params:qlog:file:sequential",
+  "serialization_format": "application/qlog+json-seq",
+  "event_schemas": [
+    "urn:ietf:params:qlog:events:quic-13",
+    "urn:ietf:params:qlog:events:http3-13",
+    "urn:ietf:params:qlog:events:loglevel"
+  ],
+  "required_live_families": {
+    "connectivity": ["quic:connection_started", "quic:connection_closed"],
+    "transport": ["quic:packet_sent", "quic:packet_received"],
+    "tls": ["quic:key_updated", "quic:key_discarded"],
+    "recovery": ["quic:recovery_metrics_updated", "quic:congestion_state_updated"],
+    "http3": ["http3:frame_created", "http3:frame_parsed"],
+    "qpack": ["http3:parameters_set", "http3:stream_type_set"]
+  },
+  "required_per_trace_families": {
+    "connectivity": ["quic:connection_started", "quic:connection_closed"],
+    "transport": ["quic:packet_sent", "quic:packet_received"],
+    "tls": ["quic:key_updated", "quic:key_discarded"],
+    "recovery": ["quic:recovery_metrics_updated", "quic:congestion_state_updated"],
+    "http3": ["http3:frame_created", "http3:frame_parsed"],
+    "qpack": ["http3:parameters_set", "http3:stream_type_set"]
+  }
+}

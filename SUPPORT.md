@@ -10,9 +10,11 @@ The intended first-release platform range is:
 - Erlang/OTP 28 and 29; and
 - Linux, macOS, and Windows after their hosted matrices pass.
 
-The JavaScript target, older OTP releases, HTTP/1.1, HTTP/2, automatic
-fallback, WebTransport, MASQUE, multipath QUIC, and draft QUIC extensions are
-not supported by this package.
+The intended product scope includes HTTP/1.1, HTTP/2, HTTP/3, safe automatic
+fallback, and the published MASQUE RFCs, but those surfaces are not supported
+until their release gates pass. The JavaScript target, older OTP releases,
+multipath QUIC, and draft protocol extensions are outside the initial scope.
+WebTransport is deferred until it becomes an RFC.
 
 Until publication, only the current source-tree revision receives fixes.
 There are no compatibility, security-update, or end-of-life promises for

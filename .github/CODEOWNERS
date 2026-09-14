@@ -1,6 +1,10 @@
 * @P4suta
 
 /.github/ @P4suta
-/packages/gleam_quic/ @P4suta
+/api/ @P4suta
+/docs/ @P4suta
+/packages/http3/ @P4suta
+/packages/quic_core/ @P4suta
+/scripts/ @P4suta
 /src/ @P4suta
 /test/ @P4suta
