@@ -553,8 +553,17 @@ pub fn advanced_transport_controls_round_trip_test() -> Nil {
       assert server.protocol(incoming) == Some("test-datagram")
       server.send_response(incoming, 200, []) |> should.be_ok
       let stream_transport = server.request_transport(incoming)
-      assert transport.stream_capabilities(stream_transport)
-        == Ok(transport.Capabilities(True, True, False, True))
+      // RFC 9114 section 6.2.1 permits a request stream to arrive before the
+      // peer's SETTINGS has been read, and HTTP Datagram support is negotiated
+      // by that frame, so the accepted request is not a barrier for it. Wait
+      // for the negotiated capability rather than assume the ordering; the
+      // bounded attempt count is what fails if it never arrives.
+      assert await_stream_capabilities(
+          stream_transport,
+          transport.Capabilities(True, True, False, True),
+          1000,
+        )
+        == transport.Capabilities(True, True, False, True)
       assert transport.maximum_datagram_size(stream_transport) |> should.be_ok
         > 0
       // DPLPMTUD stays at the RFC 9000 floor when a platform cannot apply a
@@ -1400,6 +1409,23 @@ fn await_stream_priority(
       assert attempts > 0
       http3_test_support.pause_milliseconds(1)
       await_stream_priority(stream, urgency, incremental, attempts - 1)
+    }
+  }
+}
+
+// nolint: label_possible -- recursive polling arguments are conventional.
+fn await_stream_capabilities(
+  stream: transport.Stream,
+  expected: transport.Capabilities,
+  attempts: Int,
+) -> transport.Capabilities {
+  let observed = transport.stream_capabilities(stream) |> should.be_ok
+  case observed == expected {
+    True -> observed
+    False -> {
+      assert attempts > 0
+      http3_test_support.pause_milliseconds(1)
+      await_stream_capabilities(stream, expected, attempts - 1)
     }
   }
 }
