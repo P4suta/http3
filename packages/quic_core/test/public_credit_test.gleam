@@ -478,7 +478,13 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
       actor,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
-  let dropped = dropped_count(stalled_peer)
+  // See `await_dropped`: a drained actor is not a barrier for a count that
+  // reaches it on a later delivery.
+  let dropped =
+    await_dropped(
+      stalled_peer,
+      udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
+    )
   let _stalled_closed = client.close(stalled)
   let _stalled_peer_closed = server.close(stalled_peer)
   let stopped = server.stop(listener)
@@ -535,14 +541,17 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
 
   // A bounded burst of spoofed datagrams overruns the connection's window.
   let junked = process.new_subject()
-  let _junker =
-    spawn_burst_junker(
-      port,
-      result.unwrap(identifier, <<0:64>>),
-      overflow_burst,
-      junked,
-    )
-  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
+  let junk_done =
+    with_suspended_process(actor, fn() {
+      let _junker =
+        spawn_burst_junker(
+          port,
+          result.unwrap(identifier, <<0:64>>),
+          overflow_burst,
+          junked,
+        )
+      process.receive(junked, within: 3 * settle_bound_milliseconds)
+    })
   // Let the flooded actor drain so its statistics query answers promptly.
   let settled =
     await_drained(
@@ -551,7 +560,21 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
     )
 
   // Overflow is dropped for the flooded connection only.
-  let stalled_dropped = dropped_count(stalled_peer)
+  //
+  // The listener counts a drop the moment it refuses one, but the connection
+  // only learns of it when a later delivery carries the count -- an ordinary
+  // one while the flood is still arriving, or the empty one the listener sends
+  // once the actor has acknowledged everything it was sent and the window has
+  // reopened. Either way the count travels a round trip that finishes after
+  // the actor's own mailbox is already empty, so a drained actor is not a
+  // barrier for it and reading straight through one reads whatever has landed
+  // so far. Wait for the count itself; the bound is what fails if the burst
+  // really did fit.
+  let stalled_dropped =
+    await_dropped(
+      stalled_peer,
+      udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
+    )
   let healthy_dropped = dropped_count(healthy_peer)
 
   let _stalled_closed = client.close(stalled)
@@ -626,20 +649,29 @@ pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   // A burst many windows wide shuts this connection's delivery window, so the
   // router must drop part of it and count the drops against this connection.
   let junked = process.new_subject()
-  let _junker =
-    spawn_burst_junker(
-      port,
-      result.unwrap(identifier, <<0:64>>),
-      overflow_burst,
-      junked,
-    )
-  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
+  let junk_done =
+    with_suspended_process(actor, fn() {
+      let _junker =
+        spawn_burst_junker(
+          port,
+          result.unwrap(identifier, <<0:64>>),
+          overflow_burst,
+          junked,
+        )
+      process.receive(junked, within: 3 * settle_bound_milliseconds)
+    })
   let settled =
     await_drained(
       actor,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
-  let dropped = dropped_count(stalled_peer)
+  // See `await_dropped`: a drained actor is not a barrier for a count that
+  // reaches it on a later delivery.
+  let dropped =
+    await_dropped(
+      stalled_peer,
+      udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
+    )
 
   // The owner then reads what the flood left buffered, and the connection
   // whose window those drops shut completes a bounded round trip: the window
@@ -875,6 +907,27 @@ fn junk_burst(
         Error(_reason) -> Nil
         Ok(Nil) -> junk_burst(socket, target, payload, remaining - 1)
       }
+  }
+}
+
+@external(erlang, "quic_core_test_ffi", "with_suspended_process")
+fn with_suspended_process(actor: Pid, body: fn() -> value) -> value
+
+/// The drop count a connection has been told about, once it has been told.
+///
+/// Only ever grows, so a poll that stops at the first non-zero reading stops at
+/// a report that has genuinely landed rather than at a moment in time.
+fn await_dropped(peer: server.Connection, deadline: Int) -> Result(Int, Nil) {
+  case dropped_count(peer) {
+    Ok(0) ->
+      case udp.monotonic_millisecond() >= deadline {
+        True -> Ok(0)
+        False -> {
+          process.sleep(mailbox_poll_milliseconds)
+          await_dropped(peer, deadline)
+        }
+      }
+    other -> other
   }
 }
 
