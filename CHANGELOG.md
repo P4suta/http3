@@ -269,12 +269,11 @@
   run under the bash 3.2 that macOS ships instead of failing before they read
   anything, and recorded the `libmagic` the REUSE gate needs there.
 - Started the windowed-flood observation window when the flood starts rather
-  than before its process is spawned, held the connection actor still for the
-  overflow burst so the delivery window rather than a race decides what is
-  dropped, and waited for the HTTP Datagram capability a peer's SETTINGS
-  negotiates instead of assuming an accepted request implies it. The coverage
-  capture completes for all three packages with these, so the gate now fails on
-  its thresholds rather than on a stopped run.
+  than before its process is spawned, and waited for the HTTP Datagram
+  capability a peer's SETTINGS negotiates instead of assuming an accepted
+  request implies it. The coverage capture completes for all three packages
+  with these, so the gate now fails on its thresholds rather than on a stopped
+  run.
 - Addressed the interoperability virtual environment by directory and looked
   for both interpreter layouts, so the hash-locked peer setup works where
   `uv venv` writes `Scripts/python.exe` instead of `bin/python`.

@@ -58,11 +58,6 @@ fn fixture(name: String) -> Result(BitArray, Nil)
 @external(erlang, "quic_core_test_ffi", "labelled_pid")
 fn labelled_pid(handle: handle, label: String) -> Result(Pid, Nil)
 
-/// Hold one connection actor still while `body` runs, so a flood that arrives
-/// meanwhile cannot be consumed as it arrives.
-@external(erlang, "quic_core_test_ffi", "with_suspended_process")
-fn with_suspended_process(actor: Pid, body: fn() -> value) -> value
-
 /// The number of messages waiting in one connection actor's mailbox -- the
 /// backlog the router's per-connection credit window must bound.
 @external(erlang, "quic_core_test_ffi", "mailbox_length")
@@ -539,24 +534,15 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
     |> result.flatten
 
   // A bounded burst of spoofed datagrams overruns the connection's window.
-  //
-  // The actor is held still for the burst. Whether an overrun happens at all
-  // is otherwise a race between arrival and consumption -- an actor that keeps
-  // pace drops nothing however much is sent -- and that race is not what this
-  // test is about. Suspended, the window is the only thing deciding what the
-  // router admits, so the burst overruns it by construction.
   let junked = process.new_subject()
-  let junk_done =
-    with_suspended_process(actor, fn() {
-      let _junker =
-        spawn_burst_junker(
-          port,
-          result.unwrap(identifier, <<0:64>>),
-          overflow_burst,
-          junked,
-        )
-      process.receive(junked, within: 3 * settle_bound_milliseconds)
-    })
+  let _junker =
+    spawn_burst_junker(
+      port,
+      result.unwrap(identifier, <<0:64>>),
+      overflow_burst,
+      junked,
+    )
+  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
   // Let the flooded actor drain so its statistics query answers promptly.
   let settled =
     await_drained(
