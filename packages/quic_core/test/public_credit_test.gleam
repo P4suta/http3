@@ -58,6 +58,11 @@ fn fixture(name: String) -> Result(BitArray, Nil)
 @external(erlang, "quic_core_test_ffi", "labelled_pid")
 fn labelled_pid(handle: handle, label: String) -> Result(Pid, Nil)
 
+/// Hold one connection actor still while `body` runs, so a flood that arrives
+/// meanwhile cannot be consumed as it arrives.
+@external(erlang, "quic_core_test_ffi", "with_suspended_process")
+fn with_suspended_process(actor: Pid, body: fn() -> value) -> value
+
 /// The number of messages waiting in one connection actor's mailbox -- the
 /// backlog the router's per-connection credit window must bound.
 @external(erlang, "quic_core_test_ffi", "mailbox_length")
@@ -375,7 +380,6 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
 
   // A peer floods that connection ID with spoofed short-header datagrams for a
   // fixed window; the router must never grow the actor's mailbox without bound.
-  let deadline = udp.monotonic_millisecond() + flood_window_milliseconds
   let junking = process.new_subject()
   let junked = process.new_subject()
   let _junker =
@@ -383,11 +387,12 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
       port,
       result.unwrap(identifier, <<0:64>>),
       junk_filler_bytes,
-      deadline,
+      flood_window_milliseconds,
       junking,
       junked,
     )
   let junk_started = process.receive(junking, within: settle_bound_milliseconds)
+  let deadline = udp.monotonic_millisecond() + flood_window_milliseconds
   let peak = peak_backlog(actor, deadline, empty_backlog())
 
   // Bounded teardown before any bound is asserted.
@@ -456,7 +461,6 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
 
   // Every spoofed datagram is 8 KiB, so the datagram half of the window can
   // never bind first: 192 of them would be 1.5 MiB in one mailbox.
-  let deadline = udp.monotonic_millisecond() + flood_window_milliseconds
   let junking = process.new_subject()
   let junked = process.new_subject()
   let _junker =
@@ -464,11 +468,12 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
       port,
       result.unwrap(identifier, <<0:64>>),
       oversized_junk_filler_bytes,
-      deadline,
+      flood_window_milliseconds,
       junking,
       junked,
     )
   let junk_started = process.receive(junking, within: settle_bound_milliseconds)
+  let deadline = udp.monotonic_millisecond() + flood_window_milliseconds
   let peak = peak_backlog(actor, deadline, empty_backlog())
 
   // Bounded teardown before any bound is asserted.
@@ -534,15 +539,24 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
     |> result.flatten
 
   // A bounded burst of spoofed datagrams overruns the connection's window.
+  //
+  // The actor is held still for the burst. Whether an overrun happens at all
+  // is otherwise a race between arrival and consumption -- an actor that keeps
+  // pace drops nothing however much is sent -- and that race is not what this
+  // test is about. Suspended, the window is the only thing deciding what the
+  // router admits, so the burst overruns it by construction.
   let junked = process.new_subject()
-  let _junker =
-    spawn_burst_junker(
-      port,
-      result.unwrap(identifier, <<0:64>>),
-      overflow_burst,
-      junked,
-    )
-  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
+  let junk_done =
+    with_suspended_process(actor, fn() {
+      let _junker =
+        spawn_burst_junker(
+          port,
+          result.unwrap(identifier, <<0:64>>),
+          overflow_burst,
+          junked,
+        )
+      process.receive(junked, within: 3 * settle_bound_milliseconds)
+    })
   // Let the flooded actor drain so its statistics query answers promptly.
   let settled =
     await_drained(
@@ -765,11 +779,19 @@ fn flood(stream: client.Stream, chunk: BitArray, remaining: Int) -> Nil {
 /// Flood the listener's port from a socket the child process owns for a fixed
 /// window, so every stray ICMP or reply lands in that child's mailbox and dies
 /// with it rather than polluting the shared test process.
+/// Flood for a fixed window that starts when the flood does.
+///
+/// The window cannot be handed in as a deadline computed by the caller:
+/// spawning this process, opening its socket, and building an oversized
+/// payload all happen before the first datagram leaves, and under a slow
+/// enough runtime that setup alone outlives a window measured from before it.
+/// The flood would then send nothing and the sampler would observe nothing,
+/// which is indistinguishable from a router that dropped everything.
 fn spawn_windowed_junker(
   port: Int,
   identifier: BitArray,
   filler_bytes: Int,
-  deadline: Int,
+  window_milliseconds: Int,
   junking: process.Subject(Nil),
   junked: process.Subject(Nil),
 ) -> Pid {
@@ -780,7 +802,12 @@ fn spawn_windowed_junker(
     Some(junking),
     junked,
     fn(socket, target, payload) {
-      junk_window(socket, target, payload, deadline)
+      junk_window(
+        socket,
+        target,
+        payload,
+        udp.monotonic_millisecond() + window_milliseconds,
+      )
     },
   )
 }
