@@ -196,3 +196,72 @@ pub fn relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test() -> Ni
     )
     == Ok(encapsulated_response())
 }
+
+pub fn a_hundred_continue_expectation_is_refused_in_both_directions_test() -> Nil {
+  // RFC 9458 section 5.1: an encapsulated exchange has no way to carry the
+  // interim response a 100-continue expectation asks for, so a client does not
+  // construct one and a gateway that is handed one answers with an error.
+  let expecting = fn(value: String) {
+    bhttp.Request(
+      "POST",
+      "https",
+      "example.com",
+      "/submit",
+      [bhttp.Field("expect", bit_array.from_string(value))],
+      [<<1, 2>>],
+      [],
+      0,
+    )
+  }
+  let assert Ok(client) =
+    ohttp.deterministic_client(
+      config(),
+      ephemeral_key(),
+      bhttp.defaults(),
+      maximum_message_bytes: 4096,
+    )
+  let assert Ok(gateway) =
+    ohttp.gateway(
+      key(),
+      allowed_authorities: ["example.com"],
+      bhttp_limits: bhttp.defaults(),
+      maximum_message_bytes: 4096,
+    )
+
+  // The client refuses to build one, whatever case or parameters it carries.
+  assert ohttp.seal_request(
+      client,
+      expecting("100-continue"),
+      bhttp.KnownLength,
+    )
+    == Error(ohttp.InvalidMessage)
+  assert ohttp.seal_request(
+      client,
+      expecting("100-CONTINUE"),
+      bhttp.KnownLength,
+    )
+    == Error(ohttp.InvalidMessage)
+  assert ohttp.seal_request(
+      client,
+      expecting("other, 100-continue;q=1"),
+      bhttp.KnownLength,
+    )
+    == Error(ohttp.InvalidMessage)
+
+  // An expectation that merely contains the token is a different expectation
+  // and is carried through, so the refusal is on the token and not the text.
+  let assert Ok(#(sealed, _)) =
+    ohttp.seal_request(client, expecting("not-100-continue"), bhttp.KnownLength)
+  let assert Ok(replays) = ohttp.replay_store(maximum_entries: 8)
+  let assert Ok(#(opened, _, _)) = ohttp.open_request(gateway, replays, sealed)
+  assert opened == expecting("not-100-continue")
+
+  // A peer that ignores the rule still gets an error from the gateway rather
+  // than a forwarded request, so the refusal does not depend on the sender.
+  let assert Ok(smuggled) =
+    bhttp.encode(expecting("100-continue"), bhttp.KnownLength, bhttp.defaults())
+  let assert Ok(#(sealed, _)) = ohttp.seal_request_bytes(client, smuggled)
+  let assert Ok(fresh) = ohttp.replay_store(maximum_entries: 8)
+  assert ohttp.open_request(gateway, fresh, sealed)
+    == Error(ohttp.InvalidMessage)
+}

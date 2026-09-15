@@ -306,3 +306,9 @@
   `Strict-Transport-Security` directive rather than only to `max-age`: a field
   that repeats a directive, recognised or not, is now ignored whole. The
   seen-name list is bounded at sixteen directives.
+- Refused a 100-continue expectation in both OHTTP directions, which RFC 9458
+  section 5.1 requires: an encapsulated exchange carries one request and one
+  response and cannot convey the interim response the expectation asks for, so
+  the client declines to build one and the gateway answers an error rather than
+  forwarding it. The token is matched on its own, so `not-100-continue` is a
+  different expectation and is carried through.
