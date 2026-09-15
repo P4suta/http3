@@ -1206,6 +1206,101 @@ pub fn authenticated_https_record_can_select_http3_test() -> Nil {
   Nil
 }
 
+pub fn a_configured_proxy_holds_back_a_discovered_alternative_test() -> Nil {
+  // RFC 7838 section 2.4: a client configured to use a proxy for a request does
+  // not connect directly to an alternative service for it, but routes it
+  // through that proxy. Both routes answer here, and they answer differently,
+  // so the body says which one was taken.
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let assert Ok(h3_config) = h3_server.new(certificate, private_key)
+  let assert Ok(udp_listener) = h3_server.start(h3_config)
+  let assert Ok(port) = h3_server.port(udp_listener)
+  let h3_task =
+    http_test_support.start_task(fn() {
+      use incoming <- result.try(h3_server.accept(udp_listener))
+      h3_server.respond(incoming, 200, [], <<"alternative":utf8>>)
+    })
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, proxy_port)) = transport.local_endpoint(listener)
+  let proxy_task =
+    http_test_support.start_task(fn() {
+      use socket <- result.try(transport.accept(listener, 2000))
+      use connect_read <- result.try(transport.read(socket, 4096, 2000))
+      let assert transport.ReadData(connect_bytes, socket) = connect_read
+      use _ <- result.try(
+        transport.send(socket, <<
+          "HTTP/1.1 200 Connection Established\r\n\r\n":utf8,
+        >>),
+      )
+      use ready <- result.try(transport.upgrade_server_tls(
+        socket,
+        certificate,
+        private_key,
+        [<<"http/1.1":utf8>>],
+        2000,
+      ))
+      let assert transport.TlsReady(socket, <<"http/1.1":utf8>>, _) = ready
+      use _ <- result.try(transport.read(socket, 4096, 2000))
+      use _ <- result.try(
+        transport.send(socket, <<
+          "HTTP/1.1 200 OK\r\n":utf8,
+          "Content-Length: 7\r\nConnection: close\r\n\r\nproxied":utf8,
+        >>),
+      )
+      use _ <- result.try(transport.close(socket))
+      Ok(connect_bytes)
+    })
+  let resolver = fn(_, origin_port, _) {
+    Ok([
+      client.HttpsRecord(
+        alpns: ["h3"],
+        port: origin_port,
+        authenticated: True,
+        expires_in_milliseconds: 60_000,
+      ),
+    ])
+  }
+  let assert Ok(config) =
+    client.defaults()
+    |> client.with_https_record_resolver(resolver)
+    |> client.with_ca_certificates([ca_certificate])
+    |> client.with_proxy(client.Proxy(
+      host: "127.0.0.1",
+      port: proxy_port,
+      authorization: None,
+    ))
+  let assert Ok(running) = client.start(config)
+  let outgoing =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: body.empty(),
+      scheme: gleam_http.Https,
+      host: "localhost",
+      port: Some(port),
+      path: "/proxied",
+      query: None,
+    )
+
+  let assert Ok(completed) = client.exchange(running, outgoing)
+  assert client.selected_protocol(completed) != client.Http3
+  let assert Ok(#(<<"proxied":utf8>>, [])) =
+    body.read_all(client.response(completed).body, 7)
+  let assert Ok(connect_bytes) = http_test_support.await_task(proxy_task)
+  let assert Ok(connect_text) = bit_array.to_string(connect_bytes)
+  assert string.starts_with(connect_text, "CONNECT localhost:")
+
+  let assert Ok(Nil) = client.close(running)
+  // The point of the rule is that the alternative is not contacted at all, not
+  // merely that its answer is unused. Stopping its listener is what ends the
+  // accept, so a task that never served a request reports a failure.
+  let assert Ok(h3_server.Stopped) = h3_server.stop(udp_listener)
+  assert result.is_error(http_test_support.await_task(h3_task))
+  let assert Ok(Nil) = transport.stop(listener)
+  Nil
+}
+
 pub fn proxy_is_disabled_by_default_and_configuration_is_typed_test() -> Nil {
   let config = client.defaults()
   assert client.proxy_policy(config) == client.ProxyPolicy(proxy: None)
