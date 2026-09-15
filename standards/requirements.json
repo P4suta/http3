@@ -8770,7 +8770,484 @@
         ]
       }
     },
-    {"id":"RFC9458","title":"Oblivious HTTP","map_complete":false,"evidence":["src/http/ohttp.gleam","test/ohttp_test.gleam"]},
+    {
+      "id": "RFC9458",
+      "title": "Oblivious HTTP",
+      "map_complete": true,
+      "evidence": [
+        "src/http/ohttp.gleam",
+        "test/ohttp_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9458.txt",
+        "document_sha256": "55f13cb7b3501e29f9edbbbbd9c8a3e13b84799d609d0e01443f543effa99350",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9458",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 33,
+        "level_counts": {
+          "MUST": 17,
+          "MUST NOT": 9,
+          "SHOULD NOT": 2,
+          "SHOULD": 4,
+          "RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9458-3-MUST-AUTHENTICATE-THE-KEY-CONFIGURATION",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The key configuration a client encapsulates against is authenticated and integrity protected so no other entity can substitute one it can read.",
+          "disposition": "NotApplicable",
+          "reason": "Authentication here is a property of how the configuration was retrieved, and this package fetches nothing: a caller hands it the bytes it obtained. What the codec can answer, that the bytes decode to exactly one well formed configuration or to none, it answers in decode_key_configuration."
+        },
+        {
+          "id": "RFC9458-3.2-MUST-DISCARD-A-MALFORMED-COLLECTION",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A key configuration collection with any incorrectly encoded member is discarded whole rather than partly accepted, so recovery differences cannot segregate clients.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configurations"},
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_configuration_collection"},
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configuration"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5-MUST-KEEP-ADDED-FIELDS-INDEPENDENT",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["relay"],
+          "summary": "Any field the relay's own request carries beside the encapsulated body is independent of that body.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5-MUST-REMOVE-ADDED-FIELDS-BEFORE-FORWARDING",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["relay"],
+          "summary": "The request the relay forwards to the gateway is built from the fixed gateway URI, the fixed content type, and the body, so nothing an inbound request carried survives into it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5-MUST-NOT-ADD-UNANNOUNCED-INFORMATION",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["relay"],
+          "summary": "No inbound header, address, connection identifier, or credential enters the value the relay forwards, so the relay adds nothing a client is unaware of.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5-MUST-ENCAPSULATE-FORWARDED-RESPONSE-INFORMATION",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["relay"],
+          "summary": "Anything the relay passes back that came from the gateway is the encapsulated response itself; nothing unencapsulated is carried out of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_response"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5-MUST-CARRY-ONLY-THE-NECESSARY-RESPONSE-FIELDS",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["relay"],
+          "summary": "The relay's response to its client carries a 200, a content type, and the encapsulated body, and nothing else.",
+          "disposition": "NotApplicable",
+          "reason": "The status and fields of the relay's own response are set where that response is composed, and this package composes no HTTP response. forward_response yields the encapsulated body alone and contributes no field to put beside it."
+        },
+        {
+          "id": "RFC9458-5.1-MUST-NOT-CONSTRUCT-A-CONTINUE-EXPECTATION",
+          "section": "5.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A client does not build an encapsulated request carrying a 100-continue expectation, because the exchange cannot convey the interim response it asks for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "refuse_continue_expectation"},
+            {"path": "src/http/ohttp.gleam", "symbol": "expects_continue"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "a_hundred_continue_expectation_is_refused_in_both_directions_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5.1-MUST-ERROR-ON-A-CONTINUE-EXPECTATION",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["gateway"],
+          "summary": "A gateway handed a request carrying a 100-continue expectation answers with an error instead of forwarding it to the target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "refuse_continue_expectation"},
+            {"path": "src/http/ohttp.gleam", "symbol": "expects_continue"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "a_hundred_continue_expectation_is_refused_in_both_directions_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5.2-MUST-ANSWER-AN-INVALID-MESSAGE-WITH-4XX",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["gateway", "relay"],
+          "summary": "Every refusal is a typed error naming which rule failed, so the resource answering it has a client-error condition to report rather than a silent drop.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_response"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "a_hundred_continue_expectation_is_refused_in_both_directions_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-5.2-MUST-ENCAPSULATE-POST-DECAPSULATION-ERRORS",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["gateway"],
+          "summary": "An error a gateway detects after decapsulation succeeds is answered inside an encapsulated response, which needs the response context that decapsulation produced.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_response"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_response_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6-MUST-USE-HTTPS-ON-BOTH-HOPS",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["client", "relay"],
+          "summary": "The hop this package constrains, relay to gateway, is bound to one https URI at construction and refuses any other scheme; the client's own hop is the request it composes, which nothing here builds.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"},
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.1-MUST-AUTHORIZE-THE-GATEWAY-FOR-THE-TARGET",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client has a mechanism to decide that a given gateway may be used for a given target, because it does not authenticate the target itself.",
+          "disposition": "NotApplicable",
+          "reason": "Deciding that a particular gateway may speak for a particular target is a trust decision made when the deployment is configured, not one a codec can make from the bytes it is given. The gateway side of that pairing is enforced here: a gateway carries an exact authority allowlist and an empty list denies everything."
+        },
+        {
+          "id": "RFC9458-6.1-MUST-USE-AN-ATTRIBUTABLE-KEY-CONFIGURATION",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The key configuration used to generate encapsulated requests is integrity protected and authenticated so it can be attributed to the intended gateway.",
+          "disposition": "NotApplicable",
+          "reason": "Attribution depends on the channel the configuration arrived over, which this package does not open. It refuses a configuration that is not exactly well formed and never substitutes a registry identifier it does not implement, so nothing it accepts is a silently altered one."
+        },
+        {
+          "id": "RFC9458-6.1-MUST-USE-A-FRESH-HPKE-CONTEXT-PER-REQUEST",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each sealed request draws a new ephemeral key from the platform entropy source, so no two requests share an HPKE context.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "client"},
+            {"path": "src/http/ohttp.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.1-MUST-NOT-CARRY-IDENTIFYING-INFORMATION-TO-THE-RELAY",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The request carrying an encapsulated request to the relay carries no identifying information the client cannot account for.",
+          "disposition": "NotApplicable",
+          "reason": "What a client attaches to its own outbound request is chosen where that request is composed, and this package composes none. The value it produces for a relay to send is the gateway URI, the fixed content type, and the body, so nothing identifying comes from here."
+        },
+        {
+          "id": "RFC9458-6.2-MUST-FOLLOW-HTTP-FORWARDING-RULES",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["relay"],
+          "summary": "A relay forwarding a request follows the HTTP forwarding rules for intermediaries.",
+          "disposition": "NotApplicable",
+          "reason": "The forwarding rules govern how an intermediary rewrites a live HTTP message, which needs the message and the connection it arrived on. This package models the relay as the fixed gateway identity plus the body to send, and holds no message to rewrite."
+        },
+        {
+          "id": "RFC9458-6.2-SHOULD-NOT-FORWARD-UNKNOWN-FIELDS",
+          "section": "6.2",
+          "level": "SHOULD NOT",
+          "roles": ["relay"],
+          "summary": "A relay does not pass an unrecognised field through to the gateway.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "require_media_type"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.2-MUST-NOT-ADD-IDENTIFYING-INFORMATION",
+          "section": "6.2",
+          "level": "MUST NOT",
+          "roles": ["relay"],
+          "summary": "Forwarding adds nothing that could identify a client beyond what the client already knows may be added.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.2.1-MUST-NOT-ADD-A-UNIQUE-CLIENT-IDENTIFIER",
+          "section": "6.2.1",
+          "level": "MUST NOT",
+          "roles": ["relay"],
+          "summary": "Nothing a relay adds uniquely and permanently identifies a client, pseudonymous identifiers included.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.2.3-SHOULD-ONLY-DELAY-WITH-CLIENT-AWARENESS",
+          "section": "6.2.3",
+          "level": "SHOULD",
+          "roles": ["relay"],
+          "summary": "Forwarding is a pure construction with no delay in it, so no client's latency is spent on timing mitigation without that client knowing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "forward_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.3-SHOULD-LIMIT-THE-REACHABLE-TARGETS",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["gateway"],
+          "summary": "A gateway is not usable as a relay to an arbitrary target: it carries an exact authority allowlist and an empty list denies every request.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "gateway"},
+            {"path": "src/http/ohttp.gleam", "symbol": "authorize_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "validate_authorities"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.3-SHOULD-NOT-USE-NON-SECURE-TARGET-REQUESTS",
+          "section": "6.3",
+          "level": "SHOULD NOT",
+          "roles": ["gateway"],
+          "summary": "A decapsulated request naming any scheme other than https is refused before it can reach a target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "authorize_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.4-MUST-NOT-REUSE-HPKE-KEYS-ACROSS-PROTOCOLS",
+          "section": "6.4",
+          "level": "MUST",
+          "roles": ["gateway"],
+          "summary": "The HPKE keys a gateway uses are bound to this protocol's own message/bhttp request label and are not valid for another protocol using the same label.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "gateway_key"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.5-MUST-NOT-RETRY-WITHOUT-A-POSITIVE-SIGNAL",
+          "section": "6.5",
+          "level": "MUST NOT",
+          "roles": ["client", "relay"],
+          "summary": "A failed request is not retried automatically unless something positively indicates it was neither processed nor forwarded.",
+          "disposition": "NotApplicable",
+          "reason": "Retrying is a decision about a request in flight, and this package neither sends a request nor observes one failing. Every operation it exposes is a single pure transformation that either succeeds or returns a typed error to the caller that will make that decision."
+        },
+        {
+          "id": "RFC9458-6.5.1-SHOULD-INCLUDE-A-DATE-FIELD",
+          "section": "6.5.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client includes a Date field in encapsulated requests unless it knows the gateway does not use one for anti-replay.",
+          "disposition": "NotApplicable",
+          "reason": "Which fields an encapsulated request carries is decided when the message is built, and the caller hands this codec a complete message to seal. The anti-replay this package does implement is an exact fingerprint set rather than a time window, so it needs no Date of its own."
+        },
+        {
+          "id": "RFC9458-6.5.1-MUST-NOT-TREAT-THE-TIME-WINDOW-AS-SECRET",
+          "section": "6.5.1",
+          "level": "MUST NOT",
+          "roles": ["gateway"],
+          "summary": "A gateway's anti-replay acceptance window is not treated as secret information.",
+          "disposition": "NotApplicable",
+          "reason": "This gateway keeps no time window to treat as secret or otherwise. Its anti-replay is a finite fingerprint set that refuses an exact repeat and fails closed when it is full, so there is no interval whose value could be inferred or concealed."
+        },
+        {
+          "id": "RFC9458-6.5.2-MUST-ENCRYPT-A-RETRY-AFRESH",
+          "section": "6.5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A retried request is a fresh encryption under a new HPKE context rather than a resend of the previous encapsulation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "client"},
+            {"path": "src/http/ohttp.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-6.5.2-MUST-NOT-RETRY-AN-ADJUSTED-DATE-TWICE",
+          "section": "6.5.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A client adjusts the date and retries at most once.",
+          "disposition": "NotApplicable",
+          "reason": "Counting retries belongs to whatever drives the exchange, and this package drives none: each seal is an independent call with no memory of an earlier one. It also implements no date-conditioned anti-replay for a client to be adjusting against."
+        },
+        {
+          "id": "RFC9458-6.5.2-SHOULD-KEEP-DATE-CONDITIONED-RESPONSES-OUT-OF-CACHES",
+          "section": "6.5.2",
+          "level": "SHOULD",
+          "roles": ["gateway"],
+          "summary": "A gateway conditioning responses on the Date field keeps intermediaries from caching them, or varies on Date.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here conditions a response on the Date field, so no response it produces is one this rule describes. Cache directives also live on the HTTP response the gateway composes, which this package does not build."
+        },
+        {
+          "id": "RFC9458-6.5.2-MUST-NOT-REUSE-THE-GATEWAY-DATE",
+          "section": "6.5.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The date a gateway reports is used for that one retry and for nothing else, including later requests to any resource.",
+          "disposition": "NotApplicable",
+          "reason": "No value from a gateway response is retained anywhere in this package: opening a response yields the plaintext to the caller and keeps nothing. There is therefore no stored date for a later request to reuse."
+        },
+        {
+          "id": "RFC9458-6.10-RECOMMENDED-USE-HTTPS",
+          "section": "6.10",
+          "level": "RECOMMENDED",
+          "roles": ["client", "relay", "gateway"],
+          "summary": "The hops that carry encapsulated messages use HTTPS, which the relay enforces on its gateway URI and the gateway enforces on the decapsulated target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "relay"},
+            {"path": "src/http/ohttp.gleam", "symbol": "authorize_request"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "relay_forwards_only_ohttp_content_and_fixed_gateway_identity_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9458-7-MUST-MITIGATE-CONFIGURATION-TRACKING",
+          "section": "7",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The accommodation provided against configuration tracking is that a collection is accepted whole or not at all and an unimplemented registry identifier is never substituted, so recovery behaviour does not vary between clients.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configurations"},
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_configuration_collection"},
+            {"path": "src/http/ohttp.gleam", "symbol": "select_algorithm"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 1,
+        "entries": [
+          {
+            "id": 7781,
+            "section": "Appendix A",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction sets the Content-Length in one appendix example to 35, the length of the encapsulated response printed directly above it, where the published text says 38. It corrects an example figure and carries no rule; this codec produces and consumes the encapsulated response bytes themselves and composes no HTTP response to carry that field."
+          }
+        ]
+      }
+    },
     {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
     {"id":"RFC9525","title":"Service Identity in TLS","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/authentication.gleam","packages/quic_core/test/public_loopback_test.gleam"]},
