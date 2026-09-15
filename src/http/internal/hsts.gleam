@@ -32,9 +32,10 @@ pub fn parse(
     value
     |> string.split(on: ";")
     |> list.map(string.trim)
-  case parse_directives(directives, None, False, []) {
-    Some(#(seconds, include_subdomains)) -> {
-      let host = string.lowercase(host)
+  let host = string.lowercase(host)
+  case named_host(host), parse_directives(directives, None, False, []) {
+    False, _ -> None
+    True, Some(#(seconds, include_subdomains)) -> {
       let seconds = int.min(seconds, maximum_age_seconds)
       Some(Entry(
         host:,
@@ -43,7 +44,7 @@ pub fn parse(
         retained_bytes: string.byte_size(host) + 24,
       ))
     }
-    None -> None
+    True, None -> None
   }
 }
 
@@ -89,8 +90,37 @@ pub fn from_persisted(
   }
 }
 
+/// Whether a policy may be keyed on this host at all.
+///
+/// RFC 6797 section 8.1.1 refuses an IP literal: an address is not a name, so a
+/// policy keyed on one would outlive whatever answers at that address. The
+/// bracketed and bare IPv6 forms are both caught by the colon, and the dotted
+/// form by four decimal labels. A label that merely looks numeric inside a
+/// longer name is left alone.
+fn named_host(host: String) -> Bool {
+  !string.starts_with(host, "[")
+  && !string.contains(host, ":")
+  && !dotted_address(host)
+}
+
+fn dotted_address(host: String) -> Bool {
+  case string.split(host, on: ".") {
+    [first, second, third, fourth] ->
+      list.all([first, second, third, fourth], decimal_octet)
+    _ -> False
+  }
+}
+
+fn decimal_octet(label: String) -> Bool {
+  case string.length(label) <= 3, int.parse(label) {
+    True, Ok(value) -> value >= 0 && value <= 255
+    _, _ -> False
+  }
+}
+
 fn valid_host(host: String) -> Bool {
-  host != ""
+  named_host(host)
+  && host != ""
   && string.byte_size(host) <= 253
   && !string.starts_with(host, ".")
   && !string.ends_with(host, ".")

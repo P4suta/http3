@@ -312,3 +312,11 @@
   the client declines to build one and the gateway answers an error rather than
   forwarding it. The token is matched on its own, so `not-100-continue` is a
   different expectation and is carried through.
+- Read only the first `Strict-Transport-Security` field in a response, which
+  RFC 6797 section 8.1 requires: a second field could previously revise or
+  withdraw what the first said, so a `max-age=0` appended after a real policy
+  cleared it.
+- Refused an IP-literal host as an HSTS host, which RFC 6797 section 8.1.1
+  requires. Both the bracketed and bare IPv6 forms and the dotted IPv4 form are
+  refused before an entry exists, and on the persisted path as well, while a
+  label that merely looks numeric inside a longer name is still a name.

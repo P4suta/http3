@@ -126,3 +126,24 @@ pub fn a_strict_transport_security_directive_may_appear_only_once_test() -> Nil 
   assert !valued.include_subdomains
   assert hsts.parse("max-age; includeSubDomains", "example.com", 0) == None
 }
+
+pub fn an_ip_literal_host_is_never_noted_as_an_hsts_host_test() -> Nil {
+  // RFC 6797 section 8.1.1: an address is not a name, so a policy keyed on one
+  // would outlive whatever answers at that address. Both literal forms and the
+  // bracketed IPv6 form are refused before an entry exists.
+  assert hsts.parse("max-age=60", "192.0.2.1", 0) == None
+  assert hsts.parse("max-age=60", "[2001:db8::1]", 0) == None
+  assert hsts.parse("max-age=60", "2001:db8::1", 0) == None
+  assert hsts.parse("max-age=60", "255.255.255.255", 0) == None
+
+  // A name that merely looks numeric in one label is still a name.
+  let assert Some(named) = hsts.parse("max-age=60", "192.0.2.example", 0)
+  assert named.host == "192.0.2.example"
+  let assert Some(short) = hsts.parse("max-age=60", "1.2.3", 0)
+  assert short.host == "1.2.3"
+
+  // The persisted path refuses the same hosts, so a store written by an older
+  // build cannot reintroduce one.
+  assert hsts.from_persisted("192.0.2.1", False, 60_000, 0) == None
+  assert hsts.from_persisted("[2001:db8::1]", False, 60_000, 0) == None
+}
