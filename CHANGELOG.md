@@ -287,3 +287,8 @@
   coverage gate reported as unreached: every value outside each range, the
   inclusive bounds themselves, and the rule that a line ceiling may not exceed
   the head it has to fit inside.
+- Covered two HTTP/2 server paths the coverage gate reported as unreached: a
+  request body that ends in a trailer section rather than an END_STREAM on its
+  last DATA frame, which RFC 9113 section 8.1 permits, and a handler that
+  returns an error, which still owes its peer a response unless the error is
+  the stream already ending.
