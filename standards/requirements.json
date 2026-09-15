@@ -8774,7 +8774,128 @@
     {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
     {"id":"RFC9525","title":"Service Identity in TLS","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/authentication.gleam","packages/quic_core/test/public_loopback_test.gleam"]},
-    {"id":"RFC9530","title":"Digest Fields","map_complete":false,"evidence":["src/http/digest.gleam","test/digest_test.gleam"]},
+    {
+      "id": "RFC9530",
+      "title": "Digest Fields",
+      "map_complete": true,
+      "evidence": [
+        "src/http/digest.gleam",
+        "test/digest_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9530.txt",
+        "document_sha256": "544dbb7d9afceafa8c9931d9924ca6cff2b4807274166d7ed2483342ef2cdd6a",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9530",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 5,
+        "level_counts": {
+          "MUST": 3,
+          "RECOMMENDED": 1,
+          "MUST NOT": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-REQUEST-REPRESENTATION-DATA",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A state-changing request whose enclosed representation does not describe the target resource digests the representation data it encloses.",
+          "disposition": "NotApplicable",
+          "reason": "Which bytes a message digests follows from the method's own semantics, as the section's PATCH example shows, and that choice is made where the message is built. This module is a field codec: it hashes exactly the representation data a caller hands it and has no message layer that could substitute other bytes for them."
+        },
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-ENCLOSED-STATUS-REPRESENTATION",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response whose representation describes the status of the request computes Repr-Digest on the enclosed representation.",
+          "disposition": "NotApplicable",
+          "reason": "Telling a status representation from a resource representation is a judgement about the response being built, not about the bytes being hashed. Nothing here constructs a response or inspects one, so the codec has no way to make that distinction and no field it emits on its own."
+        },
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-REFERENCED-RESOURCE-REPRESENTATION",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response that references a resource computes Repr-Digest on that resource's selected representation, even when it differs from the target resource.",
+          "disposition": "NotApplicable",
+          "reason": "Selecting the referenced resource's representation depends on Content-Location and the method's semantics, which live in the message layer above this codec. The codec receives one representation and hashes it, so it neither performs nor can override that selection."
+        },
+        {
+          "id": "RFC9530-5-RECOMMENDED-USE-ACTIVE-ALGORITHMS",
+          "section": "5",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The algorithms an application uses are the ones the registry marks Active, which at publication are SHA-256 and SHA-512.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/digest.gleam", "symbol": "defaults"},
+            {"path": "src/http/digest.gleam", "symbol": "implemented"},
+            {"path": "src/http/digest.gleam", "symbol": "algorithm"},
+            {"path": "src/http/digest.gleam", "symbol": "algorithm_key"}
+          ],
+          "tests": [
+            {"path": "test/digest_test.gleam", "symbol": "rfc9530_sha256_and_sha512_vectors_test"},
+            {"path": "test/digest_test.gleam", "symbol": "digest_fields_and_preferences_are_strict_and_bounded_test"}
+          ]
+        },
+        {
+          "id": "RFC9530-5-MUST-NOT-USE-DEPRECATED-ALGORITHMS-ADVERSARIALLY",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A registry algorithm with Deprecated status is never used where an adversary is possible, such as signing an Integrity field value for authenticity.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/digest.gleam", "symbol": "implemented"},
+            {"path": "src/http/digest.gleam", "symbol": "hash"},
+            {"path": "src/http/digest.gleam", "symbol": "verify_values"}
+          ],
+          "tests": [
+            {"path": "test/digest_test.gleam", "symbol": "parse_retains_unknown_algorithms_and_parameters_test"},
+            {"path": "test/digest_test.gleam", "symbol": "verification_checks_every_supported_value_in_constant_time_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 8158,
+            "section": "B.2",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction names the second field in a figure caption Repr-Digest rather than Digest, matching the example it captions. It corrects a caption in an appendix and changes no field, algorithm, or rule this codec implements."
+          },
+          {
+            "id": 8273,
+            "section": "Appendix A",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction repairs a missing verb in the sentence introducing the appendix examples. It is a grammatical fix to prose and carries no requirement, so nothing in this implementation follows from it."
+          },
+          {
+            "id": 8890,
+            "section": "B.4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction replaces the Brotli bytes in two example figures, which as published do not decompress. The correction is to example data rather than to any rule, and this codec hashes the octets it is given without decoding a content coding, so neither the published bytes nor the corrected ones reach it."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9651",
       "title": "Structured Field Values for HTTP",
