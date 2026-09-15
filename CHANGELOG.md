@@ -297,3 +297,8 @@
 - Covered the CONNECT-UDP proxy listener's stopped state: the port accessor
   reports its typed failure once the listener underneath has gone, and stopping
   a listener that is already stopped says so rather than failing.
+- Held the RFC 7239 `Forwarded` codec to the RFC 7230 quoted-string rules its
+  grammar inherits: `,` and `;` inside a quoted value no longer end an element
+  or a pair, a backslash stands for the character after it in both directions
+  rather than being dropped on the way in and unwritten on the way out, and an
+  unterminated quote or a trailing backslash is refused.
