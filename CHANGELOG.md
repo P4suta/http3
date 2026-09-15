@@ -277,3 +277,9 @@
 - Addressed the interoperability virtual environment by directory and looked
   for both interpreter layouts, so the hash-locked peer setup works where
   `uv venv` writes `Scripts/python.exe` instead of `bin/python`.
+- Added RFC 7239 `Forwarded` as a strict bounded codec: node identifiers with
+  obfuscated and unknown forms, per-element duplicate refusal, Host and scheme
+  validation, RFC 5952 IPv6 rendering, automatic quoting where a value leaves
+  the token production, and generated obfuscated identifiers so a proxy's
+  default discloses nothing. It was the one specification in the pinned
+  inventory with no implementation behind it.
