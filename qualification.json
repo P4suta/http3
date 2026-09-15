@@ -457,7 +457,7 @@
       "id": "PROD-013",
       "area": "External interoperability and platform matrix",
       "status": "Blocked",
-      "evidence": "aioquic 1.3.0, quic-go 0.61.0, and curl 8.5.0 pins exist. The curl gate drives the package's own HTTP/1.1 and HTTP/2 TLS listeners from an independent client: ALPN selection in both directions including the downgrade an `http/1.1`-only listener must force, chunked and DATA request bodies, a non-2xx status, HEAD without a body, sequential HTTP/1.1 reuse, two multiplexed HTTP/2 streams, and a refusal when the pinned CA is withheld; the harness refuses to report against a curl other than the pinned one. nghttp2, ngtcp2/nghttp3, quiche, Chromium, Firefox, independent MASQUE, and Go/TypeScript OHTTP evidence is missing. The local OTP 29 credential run passes 144 tests, including live RSA-PSS, ECDSA P-256/P-384, Ed25519, mTLS, HRR, rotation, resumption, and rejection rows; all six qualified OS/OTP attestations remain uncollected."
+      "evidence": "aioquic 1.3.0, quic-go 0.61.0, and curl 8.5.0 pins exist. The curl gate drives the package's own HTTP/1.1 and HTTP/2 TLS listeners from an independent client: ALPN selection in both directions including the downgrade an `http/1.1`-only listener must force, chunked and DATA request bodies, a non-2xx status, HEAD without a body, sequential HTTP/1.1 reuse, two multiplexed HTTP/2 streams, and a refusal when the pinned CA is withheld; the harness refuses to report against a curl other than the pinned one. nghttp2, ngtcp2/nghttp3, quiche, Chromium, Firefox, independent MASQUE, and Go/TypeScript OHTTP evidence is missing. The credential matrix passes 160 tests on every qualified row, including live RSA-PSS, ECDSA P-256/P-384, Ed25519, mTLS, HRR, rotation, resumption, and rejection rows; all six OS/OTP attestations are collected and aggregate verification accepts them."
     },
     {
       "id": "PROD-014",
@@ -512,7 +512,7 @@
     {
       "name": "credential-matrix",
       "implementation": "Implemented",
-      "status": "Blocked",
+      "status": "Ready",
       "purpose": "OTP/platform credential, mTLS, rotation, resumption, and rejection matrix."
     },
     {
@@ -615,9 +615,9 @@
       "id": "PRE-005",
       "area": "Credential and mTLS platform matrix",
       "governing_gate": "credential-matrix",
-      "status": "Open",
-      "evidence": "Local RSA-PSS, ECDSA P-256/P-384, Ed25519, direct/HRR, Disabled/Optional/Required mTLS, rotation, resumption, identity mismatch, expiry, revocation, and 0-RTT fallback paths pass on the current OTP 29 host; the six qualified OS/OTP attestations are absent.",
-      "closure": "Collect current-source Ubuntu 24.04, macOS 15, and Windows 2025 attestations on OTP 28 and 29 and pass credential-matrix aggregate verification."
+      "status": "Closed",
+      "evidence": "RSA-PSS, ECDSA P-256/P-384, Ed25519, direct/HRR, Disabled/Optional/Required mTLS, rotation, resumption, identity mismatch, expiry, revocation, and 0-RTT fallback paths pass as 160 tests with 0 gaps on every qualified row. All six OS/OTP attestations were collected on one source digest and aggregate verification accepted them.",
+      "closure": "Closed by the Ubuntu 24.04, macOS 15, and Windows 2025 rows on OTP 28 and 29 reporting Ready against one source digest, and by credential-matrix aggregate verification accepting all six (packages/http3/docs/evidence/2026-09-15-credential-matrix.md). An OTP 28 hostname mismatch was reported as a generic handshake failure rather than an authentication one, which had failed all three OTP 28 rows; every row passes now that the alert description is read as well."
     },
     {
       "id": "PRE-006",
@@ -647,7 +647,7 @@
       "area": "Remaining automated qualification",
       "governing_gate": "source-candidate",
       "status": "Open",
-      "evidence": "Static security, API/boundary, reproducible package, campaign, hostile/stability, qlog, model, examples, and OTP 29 release-simulation gates exist; coverage thresholds, complete RFC maps, expanded peers, cross-protocol performance, OTP 28, and canonical-archive qualification remain incomplete.",
+      "evidence": "Static security, API/boundary, reproducible package, campaign, hostile/stability, qlog, model, examples, and OTP 29 release-simulation gates exist; the credential matrix now reports Ready on all six qualified OS/OTP rows, while coverage thresholds, complete RFC maps, expanded peers, cross-protocol performance, an OTP 28 release-candidate rerun, and canonical-archive qualification remain incomplete.",
       "closure": "Make every non-external source-candidate gate Ready and retain reproducible current-source evidence, including the adaptive coverage and raw capture artifacts."
     },
     {
