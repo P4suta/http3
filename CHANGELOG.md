@@ -292,3 +292,5 @@
   last DATA frame, which RFC 9113 section 8.1 permits, and a handler that
   returns an error, which still owes its peer a response unless the error is
   the stream already ending.
+- Covered every HTTP/1.1 status line the server writes a reason phrase for,
+  and the empty phrase a status it has none for still produces.
