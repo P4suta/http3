@@ -377,9 +377,15 @@ run_aioquic_native_server() {
 run_aioquic() {
 	local python="${HTTP3_AIOQUIC_PYTHON:-}"
 
-	if [[ -z "$python" && -x build/interop-venv/bin/python ]]; then
-		python=build/interop-venv/bin/python
-	elif [[ -z "$python" ]]; then
+	# `uv venv` lays the interpreter out per platform: bin/python everywhere
+	# except Windows, which uses Scripts/python.exe.
+	for candidate in build/interop-venv/bin/python \
+		build/interop-venv/Scripts/python.exe; do
+		if [[ -z "$python" && -x "$candidate" ]]; then
+			python="$candidate"
+		fi
+	done
+	if [[ -z "$python" ]]; then
 		python=python3
 	fi
 
