@@ -340,3 +340,6 @@
   comparison and nothing here performs that conversion, so such a name is now
   reported as invalid input rather than compared unconverted and reported as
   the certificate's fault.
+- Refused a U-label host as an HSTS host for the same reason a U-label service
+  identity is refused: nothing here implements IDNA, so a policy keyed on one
+  would be stored under a name no later request could match.

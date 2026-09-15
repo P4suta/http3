@@ -146,6 +146,15 @@ pub fn an_ip_literal_host_is_never_noted_as_an_hsts_host_test() -> Nil {
   // build cannot reintroduce one.
   assert hsts.from_persisted("192.0.2.1", False, 60_000, 0) == None
   assert hsts.from_persisted("[2001:db8::1]", False, 60_000, 0) == None
+
+  // RFC 6797 section 13 asks a user agent to implement IDNA. Nothing here
+  // does, so a host still carrying a U-label is refused rather than stored
+  // under a name that would never match the A-label a request resolves.
+  assert hsts.parse("max-age=60", "bücher.example", 0) == None
+  assert hsts.from_persisted("bücher.example", False, 60_000, 0) == None
+  let assert Some(a_label) =
+    hsts.parse("max-age=60", "xn--bcher-kva.example", 0)
+  assert a_label.host == "xn--bcher-kva.example"
 }
 
 pub fn an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test() -> Nil {

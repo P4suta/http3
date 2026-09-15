@@ -1007,7 +1007,584 @@
     {"id":"RFC6066","title":"Transport Layer Security (TLS) Extensions: Extension Definitions","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/extension.gleam","packages/quic_core/test/tls_extension_test.gleam"]},
     {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC6455","title":"The WebSocket Protocol","map_complete":false,"evidence":["src/http/websocket.gleam","test/websocket_test.gleam"]},
-    {"id":"RFC6797","title":"HTTP Strict Transport Security (HSTS)","map_complete":false,"evidence":["src/http/internal/hsts.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC6797",
+      "title": "HTTP Strict Transport Security (HSTS)",
+      "map_complete": true,
+      "evidence": [
+        "src/http/internal/hsts.gleam",
+        "src/http/client.gleam",
+        "test/client_policy_test.gleam",
+        "test/client_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc6797.txt",
+        "document_sha256": "7cefa03f77547532580b7f877b4e6388bb66c20631b624667a0065c14ae3d364",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=6797",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 37,
+        "level_counts": {
+          "MUST": 23,
+          "REQUIRED": 2,
+          "SHOULD": 5,
+          "MUST NOT": 7
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC6797-6.1-MUST-ENFORCE-THE-POLICY-FOR-THE-HOST",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A conforming field noted from a host makes every later cleartext request to that host go over https instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"},
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"},
+            {"path": "src/http/client.gleam", "symbol": "capture_hsts_headers"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1-MUST-APPEAR-ONLY-ONCE-PER-DIRECTIVE",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every directive appears at most once in one field: a repeat of any name, recognised or not, refuses the whole field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "admissible_name"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_directives"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1-MUST-IGNORE-A-NON-CONFORMING-FIELD",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A field carrying anything that does not conform to the syntax is ignored whole rather than partly believed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_directives"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "apply_directive"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_age"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "complete"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1-MUST-IGNORE-UNRECOGNISED-DIRECTIVES",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A directive this parser does not recognise is skipped rather than refusing the field it appears in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "apply_directive"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_directives"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1-MUST-STILL-HONOUR-THE-REST-OF-THE-FIELD",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A field that otherwise satisfies the requirements is still processed when it carries an unrecognised directive, so one does not cost the policy.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "apply_directive"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "complete"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1.1-REQUIRED-MAX-AGE-IS-PRESENT",
+          "section": "6.1.1",
+          "level": "REQUIRED",
+          "roles": ["client"],
+          "summary": "A field without max-age carries no policy, so one is refused rather than treated as having some default lifetime.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "complete"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_directives"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-6.1.1-REQUIRED-MAX-AGE-VALUE-SYNTAX",
+          "section": "6.1.1",
+          "level": "REQUIRED",
+          "roles": ["client"],
+          "summary": "The max-age value is a number of seconds and nothing else; anything that does not parse as one refuses the field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_age"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "apply_directive"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-7.1-SHOULD-SEND-THE-FIELD-OVER-SECURE-TRANSPORT",
+          "section": "7.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An HSTS Host answering over a secure transport includes a Strict-Transport-Security field in its response.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an HSTS Host, the server that declares the policy. No listener in this package emits a Strict-Transport-Security field or decides whether to: what a response carries is chosen by the handler the deployment supplies. The client side of the same exchange, which is what this package does own, is inventoried in the section 8 rows."
+        },
+        {
+          "id": "RFC6797-7.1-MUST-SATISFY-THE-GRAMMAR",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A field an HSTS Host does include satisfies the grammar of section 6.1.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an HSTS Host, the server that declares the policy. No listener in this package emits a Strict-Transport-Security field or decides whether to: what a response carries is chosen by the handler the deployment supplies. The client side of the same exchange, which is what this package does own, is inventoried in the section 8 rows."
+        },
+        {
+          "id": "RFC6797-7.1-MUST-SEND-ONLY-ONE-FIELD",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An HSTS Host includes at most one such header field in a response.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an HSTS Host, the server that declares the policy. No listener in this package emits a Strict-Transport-Security field or decides whether to: what a response carries is chosen by the handler the deployment supplies. The client side of the same exchange, which is what this package does own, is inventoried in the section 8 rows."
+        },
+        {
+          "id": "RFC6797-7.1-SHOULD-ACCOMMODATE-CACHES-AND-LOAD-BALANCERS",
+          "section": "7.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Including the field is advisory rather than mandatory so that caches and load-balancing arrangements that cannot add it uniformly are accommodated.",
+          "disposition": "NotApplicable",
+          "reason": "This is the document explaining why the preceding sentence is advisory rather than mandatory. It states no separate obligation, and the sentence it explains is an HSTS Host's, which nothing here is."
+        },
+        {
+          "id": "RFC6797-7.2-SHOULD-REDIRECT-A-CLEARTEXT-REQUEST",
+          "section": "7.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An HSTS Host receiving a request over a non-secure transport answers with a permanent redirect to the secure equivalent.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an HSTS Host, the server that declares the policy. No listener in this package emits a Strict-Transport-Security field or decides whether to: what a response carries is chosen by the handler the deployment supplies. The client side of the same exchange, which is what this package does own, is inventoried in the section 8 rows."
+        },
+        {
+          "id": "RFC6797-7.2-SHOULD-IS-ADVISORY-FOR-DEPLOYMENT-REASONS",
+          "section": "7.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The redirect behaviour is advisory rather than mandatory for the deployment reasons the note gives.",
+          "disposition": "NotApplicable",
+          "reason": "This is the document explaining why the preceding sentence is advisory. It states no separate obligation, and the sentence it explains is an HSTS Host's, which nothing here is."
+        },
+        {
+          "id": "RFC6797-7.2-MUST-IS-NOT-USED-FOR-THE-REDIRECT",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The same note explains why the redirect is not stated at MUST level.",
+          "disposition": "NotApplicable",
+          "reason": "This is the document explaining its own choice of keyword for the preceding sentence. It states no separate obligation, and the sentence it explains is an HSTS Host's, which nothing here is."
+        },
+        {
+          "id": "RFC6797-7.2-MUST-NOT-SEND-THE-FIELD-OVER-CLEARTEXT",
+          "section": "7.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "An HSTS Host does not include the field in a response carried over a non-secure transport.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an HSTS Host, the server that declares the policy. No listener in this package emits a Strict-Transport-Security field or decides whether to: what a response carries is chosen by the handler the deployment supplies. The client side of the same exchange, which is what this package does own, is inventoried in the section 8 rows."
+        },
+        {
+          "id": "RFC6797-8.1-MUST-NOTE-THE-HOST-FROM-A-SECURE-RESPONSE",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A conforming field in a response received over a secure transport makes its host a Known HSTS Host for the lifetime the field gives.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_hsts_headers"},
+            {"path": "src/http/client.gleam", "symbol": "store_hsts_policy"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1-MUST-REMOVE-THE-POLICY-ON-A-ZERO-MAX-AGE",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A max-age of zero removes the cached policy for a known host, from the in-memory store and from the persistence adapter alike.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_hsts_policy"},
+            {"path": "src/http/client.gleam", "symbol": "persist_hsts_policy"},
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_loop"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_policy_expiry_headers_invoke_exact_partition_removals_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1-MUST-NOT-NOTE-AN-UNKNOWN-HOST-ON-A-ZERO-MAX-AGE",
+          "section": "8.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A max-age of zero for a host that was not already known leaves it unknown rather than recording an immediately expired policy.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_loop"},
+            {"path": "src/http_client_ffi.erl", "symbol": "remove_policy_item"},
+            {"path": "src/http/client.gleam", "symbol": "store_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_policy_expiry_headers_invoke_exact_partition_removals_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1-MUST-PROCESS-ONLY-THE-FIRST-FIELD",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response carrying more than one of these fields is read for the first one only, so a second cannot revise or withdraw what the first said.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_hsts_headers"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1-MUST-IGNORE-THE-FIELD-OVER-INSECURE-TRANSPORT",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A field arriving in a response that was not carried over a secure transport is ignored entirely.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_hsts_headers"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1-MUST-IGNORE-A-NON-CONFORMING-FIELD",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A field that does not conform to the section 6.1 grammar is ignored rather than partly read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse_directives"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_strict_transport_security_directive_may_appear_only_once_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1.1-MUST-NOT-NOTE-AN-IP-LITERAL-HOST",
+          "section": "8.1.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A host given as an address literal is never noted: an address is not a name, and a policy keyed on one would outlive whatever answers there next.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "named_host"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "dotted_address"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "decimal_octet"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_ip_literal_host_is_never_noted_as_an_hsts_host_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1.1-MUST-NOT-NOTE-A-NON-CONGRUENT-HOST",
+          "section": "8.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A policy is keyed on the exact host the response came from, so nothing is noted for a name that only matched a superdomain rule.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"},
+            {"path": "src/http/client.gleam", "symbol": "store_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_ip_literal_host_is_never_noted_as_an_hsts_host_test"},
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1.1-MUST-NOT-MODIFY-A-SUPERDOMAIN-ENTRY",
+          "section": "8.1.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Noting a host never alters the expiry or the includeSubDomains flag of a superdomain entry that happened to cover it, because each entry is keyed on its own host.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_hsts_policy"},
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_loop"},
+            {"path": "src/http_client_ffi.erl", "symbol": "remove_policy_item"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_ip_literal_host_is_never_noted_as_an_hsts_host_test"},
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.1.1-MUST-EVICT-EXPIRED-HOSTS",
+          "section": "8.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An expired entry is dropped from the store rather than left to be filtered at read time, and the owner wakes at the next expiry to do it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_loop"},
+            {"path": "src/http_client_ffi.erl", "symbol": "prune_policy_items"},
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_wait"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_policy_expiry_headers_invoke_exact_partition_removals_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-DETERMINE-WHETHER-A-NAME-IS-GIVEN",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Loading a cleartext URI first decides whether its authority is a domain name, because an address is never a Known HSTS Host and so never upgrades one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "named_host"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"},
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_ip_literal_host_is_never_noted_as_an_hsts_host_test"},
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-MATCH-AGAINST-KNOWN-HOSTS",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The name is matched against the known hosts by the section 8.2 procedure: an exact host, or a superdomain that asserted includeSubDomains.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"},
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-REPLACE-THE-SCHEME-WITH-HTTPS",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A matching request has its scheme replaced with https before it is sent.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-CONVERT-PORT-80-TO-443",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An explicit port of 80 becomes 443 when the scheme is replaced.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-PRESERVE-ANY-OTHER-PORT",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An explicit port that is not 80 is carried through unchanged, so an upgrade does not move the request to a different service.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.3-MUST-NOT-ADD-A-PORT",
+          "section": "8.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A URI that carried no explicit port still carries none after the upgrade.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.4-MUST-TERMINATE-ON-ANY-TLS-ERROR",
+          "section": "8.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Any error in the secure transport to a known host ends the connection: there is no path here that continues past a certificate or handshake failure, and no setting that creates one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_hsts_policy"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-8.5-MUST-NOT-HEED-A-META-ELEMENT",
+          "section": "8.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "An http-equiv attribute in received content never establishes a policy.",
+          "disposition": "NotApplicable",
+          "reason": "Establishing a policy from markup needs a markup parser, and there is none here: a response body is bytes this package hands to its caller without inspecting. The only path that notes a host reads a response header field, so no content can reach it."
+        },
+        {
+          "id": "RFC6797-8.6-MUST-KEEP-A-HOST-KNOWN-WITHOUT-THE-FIELD",
+          "section": "8.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A known host whose later secure responses carry no field stays known until its max-age elapses, because nothing treats an absent field as a withdrawal.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_hsts_headers"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "only_the_first_strict_transport_security_field_is_processed_test"}
+          ]
+        },
+        {
+          "id": "RFC6797-9.2-MUST-NOT-EQUATE-AN-EMPTY-PATH-WITH-A-SLASH",
+          "section": "9.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Comparing effective request URIs does not treat an empty path component as equivalent to an absolute path of a single slash.",
+          "disposition": "NotApplicable",
+          "reason": "Matching here is on the domain name alone, which is what section 8.2 defines and what a policy is keyed on; no path component takes part in it. This client also constructs its own request rather than reconstructing an effective request URI from a Request-Line and a Host field, so it holds no pair of such URIs to compare."
+        },
+        {
+          "id": "RFC6797-13-SHOULD-IMPLEMENT-IDNA2008",
+          "section": "13",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A user agent implements IDNA2008 so that internationalized names registered under either suite can be handled during the transition.",
+          "disposition": "NotApplicable",
+          "reason": "Name preparation belongs where a user-typed name enters a user agent, and this is a library that is handed a host rather than a URI a person wrote. It implements no IDNA and does not pretend to: a host still carrying a U-label is refused instead of stored under a name no later request could match, so the omission cannot pass silently into the policy store."
+        },
+        {
+          "id": "RFC6797-13-MUST-IMPLEMENT-IDNA2003-OTHERWISE",
+          "section": "13",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A user agent that does not implement IDNA2008 implements IDNA2003 instead.",
+          "disposition": "NotApplicable",
+          "reason": "This follows the clause above and rests on the same reading: the obligation is a user agent's, at the point a name is prepared, and this library performs no name preparation in either suite. What it does instead is refuse a host carrying a U-label outright, so no unprepared name is ever noted as a Known HSTS Host."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 5,
+        "entries": [
+          {
+            "id": 4075,
+            "section": "14",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report asked for deployment advice about fetching a first-level-domain resource to widen a policy. The verifier rejected it as a real issue but not one the errata system handles, and it asks something of a site rather than of a client, so nothing here follows from it."
+          },
+          {
+            "id": 5204,
+            "section": "6.1.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report argued from the token production that a directive name may take forms the section does not intend. This parser is stricter than the argument either way: it lowercases a name, matches the two it knows exactly, and ignores everything else, so no reading of the production changes what it accepts."
+          },
+          {
+            "id": 5372,
+            "section": "8.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report read section 8.1's update rule as leaving an unchanged policy expiring from its first reception rather than its latest. This implementation writes the entry on every conforming field it reads, so the lifetime always runs from the most recent one and the ambiguity does not arise."
+          },
+          {
+            "id": 8153,
+            "section": "8.1.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report asked for localhost to be exempt from being noted, as some browsers do. The verifier rejected it as a proposal rather than an erratum. Nothing here special-cases the name: it is a name like any other, and a policy noted for it applies to it alone unless the field asserted includeSubDomains."
+          },
+          {
+            "id": 8186,
+            "section": "6.1",
+            "status": "Rejected",
+            "type": "Editorial",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report asked for the alternation bar in one production to be written the way RFC 5234 spells it. The verifier rejected it because this document builds on the RFC 2616 grammar, which uses the bar. It concerns notation and names no behaviour."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC7239",
       "title": "Forwarded HTTP Extension",
