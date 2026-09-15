@@ -283,3 +283,7 @@
   the token production, and generated obfuscated identifiers so a proxy's
   default discloses nothing. It was the one specification in the pinned
   inventory with no implementation behind it.
+- Covered the HTTP/1.1 connection and resource ceiling refusals, which the
+  coverage gate reported as unreached: every value outside each range, the
+  inclusive bounds themselves, and the rule that a line ceiling may not exceed
+  the head it has to fit inside.

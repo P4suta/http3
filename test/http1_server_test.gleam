@@ -740,3 +740,71 @@ fn read_to_end(
       read_to_end(socket, [bytes, ..reversed])
   }
 }
+
+pub fn http1_connection_ceilings_refuse_every_value_outside_their_range_test() -> Nil {
+  let defaults = server.http1_defaults()
+  let policy = error.new(error.Policy(error.SecurityPolicy))
+
+  // Both ceilings are finite and positive, and neither may exceed a million.
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 0,
+      maximum_requests_per_connection: 8,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 1_000_001,
+      maximum_requests_per_connection: 8,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 8,
+      maximum_requests_per_connection: 0,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 8,
+      maximum_requests_per_connection: 1_000_001,
+    )
+    == Error(policy)
+
+  // The inclusive bounds themselves are accepted.
+  assert result.is_ok(server.with_http1_connection_limits(
+    defaults,
+    maximum_connections: 1,
+    maximum_requests_per_connection: 1,
+  ))
+  assert result.is_ok(server.with_http1_connection_limits(
+    defaults,
+    maximum_connections: 1_000_000,
+    maximum_requests_per_connection: 1_000_000,
+  ))
+}
+
+pub fn http1_resource_ceilings_refuse_every_value_outside_their_range_test() -> Nil {
+  let defaults = server.http1_defaults()
+  let policy = error.new(error.Policy(error.SecurityPolicy))
+  let accepted = fn(head: Int, headers: Int, line: Int, body: Int, buffer: Int) {
+    server.with_http1_limits(
+      defaults,
+      maximum_head_bytes: head,
+      maximum_header_count: headers,
+      maximum_line_bytes: line,
+      maximum_body_bytes: body,
+      maximum_stream_buffer_bytes: buffer,
+    )
+  }
+
+  assert accepted(0, 64, 8192, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 0, 8192, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 0, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 8192, 0, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 8192, 65_536, 0) == Error(policy)
+  // A line ceiling wider than the head it has to fit inside is refused.
+  assert accepted(8192, 64, 8193, 65_536, 16_384) == Error(policy)
+  // A line ceiling exactly as wide as the head is not.
+  assert result.is_ok(accepted(8192, 64, 8192, 65_536, 16_384))
+}
