@@ -97,10 +97,21 @@ pub fn from_persisted(
 /// bracketed and bare IPv6 forms are both caught by the colon, and the dotted
 /// form by four decimal labels. A label that merely looks numeric inside a
 /// longer name is left alone.
+///
+/// Section 13 asks a user agent to implement IDNA, and nothing here does, so a
+/// host still carrying a U-label is refused as well. Keying a policy on one
+/// would store it under a name no later request can match, since a request
+/// resolves the A-label form; refusing says so instead of silently keeping a
+/// policy that never applies.
 fn named_host(host: String) -> Bool {
   !string.starts_with(host, "[")
   && !string.contains(host, ":")
   && !dotted_address(host)
+  && ascii_host(host)
+}
+
+fn ascii_host(host: String) -> Bool {
+  string.byte_size(host) == string.length(host)
 }
 
 fn dotted_address(host: String) -> Bool {
