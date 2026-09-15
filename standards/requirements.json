@@ -1008,7 +1008,401 @@
     {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC6455","title":"The WebSocket Protocol","map_complete":false,"evidence":["src/http/websocket.gleam","test/websocket_test.gleam"]},
     {"id":"RFC6797","title":"HTTP Strict Transport Security (HSTS)","map_complete":false,"evidence":["src/http/internal/hsts.gleam","test/client_policy_test.gleam"]},
-    {"id":"RFC7239","title":"Forwarded HTTP Extension","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC7239",
+      "title": "Forwarded HTTP Extension",
+      "map_complete": true,
+      "evidence": [
+        "src/http/forwarded.gleam",
+        "test/forwarded_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc7239.txt",
+        "document_sha256": "f15c45c9e079684bc4284d041be63285923962448cb0d8540d54106c68c2a40d",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=7239",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 22,
+        "level_counts": {
+          "MUST NOT": 1,
+          "MUST": 9,
+          "SHOULD": 9,
+          "SHOULD NOT": 3
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC7239-4-MUST-NOT-REPEAT-PARAMETER",
+          "section": "4",
+          "level": "MUST NOT",
+          "roles": ["server", "proxy"],
+          "summary": "A parameter that appears a second time inside one forwarded-element is refused by name rather than resolved by a first-or-last precedence rule.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "apply_pairs"},
+            {"path": "src/http/forwarded.gleam", "symbol": "apply_pair"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_repeated_parameter_in_one_element_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-4-MUST-UPDATE-CORRECT-FIELD",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "Appending a hop keeps every element an earlier proxy wrote, in the order it wrote them, and adds this hop to the end of that single combined field value.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "append"},
+            {"path": "src/http/forwarded.gleam", "symbol": "to_field_value"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "each_proxy_appends_its_own_element_in_order_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.1-SHOULD-OBFUSCATE-BY-BY-DEFAULT",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The by parameter this module can build for a proxy without being given an address is an obfuscated identifier, not the interface the request arrived on.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.2-SHOULD-OBFUSCATE-FOR-BY-DEFAULT",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The for parameter this module can build without being given an address is an obfuscated identifier, so the client address is not disclosed by default.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.3-MUST-HOST-CONFORMS-TO-HOST-ABNF",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A host value is checked against the Host production after any quoted-string unescaping, so a registered name, IP literal, and optional port are the only accepted shapes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host_authority"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_registered_name_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_host_outside_the_host_abnf_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.4-MUST-PROTO-CONFORMS-TO-SCHEME",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A proto value is checked against the URI scheme name production after any quoted-string unescaping, so it starts with ALPHA and carries only scheme characters.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_scheme"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_scheme_byte"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_alpha"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_protocol_outside_the_scheme_production_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.5-SHOULD-REGISTER-EXTENSION-PARAMETERS",
+          "section": "5.5",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Extension parameters are expected to be registered in the IANA HTTP Forwarded Parameter registry.",
+          "disposition": "NotApplicable",
+          "reason": "Registering a parameter name is an action for whoever defines that parameter. This codec defines no parameter of its own: it carries an unrecognised forwarded-pair through as an uninterpreted name and value, so there is nothing here to register."
+        },
+        {
+          "id": "RFC7239-5.5-SHOULD-STANDARDIZE-WIDESPREAD-EXTENSIONS",
+          "section": "5.5",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An extension parameter expected to see widespread deployment is expected to be standardized as well.",
+          "disposition": "NotApplicable",
+          "reason": "Taking an extension parameter through standardization is a process obligation on the party that defined and deployed it. This module introduces no extension parameter, so it has none to take through that process."
+        },
+        {
+          "id": "RFC7239-6-MUST-OBFPORT-CARRIES-LEADING-UNDERSCORE",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated port is distinguished from a real port by a leading underscore, which both the constructor and the node-port parser require before accepting one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_node_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_port_carries_its_own_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6-MUST-OBFPORT-CHARACTER-SET",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated port consists only of ALPHA, DIGIT, and the three characters full stop, underscore, and hyphen; any other byte refuses the identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_obfuscated_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_port_carries_its_own_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6-MUST-QUOTE-COLON-BEARING-NODE",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An IPv6 literal and any node carrying a node-port are emitted as a quoted-string, because the colon they contain is not a token character.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "node_to_string"},
+            {"path": "src/http/forwarded.gleam", "symbol": "port_suffix"},
+            {"path": "src/http/forwarded.gleam", "symbol": "quote_if_needed"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_token"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_ipv6_node_is_bracketed_and_quoted_on_the_wire_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.1-SHOULD-IPV6-TEXT-FOLLOWS-RFC5952",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An IPv6 address is written in the RFC 5952 recommended form: lowercase hexadecimal, no leading zeros in a group, and the longest run of zero groups compressed once.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "ipv6_to_string"},
+            {"path": "src/http/forwarded.gleam", "symbol": "compress_ipv6"},
+            {"path": "src/http/forwarded.gleam", "symbol": "longest_zero_run"},
+            {"path": "src/http/forwarded.gleam", "symbol": "hexadecimal"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_ipv6_literal_is_rendered_the_way_rfc_5952_asks_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-SHOULD-GENERATE-RANDOMLY-PER-REQUEST",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A generated obfuscated identifier is drawn from sixteen fresh random bytes on each call, so two requests do not share one unless a caller deliberately reuses a static name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_name"},
+            {"path": "src/http/forwarded.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-SHOULD-NOT-PERSIST-BEYOND-CLIENT-ADDRESS",
+          "section": "6.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "Nothing retains a generated identifier between calls, so one cannot outlive the client address it stands for; a caller that needs persistence supplies its own name and owns that lifetime.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-MUST-OBFNODE-CARRIES-LEADING-UNDERSCORE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated node identifier is distinguished from a real nodename by a leading underscore, which the constructor requires and the parser uses to classify one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_nodename"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-MUST-OBFNODE-CHARACTER-SET",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated node identifier consists only of ALPHA, DIGIT, and the three characters full stop, underscore, and hyphen; any other byte refuses the identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_obfuscated_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-NOT-PASS-PRIVATE-INFORMATION",
+          "section": "8.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "No path here discloses a real address on its own: the only node this module generates is obfuscated, an unknown node is representable, and a literal address reaches the wire only because a caller supplied one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "node_to_string"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"},
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-DEFAULT-BOTH-PARAMETERS-OBFUSCATED",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The element this module builds for a proxy that has not chosen otherwise carries obfuscated identifiers in both the by and the for parameter.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-GENERATE-IDENTIFIERS-PER-REQUEST",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Each call to the generator draws new randomness rather than reusing a value, so the by and for identifiers a proxy emits differ from one request to the next.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_name"},
+            {"path": "src/http/forwarded.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-LIMIT-PERSISTENT-IDENTIFIER-LIFETIME",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "This module keeps no identifier store, so the lifetime of a persistent identifier is bounded by whatever the caller that supplied the name retains, and nothing is extended here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_port"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-NOT-PERSIST-BEYOND-CLIENT-ADDRESS",
+          "section": "8.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "A persistent identifier cannot outlive the client address through this module, because no generated identifier is retained between calls and a supplied one is held only by its caller.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-9-MUST-NEW-PARAMETERS-CONFORM-TO-FORWARDED-PAIR",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A parameter this module does not recognise is still held to the forwarded-pair grammar: a token name, an equals sign, and a token or quoted-string value, or the field value is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_pair"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_value"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_token"},
+            {"path": "src/http/forwarded.gleam", "symbol": "unquote"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_unregistered_parameter_is_retained_without_interpretation_test"},
+            {"path": "test/forwarded_test.gleam", "symbol": "a_quoted_value_keeps_the_delimiters_and_escapes_inside_it_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 5067,
+            "section": "GLOBAL",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction replaces the word proxy with message-forwarding agent throughout, because this document also means agents the client did not select. It renames a role and changes no field syntax, generation rule, or refusal, so nothing in this codec follows from it."
+          },
+          {
+            "id": 5275,
+            "section": "4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction writes the comma and optional whitespace of the list production out in the ABNF instead of leaving them to the # list extension. The published extension already defines exactly that separator, and this parser splits elements on an unquoted comma and trims the surrounding whitespace, so the correction adds no behaviour here."
+          },
+          {
+            "id": 7973,
+            "section": "4",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would lowercase a capitalised parameter name in one example, on the reading that only lowercase is allowed. The verifier rejected it because parameter names are case-insensitive, and this parser agrees: it lowercases every name before matching, so both spellings in that example parse to the same parameter."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC7301",
       "title": "Transport Layer Security (TLS) Application-Layer Protocol Negotiation Extension",
