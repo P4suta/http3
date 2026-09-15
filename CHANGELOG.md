@@ -320,3 +320,10 @@
   requires. Both the bracketed and bare IPv6 forms and the dotted IPv4 form are
   refused before an entry exists, and on the persisted path as well, while a
   label that merely looks numeric inside a longer name is still a name.
+- Classified a refused certificate as an authentication failure on every OTP
+  release, not only the ones that report it as the TLS alert itself. OTP 28.5
+  reports a hostname mismatch as a `handshake_failure` whose description spells
+  out `hostname_check_failed`, so reading the alert atom alone answered
+  `TlsHandshake` there and `TlsAuthentication` on 28.5.0.6 and 29. The
+  description is now read as well, bounded at four kibibytes and only ever
+  toward the certificate class.

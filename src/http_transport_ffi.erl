@@ -25,6 +25,9 @@
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
 %% RFC 8305 section 8: the recommended Connection Attempt Delay.
 -define(CONNECTION_ATTEMPT_DELAY, 250).
+%% A TLS alert description carries peer-supplied certificate names, so the text
+%% read out of one is bounded rather than taken whole.
+-define(MAXIMUM_ALERT_TEXT_BYTES, 4096).
 
 -type family() :: inet | inet6.
 -type listener() :: #{
@@ -1094,21 +1097,90 @@ tls_error_code(Reason) ->
     ]) of
         true -> 15;
         false ->
-            case contains_reason(Reason, [
-                bad_cert,
-                bad_certificate,
-                certificate_expired,
-                certificate_revoked,
-                certificate_unknown,
-                hostname_check_failed,
-                invalid_issuer,
-                invalid_signature,
-                selfsigned_peer,
-                unknown_ca,
-                unsupported_certificate
-            ]) of
+            case
+                contains_reason(Reason, certificate_reasons())
+                    orelse contains_reason_text(Reason, certificate_reasons())
+            of
                 true -> 14;
                 false -> 13
+            end
+    end.
+
+-spec certificate_reasons() -> [atom()].
+certificate_reasons() ->
+    [
+        bad_cert,
+        bad_certificate,
+        certificate_expired,
+        certificate_revoked,
+        certificate_unknown,
+        hostname_check_failed,
+        invalid_issuer,
+        invalid_signature,
+        selfsigned_peer,
+        unknown_ca,
+        unsupported_certificate
+    ].
+
+%% Whether the human-readable description inside an alert names a certificate
+%% reason.
+%%
+%% Which of the two forms a release produces is not stable. OTP 28.5 reports a
+%% hostname mismatch as `{tls_alert, {handshake_failure, Description}}' whose
+%% description spells out `bad_cert' and `hostname_check_failed', while 28.5.0.6
+%% and 29 report `bad_certificate' as the alert itself. Reading only the alert
+%% atom therefore answers `tls_handshake' on one build of a release and
+%% `tls_authentication' on another, for one refusal.
+%%
+%% This is asked only for the certificate class, never for the ALPN one. A
+%% description embeds peer-supplied certificate fields, so text can move a
+%% classification toward "the certificate was refused" and never away from it.
+-spec contains_reason_text(term(), [atom()]) -> boolean().
+contains_reason_text(Reason, Atoms) ->
+    case alert_text(Reason, <<>>) of
+        <<>> -> false;
+        Text ->
+            lists:any(
+                fun(Atom) ->
+                    binary:match(Text, atom_to_binary(Atom, utf8)) =/= nomatch
+                end,
+                Atoms
+            )
+    end.
+
+%% Collect the printable text inside one reason, up to a fixed ceiling.
+%%
+%% The ceiling is there because the description carries peer-supplied names
+%% from the certificate that was refused, which is not this endpoint's to size.
+-spec alert_text(term(), binary()) -> binary().
+alert_text(_Term, Accumulated)
+    when byte_size(Accumulated) >= ?MAXIMUM_ALERT_TEXT_BYTES ->
+    Accumulated;
+alert_text(Binary, Accumulated) when is_binary(Binary) ->
+    <<Accumulated/binary, Binary/binary>>;
+alert_text(Tuple, Accumulated) when is_tuple(Tuple) ->
+    alert_text(tuple_to_list(Tuple), Accumulated);
+alert_text(List, Accumulated) when is_list(List) ->
+    case printable_text(List) of
+        {ok, Text} -> <<Accumulated/binary, Text/binary>>;
+        error ->
+            lists:foldl(
+                fun(Item, Inner) -> alert_text(Item, Inner) end,
+                Accumulated,
+                List
+            )
+    end;
+alert_text(_Other, Accumulated) ->
+    Accumulated.
+
+-spec printable_text(list()) -> {ok, binary()} | error.
+printable_text(List) ->
+    case io_lib:printable_unicode_list(List) of
+        false -> error;
+        true ->
+            case unicode:characters_to_binary(List) of
+                Text when is_binary(Text) -> {ok, Text};
+                _Other -> error
             end
     end.
 
