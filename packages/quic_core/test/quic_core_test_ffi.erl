@@ -13,8 +13,7 @@
     socket_buffer_bytes/1,
     socket_dont_fragment_values/1,
     trace_frame_progress/3,
-    traced_routed_connection_id/2,
-    with_suspended_process/2
+    traced_routed_connection_id/2
 ]).
 
 %% IPPROTO_IP / IP_MTU_DISCOVER and IPPROTO_IPV6 / IPV6_MTU_DISCOVER, the
@@ -313,11 +312,6 @@ connection_handle(_Other) ->
 
 %% Find the process behind one opaque public handle by its fixed role label, so
 %% a lifecycle test can watch exactly the actor that handle names.
--spec with_suspended_process(pid(), fun(() -> term())) -> term().
-with_suspended_process(Pid, Fun) when is_pid(Pid), is_function(Fun, 0) ->
-    true = erlang:suspend_process(Pid),
-    try Fun() after true = erlang:resume_process(Pid) end.
-
 -spec labelled_pid(term(), binary()) -> {ok, pid()} | {error, nil}.
 labelled_pid(Handle, Label) ->
     case labelled_pids(Handle, Label) of

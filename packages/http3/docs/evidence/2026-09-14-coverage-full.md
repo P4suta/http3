@@ -46,30 +46,29 @@ is the error and boundary side rather than the ordinary path:
 | `http/internal/http2/server` | 74.87% | 62.75% |
 | `http_masque_udp_ffi.erl` | 66.01% | 53.46% |
 
-Three capture stops were found and fixed to reach this run. All were defects
+Two capture stops were found and fixed to reach this run. Both were defects
 the instrumentation exposed rather than defects of the instrumentation, and
 each one had made the capture stop before any package finished:
 
-1. The two windowed-flood tests in the QUIC credit suite measured their
-   observation window from before the flooding process was spawned, so on a
-   runtime slow enough for that setup to outlive the window the flood sent
-   nothing and the sampler observed nothing.
-2. Three tests read the per-connection dropped-datagram counter through a
+1. Three tests read the per-connection dropped-datagram counter through a
    drained actor. The listener keeps a drop it refuses until a later delivery
    carries the count, or until the empty delivery it sends once the actor has
    acknowledged everything and the window has reopened, so the count completes
    a round trip that finishes after the actor's mailbox is already empty. A
-   drained actor is therefore not a barrier for it. They now wait for the
-   report, which also lets the overflow burst hold its actor still and leave
-   the delivery window rather than a race deciding what is dropped.
-3. The advanced HTTP/3 transport test read the HTTP Datagram capability off an
+   drained actor is therefore not a barrier for it, and the tests read whatever
+   had landed. They now wait for the report itself.
+2. The advanced HTTP/3 transport test read the HTTP Datagram capability off an
    accepted request stream before the peer's SETTINGS had necessarily been
    read, which RFC 9114 section 6.2.1 permits.
 
-The second was verified against the platform it had failed on: the suspended
-burst passes three consecutive runs of the QUIC core suite in a container of
-the same Gleam 1.18.1 and OTP 29 the smoke job uses, and five consecutive runs
-on this host.
+Two further changes were tried and withdrawn, because neither could be shown to
+be necessary and both changed behaviour on a platform they could not be checked
+against from here. Starting the flood observation window when the flood starts
+rather than when the caller computes it, and holding the connection actor still
+for the overflow burst, each passed on macOS and Linux and each failed the
+Windows smoke job on a test that had been passing. The capture completes
+without them -- thirteen repetitions, paths saturated, resources converged --
+so the barrier above is the whole of what the stop required.
 
 `coverage-evidence.json` is source-bound and deliberately untracked: it is
 invalidated by any source edit, so a clean checkout renders the unproven
