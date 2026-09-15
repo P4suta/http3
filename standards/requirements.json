@@ -1960,7 +1960,441 @@
         ]
       }
     },
-    {"id":"RFC7838","title":"HTTP Alternative Services","map_complete":false,"evidence":["src/http/internal/alt_svc.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC7838",
+      "title": "HTTP Alternative Services",
+      "map_complete": true,
+      "evidence": [
+        "src/http/internal/alt_svc.gleam",
+        "src/http/client.gleam",
+        "test/client_policy_test.gleam",
+        "test/client_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc7838.txt",
+        "document_sha256": "ac2ee358ed7406e8128fc85ada8a1891de54b963bd7d47875e290a23a4e95021",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=7838",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 29,
+        "level_counts": {
+          "MUST NOT": 4,
+          "MUST": 20,
+          "SHOULD": 4,
+          "SHOULD NOT": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC7838-2-MUST-NOT-PROPAGATE-THE-SUBSTITUTION",
+          "section": "2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Using an alternative changes the host, port, or protocol the request travels over without any of that reaching the application, which still sees the origin it asked for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"},
+            {"path": "src/http/client.gleam", "symbol": "should_attempt_http3"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"},
+            {"path": "test/client_policy_test.gleam", "symbol": "alt_svc_clear_produces_an_exact_origin_expiry_test"},
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2-MUST-HAVE-A-FRESHNESS-LIFETIME",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every retained alternative carries a freshness lifetime in seconds, so one without an explicit maximum age is refused rather than kept indefinitely.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "delta_seconds"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "parse_alternative"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2.1-MUST-HAVE-ASSURANCE-FOR-THE-WHOLE-ORIGIN",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An alternative is only used when it is the same host and port as the origin, learned over an authenticated https response, so the assurance covering the origin covers it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "parse"},
+            {"path": "src/http/client.gleam", "symbol": "capture_alt_svc_headers"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "test/client_test.gleam", "symbol": "a_misdirected_request_withdraws_the_alternative_it_answers_for_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2.2-SHOULD-DROP-NON-PERSISTENT-ENTRIES-ON-A-NETWORK-CHANGE",
+          "section": "2.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "On a detected network change a client drops every cached alternative that is not marked persist=1.",
+          "disposition": "NotApplicable",
+          "reason": "Detecting that the host moved network is the embedding application's, not a client library's: nothing here observes an interface or a route. What the library gives that application is the seam to act on, a network isolation key that partitions the store, and it honours no persist flag at all, so it holds nothing marked as surviving a change."
+        },
+        {
+          "id": "RFC7838-2.3-MUST-NOT-USE-TLS-WITHOUT-SNI",
+          "section": "2.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Every TLS client upgrade carries an explicit server name, so no alternative is reached over TLS without Server Name Indication.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2.4-SHOULD-USE-THE-ALTERNATIVE-FOR-ALL-REQUESTS",
+          "section": "2.4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Once an alternative is available a client uses it for every request to the associated origin.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The alternative is used only for an idempotent method carrying a replayable body. A route that fails partway is retried on the other one, and replaying a request the origin may already have acted on is a worse outcome than not using the alternative for it. Every other request to the origin still goes over the connection it would have used anyway, so nothing is refused, only routed as before.",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "should_attempt_http3"},
+            {"path": "src/http/client.gleam", "symbol": "race_https_routes"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "test/client_test.gleam", "symbol": "a_configured_proxy_holds_back_a_discovered_alternative_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2.4-SHOULD-NOT-BYPASS-A-CONFIGURED-PROXY",
+          "section": "2.4",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A request configured to go through a proxy is routed through it rather than connecting directly to an alternative, which is never contacted at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "should_attempt_http3"},
+            {"path": "src/http/client.gleam", "symbol": "http1_config"},
+            {"path": "src/http/client.gleam", "symbol": "http2_config"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "a_configured_proxy_holds_back_a_discovered_alternative_test"},
+            {"path": "test/client_test.gleam", "symbol": "verified_https_uses_connect_proxy_without_leaking_credentials_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-2.4-MUST-TREAT-A-WRONG-PROTOCOL-AS-AN-ERROR",
+          "section": "2.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A connection to the alternative that does not negotiate the expected protocol is an error rather than a usable connection, and the request falls back to the route that was already open.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "run_http3_exchange"},
+            {"path": "src/http/client.gleam", "symbol": "map_http3_error"},
+            {"path": "src/http/client.gleam", "symbol": "race_https_routes"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "test/client_test.gleam", "symbol": "a_configured_proxy_holds_back_a_discovered_alternative_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-3-MUST-PERCENT-ENCODE-NON-TOKEN-OCTETS",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An octet of the ALPN protocol name that is not a token character is percent-encoded when the field is written.",
+          "disposition": "NotApplicable",
+          "reason": "Generating the field is not this package's: nothing here emits Alt-Svc, and the only protocol-id it accepts on the way in is the literal `h3`, which has no octet needing an encoded form. A sender that encoded it anyway would not match and its alternative is skipped rather than guessed at."
+        },
+        {
+          "id": "RFC7838-3-MUST-PERCENT-ENCODE-THE-PERCENT-OCTET",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The percent character itself is percent-encoded when the field is written, so an encoded octet cannot be confused with a literal one.",
+          "disposition": "NotApplicable",
+          "reason": "Generating the field is not this package's: nothing here emits Alt-Svc, and the only protocol-id it accepts on the way in is the literal `h3`, which has no octet needing an encoded form. A sender that encoded it anyway would not match and its alternative is skipped rather than guessed at."
+        },
+        {
+          "id": "RFC7838-3-MUST-NOT-ENCODE-TOKEN-OCTETS",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "An octet of the ALPN protocol name that is a valid token character other than percent is written literally rather than encoded.",
+          "disposition": "NotApplicable",
+          "reason": "Generating the field is not this package's: nothing here emits Alt-Svc, and the only protocol-id it accepts on the way in is the literal `h3`, which has no octet needing an encoded form. A sender that encoded it anyway would not match and its alternative is skipped rather than guessed at."
+        },
+        {
+          "id": "RFC7838-3-MUST-USE-UPPERCASE-HEX",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Percent-encoding in the field uses uppercase hexadecimal digits.",
+          "disposition": "NotApplicable",
+          "reason": "Generating the field is not this package's: nothing here emits Alt-Svc, and the only protocol-id it accepts on the way in is the literal `h3`, which has no octet needing an encoded form. A sender that encoded it anyway would not match and its alternative is skipped rather than guessed at."
+        },
+        {
+          "id": "RFC7838-3-SHOULD-SEND-AN-ALTSVC-FRAME-OVER-HTTP2",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server advertising an alternative over HTTP/2 sends an ALTSVC frame rather than the header field.",
+          "disposition": "NotApplicable",
+          "reason": "Advertising an alternative is a server's, and no listener here emits one in either form. The frame type is not implemented, which section 4 requires a server receiving it to do anyway, and the HTTP/2 connection ignores an unknown frame type rather than failing the connection."
+        },
+        {
+          "id": "RFC7838-3-MUST-IGNORE-UNKNOWN-PARAMETERS",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A parameter this codec does not recognise is skipped rather than refused, so an alt-value carrying one is still usable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "delta_seconds"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-3-MUST-PROCESS-AS-IF-UNKNOWN-PARAMETERS-WERE-ABSENT",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An alt-value is read exactly as it would have been without the unrecognised parameter, so one changes neither the port nor the maximum age taken from it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "parse_alternative"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "delta_seconds"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-3-MUST-PROCESS-QUOTED-STRINGS-PER-RFC7230",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A quoted-string is read per RFC 7230 section 3.2.6: neither delimiter ends a value inside one, a backslash stands for the character after it, and an unterminated quote is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "split_unquoted"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "unquote"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "unquote_body"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "quoted_port"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-3.1-MUST-IGNORE-A-NON-ONE-PERSIST",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A persist parameter with any value other than 1 makes nothing persist, because no value of it is read and no entry outlives the store that holds it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "delta_seconds"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "parse_alternative"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-4-MUST-IGNORE-A-NON-AUTHORITATIVE-ASSOCIATION",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An ALTSVC frame associating an origin the client is not authoritative for on this connection is ignored.",
+          "disposition": "NotApplicable",
+          "reason": "The ALTSVC frame is not implemented, so no association arrives through it to be judged. The header field path, which is implemented, answers the same concern a different way: an alternative is only kept for the exact origin of the authenticated response that carried it."
+        },
+        {
+          "id": "RFC7838-4-MUST-IGNORE-AN-ALTSVC-FRAME-AS-A-SERVER",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A device acting as a server ignores an ALTSVC frame it receives rather than treating it as an error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http2/connection.gleam", "symbol": "receive_frame"},
+            {"path": "src/http/internal/http2/connection.gleam", "symbol": "IgnoredUnknownFrame"}
+          ],
+          "tests": [
+            {"path": "test/http2_connection_test.gleam", "symbol": "unknown_frame_types_are_ignored_after_initial_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-4-MUST-IGNORE-AN-EMPTY-ORIGIN-ON-STREAM-ZERO",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An ALTSVC frame on stream 0 whose Origin field is empty is invalid and ignored.",
+          "disposition": "NotApplicable",
+          "reason": "This is a rule for reading a frame type that is not implemented here, so no frame of it is ever decoded far enough to have an Origin field to inspect. An HTTP/2 connection treats it as the unknown type it is and ignores it whole."
+        },
+        {
+          "id": "RFC7838-4-MUST-IGNORE-A-NON-EMPTY-ORIGIN-OFF-STREAM-ZERO",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An ALTSVC frame on a stream other than 0 that carries a non-empty Origin field is invalid and ignored.",
+          "disposition": "NotApplicable",
+          "reason": "This is a rule for reading a frame type that is not implemented here, so no frame of it is ever decoded far enough to have an Origin field or a stream association to judge. An HTTP/2 connection treats it as the unknown type it is and ignores it whole."
+        },
+        {
+          "id": "RFC7838-4-MUST-NOT-FORWARD-ALTSVC-FRAMES",
+          "section": "4",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "An intermediary does not pass an ALTSVC frame through, though it may use what one told it when forming its own.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here is an HTTP/2 intermediary: there is no path that reads frames from one connection and writes them to another. The frame type is not implemented in either direction, so none is decoded to forward and none is encoded to send."
+        },
+        {
+          "id": "RFC7838-5-SHOULD-SEND-ALT-USED",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A request sent over an alternative carries an Alt-Used header field naming the alternative it is using.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The only alternative this client uses is the same host and the same port as the origin, reached over HTTP/3 instead of TCP. Alt-Used exists so a server can tell which of several authorities routed a request to it, and a field that always repeats the authority already in the request tells it nothing it does not have. It is not sent, and the loop-detection concern the section raises cannot arise from an alternative that is the origin.",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"},
+            {"path": "src/http/client.gleam", "symbol": "should_attempt_http3"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "test/client_policy_test.gleam", "symbol": "alt_svc_clear_produces_an_exact_origin_expiry_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-6-MUST-REMOVE-THE-ENTRY-ON-A-MISDIRECTED-REQUEST",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A 421 received while using an alternative removes that origin's entry from the alternative service cache.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "withdraw_alt_svc_origin"},
+            {"path": "src/http/client.gleam", "symbol": "capture_alt_svc_headers"},
+            {"path": "src/http/client.gleam", "symbol": "store_alt_svc_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "a_misdirected_request_withdraws_the_alternative_it_answers_for_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-6-MUST-IGNORE-ALT-SVC-IN-A-MISDIRECTED-RESPONSE",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An Alt-Svc field carried by a 421 response is ignored rather than learned from the server that just said it is the wrong one to ask.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_alt_svc_headers"},
+            {"path": "src/http/client.gleam", "symbol": "capture_alt_svc_fields"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "a_misdirected_request_withdraws_the_alternative_it_answers_for_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-7.3.1-MUST-REGISTER-THE-REQUIRED-FIELDS",
+          "section": "7.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registration in the Alt-Svc Parameter registry includes the parameter name, a reference, and the other fields the section lists.",
+          "disposition": "NotApplicable",
+          "reason": "Filling in a registry template is an action for whoever defines a parameter, and this package defines none: it reads the one registered parameter it needs and carries every other through without interpreting it. There is nothing here to register."
+        },
+        {
+          "id": "RFC7838-8-MUST-USE-A-LABELS-FOR-INTERNATIONALIZED-NAMES",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An internationalized domain name appearing in the field or the frame is written in A-label form.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "quoted_port"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "parse_alternative"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-9.2-MUST-PIN-CERTIFICATES-ON-ALTERNATIVES",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An alternative is authenticated against the same configured trust anchors and the same service identity as a direct connection to the origin, with no separate or relaxed path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "run_http3_exchange"},
+            {"path": "src/http/client.gleam", "symbol": "add_http3_ca_certificates"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC7838-9.4-MUST-CLEAR-WITH-ORIGIN-DATA",
+          "section": "9.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Alternative service information is removed when the user agent clears origin-specific data such as cookies.",
+          "disposition": "NotApplicable",
+          "reason": "There is no operation here that clears origin-specific data: the stores live for the client's lifetime and go together when it closes. A deployment that clears such data owns the persistence adapters it supplied, and those receive the same removals this client issues, so clearing is done where the data actually outlives a client."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 2,
+        "entries": [
+          {
+            "id": 6480,
+            "section": "2",
+            "status": "Held for Document Update",
+            "type": "Editorial",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The held correction hyphenates Application-Layer Protocol Negotiation to match the spelling RFC 7301 uses for its own registry. It corrects the expansion of an acronym in prose and names no behaviour; the protocol identifier this codec matches is unaffected."
+          },
+          {
+            "id": 6481,
+            "section": "2.4",
+            "status": "Rejected",
+            "type": "Editorial",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report asked for the fallback downgrade concern in section 2.4 to be restated in the security considerations. The verifier rejected it as a general clarification, and the concern itself is already answered here: an alternative is only ever the origin reached over another protocol, authenticated against the same trust anchors, so falling back loses no security property."
+          }
+        ]
+      }
+    },
     {"id":"RFC7932","title":"Brotli Compressed Data Format","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
     {"id":"RFC8305","title":"Happy Eyeballs Version 2: Better Connectivity Using Concurrency","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/runtime/client_transport.gleam","packages/quic_core/test/public_loopback_test.gleam","src/http_transport_ffi.erl","test/transport_test.gleam"]},
     {
