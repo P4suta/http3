@@ -283,3 +283,17 @@
   the token production, and generated obfuscated identifiers so a proxy's
   default discloses nothing. It was the one specification in the pinned
   inventory with no implementation behind it.
+- Covered the HTTP/1.1 connection and resource ceiling refusals, which the
+  coverage gate reported as unreached: every value outside each range, the
+  inclusive bounds themselves, and the rule that a line ceiling may not exceed
+  the head it has to fit inside.
+- Covered two HTTP/2 server paths the coverage gate reported as unreached: a
+  request body that ends in a trailer section rather than an END_STREAM on its
+  last DATA frame, which RFC 9113 section 8.1 permits, and a handler that
+  returns an error, which still owes its peer a response unless the error is
+  the stream already ending.
+- Covered every HTTP/1.1 status line the server writes a reason phrase for,
+  and the empty phrase a status it has none for still produces.
+- Covered the CONNECT-UDP proxy listener's stopped state: the port accessor
+  reports its typed failure once the listener underneath has gone, and stopping
+  a listener that is already stopped says so rather than failing.
