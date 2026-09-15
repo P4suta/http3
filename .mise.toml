@@ -221,7 +221,10 @@ description = "Install the hash-locked aioquic interoperability peer"
 dir = "{{ config_root }}/packages/http3"
 run = [
   "uv venv --clear --python 3.12.13 build/interop-venv",
-  "uv pip sync --python build/interop-venv/bin/python --require-hashes --strict test/interop/requirements.lock",
+  # Addressing the environment by directory rather than by interpreter path
+  # keeps this working where `uv venv` lays the interpreter out differently;
+  # Windows puts it in Scripts/python.exe rather than bin/python.
+  "uv pip sync --python build/interop-venv --require-hashes --strict test/interop/requirements.lock",
 ]
 
 [tasks.interop-lock]

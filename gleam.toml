@@ -98,6 +98,12 @@ unused_exports = "error"
 # field output. Public codec exports are also consumed by downstream packages.
 "src/http/digest.gleam" = ["unused_exports"]
 "test/digest_test.gleam" = ["assert_ok_pattern"]
+# RFC 7239 parsing walks the forwarded-pair grammar in positional recursive
+# passes that mirror it, and names each refusal in an explicit True/False
+# branch rather than continuing past it. Its vectors destructure Result values
+# to show the exact field output a proxy would emit.
+"src/http/forwarded.gleam" = ["label_possible", "prefer_guard_clause"]
+"test/forwarded_test.gleam" = ["assert_ok_pattern"]
 # RFC 9421 base construction preserves ordered component and metadata state in
 # positional helpers. The nested message/role match is the explicit matrix of
 # valid derived components; public wire helpers are downstream stable surface.

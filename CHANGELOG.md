@@ -268,3 +268,18 @@
   supported shell has, so the FFI audit and the structured-fields oracle setup
   run under the bash 3.2 that macOS ships instead of failing before they read
   anything, and recorded the `libmagic` the REUSE gate needs there.
+- Waited for the dropped-datagram count a connection is told about on a later
+  delivery rather than reading it through a drained actor, and waited for the
+  HTTP Datagram capability a peer's SETTINGS negotiates instead of assuming an
+  accepted request implies it. The coverage capture completes for all three
+  packages with these, so the gate now fails on its thresholds rather than on a
+  stopped run.
+- Addressed the interoperability virtual environment by directory and looked
+  for both interpreter layouts, so the hash-locked peer setup works where
+  `uv venv` writes `Scripts/python.exe` instead of `bin/python`.
+- Added RFC 7239 `Forwarded` as a strict bounded codec: node identifiers with
+  obfuscated and unknown forms, per-element duplicate refusal, Host and scheme
+  validation, RFC 5952 IPv6 rendering, automatic quoting where a value leaves
+  the token production, and generated obfuscated identifiers so a proxy's
+  default discloses nothing. It was the one specification in the pinned
+  inventory with no implementation behind it.
