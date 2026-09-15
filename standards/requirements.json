@@ -9293,7 +9293,376 @@
         ]
       }
     },
-    {"id":"RFC9842","title":"Compression Dictionary Transport","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
+    {
+      "id": "RFC9842",
+      "title": "Compression Dictionary Transport",
+      "map_complete": true,
+      "evidence": [
+        "src/http/compression.gleam",
+        "test/compression_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9842.txt",
+        "document_sha256": "27944690358430e7885edc3a7a0c6b12eae23076b11adb38fcb5bc865f31c0de",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9842",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 24,
+        "level_counts": {
+          "MUST NOT": 4,
+          "MUST": 20
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9842-2.1.1-MUST-NOT-USE-AN-INVALID-MATCH-PATTERN",
+          "section": "2.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A match pattern outside the accepted URLPattern shape refuses the directive rather than being used against a request path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "valid_pattern"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_directive"},
+            {"path": "src/http/compression.gleam", "symbol": "pattern_matches"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.1-MUST-REQUIRE-MATCH",
+          "section": "2.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A Use-As-Dictionary field without a match member carries no valid dictionary and is refused when it is parsed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_directive_members"},
+            {"path": "src/http/compression.gleam", "symbol": "parse_use_as_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.2-MUST-EMPTY-MATCH-DEST-MATCHES-ALL",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A dictionary whose match-dest list is empty is eligible for a request of any destination.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "destination_matches"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.2-MUST-TREAT-ABSENT-DESTINATION-SUPPORT-AS-EMPTY",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that does not support request destinations treats match-dest as an empty list and matches every destination.",
+          "disposition": "NotApplicable",
+          "reason": "Selection here takes the request destination as a required argument, so the client this store serves does support destinations by construction. The fallback the requirement defines exists for a client that cannot supply one, and no caller of this API is in that position."
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-SEND-DICTIONARY-ID-WHEN-IDENTIFIED",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A stored dictionary carrying a non-empty server identifier has that identifier sent as Dictionary-ID alongside Available-Dictionary.",
+          "disposition": "NotApplicable",
+          "reason": "Which request fields are emitted is decided where the request is composed, and nothing in this package composes a dictionary-aware request. The store retains the identifier on the selected dictionary and serialize_dictionary_id produces the field from it, so the value and its serializer are supplied to the caller that does."
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-TREAT-IDENTIFIER-AS-OPAQUE",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The server identifier is carried and compared as an opaque string: nothing here reads structure out of it, only its length and text safety.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-NOT-RELY-ON-IDENTIFIER-FOR-CONTENT",
+          "section": "2.1.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "What a compressed body was built against is decided by the dictionary hash the stream carries, never by the identifier that accompanied it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_hash"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-VALIDATE-DICTIONARY-HASH",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Expansion compares the stream's embedded thirty-two byte hash against the SHA-256 of the supplied dictionary and refuses a mismatch before decoding a byte.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_hash"},
+            {"path": "src/http/compression.gleam", "symbol": "decode"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.4-MUST-NOT-USE-AN-UNKNOWN-DICTIONARY-TYPE",
+          "section": "2.1.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A dictionary whose declared type is not raw is retained as an extension value and refused at insertion rather than used.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_type"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_type_name"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2-MUST-SEND-ONE-AVAILABLE-DICTIONARY",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Selection returns exactly one dictionary, and the Available-Dictionary serializer carries the one hash belonging to it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "select_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_available_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2.1-MUST-MATCH-ONLY-A-FRESH-DICTIONARY",
+          "section": "2.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A dictionary whose freshness has passed the current time is not a match, so a stale entry is never selected.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2.3-MUST-PICK-ONE-BY-THE-STATED-RULES",
+          "section": "2.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Among matching dictionaries a destination-specific one wins, then the longest match, then the most recently fetched, in that order.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "preferred"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.3-MUST-SEND-THE-STORED-IDENTIFIER",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A request using a dictionary stored with a server-provided id carries that id in a Dictionary-ID request header.",
+          "disposition": "NotApplicable",
+          "reason": "This is the same emission decision as the section 2.1.3 rule above and is made where the request is composed, which no module in this package does for dictionary transport. The identifier travels with the selected dictionary so the composer has it."
+        },
+        {
+          "id": "RFC9842-2.3-MUST-DICTIONARY-ID-IS-A-BOUNDED-IDENTICAL-STRING",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Dictionary-ID is a Structured Fields String of at most 1024 characters after decoding, and it round trips identically to the identifier the server gave.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_directive"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-4-MUST-DECOMPRESS-DCB-TO-A-SIXTEEN-MEGABYTE-WINDOW",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The default expansion ceiling admits a window log of 27, which is past the sixteen megabytes a dcb decoder has to accept.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "defaults"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "decode_brotli"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "brotli_trivial_stream_and_zstandard_magic_are_interoperable_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-5-MUST-DECOMPRESS-DCZ-TO-THE-LARGER-WINDOW",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same window log of 27 is past both eight megabytes and 1.25 times the sixteen megabyte dictionary ceiling, which is the larger of the two a dcz decoder has to accept.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "defaults"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "decode_ffi"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-5-MUST-KEEP-THE-ENCODED-WINDOW-BELOW-THE-LIMIT",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A stream whose encoded window exceeds the configured ceiling is refused during expansion rather than allocated for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "decode_ffi"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "defaults"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "malformed_bomb_and_non_byte_aligned_input_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-6.1-MUST-NOT-OFFER-DICTIONARY-ENCODINGS-WITHOUT-ONE",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A request for which no stored dictionary matches, or for which the client declines one, does not advertise the dictionary-aware content codings.",
+          "disposition": "NotApplicable",
+          "reason": "What a request advertises in Accept-Encoding is decided where the request is composed, and no module here composes one for dictionary transport. Selection reports NoMatchingDictionary rather than returning an unusable entry, which is the answer that decision needs."
+        },
+        {
+          "id": "RFC9842-6.2-MUST-VARY-A-CACHEABLE-DICTIONARY-RESPONSE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A cacheable dictionary-compressed response carries a Vary header so a cache cannot serve it to a client that did not ask for that encoding or that dictionary.",
+          "disposition": "NotApplicable",
+          "reason": "Emitting Vary on a response is a decision for the origin that built it, and nothing in this package builds a dictionary-compressed response or serves one from a cache. This module encodes and decodes a body when a caller asks and adds no field of its own."
+        },
+        {
+          "id": "RFC9842-8-MUST-USE-ONLY-SECURE-CONTEXTS",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A dictionary is stored and selected only against an https origin; any other scheme refuses the operation outright.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "validate_origin"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-9.3-MUST-DROP-A-RESPONSE-THAT-FAILS-A-MITIGATION",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A stream whose magic, dictionary hash, window, or size ceiling does not hold produces a typed error rather than any output.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "decode"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_operation"},
+            {"path": "src/http/compression.gleam", "symbol": "allowed_output"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "malformed_bomb_and_non_byte_aligned_input_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-9.3.2-MUST-PROTECT-OPAQUE-PAYLOADS",
+          "section": "9.3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that hides response payloads from script and guards against cross-site tracking takes further steps so dictionary compression cannot leak across that boundary.",
+          "disposition": "NotApplicable",
+          "reason": "The protection named is a user agent's: it depends on knowing which responses the page's script may read, which is a browser concept this package has no notion of. What it can partition, it does, by isolation key and by origin."
+        },
+        {
+          "id": "RFC9842-9.3.2-MUST-REQUIRE-BOTH-TO-BE-READABLE",
+          "section": "9.3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "In a user agent of that kind, dictionary compression is used only where both the dictionary and the compressed response are fully readable by the client.",
+          "disposition": "NotApplicable",
+          "reason": "Readability in the sense the section means is a property of a browser's response taint model, and this package has no such model and serves no opaque response. The pairing it can enforce, that a body expands only against the dictionary its hash names, it enforces."
+        },
+        {
+          "id": "RFC9842-10-MUST-TREAT-DICTIONARIES-LIKE-COOKIES",
+          "section": "10",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Stored dictionaries are partitioned the way cookie state is: by top-level site and profile as well as by origin, so one partition cannot read or be probed through another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "validate_isolation"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "remove_same_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 0,
+        "entries": []
+      }
+    },
     {
       "id": "RFC9931",
       "title": "Security Considerations for Optimistic Protocol Transitions in HTTP/1.1",
