@@ -37,7 +37,7 @@ pub fn parse(
       ))
     _ ->
       parse_alternatives(
-        string.split(value, on: ","),
+        split_unquoted(value, ","),
         host,
         origin_port,
         now_milliseconds,
@@ -119,7 +119,7 @@ fn parse_alternative(
   origin_port: Int,
   now: Int,
 ) -> Option(Entry) {
-  case string.split(alternative, on: ";") {
+  case split_unquoted(alternative, ";") {
     [] -> None
     [service, ..parameters] ->
       case string.split_once(string.trim(service), on: "=") {
@@ -149,18 +149,68 @@ fn parse_alternative(
 }
 
 fn quoted_port(authority: String) -> Option(Int) {
-  let length = string.length(authority)
-  case
-    length >= 4,
-    string.starts_with(authority, "\":"),
-    string.ends_with(authority, "\"")
-  {
-    True, True, True ->
-      authority
-      |> string.slice(at_index: 2, length: length - 3)
-      |> int.parse
-      |> option_from_result
-    _, _, _ -> None
+  case unquote(authority) {
+    None -> None
+    Some(inner) ->
+      case string.starts_with(inner, ":") {
+        False -> None
+        True ->
+          inner
+          |> string.drop_start(1)
+          |> int.parse
+          |> option_from_result
+      }
+  }
+}
+
+/// Split one field value on a delimiter, but only outside a quoted-string.
+///
+/// RFC 7838 section 3 makes a parameter value a token or a quoted-string, and
+/// RFC 7230 admits both delimiters as `qdtext`, so splitting on every
+/// occurrence ends an alt-value or a parameter in the middle of a value a
+/// server is entitled to send. The walk is one pass and the caller has already
+/// bounded the field.
+fn split_unquoted(value: String, delimiter: String) -> List(String) {
+  let #(parts, last, _, _) =
+    value
+    |> string.to_graphemes
+    |> list.fold(#([], "", False, False), fn(state, grapheme) {
+      let #(parts, current, quoted, escaped) = state
+      case escaped, quoted, grapheme, grapheme == delimiter {
+        // The character after a backslash is data, whatever it is.
+        True, _, _, _ -> #(parts, current <> grapheme, quoted, False)
+        False, True, "\\", _ -> #(parts, current <> grapheme, True, True)
+        False, _, "\"", _ -> #(parts, current <> grapheme, !quoted, False)
+        False, False, _, True -> #([current, ..parts], "", False, False)
+        False, _, _, _ -> #(parts, current <> grapheme, quoted, False)
+      }
+    })
+  list.reverse([last, ..parts])
+}
+
+/// Read a token or a quoted-string as the value it stands for.
+///
+/// A bare quote before the end, a backslash with nothing after it, and a value
+/// that runs out before its closing quote are all refused; a token is returned
+/// as it was written.
+fn unquote(raw: String) -> Option(String) {
+  case string.to_graphemes(raw) {
+    ["\"", ..body] -> unquote_body(body, "")
+    _ ->
+      case string.contains(raw, "\"") {
+        True -> None
+        False -> Some(raw)
+      }
+  }
+}
+
+fn unquote_body(remaining: List(String), decoded: String) -> Option(String) {
+  case remaining {
+    ["\""] -> Some(decoded)
+    ["\\", escaped, ..rest] -> unquote_body(rest, decoded <> escaped)
+    ["\"", ..] -> None
+    [grapheme, ..rest] -> unquote_body(rest, decoded <> grapheme)
+    [] -> None
   }
 }
 
@@ -168,16 +218,25 @@ fn maximum_age(parameters: List(String)) -> Option(Int) {
   case parameters {
     [] -> None
     [parameter, ..rest] ->
-      case string.split_once(string.trim(parameter), on: "=") {
-        Ok(#(name, value)) ->
-          case
-            string.lowercase(string.trim(name)),
-            int.parse(string.trim(value))
-          {
-            "ma", Ok(seconds) -> Some(seconds)
-            _, _ -> maximum_age(rest)
+      case delta_seconds(parameter) {
+        Some(seconds) -> Some(seconds)
+        None -> maximum_age(rest)
+      }
+  }
+}
+
+/// The `ma` value, which the grammar admits as a token or a quoted-string.
+fn delta_seconds(parameter: String) -> Option(Int) {
+  case string.split_once(string.trim(parameter), on: "=") {
+    Error(Nil) -> None
+    Ok(#(name, value)) ->
+      case string.lowercase(string.trim(name)) == "ma" {
+        False -> None
+        True ->
+          case unquote(string.trim(value)) {
+            None -> None
+            Some(inner) -> option_from_result(int.parse(inner))
           }
-        Error(_) -> maximum_age(rest)
       }
   }
 }
