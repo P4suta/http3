@@ -190,3 +190,33 @@ pub fn a_malformed_node_or_pair_is_refused_test() -> Nil {
     == Error(forwarded.InvalidNode)
   assert forwarded.parse("for", limits) == Error(forwarded.InvalidParameter)
 }
+
+pub fn a_quoted_value_keeps_the_delimiters_and_escapes_inside_it_test() -> Nil {
+  // RFC 7230 quoted-string admits "," and ";" as qdtext and "\\" before any
+  // visible character, so neither delimiter ends an element or a pair while
+  // the parser is inside one, and an escape stands for the character after it
+  // rather than for nothing.
+  let limits = forwarded.default_limits()
+  let assert Ok([element]) =
+    forwarded.parse("for=unknown;note=\"one, two; three\"", limits)
+  assert element.for == Some(forwarded.Unknown(None))
+  assert element.extensions == [forwarded.Parameter("note", "one, two; three")]
+  assert forwarded.to_field_value([element])
+    == "for=unknown;note=\"one, two; three\""
+
+  let assert Ok([first, second]) =
+    forwarded.parse("note=\"a,b\", note=\"c;d\"", limits)
+  assert first.extensions == [forwarded.Parameter("note", "a,b")]
+  assert second.extensions == [forwarded.Parameter("note", "c;d")]
+
+  let assert Ok([escaped]) = forwarded.parse("note=\"a\\\"b\\\\c\"", limits)
+  assert escaped.extensions == [forwarded.Parameter("note", "a\"b\\c")]
+  assert forwarded.to_field_value([escaped]) == "note=\"a\\\"b\\\\c\""
+
+  // An opening quote with nothing closing it is still refused rather than
+  // read to the end of the field.
+  assert forwarded.parse("note=\"unterminated", limits)
+    == Error(forwarded.InvalidParameter)
+  assert forwarded.parse("note=\"trailing\\\"", limits)
+    == Error(forwarded.InvalidParameter)
+}

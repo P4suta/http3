@@ -196,7 +196,7 @@ pub fn parse(
   case string.byte_size(value) > limits.maximum_bytes {
     True -> Error(InputTooLarge)
     False ->
-      parse_elements(split_elements(value), limits, [], 0)
+      parse_elements(split_unquoted(value, ","), limits, [], 0)
       |> result.map(list.reverse)
   }
 }
@@ -217,8 +217,29 @@ pub fn append(
   list.append(elements, [element])
 }
 
-fn split_elements(value: String) -> List(String) {
-  string.split(value, ",")
+/// Split a field value on one delimiter, but only where the walk is outside a
+/// quoted-string.
+///
+/// RFC 7230 admits both `,` and `;` as `qdtext` and admits a backslash before
+/// any visible character, so splitting on every occurrence ends an element or
+/// a pair in the middle of a value a peer is entitled to send. The walk is one
+/// pass over an input the caller has already held to `maximum_bytes`.
+fn split_unquoted(value: String, delimiter: String) -> List(String) {
+  let #(parts, last, _, _) =
+    value
+    |> string.to_graphemes
+    |> list.fold(#([], "", False, False), fn(state, grapheme) {
+      let #(parts, current, quoted, escaped) = state
+      case escaped, quoted, grapheme, grapheme == delimiter {
+        // The character after a backslash is data, whatever it is.
+        True, _, _, _ -> #(parts, current <> grapheme, quoted, False)
+        False, True, "\\", _ -> #(parts, current <> grapheme, True, True)
+        False, _, "\"", _ -> #(parts, current <> grapheme, !quoted, False)
+        False, False, _, True -> #([current, ..parts], "", False, False)
+        False, _, _, _ -> #(parts, current <> grapheme, quoted, False)
+      }
+    })
+  list.reverse([last, ..parts])
 }
 
 fn parse_elements(
@@ -243,7 +264,7 @@ fn parse_elements(
 fn parse_element(raw: String, limits: Limits) -> Result(Element, Error) {
   let empty =
     Element(by: None, for: None, host: None, proto: None, extensions: [])
-  use pairs <- result.try(parse_pairs(string.split(raw, ";"), limits, [], 0))
+  use pairs <- result.try(parse_pairs(split_unquoted(raw, ";"), limits, [], 0))
   apply_pairs(pairs, empty, [])
 }
 
@@ -298,15 +319,28 @@ fn parse_value(raw: String) -> Result(String, Error) {
 }
 
 fn unquote(raw: String) -> Result(String, Error) {
-  case string.ends_with(raw, "\"") && string.byte_size(raw) >= 2 {
-    False -> Error(InvalidParameter)
-    True -> {
-      let inner = string.slice(raw, 1, string.length(raw) - 2)
-      case string.contains(inner, "\"") {
-        True -> Error(InvalidParameter)
-        False -> Ok(string.replace(inner, "\\", ""))
-      }
-    }
+  case string.to_graphemes(raw) {
+    ["\"", ..body] -> unquote_body(body, "")
+    _ -> Error(InvalidParameter)
+  }
+}
+
+/// Read a quoted-string body up to the quote that closes it.
+///
+/// A backslash stands for the single character after it, so `\"` is data and
+/// not the end of the value, and `\\` is one backslash rather than nothing. A
+/// bare quote before the end, a backslash with nothing after it, and a value
+/// that runs out before its closing quote are all refused.
+fn unquote_body(
+  remaining: List(String),
+  decoded: String,
+) -> Result(String, Error) {
+  case remaining {
+    ["\""] -> Ok(decoded)
+    ["\\", escaped, ..rest] -> unquote_body(rest, decoded <> escaped)
+    ["\"", ..] -> Error(InvalidParameter)
+    [grapheme, ..rest] -> unquote_body(rest, decoded <> grapheme)
+    [] -> Error(InvalidParameter)
   }
 }
 
@@ -672,7 +706,14 @@ fn hexadecimal(group: Int) -> String {
 fn quote_if_needed(value: String) -> String {
   case valid_token(value) {
     True -> value
-    False -> "\"" <> string.replace(value, "\"", "\\\"") <> "\""
+    // The backslash goes first: escaping the quotes first would then escape
+    // the backslashes this step just wrote.
+    False ->
+      "\""
+      <> value
+      |> string.replace("\\", "\\\\")
+      |> string.replace("\"", "\\\"")
+      <> "\""
   }
 }
 

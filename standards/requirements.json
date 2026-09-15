@@ -1008,7 +1008,401 @@
     {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC6455","title":"The WebSocket Protocol","map_complete":false,"evidence":["src/http/websocket.gleam","test/websocket_test.gleam"]},
     {"id":"RFC6797","title":"HTTP Strict Transport Security (HSTS)","map_complete":false,"evidence":["src/http/internal/hsts.gleam","test/client_policy_test.gleam"]},
-    {"id":"RFC7239","title":"Forwarded HTTP Extension","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC7239",
+      "title": "Forwarded HTTP Extension",
+      "map_complete": true,
+      "evidence": [
+        "src/http/forwarded.gleam",
+        "test/forwarded_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc7239.txt",
+        "document_sha256": "f15c45c9e079684bc4284d041be63285923962448cb0d8540d54106c68c2a40d",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=7239",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 22,
+        "level_counts": {
+          "MUST NOT": 1,
+          "MUST": 9,
+          "SHOULD": 9,
+          "SHOULD NOT": 3
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC7239-4-MUST-NOT-REPEAT-PARAMETER",
+          "section": "4",
+          "level": "MUST NOT",
+          "roles": ["server", "proxy"],
+          "summary": "A parameter that appears a second time inside one forwarded-element is refused by name rather than resolved by a first-or-last precedence rule.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "apply_pairs"},
+            {"path": "src/http/forwarded.gleam", "symbol": "apply_pair"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_repeated_parameter_in_one_element_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-4-MUST-UPDATE-CORRECT-FIELD",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "Appending a hop keeps every element an earlier proxy wrote, in the order it wrote them, and adds this hop to the end of that single combined field value.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "append"},
+            {"path": "src/http/forwarded.gleam", "symbol": "to_field_value"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "each_proxy_appends_its_own_element_in_order_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.1-SHOULD-OBFUSCATE-BY-BY-DEFAULT",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The by parameter this module can build for a proxy without being given an address is an obfuscated identifier, not the interface the request arrived on.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.2-SHOULD-OBFUSCATE-FOR-BY-DEFAULT",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The for parameter this module can build without being given an address is an obfuscated identifier, so the client address is not disclosed by default.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.3-MUST-HOST-CONFORMS-TO-HOST-ABNF",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A host value is checked against the Host production after any quoted-string unescaping, so a registered name, IP literal, and optional port are the only accepted shapes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host_authority"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_host_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_registered_name_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_host_outside_the_host_abnf_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.4-MUST-PROTO-CONFORMS-TO-SCHEME",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A proto value is checked against the URI scheme name production after any quoted-string unescaping, so it starts with ALPHA and carries only scheme characters.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_scheme"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_scheme_byte"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_alpha"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_protocol_outside_the_scheme_production_is_refused_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-5.5-SHOULD-REGISTER-EXTENSION-PARAMETERS",
+          "section": "5.5",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Extension parameters are expected to be registered in the IANA HTTP Forwarded Parameter registry.",
+          "disposition": "NotApplicable",
+          "reason": "Registering a parameter name is an action for whoever defines that parameter. This codec defines no parameter of its own: it carries an unrecognised forwarded-pair through as an uninterpreted name and value, so there is nothing here to register."
+        },
+        {
+          "id": "RFC7239-5.5-SHOULD-STANDARDIZE-WIDESPREAD-EXTENSIONS",
+          "section": "5.5",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An extension parameter expected to see widespread deployment is expected to be standardized as well.",
+          "disposition": "NotApplicable",
+          "reason": "Taking an extension parameter through standardization is a process obligation on the party that defined and deployed it. This module introduces no extension parameter, so it has none to take through that process."
+        },
+        {
+          "id": "RFC7239-6-MUST-OBFPORT-CARRIES-LEADING-UNDERSCORE",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated port is distinguished from a real port by a leading underscore, which both the constructor and the node-port parser require before accepting one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_node_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_port_carries_its_own_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6-MUST-OBFPORT-CHARACTER-SET",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated port consists only of ALPHA, DIGIT, and the three characters full stop, underscore, and hyphen; any other byte refuses the identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_obfuscated_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_port_carries_its_own_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6-MUST-QUOTE-COLON-BEARING-NODE",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An IPv6 literal and any node carrying a node-port are emitted as a quoted-string, because the colon they contain is not a token character.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "node_to_string"},
+            {"path": "src/http/forwarded.gleam", "symbol": "port_suffix"},
+            {"path": "src/http/forwarded.gleam", "symbol": "quote_if_needed"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_token"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_ipv6_node_is_bracketed_and_quoted_on_the_wire_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.1-SHOULD-IPV6-TEXT-FOLLOWS-RFC5952",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An IPv6 address is written in the RFC 5952 recommended form: lowercase hexadecimal, no leading zeros in a group, and the longest run of zero groups compressed once.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "ipv6_to_string"},
+            {"path": "src/http/forwarded.gleam", "symbol": "compress_ipv6"},
+            {"path": "src/http/forwarded.gleam", "symbol": "longest_zero_run"},
+            {"path": "src/http/forwarded.gleam", "symbol": "hexadecimal"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_ipv6_literal_is_rendered_the_way_rfc_5952_asks_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-SHOULD-GENERATE-RANDOMLY-PER-REQUEST",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A generated obfuscated identifier is drawn from sixteen fresh random bytes on each call, so two requests do not share one unless a caller deliberately reuses a static name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_port"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_name"},
+            {"path": "src/http/forwarded.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-SHOULD-NOT-PERSIST-BEYOND-CLIENT-ADDRESS",
+          "section": "6.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "Nothing retains a generated identifier between calls, so one cannot outlive the client address it stands for; a caller that needs persistence supplies its own name and owns that lifetime.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-MUST-OBFNODE-CARRIES-LEADING-UNDERSCORE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated node identifier is distinguished from a real nodename by a leading underscore, which the constructor requires and the parser uses to classify one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_nodename"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-6.3-MUST-OBFNODE-CHARACTER-SET",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "An obfuscated node identifier consists only of ALPHA, DIGIT, and the three characters full stop, underscore, and hyphen; any other byte refuses the identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_obfuscated"},
+            {"path": "src/http/forwarded.gleam", "symbol": "is_obfuscated_byte"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-NOT-PASS-PRIVATE-INFORMATION",
+          "section": "8.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "No path here discloses a real address on its own: the only node this module generates is obfuscated, an unknown node is representable, and a literal address reaches the wire only because a caller supplied one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "node_to_string"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"},
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-DEFAULT-BOTH-PARAMETERS-OBFUSCATED",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "The element this module builds for a proxy that has not chosen otherwise carries obfuscated identifiers in both the by and the for parameter.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-GENERATE-IDENTIFIERS-PER-REQUEST",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Each call to the generator draws new randomness rather than reusing a value, so the by and for identifiers a proxy emits differ from one request to the next.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_element"},
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_name"},
+            {"path": "src/http/forwarded.gleam", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-LIMIT-PERSISTENT-IDENTIFIER-LIFETIME",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "This module keeps no identifier store, so the lifetime of a persistent identifier is bounded by whatever the caller that supplied the name retains, and nothing is extended here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_port"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_obfuscated_identifier_requires_its_leading_underscore_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-8.3-SHOULD-NOT-PERSIST-BEYOND-CLIENT-ADDRESS",
+          "section": "8.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "A persistent identifier cannot outlive the client address through this module, because no generated identifier is retained between calls and a supplied one is held only by its caller.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "generate_obfuscated_node"},
+            {"path": "src/http/forwarded.gleam", "symbol": "obfuscated_node"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "a_generated_identifier_is_obfuscated_and_fresh_per_request_test"}
+          ]
+        },
+        {
+          "id": "RFC7239-9-MUST-NEW-PARAMETERS-CONFORM-TO-FORWARDED-PAIR",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["server", "proxy"],
+          "summary": "A parameter this module does not recognise is still held to the forwarded-pair grammar: a token name, an equals sign, and a token or quoted-string value, or the field value is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_pair"},
+            {"path": "src/http/forwarded.gleam", "symbol": "parse_value"},
+            {"path": "src/http/forwarded.gleam", "symbol": "valid_token"},
+            {"path": "src/http/forwarded.gleam", "symbol": "unquote"}
+          ],
+          "tests": [
+            {"path": "test/forwarded_test.gleam", "symbol": "an_unregistered_parameter_is_retained_without_interpretation_test"},
+            {"path": "test/forwarded_test.gleam", "symbol": "a_quoted_value_keeps_the_delimiters_and_escapes_inside_it_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 5067,
+            "section": "GLOBAL",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction replaces the word proxy with message-forwarding agent throughout, because this document also means agents the client did not select. It renames a role and changes no field syntax, generation rule, or refusal, so nothing in this codec follows from it."
+          },
+          {
+            "id": 5275,
+            "section": "4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction writes the comma and optional whitespace of the list production out in the ABNF instead of leaving them to the # list extension. The published extension already defines exactly that separator, and this parser splits elements on an unquoted comma and trims the surrounding whitespace, so the correction adds no behaviour here."
+          },
+          {
+            "id": 7973,
+            "section": "4",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would lowercase a capitalised parameter name in one example, on the reading that only lowercase is allowed. The verifier rejected it because parameter names are case-insensitive, and this parser agrees: it lowercases every name before matching, so both spellings in that example parse to the same parameter."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC7301",
       "title": "Transport Layer Security (TLS) Application-Layer Protocol Negotiation Extension",
@@ -8380,7 +8774,128 @@
     {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
     {"id":"RFC9525","title":"Service Identity in TLS","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/authentication.gleam","packages/quic_core/test/public_loopback_test.gleam"]},
-    {"id":"RFC9530","title":"Digest Fields","map_complete":false,"evidence":["src/http/digest.gleam","test/digest_test.gleam"]},
+    {
+      "id": "RFC9530",
+      "title": "Digest Fields",
+      "map_complete": true,
+      "evidence": [
+        "src/http/digest.gleam",
+        "test/digest_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9530.txt",
+        "document_sha256": "544dbb7d9afceafa8c9931d9924ca6cff2b4807274166d7ed2483342ef2cdd6a",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9530",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 5,
+        "level_counts": {
+          "MUST": 3,
+          "RECOMMENDED": 1,
+          "MUST NOT": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-REQUEST-REPRESENTATION-DATA",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A state-changing request whose enclosed representation does not describe the target resource digests the representation data it encloses.",
+          "disposition": "NotApplicable",
+          "reason": "Which bytes a message digests follows from the method's own semantics, as the section's PATCH example shows, and that choice is made where the message is built. This module is a field codec: it hashes exactly the representation data a caller hands it and has no message layer that could substitute other bytes for them."
+        },
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-ENCLOSED-STATUS-REPRESENTATION",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response whose representation describes the status of the request computes Repr-Digest on the enclosed representation.",
+          "disposition": "NotApplicable",
+          "reason": "Telling a status representation from a resource representation is a judgement about the response being built, not about the bytes being hashed. Nothing here constructs a response or inspects one, so the codec has no way to make that distinction and no field it emits on its own."
+        },
+        {
+          "id": "RFC9530-3.1-MUST-DIGEST-REFERENCED-RESOURCE-REPRESENTATION",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response that references a resource computes Repr-Digest on that resource's selected representation, even when it differs from the target resource.",
+          "disposition": "NotApplicable",
+          "reason": "Selecting the referenced resource's representation depends on Content-Location and the method's semantics, which live in the message layer above this codec. The codec receives one representation and hashes it, so it neither performs nor can override that selection."
+        },
+        {
+          "id": "RFC9530-5-RECOMMENDED-USE-ACTIVE-ALGORITHMS",
+          "section": "5",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The algorithms an application uses are the ones the registry marks Active, which at publication are SHA-256 and SHA-512.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/digest.gleam", "symbol": "defaults"},
+            {"path": "src/http/digest.gleam", "symbol": "implemented"},
+            {"path": "src/http/digest.gleam", "symbol": "algorithm"},
+            {"path": "src/http/digest.gleam", "symbol": "algorithm_key"}
+          ],
+          "tests": [
+            {"path": "test/digest_test.gleam", "symbol": "rfc9530_sha256_and_sha512_vectors_test"},
+            {"path": "test/digest_test.gleam", "symbol": "digest_fields_and_preferences_are_strict_and_bounded_test"}
+          ]
+        },
+        {
+          "id": "RFC9530-5-MUST-NOT-USE-DEPRECATED-ALGORITHMS-ADVERSARIALLY",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A registry algorithm with Deprecated status is never used where an adversary is possible, such as signing an Integrity field value for authenticity.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/digest.gleam", "symbol": "implemented"},
+            {"path": "src/http/digest.gleam", "symbol": "hash"},
+            {"path": "src/http/digest.gleam", "symbol": "verify_values"}
+          ],
+          "tests": [
+            {"path": "test/digest_test.gleam", "symbol": "parse_retains_unknown_algorithms_and_parameters_test"},
+            {"path": "test/digest_test.gleam", "symbol": "verification_checks_every_supported_value_in_constant_time_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 8158,
+            "section": "B.2",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction names the second field in a figure caption Repr-Digest rather than Digest, matching the example it captions. It corrects a caption in an appendix and changes no field, algorithm, or rule this codec implements."
+          },
+          {
+            "id": 8273,
+            "section": "Appendix A",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction repairs a missing verb in the sentence introducing the appendix examples. It is a grammatical fix to prose and carries no requirement, so nothing in this implementation follows from it."
+          },
+          {
+            "id": 8890,
+            "section": "B.4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction replaces the Brotli bytes in two example figures, which as published do not decompress. The correction is to example data rather than to any rule, and this codec hashes the octets it is given without decoding a content coding, so neither the published bytes nor the corrected ones reach it."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9651",
       "title": "Structured Field Values for HTTP",
@@ -8778,7 +9293,376 @@
         ]
       }
     },
-    {"id":"RFC9842","title":"Compression Dictionary Transport","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
+    {
+      "id": "RFC9842",
+      "title": "Compression Dictionary Transport",
+      "map_complete": true,
+      "evidence": [
+        "src/http/compression.gleam",
+        "test/compression_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9842.txt",
+        "document_sha256": "27944690358430e7885edc3a7a0c6b12eae23076b11adb38fcb5bc865f31c0de",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9842",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 24,
+        "level_counts": {
+          "MUST NOT": 4,
+          "MUST": 20
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9842-2.1.1-MUST-NOT-USE-AN-INVALID-MATCH-PATTERN",
+          "section": "2.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A match pattern outside the accepted URLPattern shape refuses the directive rather than being used against a request path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "valid_pattern"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_directive"},
+            {"path": "src/http/compression.gleam", "symbol": "pattern_matches"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.1-MUST-REQUIRE-MATCH",
+          "section": "2.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A Use-As-Dictionary field without a match member carries no valid dictionary and is refused when it is parsed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_directive_members"},
+            {"path": "src/http/compression.gleam", "symbol": "parse_use_as_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.2-MUST-EMPTY-MATCH-DEST-MATCHES-ALL",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A dictionary whose match-dest list is empty is eligible for a request of any destination.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "destination_matches"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.2-MUST-TREAT-ABSENT-DESTINATION-SUPPORT-AS-EMPTY",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that does not support request destinations treats match-dest as an empty list and matches every destination.",
+          "disposition": "NotApplicable",
+          "reason": "Selection here takes the request destination as a required argument, so the client this store serves does support destinations by construction. The fallback the requirement defines exists for a client that cannot supply one, and no caller of this API is in that position."
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-SEND-DICTIONARY-ID-WHEN-IDENTIFIED",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A stored dictionary carrying a non-empty server identifier has that identifier sent as Dictionary-ID alongside Available-Dictionary.",
+          "disposition": "NotApplicable",
+          "reason": "Which request fields are emitted is decided where the request is composed, and nothing in this package composes a dictionary-aware request. The store retains the identifier on the selected dictionary and serialize_dictionary_id produces the field from it, so the value and its serializer are supplied to the caller that does."
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-TREAT-IDENTIFIER-AS-OPAQUE",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The server identifier is carried and compared as an opaque string: nothing here reads structure out of it, only its length and text safety.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-NOT-RELY-ON-IDENTIFIER-FOR-CONTENT",
+          "section": "2.1.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "What a compressed body was built against is decided by the dictionary hash the stream carries, never by the identifier that accompanied it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_hash"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.3-MUST-VALIDATE-DICTIONARY-HASH",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Expansion compares the stream's embedded thirty-two byte hash against the SHA-256 of the supplied dictionary and refuses a mismatch before decoding a byte.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_hash"},
+            {"path": "src/http/compression.gleam", "symbol": "decode"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.1.4-MUST-NOT-USE-AN-UNKNOWN-DICTIONARY-TYPE",
+          "section": "2.1.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A dictionary whose declared type is not raw is retained as an extension value and refused at insertion rather than used.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_type"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "dictionary_type_name"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2-MUST-SEND-ONE-AVAILABLE-DICTIONARY",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Selection returns exactly one dictionary, and the Available-Dictionary serializer carries the one hash belonging to it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "select_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_available_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2.1-MUST-MATCH-ONLY-A-FRESH-DICTIONARY",
+          "section": "2.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A dictionary whose freshness has passed the current time is not a match, so a stale entry is never selected.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.2.3-MUST-PICK-ONE-BY-THE-STATED-RULES",
+          "section": "2.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Among matching dictionaries a destination-specific one wins, then the longest match, then the most recently fetched, in that order.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "preferred"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-2.3-MUST-SEND-THE-STORED-IDENTIFIER",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A request using a dictionary stored with a server-provided id carries that id in a Dictionary-ID request header.",
+          "disposition": "NotApplicable",
+          "reason": "This is the same emission decision as the section 2.1.3 rule above and is made where the request is composed, which no module in this package does for dictionary transport. The identifier travels with the selected dictionary so the composer has it."
+        },
+        {
+          "id": "RFC9842-2.3-MUST-DICTIONARY-ID-IS-A-BOUNDED-IDENTICAL-STRING",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Dictionary-ID is a Structured Fields String of at most 1024 characters after decoding, and it round trips identically to the identifier the server gave.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "parse_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "serialize_dictionary_id"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_directive"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_structured_fields_are_strict_and_canonical_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-4-MUST-DECOMPRESS-DCB-TO-A-SIXTEEN-MEGABYTE-WINDOW",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The default expansion ceiling admits a window log of 27, which is past the sixteen megabytes a dcb decoder has to accept.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "defaults"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "decode_brotli"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "brotli_trivial_stream_and_zstandard_magic_are_interoperable_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-5-MUST-DECOMPRESS-DCZ-TO-THE-LARGER-WINDOW",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same window log of 27 is past both eight megabytes and 1.25 times the sixteen megabyte dictionary ceiling, which is the larger of the two a dcz decoder has to accept.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "defaults"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "decode_ffi"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-5-MUST-KEEP-THE-ENCODED-WINDOW-BELOW-THE-LIMIT",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A stream whose encoded window exceeds the configured ceiling is refused during expansion rather than allocated for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "decode_ffi"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_limits"},
+            {"path": "src/http/compression.gleam", "symbol": "defaults"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "malformed_bomb_and_non_byte_aligned_input_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-6.1-MUST-NOT-OFFER-DICTIONARY-ENCODINGS-WITHOUT-ONE",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A request for which no stored dictionary matches, or for which the client declines one, does not advertise the dictionary-aware content codings.",
+          "disposition": "NotApplicable",
+          "reason": "What a request advertises in Accept-Encoding is decided where the request is composed, and no module here composes one for dictionary transport. Selection reports NoMatchingDictionary rather than returning an unusable entry, which is the answer that decision needs."
+        },
+        {
+          "id": "RFC9842-6.2-MUST-VARY-A-CACHEABLE-DICTIONARY-RESPONSE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A cacheable dictionary-compressed response carries a Vary header so a cache cannot serve it to a client that did not ask for that encoding or that dictionary.",
+          "disposition": "NotApplicable",
+          "reason": "Emitting Vary on a response is a decision for the origin that built it, and nothing in this package builds a dictionary-compressed response or serves one from a cache. This module encodes and decodes a body when a caller asks and adds no field of its own."
+        },
+        {
+          "id": "RFC9842-8-MUST-USE-ONLY-SECURE-CONTEXTS",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A dictionary is stored and selected only against an https origin; any other scheme refuses the operation outright.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "validate_origin"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-9.3-MUST-DROP-A-RESPONSE-THAT-FAILS-A-MITIGATION",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A stream whose magic, dictionary hash, window, or size ceiling does not hold produces a typed error rather than any output.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "open_dictionary_header"},
+            {"path": "src/http/compression.gleam", "symbol": "decode"},
+            {"path": "src/http/compression.gleam", "symbol": "validate_operation"},
+            {"path": "src/http/compression.gleam", "symbol": "allowed_output"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "rfc9842_dictionary_headers_hash_and_round_trip_test"},
+            {"path": "test/compression_test.gleam", "symbol": "malformed_bomb_and_non_byte_aligned_input_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9842-9.3.2-MUST-PROTECT-OPAQUE-PAYLOADS",
+          "section": "9.3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that hides response payloads from script and guards against cross-site tracking takes further steps so dictionary compression cannot leak across that boundary.",
+          "disposition": "NotApplicable",
+          "reason": "The protection named is a user agent's: it depends on knowing which responses the page's script may read, which is a browser concept this package has no notion of. What it can partition, it does, by isolation key and by origin."
+        },
+        {
+          "id": "RFC9842-9.3.2-MUST-REQUIRE-BOTH-TO-BE-READABLE",
+          "section": "9.3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "In a user agent of that kind, dictionary compression is used only where both the dictionary and the compressed response are fully readable by the client.",
+          "disposition": "NotApplicable",
+          "reason": "Readability in the sense the section means is a property of a browser's response taint model, and this package has no such model and serves no opaque response. The pairing it can enforce, that a body expands only against the dictionary its hash names, it enforces."
+        },
+        {
+          "id": "RFC9842-10-MUST-TREAT-DICTIONARIES-LIKE-COOKIES",
+          "section": "10",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Stored dictionaries are partitioned the way cookie state is: by top-level site and profile as well as by origin, so one partition cannot read or be probed through another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/compression.gleam", "symbol": "validate_isolation"},
+            {"path": "src/http/compression.gleam", "symbol": "insert_dictionary"},
+            {"path": "src/http/compression.gleam", "symbol": "select_entry"},
+            {"path": "src/http/compression.gleam", "symbol": "remove_same_dictionary"}
+          ],
+          "tests": [
+            {"path": "test/compression_test.gleam", "symbol": "dictionary_store_partitions_origin_destination_and_freshness_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 0,
+        "entries": []
+      }
+    },
     {
       "id": "RFC9931",
       "title": "Security Considerations for Optimistic Protocol Transitions in HTTP/1.1",
