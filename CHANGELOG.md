@@ -294,3 +294,6 @@
   the stream already ending.
 - Covered every HTTP/1.1 status line the server writes a reason phrase for,
   and the empty phrase a status it has none for still produces.
+- Covered the CONNECT-UDP proxy listener's stopped state: the port accessor
+  reports its typed failure once the listener underneath has gone, and stopping
+  a listener that is already stopped says so rather than failing.

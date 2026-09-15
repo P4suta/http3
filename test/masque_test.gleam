@@ -4303,3 +4303,24 @@ fn inbound_http1_udp_request() -> request.Request(Nil) {
     query: None,
   )
 }
+
+pub fn a_stopped_udp_proxy_listener_reports_its_lifecycle_rather_than_a_port_test() -> Nil {
+  // The port accessor answers from the listener underneath, so once that has
+  // stopped there is no port to answer with and the typed failure is what the
+  // caller reads. Stopping twice is idempotent and says which of the two it
+  // was, so an owner that stops a listener it already stopped is not an error.
+  let #(certificate, private_key, _ca_certificate) =
+    http_test_support.server_credentials()
+  let assert Ok(configuration) = http3_server.new(certificate, private_key)
+  let assert Ok(configuration) = http3_server.with_timeout(configuration, 3000)
+  let assert Ok(listener) =
+    masque.start_udp_proxy_listener(configuration, limits())
+
+  let assert Ok(_) = masque.udp_proxy_listener_port(listener)
+  assert masque.stop_udp_proxy_listener(listener)
+    == Ok(masque.UdpProxyListenerStopped)
+  assert masque.stop_udp_proxy_listener(listener)
+    == Ok(masque.UdpProxyListenerAlreadyStopped)
+  assert masque.udp_proxy_listener_port(listener)
+    == Error(masque.UdpProxyListenerPortFailed)
+}
