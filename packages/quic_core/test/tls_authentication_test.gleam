@@ -142,3 +142,48 @@ pub fn rejects_private_key_that_does_not_match_leaf_certificate_test() -> Nil {
     )
     == Ok(False)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn a_service_identity_must_already_be_an_a_label_test() -> Nil {
+  // RFC 9525 section 6.3 requires a U-label in a reference identifier to be
+  // converted to its A-label before comparison. Nothing here performs that
+  // conversion, so a name that still carries one is refused as input rather
+  // than compared unconverted against what the certificate presents.
+  let assert Ok(ca_pem) = fixture("ca.pem")
+  let assert Ok(server_pem) = fixture("server.pem")
+  let assert Ok(trust_store) = authentication.trust_store_from_pem(ca_pem)
+  let assert Ok(chain) = authentication.certificate_chain_from_pem(server_pem)
+
+  assert authentication.validate_server_certificate(
+      chain,
+      trust_store,
+      "bücher.example",
+    )
+    == Error(authentication.InvalidInput)
+  assert authentication.validate_server_certificate(
+      chain,
+      trust_store,
+      "münchen.localhost",
+    )
+    == Error(authentication.InvalidInput)
+
+  // The A-label spelling of the same name is admissible input; it simply does
+  // not match this certificate.
+  assert authentication.validate_server_certificate(
+      chain,
+      trust_store,
+      "xn--bcher-kva.example",
+    )
+    == Error(authentication.IdentityMismatch)
+
+  // An address literal and an ASCII name are unaffected.
+  assert authentication.validate_server_certificate(
+      chain,
+      trust_store,
+      "127.0.0.1",
+    )
+    == Error(authentication.IdentityMismatch)
+  let assert Ok(_) =
+    authentication.validate_server_certificate(chain, trust_store, "localhost")
+  Nil
+}

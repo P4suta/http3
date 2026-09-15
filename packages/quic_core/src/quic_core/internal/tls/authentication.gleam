@@ -137,10 +137,17 @@ pub fn validate_server_certificate(
   trust_store trust_store: TrustStore,
   hostname hostname: String,
 ) -> Result(VerifiedPeer, Error) {
-  case certificate_chain, hostname {
-    [], _ -> Error(EmptyCertificateChain)
-    _, "" -> Error(InvalidInput)
-    _, _ ->
+  case certificate_chain, hostname, ascii_identity(hostname) {
+    [], _, _ -> Error(EmptyCertificateChain)
+    _, "", _ -> Error(InvalidInput)
+    // RFC 9525 section 6.3 requires a U-label in a reference identifier to be
+    // converted to its A-label before comparison, and nothing here performs
+    // that conversion. A name still carrying one is refused as input rather
+    // than compared unconverted: the comparison would refuse the connection
+    // anyway, but report it as the certificate's fault instead of the
+    // caller's.
+    _, _, False -> Error(InvalidInput)
+    _, _, True ->
       case all_byte_aligned(certificate_chain) {
         False -> Error(NonByteAligned)
         True ->
@@ -151,6 +158,20 @@ pub fn validate_server_certificate(
           )
           |> map_result
       }
+  }
+}
+
+/// Whether a service identity is entirely ASCII, which an A-label and an
+/// address literal both are and a U-label is not.
+fn ascii_identity(hostname: String) -> Bool {
+  ascii_bytes(bit_array.from_string(hostname))
+}
+
+fn ascii_bytes(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bits>> if byte < 0x80 -> ascii_bytes(rest)
+    _ -> False
   }
 }
 
