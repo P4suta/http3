@@ -9684,7 +9684,659 @@
     },
     {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
-    {"id":"RFC9525","title":"Service Identity in TLS","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/authentication.gleam","packages/quic_core/test/public_loopback_test.gleam"]},
+    {
+      "id": "RFC9525",
+      "title": "Service Identity in TLS",
+      "map_complete": true,
+      "evidence": [
+        "packages/quic_core/src/quic_core/internal/tls/authentication.gleam",
+        "packages/quic_core/src/quic_core_tls_ffi.erl",
+        "packages/quic_core/test/tls_authentication_test.gleam",
+        "packages/quic_core/test/public_loopback_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9525.txt",
+        "document_sha256": "ed8116c2435376dffe37ec2ca688c3a8515e36820852b29e0b6cdfbe92abd2c5",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9525",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 52,
+        "level_counts": {
+          "MUST": 30,
+          "SHOULD": 16,
+          "MUST NOT": 5,
+          "SHOULD NOT": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9525-2-MUST-SPECIFY-MANDATORY-IDENTIFIERS",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A protocol specification states which identifier types are mandatory to implement for its application service type.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-2-SHOULD-PROVIDE-OPERATIONAL-GUIDANCE",
+          "section": "2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A protocol specification provides operational guidance about those identifiers where that is necessary.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-2-MUST-NOT-IDENTIFY-BY-COMMON-NAME",
+          "section": "2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The Common Name RDN is never used to identify a service: the match function refuses that fallback outright rather than consulting it when no subjectAltName matches.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-2-MUST-NOT-IDENTIFY-BY-OTHER-RDNS",
+          "section": "2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No other relative distinguished name in the subject is consulted either: the only identifiers compared are the subjectAltName entries the reference identity names.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-3-MUST-STATE-SRV-ID-UNSUPPORTED",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A technology that does not resolve service names through DNS SRV records states that SRV-ID is not supported for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-3-MUST-STATE-URI-ID-UNSUPPORTED",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A technology that does not identify services by URI states that URI-ID is not supported for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-3-MUST-STATE-WILDCARDS-UNSUPPORTED",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A technology that does not support wildcard certificates states that they are not supported for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-4.1-MUST-INCLUDE-AT-LEAST-ONE-IDENTIFIER",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A certificate for an application service includes at least one identifier of an applicable type.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-SHOULD-INCLUDE-A-DNS-ID",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate includes a DNS-ID as the baseline every client can be expected to check.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-SHOULD-INCLUDE-STIPULATED-SRV-IDS",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate for a technology whose specification stipulates SRV-ID entries includes them.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-SHOULD-INCLUDE-STIPULATED-URI-IDS",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate for a technology whose specification stipulates URI-ID entries includes them.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-MUST-USE-THE-PROTOCOL-SCHEME-IN-A-URI-ID",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A URI-ID entry carries the scheme of the protocol associated with the application service type.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-MUST-USE-THE-SERVICE-FQDN-IN-A-URI-ID",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A URI-ID entry's host component is the fully qualified domain name of the service.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-4.1-MUST-SPECIFY-ACCEPTABLE-URI-SCHEMES",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An application protocol specification states which URI schemes are acceptable in URI-ID entries for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the author of a protocol specification, not an implementation of one. This package implements HTTP over TLS and writes no specification; what it does with the identifier types those documents settle is inventoried in the section 6 rows."
+        },
+        {
+          "id": "RFC9525-5-SHOULD-REQUEST-ALL-REQUIRED-IDENTIFIER-TYPES",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A service provider requests certificates carrying every identifier type its application service types require or recommend.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-5-SHOULD-REQUEST-AS-FEW-IDENTIFIERS-AS-NECESSARY",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A service provider requests as few identifiers as identify a single service, rather than a certificate covering more than it must.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-5-SHOULD-REQUEST-DNS-ID-FOR-A-SINGLE-TYPE",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate used for only one application service type is requested with a DNS-ID plus the type-specific identifiers that type needs.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-5-SHOULD-REQUEST-ONLY-DNS-IDS-FOR-ANY-TYPE",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate that might be used for any application service type is requested with only DNS-IDs.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-5-SHOULD-SEPARATE-CERTIFICATES-TO-LIMIT-APPLICABILITY",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A provider limiting the applicability of SRV-ID or URI-ID certificates obtains separate certificates for the separate service types.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever requests or issues the certificate, not the client checking one. The client's side is the only side here: a certificate presenting nothing that matches the reference identity is refused rather than accepted on some weaker ground."
+        },
+        {
+          "id": "RFC9525-6.1.1-MUST-CONSTRUCT-A-REFERENCE-IDENTIFIER-LIST",
+          "section": "6.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The client builds the list of acceptable reference identifiers it will check against before it looks at the certificate.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.1.1-MUST-BUILD-IT-INDEPENDENTLY-OF-THE-SERVER",
+          "section": "6.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The reference identity comes from the caller and nothing the server presented contributes to it, so a certificate cannot widen what it will be checked against.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.1.1-MUST-NOT-USE-AN-INTERMEDIATE-IDENTIFIER",
+          "section": "6.1.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No name learned along the way becomes a reference identity: the caller's service identity is the only one, and it is passed through unchanged.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.1.1-MUST-BUILD-FROM-NAMES-OR-ADDRESSES",
+          "section": "6.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The reference identity is a DNS-ID or an IP-ID depending on whether the service identity parses as an address literal, with no service type attached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "is_ip_address"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "is_ip_address"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.1.1-SHOULD-USE-A-URI-ID-FOR-URI-ASSOCIATED-TYPES",
+          "section": "6.1.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A service type whose formal specification associates it with a URI for security purposes is referenced by a URI-ID.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.1.1-SHOULD-USE-AN-SRV-ID-FOR-SRV-DISCOVERED-TYPES",
+          "section": "6.1.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A service type typically discovered through DNS SRV records is referenced by an SRV-ID.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.2-SHOULD-STOP-AT-THE-FIRST-MATCH",
+          "section": "6.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The search over presented identifiers ends at the first one that matches a reference identity rather than continuing through the rest.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.2-MUST-USE-A-DNS-ID-DIRECTLY",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A DNS-ID reference identity is used as the DNS domain name itself, with no application service type alongside it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.2-MUST-MATCH-AN-IP-ID-EXACTLY",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An IP-ID reference identity matches an iPAddress subjectAltName entry exactly, with no network-level or prefix matching.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "is_ip_address"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.2-MUST-MATCH-THE-DNS-NAME",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A reference identity that produces a domain name is matched as a domain name by the section 6.3 rules.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.2-MUST-MATCH-THE-IP-ADDRESS",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A reference identity that produces an IP address is matched as an address by the section 6.4 rules rather than as a name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "is_ip_address"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.2-MUST-ALSO-MATCH-THE-SERVICE-TYPE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Where an application service type is part of the reference identity, it is matched as well as the name.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.3-MUST-COMPARE-PREFERRED-SYNTAX-NAMES-BY-LABEL",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A reference name in preferred name syntax is compared against the presented name label by label, case-insensitively as ASCII.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.3-MUST-REQUIRE-EVERY-LABEL-TO-MATCH",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every label has to match for the names to match, apart from what the wildcard rule supplements.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.3-MUST-CONVERT-U-LABELS-TO-A-LABELS",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A reference identity that is an internationalized domain name has its U-labels converted to A-labels before comparison.",
+          "disposition": "NotApplicable",
+          "reason": "No reference identity here is an internationalized domain name: a service identity carrying a non-ASCII byte is refused as invalid input before any comparison is attempted, so the conversion this rule mandates has no input and no path exists on which an unconverted label is compared. A deployment that needs internationalized names converts to A-labels before calling, which is the contract the refusal makes explicit."
+        },
+        {
+          "id": "RFC9525-6.3-MUST-COMPARE-A-LABELS-CASE-INSENSITIVELY",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A-labels are compared as case-insensitive ASCII, which is how every label reaching comparison here is compared.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "ascii_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.3-MUST-REQUIRE-EVERY-A-LABEL-TO-MATCH",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every label of an A-label name has to match for the names to match, apart from what the wildcard rule supplements.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.3-MUST-APPLY-THE-WILDCARD-RULES",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A presented identifier carrying a wildcard is matched only under the rules the section gives for one, which the platform matcher applies.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.3-MUST-IGNORE-AN-INVALID-PRESENTED-IDENTIFIER",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A presented identifier that does not meet the requirements is ignored rather than matched loosely or treated as an error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.5-MUST-CHECK-THE-APPLICABLE-COMBINATION",
+          "section": "6.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Where a service type applies, the client checks the combination of that type and the domain name rather than either alone.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.5-MUST-NOT-CHECK-AN-INAPPLICABLE-COMBINATION",
+          "section": "6.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A combination of service type and domain name that does not apply to the connection is not checked.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.5-MUST-MATCH-AN-SRV-SERVICE-NAME-CASE-INSENSITIVELY",
+          "section": "6.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The application service name in an SRV-ID is matched without regard to case.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.5-MUST-MATCH-A-URI-SCHEME-CASE-INSENSITIVELY",
+          "section": "6.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The scheme name portion of a URI-ID is matched without regard to case.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-6.6-MUST-USE-THE-MATCHED-REFERENCE-AS-THE-IDENTITY",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The validated identity of the service is the reference identity that matched, not anything read out of the certificate afterwards.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "verified_peer_fingerprint"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.6-MUST-PROCEED-AS-STATED-ON-NO-MATCH",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Finding no presented identifier that matches any reference identity leads to the stated failure path rather than to a weaker acceptance.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.6-SHOULD-TERMINATE-AN-AUTOMATED-ATTEMPT",
+          "section": "6.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An automated client ends the attempt with a bad certificate error rather than continuing, which is the only outcome available here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.6-MUST-NOT-DISABLE-THE-CONTROL-BY-DEFAULT",
+          "section": "6.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Identity checking is never off by default, and there is no setting that turns it off at all: no path reaches a verified peer without a matching reference identity.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "validate_chain_and_identity"},
+            {"path": "packages/quic_core/src/quic_core_tls_ffi.erl", "symbol": "verify_service_identity"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9525-6.6-SHOULD-INFORM-A-HUMAN-USER",
+          "section": "6.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client directly controlled by a human tells that person about the mismatch and ends the attempt automatically.",
+          "disposition": "NotApplicable",
+          "reason": "There is no human in this path and no interface to tell one through: this is a library whose caller receives a typed failure. Telling a person is that caller's to do, and the automatic termination the same sentence asks for is what happens here regardless."
+        },
+        {
+          "id": "RFC9525-6.6-SHOULD-NOT-PIN-FUTURE-CONNECTIONS",
+          "section": "6.6",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "An accepted mismatch is not turned into a pin that restricts later connections to that one certificate.",
+          "disposition": "NotApplicable",
+          "reason": "No mismatch is ever accepted here, so there is nothing to pin from one. Nothing in this package retains a certificate across connections in any form: a verified peer is a value for the handshake that produced it."
+        },
+        {
+          "id": "RFC9525-6.6-SHOULD-CONFIGURE-STATIC-PINS-IN-ADVANCE",
+          "section": "6.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Local policy that fixes a certificate for a peer is set up beforehand rather than accepted in the moment.",
+          "disposition": "NotApplicable",
+          "reason": "This package has no pinning policy of either kind. What it does take in advance is the trust store, which is configuration supplied before any connection and never altered by one."
+        },
+        {
+          "id": "RFC9525-7.2-MUST-REQUIRE-A-SCHEME-AND-HOST-IN-A-URI-ID",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A URI-ID carries both a scheme and a host matching the reg-name rule.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-7.2-MUST-IGNORE-AN-INCOMPLETE-URI-ID",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An entry lacking either half is not a valid URI-ID and is ignored rather than partly used.",
+          "disposition": "NotApplicable",
+          "reason": "No application service type is ever constructed here. The reference identity is a DNS-ID or an IP-ID built from the caller's service identity alone, so there is no service type to match, mismatch, or compare case-insensitively."
+        },
+        {
+          "id": "RFC9525-7.6-SHOULD-WEIGH-MULTIPLE-IDENTIFIER-TYPES",
+          "section": "7.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client building reference identities of several types takes account of how they interact.",
+          "disposition": "NotApplicable",
+          "reason": "Exactly one reference identity is built per connection, and its type follows from whether the caller's service identity is an address literal. There is no second type for it to interact with."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 1,
+        "entries": [
+          {
+            "id": 8173,
+            "section": "6.1.2",
+            "status": "Held for Document Update",
+            "type": "Editorial",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The held correction renumbers a cross-reference in prose from the third example to the fourth, because the third is an email service unrelated to the SIP one being discussed. It corrects which example a sentence points at and states no rule."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9530",
       "title": "Digest Fields",

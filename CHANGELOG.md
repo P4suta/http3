@@ -335,3 +335,8 @@
   RFC 7838 section 3 requires: `,` and `;` inside a quoted parameter value no
   longer end an alt-value or a parameter, and `ma` is accepted in the quoted
   form the grammar admits.
+- Refused a service identity that is not already an A-label. RFC 9525 section
+  6.3 requires a U-label in a reference identifier to be converted before
+  comparison and nothing here performs that conversion, so such a name is now
+  reported as invalid input rather than compared unconverted and reported as
+  the certificate's fault.
