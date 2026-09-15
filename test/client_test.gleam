@@ -24,6 +24,7 @@ type PolicyRemoval {
   CookieRemoval(client_store.Partition, String, Int)
   HstsRemoval(client_store.Partition, String, Int)
   AltSvcRemoval(client_store.Partition, String, Int)
+  AltSvcUpsert(String, Int)
 }
 
 pub fn main() -> Nil {
@@ -617,6 +618,106 @@ pub fn typed_policy_expiry_headers_invoke_exact_partition_removals_test() -> Nil
   assert hsts_removal == HstsRemoval(partition, "localhost", 250)
   assert alt_svc_removal
     == AltSvcRemoval(partition, "localhost:" <> int.to_string(port), 250)
+
+  let assert Ok(Nil) = client.close(running)
+  let assert Ok(Nil) = server.drain_listener(listener)
+  let assert Ok(Nil) = server.stop_listener(listener)
+  let assert Ok(Nil) = server.stop(executor)
+  Nil
+}
+
+pub fn a_misdirected_request_withdraws_the_alternative_it_answers_for_test() -> Nil {
+  // RFC 7838 section 6: a 421 says this server does not answer for the
+  // authority that was asked for, so the alternative learned for that origin is
+  // withdrawn and an Alt-Svc field the same response carries is ignored rather
+  // than believed.
+  let partition =
+    client_store.Partition(
+      top_level_site: "https://top.example",
+      profile: "private",
+    )
+  let events = process.new_subject()
+  let assert Ok(alt_svc_adapter) =
+    client_store.new(
+      fn(_, _) { Ok([]) },
+      fn(_, record: client_store.AltSvcRecord, _) {
+        process.send(events, AltSvcUpsert(record.key, record.alternative_port))
+        Ok(Nil)
+      },
+      fn(received_partition, key, timeout_milliseconds) {
+        process.send(
+          events,
+          AltSvcRemoval(received_partition, key, timeout_milliseconds),
+        )
+        Ok(Nil)
+      },
+      250,
+    )
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let statuses = process.new_subject()
+  let handler = fn(incoming: request.Request(body.Body), _) {
+    process.send(statuses, incoming.path)
+    let status = case incoming.path {
+      "/learn" -> 200
+      _ -> 421
+    }
+    Ok(response.Response(
+      status: status,
+      headers: [#("alt-svc", "h3=\":8443\"; ma=3600")],
+      body: body.empty(),
+    ))
+  }
+  let assert Ok(executor) = server.start(server.defaults(), handler)
+  let assert Ok(listener) =
+    server.listen_http2_tls(
+      executor,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http2_defaults(),
+      certificate,
+      private_key,
+      service_identity: "localhost",
+    )
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+  let assert Ok(config) =
+    client.with_network_isolation_key(
+      client.defaults(),
+      client.NetworkIsolationKey(
+        top_level_site: "https://top.example",
+        profile: "private",
+      ),
+    )
+  let assert Ok(running) =
+    config
+    |> client.with_ca_certificates([ca_certificate])
+    |> client.with_alt_svc_store_adapter(alt_svc_adapter)
+    |> client.start
+  let outgoing =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: <<>>,
+      scheme: gleam_http.Https,
+      host: "localhost",
+      port: Some(port),
+      path: "/learn",
+      query: None,
+    )
+  let key = "localhost:" <> int.to_string(port)
+
+  let assert Ok(learned) = client.fetch(running, outgoing)
+  assert learned.status == 200
+  assert process.receive(events, within: 1000) == Ok(AltSvcUpsert(key, 8443))
+
+  let assert Ok(misdirected) =
+    client.fetch(running, request.Request(..outgoing, path: "/moved"))
+  assert misdirected.status == 421
+  // The only event the 421 produces is the withdrawal: its own Alt-Svc field
+  // never reaches the store.
+  assert process.receive(events, within: 1000)
+    == Ok(AltSvcRemoval(partition, key, 250))
+  assert process.receive(events, within: 250) == Error(Nil)
 
   let assert Ok(Nil) = client.close(running)
   let assert Ok(Nil) = server.drain_listener(listener)

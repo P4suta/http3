@@ -147,3 +147,51 @@ pub fn an_ip_literal_host_is_never_noted_as_an_hsts_host_test() -> Nil {
   assert hsts.from_persisted("192.0.2.1", False, 60_000, 0) == None
   assert hsts.from_persisted("[2001:db8::1]", False, 60_000, 0) == None
 }
+
+pub fn an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test() -> Nil {
+  // RFC 7838 section 3: every field element that allows quoted-string syntax is
+  // processed per RFC 7230 section 3.2.6. A parameter value may be a
+  // quoted-string, so `,` and `;` inside one end neither the alt-value nor the
+  // parameter list, and `ma` may be sent quoted.
+  let assert Some(plain) =
+    alt_svc.parse("h3=\":443\"; ma=3600", "Example.COM", 443, 0)
+  assert plain.alternative_port == 443
+  assert plain.expires_at == 3_600_000
+
+  let assert Some(comma) =
+    alt_svc.parse(
+      "h3=\":443\"; persist=\"a,b\"; ma=3600",
+      "example.com",
+      443,
+      0,
+    )
+  assert comma.alternative_port == 443
+  assert comma.expires_at == 3_600_000
+
+  let assert Some(semicolon) =
+    alt_svc.parse("h3=\":443\"; note=\"x;y\"; ma=60", "example.com", 443, 0)
+  assert semicolon.expires_at == 60_000
+
+  let assert Some(quoted_age) =
+    alt_svc.parse("h3=\":443\"; ma=\"3600\"", "example.com", 443, 0)
+  assert quoted_age.expires_at == 3_600_000
+
+  // A parameter this module does not read still ends where its quote does, so
+  // an `ma` written inside one is text rather than a maximum age.
+  assert alt_svc.parse("h3=\":443\"; note=\"; ma=99; \"", "example.com", 443, 0)
+    == None
+
+  // An unterminated quote is still refused rather than read to the end of the
+  // field, and a second alternative is still reached when the first is not h3.
+  assert alt_svc.parse("h3=\":443", "example.com", 443, 0) == None
+  assert alt_svc.parse("h3=\":443; ma=60", "example.com", 443, 0) == None
+  let assert Some(second) =
+    alt_svc.parse(
+      "h2=\":443\"; ma=60, h3=\":8443\"; ma=120",
+      "example.com",
+      443,
+      0,
+    )
+  assert second.alternative_port == 8443
+  assert second.expires_at == 120_000
+}

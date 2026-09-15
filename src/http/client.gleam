@@ -2099,6 +2099,7 @@ fn capture_response_policies(
   capture_alt_svc_headers(
     client,
     outgoing,
+    incoming.status,
     incoming.headers,
     transport.monotonic_millisecond(),
   )
@@ -2153,12 +2154,39 @@ fn capture_hsts_headers(
 fn capture_alt_svc_headers(
   client: Client,
   outgoing: Request(body),
+  status: Int,
   headers: List(#(String, String)),
   now: Int,
 ) -> Nil {
-  case outgoing.scheme, client.config.discovery_policy.enabled, headers {
-    _, False, _ | Http, _, _ | _, _, [] -> Nil
-    Https, True, [#(name, value), ..rest] -> {
+  case outgoing.scheme, client.config.discovery_policy.enabled {
+    Http, _ | _, False -> Nil
+    // RFC 7838 section 6: a 421 says this server does not answer for the
+    // authority that was asked for. The alternative learned for that origin is
+    // withdrawn, and the Alt-Svc field the same response carries is ignored
+    // rather than believed, because it came from the server that just said it
+    // is the wrong one to ask.
+    //
+    // The section scopes the withdrawal to a 421 received from an alternative
+    // service. Withdrawing on any 421 for the origin is wider and is the safe
+    // direction: the worst it costs is relearning the alternative from the next
+    // response that advertises it.
+    Https, True ->
+      case status == 421 {
+        True -> withdraw_alt_svc_origin(client, outgoing, now)
+        False -> capture_alt_svc_fields(client, outgoing, headers, now)
+      }
+  }
+}
+
+fn capture_alt_svc_fields(
+  client: Client,
+  outgoing: Request(body),
+  headers: List(#(String, String)),
+  now: Int,
+) -> Nil {
+  case headers {
+    [] -> Nil
+    [#(name, value), ..rest] -> {
       let origin = request_origin(outgoing)
       case
         string.lowercase(name),
@@ -2170,7 +2198,23 @@ fn capture_alt_svc_headers(
         }
         _, _ -> Nil
       }
-      capture_alt_svc_headers(client, outgoing, rest, now)
+      capture_alt_svc_fields(client, outgoing, rest, now)
+    }
+  }
+}
+
+/// Drop this origin's alternative the way an `Alt-Svc: clear` would.
+fn withdraw_alt_svc_origin(
+  client: Client,
+  outgoing: Request(body),
+  now: Int,
+) -> Nil {
+  let origin = request_origin(outgoing)
+  case alt_svc.parse("clear", outgoing.host, origin.port, now) {
+    None -> Nil
+    Some(entry) -> {
+      let _withdrawn = store_alt_svc_policy(client, entry, now)
+      Nil
     }
   }
 }

@@ -327,3 +327,11 @@
   `TlsHandshake` there and `TlsAuthentication` on 28.5.0.6 and 29. The
   description is now read as well, bounded at four kibibytes and only ever
   toward the certificate class.
+- Withdrew an origin's discovered alternative on a 421 and ignored the
+  `Alt-Svc` field such a response carries, which RFC 7838 section 6 requires: a
+  misdirected-request answer previously taught the client a new alternative
+  instead of retiring the one it had.
+- Held `Alt-Svc` to the RFC 7230 quoted-string rules its grammar inherits, which
+  RFC 7838 section 3 requires: `,` and `;` inside a quoted parameter value no
+  longer end an alt-value or a parameter, and `ma` is accepted in the quoted
+  form the grammar admits.
