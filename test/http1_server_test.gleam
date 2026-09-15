@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/result
@@ -739,4 +740,136 @@ fn read_to_end(
     Ok(transport.ReadData(bytes, socket)) ->
       read_to_end(socket, [bytes, ..reversed])
   }
+}
+
+pub fn http1_connection_ceilings_refuse_every_value_outside_their_range_test() -> Nil {
+  let defaults = server.http1_defaults()
+  let policy = error.new(error.Policy(error.SecurityPolicy))
+
+  // Both ceilings are finite and positive, and neither may exceed a million.
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 0,
+      maximum_requests_per_connection: 8,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 1_000_001,
+      maximum_requests_per_connection: 8,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 8,
+      maximum_requests_per_connection: 0,
+    )
+    == Error(policy)
+  assert server.with_http1_connection_limits(
+      defaults,
+      maximum_connections: 8,
+      maximum_requests_per_connection: 1_000_001,
+    )
+    == Error(policy)
+
+  // The inclusive bounds themselves are accepted.
+  assert result.is_ok(server.with_http1_connection_limits(
+    defaults,
+    maximum_connections: 1,
+    maximum_requests_per_connection: 1,
+  ))
+  assert result.is_ok(server.with_http1_connection_limits(
+    defaults,
+    maximum_connections: 1_000_000,
+    maximum_requests_per_connection: 1_000_000,
+  ))
+}
+
+pub fn http1_resource_ceilings_refuse_every_value_outside_their_range_test() -> Nil {
+  let defaults = server.http1_defaults()
+  let policy = error.new(error.Policy(error.SecurityPolicy))
+  let accepted = fn(head: Int, headers: Int, line: Int, body: Int, buffer: Int) {
+    server.with_http1_limits(
+      defaults,
+      maximum_head_bytes: head,
+      maximum_header_count: headers,
+      maximum_line_bytes: line,
+      maximum_body_bytes: body,
+      maximum_stream_buffer_bytes: buffer,
+    )
+  }
+
+  assert accepted(0, 64, 8192, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 0, 8192, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 0, 65_536, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 8192, 0, 16_384) == Error(policy)
+  assert accepted(16_384, 64, 8192, 65_536, 0) == Error(policy)
+  // A line ceiling wider than the head it has to fit inside is refused.
+  assert accepted(8192, 64, 8193, 65_536, 16_384) == Error(policy)
+  // A line ceiling exactly as wide as the head is not.
+  assert result.is_ok(accepted(8192, 64, 8192, 65_536, 16_384))
+}
+
+pub fn every_status_line_carries_its_registered_reason_phrase_test() -> Nil {
+  // RFC 9112 section 4: the reason phrase is what follows the status code on
+  // the status line. Each status this server writes a phrase for is asked for
+  // in turn, and a status it has no phrase for still produces a well formed
+  // status line with an empty one.
+  let expected = [
+    #(200, "OK"),
+    #(201, "Created"),
+    #(202, "Accepted"),
+    #(206, "Partial Content"),
+    #(301, "Moved Permanently"),
+    #(302, "Found"),
+    #(303, "See Other"),
+    #(304, "Not Modified"),
+    #(307, "Temporary Redirect"),
+    #(308, "Permanent Redirect"),
+    #(400, "Bad Request"),
+    #(401, "Unauthorized"),
+    #(403, "Forbidden"),
+    #(404, "Not Found"),
+    #(405, "Method Not Allowed"),
+    #(408, "Request Timeout"),
+    #(413, "Content Too Large"),
+    #(417, "Expectation Failed"),
+    #(421, "Misdirected Request"),
+    #(429, "Too Many Requests"),
+    #(500, "Internal Server Error"),
+    #(501, "Not Implemented"),
+    #(502, "Bad Gateway"),
+    #(503, "Service Unavailable"),
+    #(504, "Gateway Timeout"),
+    #(599, ""),
+  ]
+  let handler = fn(request: Request(body.Body), _) {
+    let status = case int.parse(string.drop_start(request.path, 1)) {
+      Ok(status) -> status
+      Error(Nil) -> 500
+    }
+    Ok(response.Response(status:, headers: [], body: body.empty()))
+  }
+  let #(executor, listener, port) = cleartext_server(handler)
+
+  list.each(expected, fn(pair) {
+    let #(status, phrase) = pair
+    let assert Ok(client) = transport.connect("127.0.0.1", port, 1000, 1000)
+    let assert Ok(Nil) =
+      transport.send(
+        client,
+        bit_array.from_string(
+          "GET /"
+          <> int.to_string(status)
+          <> " HTTP/1.1\r\n"
+          <> "Host: example.test\r\nConnection: close\r\n\r\n",
+        ),
+      )
+    let assert Ok(#(_, received)) = read_to_end(client, [])
+    let assert Ok(text) = bit_array.to_string(received)
+    let line = "HTTP/1.1 " <> int.to_string(status) <> " " <> phrase <> "\r\n"
+    assert string.starts_with(text, line)
+  })
+
+  stop_server(listener, executor)
 }

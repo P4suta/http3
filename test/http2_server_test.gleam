@@ -2037,3 +2037,135 @@ fn wire_limits() -> wire.Limits {
     maximum_frames_per_feed: 32,
   )
 }
+
+pub fn a_request_body_ending_in_trailers_reaches_its_handler_test() -> Nil {
+  // RFC 9113 section 8.1: a request body may end with a trailer section
+  // instead of an END_STREAM on its last DATA frame. The server has to finish
+  // the body on the trailers rather than keep waiting for data that will not
+  // arrive, and the handler has to see them.
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let observed = process.new_subject()
+  let handler = fn(incoming: request.Request(body.Body), _) {
+    use #(bytes, trailers) <- result.try(body.read_all(incoming.body, 1024))
+    process.send(observed, #(bytes, trailers))
+    Ok(response.Response(status: 204, headers: [], body: body.empty()))
+  }
+  let assert Ok(executor) = server.start(server.defaults(), handler)
+  let assert Ok(listener) =
+    server.listen_http2_tls(
+      executor,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http2_defaults(),
+      certificate,
+      private_key,
+      service_identity: "localhost",
+    )
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+  let assert Ok(socket) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(transport.TlsReady(socket, <<"h2":utf8>>, _)) =
+    transport.upgrade_client_tls(
+      socket,
+      "localhost",
+      [ca_certificate],
+      [<<"h2":utf8>>],
+      1000,
+    )
+  let assert Ok(state) =
+    wire.new(connection.Client, connection_limits(), wire_limits())
+  let assert Ok(wire.Started(state, initial)) = wire.initial_bytes(state, [])
+  let assert Ok(Nil) = transport.send(socket, initial)
+
+  let outgoing =
+    request.Request(..get_request(port, "/trailers"), method: gleam_http.Post)
+  let assert Ok(wire.HeadersWritten(state, 1, headers)) =
+    wire.send_request_headers(state, outgoing, end_stream: False)
+  let assert Ok(Nil) = send_frames(socket, headers)
+  let assert Ok(wire.DataWritten(state, data, _, _)) =
+    wire.send_data(
+      state,
+      stream_id: 1,
+      bytes: <<"body":utf8>>,
+      end_stream: False,
+    )
+  let assert Ok(Nil) = send_frames(socket, data)
+  // No END_STREAM on the DATA above: the trailer section ends the body.
+  let assert Ok(wire.HeadersWritten(state, 1, trailers)) =
+    wire.send_trailers(state, 1, [#("x-checksum", "abcd")])
+  let assert Ok(Nil) = send_frames(socket, trailers)
+
+  let assert Ok(#(bytes, seen)) = process.receive(observed, within: 2000)
+  assert bytes == <<"body":utf8>>
+  assert seen == [#("x-checksum", "abcd")]
+
+  let assert Ok(#(socket, _, responses)) =
+    collect_responses(socket, state, [], 1)
+  assert responses == [#(1, 204)]
+
+  let assert Ok(Nil) = transport.close(socket)
+  let assert Ok(Nil) = server.drain_listener(listener)
+  let assert Ok(Nil) = server.stop_listener(listener)
+  let assert Ok(Nil) = server.stop(executor)
+  Nil
+}
+
+pub fn a_handler_failure_becomes_a_response_unless_it_cancelled_test() -> Nil {
+  // A handler that returns an error still owes the peer a response, and which
+  // response depends on what the error was: a deadline or a cancellation is
+  // the stream already ending, so nothing more is written for it, while any
+  // other failure is answered rather than left hanging.
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let handler = fn(incoming: request.Request(body.Body), _) {
+    case incoming.path {
+      "/refused" -> Error(error.new(error.Policy(error.SecurityPolicy)))
+      _ -> Ok(response.Response(status: 204, headers: [], body: body.empty()))
+    }
+  }
+  let assert Ok(executor) = server.start(server.defaults(), handler)
+  let assert Ok(listener) =
+    server.listen_http2_tls(
+      executor,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http2_defaults(),
+      certificate,
+      private_key,
+      service_identity: "localhost",
+    )
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+  let assert Ok(socket) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(transport.TlsReady(socket, <<"h2":utf8>>, _)) =
+    transport.upgrade_client_tls(
+      socket,
+      "localhost",
+      [ca_certificate],
+      [<<"h2":utf8>>],
+      1000,
+    )
+  let assert Ok(state) =
+    wire.new(connection.Client, connection_limits(), wire_limits())
+  let assert Ok(wire.Started(state, initial)) = wire.initial_bytes(state, [])
+  let assert Ok(Nil) = transport.send(socket, initial)
+  let assert Ok(wire.HeadersWritten(state, 1, refused)) =
+    wire.send_request_headers(
+      state,
+      get_request(port, "/refused"),
+      end_stream: True,
+    )
+  let assert Ok(Nil) = send_frames(socket, refused)
+
+  let assert Ok(#(socket, _, responses)) =
+    collect_responses(socket, state, [], 1)
+  // The status is the one the error classifies to, not the handler's own 204.
+  let assert [#(1, status)] = responses
+  assert status != 204
+  assert status >= 400
+
+  let assert Ok(Nil) = transport.close(socket)
+  let assert Ok(Nil) = server.drain_listener(listener)
+  let assert Ok(Nil) = server.stop_listener(listener)
+  let assert Ok(Nil) = server.stop(executor)
+  Nil
+}
