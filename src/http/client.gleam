@@ -2131,16 +2131,22 @@ fn capture_hsts_headers(
 ) -> Nil {
   case outgoing.scheme, client.config.hsts_policy.enabled, headers {
     _, False, _ | Http, _, _ | _, _, [] -> Nil
-    Https, True, [#(name, value), ..rest] -> {
-      case string.lowercase(name), hsts.parse(value, outgoing.host, now) {
-        "strict-transport-security", Some(entry) -> {
-          let _stored = store_hsts_policy(client, entry, now)
-          Nil
-        }
-        _, _ -> Nil
+    Https, True, [#(name, value), ..rest] ->
+      // RFC 6797 section 8.1: a response carrying more than one of these is
+      // read for the first one only, so a second field cannot revise or
+      // withdraw what the first said. The walk stops at the first one whether
+      // or not it turned out to be well formed.
+      case string.lowercase(name) == "strict-transport-security" {
+        False -> capture_hsts_headers(client, outgoing, rest, now)
+        True ->
+          case hsts.parse(value, outgoing.host, now) {
+            None -> Nil
+            Some(entry) -> {
+              let _stored = store_hsts_policy(client, entry, now)
+              Nil
+            }
+          }
       }
-      capture_hsts_headers(client, outgoing, rest, now)
-    }
   }
 }
 

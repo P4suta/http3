@@ -801,6 +801,70 @@ pub fn verified_hsts_policy_upgrades_a_later_cleartext_uri_test() -> Nil {
   Nil
 }
 
+pub fn only_the_first_strict_transport_security_field_is_processed_test() -> Nil {
+  // RFC 6797 section 8.1: a response carrying more than one STS field is read
+  // for the first one only, so a second field cannot revise or withdraw what
+  // the first said. Here the second would clear the policy the first sets.
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let schemes = process.new_subject()
+  let handler = fn(incoming: request.Request(body.Body), _) {
+    process.send(schemes, incoming.scheme)
+    Ok(response.Response(
+      status: 200,
+      headers: [
+        #("strict-transport-security", "max-age=60"),
+        #("strict-transport-security", "max-age=0"),
+      ],
+      body: body.from_text("secure"),
+    ))
+  }
+  let assert Ok(executor) = server.start(server.defaults(), handler)
+  let assert Ok(listener) =
+    server.listen_http2_tls(
+      executor,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http2_defaults(),
+      certificate,
+      private_key,
+      service_identity: "localhost",
+    )
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+  let assert Ok(running) =
+    client.defaults()
+    |> client.with_ca_certificates([ca_certificate])
+    |> client.start
+  let secure =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: <<>>,
+      scheme: gleam_http.Https,
+      host: "localhost",
+      port: Some(port),
+      path: "/learn",
+      query: None,
+    )
+  let cleartext =
+    request.Request(..secure, scheme: gleam_http.Http, path: "/use")
+
+  let assert Ok(first) = client.fetch(running, secure)
+  let assert Ok(#(<<"secure":utf8>>, [])) = body.read_all(first.body, 6)
+  let assert Ok(second) = client.fetch(running, cleartext)
+  let assert Ok(#(<<"secure":utf8>>, [])) = body.read_all(second.body, 6)
+  // The first field is what holds: the cleartext request is upgraded rather
+  // than sent as it was written.
+  assert process.receive(schemes, within: 1000) == Ok(gleam_http.Https)
+  assert process.receive(schemes, within: 1000) == Ok(gleam_http.Https)
+
+  let assert Ok(Nil) = client.close(running)
+  let assert Ok(Nil) = server.drain_listener(listener)
+  let assert Ok(Nil) = server.stop_listener(listener)
+  let assert Ok(Nil) = server.stop(executor)
+  Nil
+}
+
 pub fn protocol_discovery_is_bounded_and_can_be_disabled_test() -> Nil {
   let config = client.defaults()
   assert client.discovery_policy(config)
