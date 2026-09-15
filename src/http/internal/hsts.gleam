@@ -7,6 +7,11 @@ import gleam/string
 
 const maximum_age_seconds = 63_072_000
 
+/// RFC 6797 defines two directives and admits unrecognised ones. Sixteen names
+/// is past anything a conforming host sends and keeps the seen-name list that
+/// enforces the appear-once rule finite against a hostile field.
+const maximum_directives = 16
+
 /// One HSTS policy learned from a verified HTTPS response.
 pub type Entry {
   Entry(
@@ -27,7 +32,7 @@ pub fn parse(
     value
     |> string.split(on: ";")
     |> list.map(string.trim)
-  case parse_directives(directives, None, False, False) {
+  case parse_directives(directives, None, False, []) {
     Some(#(seconds, include_subdomains)) -> {
       let host = string.lowercase(host)
       let seconds = int.min(seconds, maximum_age_seconds)
@@ -101,38 +106,82 @@ fn parse_directives(
   directives: List(String),
   age: Option(Int),
   include_subdomains: Bool,
-  invalid: Bool,
+  seen: List(String),
 ) -> Option(#(Int, Bool)) {
-  case directives, invalid {
-    _, True -> None
-    [], False ->
-      case age {
-        Some(seconds) -> Some(#(seconds, include_subdomains))
+  case directives {
+    [] -> complete(age, include_subdomains)
+    // The grammar makes the directive optional in every position, so an empty
+    // span between two separators is well formed and carries no name that a
+    // later one could repeat.
+    ["", ..rest] -> parse_directives(rest, age, include_subdomains, seen)
+    [directive, ..rest] ->
+      case admissible_name(directive, seen) {
         None -> None
-      }
-    [directive, ..rest], False ->
-      case string.split_once(directive, on: "=") {
-        Ok(#(name, value)) ->
-          case string.lowercase(string.trim(name)), age {
-            "max-age", None ->
-              case int.parse(string.trim(value)) {
-                Ok(seconds) if seconds >= 0 ->
-                  parse_directives(
-                    rest,
-                    Some(seconds),
-                    include_subdomains,
-                    False,
-                  )
-                _ -> None
-              }
-            "max-age", Some(_) -> None
-            _, _ -> parse_directives(rest, age, include_subdomains, False)
-          }
-        Error(_) ->
-          case string.lowercase(directive) {
-            "includesubdomains" -> parse_directives(rest, age, True, False)
-            _ -> parse_directives(rest, age, include_subdomains, False)
+        Some(name) ->
+          case apply_directive(directive, name, age, include_subdomains) {
+            None -> None
+            Some(#(age, include_subdomains)) ->
+              parse_directives(rest, age, include_subdomains, [name, ..seen])
           }
       }
+  }
+}
+
+/// A field carries a policy only once `max-age` has been read.
+fn complete(
+  age: Option(Int),
+  include_subdomains: Bool,
+) -> Option(#(Int, Bool)) {
+  case age {
+    Some(seconds) -> Some(#(seconds, include_subdomains))
+    None -> None
+  }
+}
+
+/// The directive's lowercase name, unless section 6.1's appear-once rule or the
+/// finite ceiling on distinct names refuses the whole field.
+fn admissible_name(directive: String, seen: List(String)) -> Option(String) {
+  let name = string.lowercase(directive_name(directive))
+  case list.contains(seen, name) || list.length(seen) >= maximum_directives {
+    True -> None
+    False -> Some(name)
+  }
+}
+
+/// Fold one directive into the policy read so far, or refuse the whole field.
+///
+/// A recognised name carrying the wrong shape is left to the unrecognised arm:
+/// section 6.1 asks for unrecognised directives to be ignored, and a bare
+/// `max-age` or an `includeSubDomains` with a value conveys nothing either way.
+fn apply_directive(
+  directive: String,
+  name: String,
+  age: Option(Int),
+  include_subdomains: Bool,
+) -> Option(#(Option(Int), Bool)) {
+  case name, string.split_once(directive, on: "=") {
+    "max-age", Ok(#(_, value)) -> parse_age(value, include_subdomains)
+    "includesubdomains", Error(Nil) -> Some(#(age, True))
+    _, _ -> Some(#(age, include_subdomains))
+  }
+}
+
+/// The `max-age` value is a nonnegative number of seconds and nothing else.
+fn parse_age(
+  value: String,
+  include_subdomains: Bool,
+) -> Option(#(Option(Int), Bool)) {
+  case int.parse(string.trim(value)) {
+    Ok(seconds) if seconds >= 0 -> Some(#(Some(seconds), include_subdomains))
+    _ -> None
+  }
+}
+
+/// The name half of a directive, which is the whole span when it carries no
+/// value.
+fn directive_name(directive: String) -> String {
+  case string.split_once(directive, on: "=") {
+    Ok(#(name, _)) -> string.trim(name)
+    Error(_) -> directive
   }
 }
