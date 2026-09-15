@@ -271,6 +271,7 @@ pub fn seal_request(
     bhttp.Request(..) -> Ok(Nil)
     bhttp.Response(..) -> Error(InvalidMessage)
   })
+  use _ <- result.try(refuse_continue_expectation(request))
   use encoded <- result.try(
     bhttp.encode(request, mode, client.bhttp_limits)
     |> result.map_error(fn(_) { InvalidMessage }),
@@ -366,6 +367,7 @@ pub fn open_request(
     bhttp.decode(plaintext, gateway.bhttp_limits)
     |> result.map_error(fn(_) { InvalidMessage }),
   )
+  use _ <- result.try(refuse_continue_expectation(request))
   use _ <- result.try(authorize_request(request, gateway.allowed_authorities))
   Ok(#(request, context, replays))
 }
@@ -943,6 +945,48 @@ fn maximum(first: Int, second: Int) -> Int {
   case first >= second {
     True -> first
     False -> second
+  }
+}
+
+/// Refuse a message carrying a 100-continue expectation.
+///
+/// RFC 9458 section 5.1: an encapsulated exchange carries one request and one
+/// response, so there is no way to convey the interim response the expectation
+/// asks for. A client does not construct one, and a gateway handed one answers
+/// with an error rather than forwarding it to the target.
+///
+/// A gateway that needs to encapsulate that answer opens the request with
+/// `open_request_bytes`, which hands back the response context as soon as
+/// decapsulation succeeds, and decodes the message itself.
+fn refuse_continue_expectation(message: bhttp.Message) -> Result(Nil, Error) {
+  let headers = case message {
+    bhttp.Request(_, _, _, _, headers, _, _, _) -> headers
+    bhttp.Response(_, _, headers, _, _, _) -> headers
+  }
+  case list.any(headers, expects_continue) {
+    True -> Error(InvalidMessage)
+    False -> Ok(Nil)
+  }
+}
+
+/// Whether one field is an `Expect` carrying the `100-continue` expectation.
+///
+/// The field is a comma-separated list and each member may carry parameters,
+/// so the token is compared on its own rather than searched for in the text:
+/// `not-100-continue` is a different expectation and is left alone.
+fn expects_continue(field: bhttp.Field) -> Bool {
+  case string.lowercase(field.name), bit_array.to_string(field.value) {
+    "expect", Ok(value) ->
+      value
+      |> string.lowercase
+      |> string.split(on: ",")
+      |> list.any(fn(expectation) {
+        case string.split_once(expectation, on: ";") {
+          Ok(#(name, _)) -> string.trim(name) == "100-continue"
+          Error(Nil) -> string.trim(expectation) == "100-continue"
+        }
+      })
+    _, _ -> False
   }
 }
 
