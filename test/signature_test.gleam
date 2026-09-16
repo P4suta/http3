@@ -63,6 +63,92 @@ pub fn rfc9421_hmac_sha256_vector_test() -> Nil {
     == "sig-b25=:pxcQw6G3AjtMBQjwo8XzkZf/bws5LelbaMk5rGIGtE8=:"
 }
 
+pub fn rfc9421_component_values_are_printable_and_normalized_test() -> Nil {
+  // RFC 9421 section 2: a component value carries no newline, and section 2.2:
+  // a derived component value is limited to printable characters and spaces and
+  // neither starts nor ends with whitespace. A value that breaks either rule
+  // puts a line of the signer's choosing into the signature base, where it is
+  // indistinguishable from a line a covered component produced.
+  let components = [signature.Method, signature.Path]
+  let input =
+    signature.SignatureInput(
+      label: "sig",
+      components: components,
+      parameters: signature.Parameters(
+        created: 1_618_884_473,
+        expires: None,
+        nonce: None,
+        algorithm: None,
+        key_id: "test-shared-secret",
+        tag: None,
+        extensions: [],
+      ),
+    )
+  let assert Ok(profile) = signature.profile(components, 300)
+  let request = fn(scheme, authority, path, query, headers) {
+    signature.signature_base(
+      signature.RequestMessage(
+        method: "POST",
+        scheme: scheme,
+        authority: authority,
+        path: path,
+        query: query,
+        headers: headers,
+      ),
+      input,
+      profile,
+    )
+  }
+  let plain = fn(path) { request("https", "example.com", path, None, []) }
+
+  let assert Ok(_) = plain("/foo")
+  // A newline in the path writes a second line into the base.
+  assert plain("/a\nb") == Error(signature.InvalidMessage)
+  // So does a carriage return, and so does any other control character.
+  assert plain("/a\rb") == Error(signature.InvalidMessage)
+  assert plain("/a\u{0001}b") == Error(signature.InvalidMessage)
+  // A trailing space is whitespace at the end of a derived value.
+  assert plain("/foo ") == Error(signature.InvalidMessage)
+
+  // The same holds for every other derived value.
+  assert request("https ", "example.com", "/foo", None, [])
+    == Error(signature.InvalidMessage)
+  assert request("https", "example.com", "/foo", Some("?a=\nb"), [])
+    == Error(signature.InvalidMessage)
+
+  // RFC 9421 section 2.2.3: the authority is normalized as RFC 9110 section
+  // 4.2.3 normalizes it, so the case of the host and a port that is the
+  // scheme's default are not the signer's to choose.
+  assert request("https", "Example.com", "/foo", None, [])
+    == Error(signature.InvalidMessage)
+  assert request("https", "example.com:443", "/foo", None, [])
+    == Error(signature.InvalidMessage)
+  assert request("http", "example.com:80", "/foo", None, [])
+    == Error(signature.InvalidMessage)
+  let assert Ok(_) = request("https", "example.com:8443", "/foo", None, [])
+  let assert Ok(_) = request("http", "example.com:443", "/foo", None, [])
+
+  // RFC 9421 section 2.1: a field value that is not ASCII is encoded to ASCII
+  // before it reaches the signature base, so one that has not been is refused
+  // rather than signed in whatever encoding it arrived in.
+  let with_field = fn(value) {
+    signature.signature_base(
+      signature.RequestMessage(
+        method: "POST",
+        scheme: "https",
+        authority: "example.com",
+        path: "/foo",
+        query: None,
+        headers: [signature.Header("x-note", value)],
+      ),
+      input,
+      profile,
+    )
+  }
+  let assert Ok(_) = with_field("plain")
+  assert with_field("caf\u{00e9}") == Error(signature.InvalidMessage)
+}
+
 pub fn verification_enforces_time_authority_nonce_and_replay_test() -> Nil {
   let components = [
     signature.Method,
