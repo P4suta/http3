@@ -1,7 +1,7 @@
 //// Conservative bounded HTTP response-cache decisions.
 
 import gleam/bit_array
-import gleam/http.{type Scheme, Get, Http, Https}
+import gleam/http.{type Scheme, Get, Head, Http, Https}
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
 import gleam/int
@@ -32,27 +32,78 @@ pub type Entry {
 }
 
 /// Return a cache key only for requests this non-revalidating cache can serve.
+///
+/// RFC 9111 section 5.2.1.5: a request carrying `no-store` means no part of it
+/// or of any response to it is stored, in a private cache as much as a shared
+/// one. Withholding the key is how that is enforced, because the key is what
+/// every other path here needs.
 pub fn key(outgoing: Request(body)) -> Option(String) {
   case
     outgoing.method == Get,
     has_header(outgoing.headers, "authorization"),
-    has_header(outgoing.headers, "range")
+    has_header(outgoing.headers, "range"),
+    request_forbids_storage(outgoing.headers)
   {
-    True, False, False ->
-      Some(
-        scheme_text(outgoing.scheme)
-        <> "://"
-        <> string.lowercase(outgoing.host)
-        <> ":"
-        <> int.to_string(request_port(outgoing))
-        <> outgoing.path
-        <> case outgoing.query {
-          Some(query) -> "?" <> query
-          None -> ""
-        },
-      )
-    _, _, _ -> None
+    True, False, False, False -> target_key(outgoing)
+    _, _, _, _ -> None
   }
+}
+
+/// The store key for one request's target, independent of whether that request
+/// may be served or stored.
+fn target_key(outgoing: Request(body)) -> Option(String) {
+  Some(
+    scheme_text(outgoing.scheme)
+    <> "://"
+    <> string.lowercase(outgoing.host)
+    <> ":"
+    <> int.to_string(request_port(outgoing))
+    <> outgoing.path
+    <> case outgoing.query {
+      Some(query) -> "?" <> query
+      None -> ""
+    },
+  )
+}
+
+/// The key an unsafe request invalidates, if any.
+///
+/// RFC 9111 section 4.4: a non-error answer to an unsafe request invalidates
+/// the target URI, so the next read does not serve what the write replaced. The
+/// key is the exact scheme, host, port, and target, so one origin's write can
+/// only reach its own entry.
+pub fn invalidated_key(outgoing: Request(body), status: Int) -> Option(String) {
+  case outgoing.method == Get || outgoing.method == Head, status < 400 {
+    False, True -> target_key(outgoing)
+    _, _ -> None
+  }
+}
+
+/// An already-expired stand-in for one key.
+///
+/// Storing it removes whatever the key held, from the in-memory store and from
+/// the persistence adapter alike, without first reading the entry back out to
+/// rewrite it.
+pub fn tombstone(key: String, now_milliseconds: Int) -> Entry {
+  Entry(
+    key:,
+    status: 200,
+    headers: [],
+    bytes: <<>>,
+    trailers: [],
+    stored_at: now_milliseconds,
+    arrival_age_seconds: 0,
+    expires_at: now_milliseconds,
+    retained_bytes: 1,
+  )
+}
+
+/// Whether the request's own directives forbid storing anything about it.
+fn request_forbids_storage(headers: List(#(String, String))) -> Bool {
+  header_values(headers, "cache-control", [])
+  |> list.flat_map(fn(value) { string.split(value, on: ",") })
+  |> list.map(string.trim)
+  |> directive_present("no-store")
 }
 
 /// Construct a cache entry only for an explicitly fresh, self-contained 200.
