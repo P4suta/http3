@@ -570,9 +570,10 @@ fn validate_message(message: Message) -> Result(Nil, Error) {
     RequestMessage(method, scheme, authority, path, query, headers) ->
       case
         valid_token(method),
-        scheme != "" && string.lowercase(scheme) == scheme,
-        valid_authority(authority),
-        path == "*" || string.starts_with(path, "/"),
+        valid_derived_value(scheme) && string.lowercase(scheme) == scheme,
+        valid_authority(authority, scheme),
+        valid_derived_value(path)
+        && { path == "*" || string.starts_with(path, "/") },
         valid_query(query),
         valid_headers(headers)
       {
@@ -918,22 +919,56 @@ fn valid_optional_text(value: Option(String)) -> Bool {
 fn valid_query(query: Option(String)) -> Bool {
   case query {
     None -> True
-    Some(query) ->
-      string.starts_with(query, "?")
-      && !string.contains(query, "\r")
-      && !string.contains(query, "\n")
-      && !string.contains(query, "\u{0000}")
+    Some(query) -> valid_derived_value(query) && string.starts_with(query, "?")
   }
 }
 
-fn valid_authority(authority: String) -> Bool {
-  authority != ""
-  && !string.contains(authority, " ")
-  && !string.contains(authority, "\t")
-  && !string.contains(authority, "\r")
-  && !string.contains(authority, "\n")
-  && !string.contains(authority, "\u{0000}")
+/// Whether a derived component value is one RFC 9421 section 2.2 admits.
+///
+/// Such a value is limited to printable characters and spaces, carries no
+/// newline, and neither starts nor ends with whitespace. This is stricter: the
+/// space is refused everywhere, because no value derived here -- a scheme, an
+/// authority, a path, a query -- holds one in a well-formed message, and one
+/// that reached the signature base would have had to be percent-encoded to be
+/// there. The rule matters because every one of these values becomes a line of
+/// the signature base, and a value carrying a newline writes a line of the
+/// signer's choosing into it.
+fn valid_derived_value(value: String) -> Bool {
+  value != "" && printable_ascii(bit_array.from_string(value))
+}
+
+fn printable_ascii(value: BitArray) -> Bool {
+  case value {
+    <<>> -> True
+    <<byte, rest:bits>> ->
+      case byte >= 0x21 && byte <= 0x7e {
+        True -> printable_ascii(rest)
+        False -> False
+      }
+    _ -> False
+  }
+}
+
+/// Whether an authority is already in the form RFC 9421 section 2.2.3 signs.
+///
+/// That section takes the value normalized as RFC 9110 section 4.2.3 normalizes
+/// it, which lowercases the host and omits a port that is the scheme's default.
+/// Normalizing here instead of refusing would sign a value the caller did not
+/// hand over, so a value that is not already normal is refused the way a scheme
+/// that is not already lowercase is.
+fn valid_authority(authority: String, scheme: String) -> Bool {
+  valid_derived_value(authority)
+  && string.lowercase(authority) == authority
   && !string.contains(authority, "/")
+  && !carries_default_port(authority, scheme)
+}
+
+fn carries_default_port(authority: String, scheme: String) -> Bool {
+  case scheme {
+    "http" -> string.ends_with(authority, ":80")
+    "https" -> string.ends_with(authority, ":443")
+    _ -> False
+  }
 }
 
 fn valid_headers(headers: List(Header)) -> Bool {
@@ -941,14 +976,31 @@ fn valid_headers(headers: List(Header)) -> Bool {
   && list.all(headers, fn(header) {
     valid_field_name(header.name)
     && string.byte_size(header.value) <= maximum_field_bytes
-    && !string.contains(header.value, "\r")
-    && !string.contains(header.value, "\n")
-    && !string.contains(header.value, "\u{0000}")
+    && ascii_field_value(bit_array.from_string(header.value))
   })
 }
 
 fn valid_field_name(name: String) -> Bool {
   name != "" && valid_token(name)
+}
+
+/// Whether a field value is one RFC 9421 section 2.1 can put in the base.
+///
+/// That section requires every non-ASCII field value to be encoded to ASCII
+/// before it is added, so a value that has not been is refused rather than
+/// signed in whichever encoding it arrived in. Tab is admitted because a field
+/// value may hold one; every other control character, the newline included,
+/// would end the base line it appears in.
+fn ascii_field_value(value: BitArray) -> Bool {
+  case value {
+    <<>> -> True
+    <<byte, rest:bits>> ->
+      case byte == 0x09 || { byte >= 0x20 && byte <= 0x7e } {
+        True -> ascii_field_value(rest)
+        False -> False
+      }
+    _ -> False
+  }
 }
 
 fn valid_token(value: String) -> Bool {
