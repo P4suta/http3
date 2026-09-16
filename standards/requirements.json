@@ -6178,7 +6178,375 @@
         ]
       }
     },
-    {"id":"RFC8305","title":"Happy Eyeballs Version 2: Better Connectivity Using Concurrency","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/runtime/client_transport.gleam","packages/quic_core/test/public_loopback_test.gleam","src/http_transport_ffi.erl","test/transport_test.gleam"]},
+    {
+      "id": "RFC8305",
+      "title": "Happy Eyeballs Version 2: Better Connectivity Using Concurrency",
+      "map_complete": true,
+      "evidence": [
+        "src/http_transport_ffi.erl",
+        "test/transport_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc8305.txt",
+        "document_sha256": "9bb65e288b32acae072d1bf403c609f71c32ea7a5087d0056ee9af3cedca47e1",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=8305",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 27,
+        "level_counts": {
+          "SHOULD": 18,
+          "SHOULD NOT": 4,
+          "MUST": 2,
+          "MUST NOT": 3
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC8305-3-SHOULD-ISSUE-BOTH-QUERIES-TOGETHER",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Both queries are issued at once, the AAAA one first: each family's lookup runs in its own process, spawned in that order, rather than one lookup being started only when the other has answered.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "resolved_families"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "resolve_families"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-3-SHOULD-NOT-WAIT-FOR-BOTH-FAMILIES",
+          "section": "3",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "Nothing waits on the second family once the first has answered beyond the Resolution Delay this section prescribes: the first answer starts that clock, and what has not arrived when it runs out is left out of the sort.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "collect_family_answers"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-3-SHOULD-TREAT-RESOLUTION-AS-ASYNCHRONOUS",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Resolution is two independent lookups collected as their answers arrive, each in its own process, so neither blocks the other and a lookup that dies without answering counts as answering nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "resolve_families"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "collect_family_answers"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-3-SHOULD-WAIT-BRIEFLY-FOR-A-LATE-AAAA",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An A answer that arrives first starts the Resolution Delay rather than ending the wait, so a AAAA answer a few milliseconds behind it is still taken and IPv6 keeps its preference.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "collect_family_answers"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-3-SHOULD-PROCEED-WHEN-THE-RESOLUTION-DELAY-EXPIRES",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "When the delay runs out, or when the AAAA lookup answers with nothing, what has been collected goes straight to sorting and the staggered walk; there is no second wait and no retry.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "collect_family_answers"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "resolve_host"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"},
+            {"path": "test/transport_test.gleam", "symbol": "a_resolved_name_is_sorted_and_interleaved_before_it_is_attempted_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-3.1-SHOULD-SEND-QUERIES-OVER-IPV6-FIRST",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Which address the query itself travels to is the stub resolver's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the configuration of the stub resolver: which nameservers it knows, how many it will hold, and over which address family it reaches them. This package configures none of that. It asks the platform resolver for a name and one address family and takes the answer, so the transport the query itself travels over is the host's to decide."
+        },
+        {
+          "id": "RFC8305-3.1-SHOULD-NOT-LIMIT-THE-NUMBER-OF-DNS-SERVERS",
+          "section": "3.1",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "How many nameservers may be configured is the resolver's, not this package's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the configuration of the stub resolver: which nameservers it knows, how many it will hold, and over which address family it reaches them. This package configures none of that. It asks the platform resolver for a name and one address family and takes the answer, so the transport the query itself travels over is the host's to decide."
+        },
+        {
+          "id": "RFC8305-3.1-SHOULD-KEEP-ONE-SERVER-PER-FAMILY-UNDER-A-LIMIT",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Which nameservers survive such a limit is part of the same configuration.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the configuration of the stub resolver: which nameservers it knows, how many it will hold, and over which address family it reaches them. This package configures none of that. It asks the platform resolver for a name and one address family and takes the answer, so the transport the query itself travels over is the host's to decide."
+        },
+        {
+          "id": "RFC8305-4-MUST-SORT-BY-RFC6724-DESTINATION-SELECTION",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The collected addresses are ordered by RFC 6724 section 6 before any of them is attempted, with the default policy table, the scope ladder, and the common prefix length that document defines, and with the source address for each destination taken from the kernel by connecting an unbound datagram socket that is never written to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "sort_destinations"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "address_policy"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "address_scope"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "common_prefix_length"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "connected_source"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "resolved_addresses_are_ordered_by_rfc6724_destination_selection_test"},
+            {"path": "test/transport_test.gleam", "symbol": "a_resolved_name_is_sorted_and_interleaved_before_it_is_attempted_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-4-SHOULD-ADD-AN-RTT-RULE-BETWEEN-RULES-8-AND-9",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The rule is conditional on holding a history of round-trip times, and none is held.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client that keeps per-address history across connections: round-trip times for the routes it has used, or which addresses it reached before. This package keeps none. Each resolution is independent, the order comes from the addresses and the host's own interface state alone, and there is nothing retained that could be carried across an interface change or would need flushing when the network changes."
+        },
+        {
+          "id": "RFC8305-4-SHOULD-ADD-A-USED-ADDRESS-RULE",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The rule is conditional on tracking which addresses were used before, which is not tracked.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client that keeps per-address history across connections: round-trip times for the routes it has used, or which addresses it reached before. This package keeps none. Each resolution is independent, the order comes from the addresses and the host's own interface state alone, and there is nothing retained that could be carried across an interface change or would need flushing when the network changes."
+        },
+        {
+          "id": "RFC8305-4-MUST-NOT-CARRY-HISTORY-ACROSS-INTERFACES",
+          "section": "4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "There is no historical data to carry anywhere.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client that keeps per-address history across connections: round-trip times for the routes it has used, or which addresses it reached before. This package keeps none. Each resolution is independent, the order comes from the addresses and the host's own interface state alone, and there is nothing retained that could be carried across an interface change or would need flushing when the network changes."
+        },
+        {
+          "id": "RFC8305-4-SHOULD-FLUSH-HISTORY-ON-A-NETWORK-CHANGE",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "There is nothing retained to flush when the network changes.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client that keeps per-address history across connections: round-trip times for the routes it has used, or which addresses it reached before. This package keeps none. Each resolution is independent, the order comes from the addresses and the host's own interface state alone, and there is nothing retained that could be carried across an interface change or would need flushing when the network changes."
+        },
+        {
+          "id": "RFC8305-4-SHOULD-INTERLEAVE-ADDRESS-FAMILIES",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Whichever family leads the sorted list is followed by one address of the other, alternating until one runs out, with a First Address Family Count of one, so an impaired family costs a single attempt rather than a run of them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "interleave_families"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "resolved_addresses_interleave_the_two_families_test"},
+            {"path": "test/transport_test.gleam", "symbol": "a_resolved_name_is_sorted_and_interleaved_before_it_is_attempted_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-SHOULD-NOT-ATTEMPT-CONNECTIONS-SIMULTANEOUSLY",
+          "section": "5",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "The walk is sequential by construction: one attempt is outstanding at a time, bounded by the Connection Attempt Delay, and the next address is reached when that expires or when the attempt is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-SHOULD-CANCEL-THE-OTHER-ATTEMPTS-ON-SUCCESS",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "There is never another attempt open to cancel: a stalled attempt is abandoned before the next address is tried, and a success returns the one socket that was opened.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-SHOULD-IGNORE-THE-UNATTEMPTED-ADDRESSES-ON-SUCCESS",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The walk returns on the first success and the remaining addresses are never reached, so nothing is attempted after a connection is established.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-SHOULD-KEEP-PROCESSING-LATE-DNS-REPLIES",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A lookup whose answer came too late to be sorted is left to finish rather than killed, so its answer still reaches the platform's resolver cache and a later connection can use it; only the monitor is dropped and the late answer is flushed from the mailbox.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "resolve_families"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "flush_family_answers"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-MUST-THE-CONNECTION-ATTEMPT-DELAY-HAS-A-LOWER-BOUND",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The delay is a fixed constant rather than a computed value, so it is its own lower bound and cannot be driven toward zero by anything measured at runtime.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-MUST-NOT-START-A-SUBSEQUENT-ATTEMPT-WITHIN-10MS",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The constant is 250 milliseconds, well above the floor this clause sets, and it is the whole of the spacing: nothing shortens it for a particular address.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-5-SHOULD-THE-CONNECTION-ATTEMPT-DELAY-HAS-AN-UPPER-BOUND",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The same constant is the upper bound as well, so the Maximum Connection Attempt Delay and the delay itself are one value and no attempt can wait longer than it before the next address is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-6-SHOULD-NOT-CANCEL-AN-ATTEMPT-FOR-A-REMOVED-ADDRESS",
+          "section": "6",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "No address is removed from a list that is already being walked.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client whose address list can change while connection attempts are already running, which happens when attempts start before resolution has finished. Here the list is settled first: the answers are collected, sorted, and interleaved, and only then is the first attempt made, so no address is ever added to or removed from a list that is being walked."
+        },
+        {
+          "id": "RFC8305-6-SHOULD-DROP-A-REMOVED-ADDRESS-NOT-YET-ATTEMPTED",
+          "section": "6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The same: the list is settled before the first attempt.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a client whose address list can change while connection attempts are already running, which happens when attempts start before resolution has finished. Here the list is settled first: the answers are collected, sorted, and interleaved, and only then is the first attempt made, so no address is ever added to or removed from a list that is being walked."
+        },
+        {
+          "id": "RFC8305-7-SHOULD-FOLLOW-THE-NAT64-RECOMMENDATIONS",
+          "section": "7",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "No NAT64 prefix is discovered and no address is synthesised here.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a Happy Eyeballs engine that discovers a NAT64 prefix and synthesises IPv6 addresses for IPv4-only destinations itself. This package does neither: it asks the platform resolver for each family and connects to what comes back, so on a NAT64 network with DNS64 the synthesis has already happened before any address reaches this code."
+        },
+        {
+          "id": "RFC8305-7-SHOULD-ENABLE-THEM-ONLY-ON-SUCH-A-NETWORK",
+          "section": "7",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "There is no such feature to enable or leave off.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a Happy Eyeballs engine that discovers a NAT64 prefix and synthesises IPv6 addresses for IPv4-only destinations itself. This package does neither: it asks the platform resolver for each family and connects to what comes back, so on a NAT64 network with DNS64 the synthesis has already happened before any address reaches this code."
+        },
+        {
+          "id": "RFC8305-8-MUST-NOT-A-CONNECTION-ATTEMPT-DELAY-BELOW-10MS",
+          "section": "8",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The table's floor, restated where the recommended values are given; the constant here is 250 milliseconds and there is no path that reduces it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC8305-8-SHOULD-RAISE-THE-DELAYS-OVER-TIME",
+          "section": "8",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Both delays are at the values this document recommends and have not been raised above them.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The clause asks the recommended delays to drift upward across releases as IPv6 deployment matures. Both constants here are the ones this document gives, 50 milliseconds for the Resolution Delay and 250 for the Connection Attempt Delay, and neither has been raised. Raising them is a judgement about the deployed internet rather than about this code, and it needs evidence this package does not have: it keeps no per-address history and measures nothing across connections, so it has no basis on which to say that a larger delay would cost less than it saves.",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "collect_family_answers"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "both_address_families_are_asked_for_at_once_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 0,
+        "entries": []
+      }
+    },
     {
       "id": "RFC8336",
       "title": "The ORIGIN HTTP/2 Frame",
