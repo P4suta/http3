@@ -363,6 +363,12 @@
   lifetime was kept for the session default instead. Dates are read with the
   section 5.1.1 algorithm, `Max-Age` still takes precedence, and the date is
   turned into a remaining duration at parse time so the store stays monotonic.
+- Held every HTTP message signature component value to the characters RFC 9421
+  sections 2 and 2.2 allow it. A derived value is now printable ASCII and a
+  field value ASCII with tab, so neither can carry the newline that would write
+  an attacker-chosen line into the signature base; the authority and the scheme
+  must also arrive normalized, rather than a default port or an uppercase host
+  being signed as though it were the canonical form.
 - Percent-encoded the wildcard `target` and `ipproto` variables in a
   CONNECT-IP request path, which RFC 9484 section 4.6 requires as corrected by
   erratum 8444: the path was expanded with a bare `*`, which RFC 6570 simple
