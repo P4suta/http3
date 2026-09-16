@@ -418,3 +418,9 @@
   and the first of which offers no forward secrecy at all; inheriting that list
   offered exactly what the section excludes. TLS 1.3 is unaffected: its own
   suites are always ephemeral and always AEAD.
+- Refused a non-canonical `Sec-WebSocket-Key`, which a length check alone let
+  through. RFC 6455 section 4.1 asks for a base64-encoded sixteen-byte nonce,
+  and erratum 3150 records that the document's own example left the unused bits
+  of its final character set; the platform decoder accepts such a value, so the
+  offered key is now required to re-encode to itself, as RFC 4648 section 3.5
+  describes.
