@@ -2103,6 +2103,31 @@ fn capture_response_policies(
     incoming.headers,
     transport.monotonic_millisecond(),
   )
+  invalidate_cache_entry(client, outgoing, incoming.status)
+}
+
+/// Drop this target's stored response when an unsafe request changed it.
+///
+/// RFC 9111 section 4.4: a non-error answer to an unsafe request invalidates
+/// the target URI, so a later read does not serve what the write replaced. The
+/// key is the exact scheme, host, port, and target, so one origin's write
+/// reaches only its own entry.
+fn invalidate_cache_entry(
+  client: Client,
+  outgoing: Request(body),
+  status: Int,
+) -> Nil {
+  case
+    client.config.cache_policy.enabled,
+    cache.invalidated_key(outgoing, status)
+  {
+    True, Some(key) -> {
+      let now = transport.monotonic_millisecond()
+      let _removed = store_cache_policy(client, cache.tombstone(key, now), now)
+      Nil
+    }
+    _, _ -> Nil
+  }
 }
 
 fn capture_response_cookies(
