@@ -1712,7 +1712,838 @@
         ]
       }
     },
-    {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC6265",
+      "title": "HTTP State Management Mechanism",
+      "map_complete": true,
+      "evidence": [
+        "src/http/internal/cookie.gleam",
+        "src/http/client.gleam",
+        "src/http/client_store.gleam",
+        "src/http_client_ffi.erl",
+        "test/client_policy_test.gleam",
+        "test/client_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc6265.txt",
+        "document_sha256": "dc4177094813e85a44a7897b892b76bc09160b3a03aea44f0f511f3a98f91933",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=6265",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 54,
+        "level_counts": {
+          "SHOULD": 19,
+          "MUST": 23,
+          "SHOULD NOT": 9,
+          "MUST NOT": 3
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC6265-1-SHOULD-SERVERS-KEEP-TO-THE-WELL-BEHAVED-PROFILE",
+          "section": "1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "What a Set-Cookie field looks like on the wire is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-1-MUST-A-USER-AGENT-IMPLEMENTS-THE-LIBERAL-RULES",
+          "section": "1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The parser is section 5's liberal one rather than section 4's grammar: the field is cut at the first semicolon and each attribute at its first equals sign, an unrecognised attribute is skipped, an unparsable date leaves a session cookie, and nothing is refused for failing the well-behaved profile alone.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse_attributes"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_date"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-2.1-MUST-IMPERATIVE-ALGORITHM-STEPS-TAKE-THE-INTRODUCING-LEVEL",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An imperative step inside an algorithm carries the level of the keyword that introduced the algorithm.",
+          "disposition": "NotApplicable",
+          "reason": "This states how the document's own imperative prose is to be read rather than what an implementation does. It binds the reader of this specification, and the clauses it governs are inventoried where they appear."
+        },
+        {
+          "id": "RFC6265-2.1-SHOULD-IMPERATIVE-ALGORITHM-STEPS-TAKE-THE-INTRODUCING-LEVEL",
+          "section": "2.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The same reading rule, for an algorithm a SHOULD introduced.",
+          "disposition": "NotApplicable",
+          "reason": "This states how the document's own imperative prose is to be read rather than what an implementation does. It binds the reader of this specification, and the clauses it governs are inventoried where they appear."
+        },
+        {
+          "id": "RFC6265-2.2-SHOULD-OPTIONAL-WHITESPACE-IS-ONE-SPACE-OR-NONE",
+          "section": "2.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "How a server spaces the field it writes is the handler's; what this package writes is the Cookie field, where the separator is a semicolon and a single space.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-3-MUST-PROCESS-SET-COOKIE-OUTSIDE-1XX",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every Set-Cookie field on a final response is processed whatever the status carries: the capture step reads the response's fields without consulting the status at all, so a cookie on a 404 or a 500 is stored exactly as one on a 200 is.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_response_cookies"},
+            {"path": "src/http/client.gleam", "symbol": "capture_cookie_headers"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-3-SHOULD-NOT-A-SERVER-FOLDS-SET-COOKIE-FIELDS",
+          "section": "3",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Whether a server writes one field or several is the handler's, and this package neither folds nor unfolds them.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.1.1-SHOULD-NOT-A-SERVER-SENDS-A-FIELD-OUTSIDE-THE-GRAMMAR",
+          "section": "4.1.1",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "The well-behaved grammar binds what a server writes.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.1.1-SHOULD-A-SERVER-ENCODES-ARBITRARY-DATA",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "What a cookie's value carries, and in what encoding, is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.1.1-SHOULD-NOT-A-SERVER-REPEATS-AN-ATTRIBUTE",
+          "section": "4.1.1",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Repeating an attribute in one field is the handler's to avoid; this parser takes the last occurrence of each, which is what section 5.2 asks of the receiver.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.1.1-SHOULD-NOT-A-SERVER-REPEATS-A-COOKIE-NAME",
+          "section": "4.1.1",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Sending two fields for one name is the handler's to avoid.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.1.1-SHOULD-A-SERVER-USES-THE-RFC1123-DATE-FORMAT",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Which date format a server writes is the handler's; this parser accepts the liberal set section 5.1.1 defines, four-digit years and two-digit ones alike.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.2.2-SHOULD-NOT-A-SERVER-RELIES-ON-COOKIE-ORDER",
+          "section": "4.2.2",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "What a server infers from the order is its own affair, though the order this package writes is the one section 5.4 asks for rather than an arbitrary one.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-4.2.2-SHOULD-NOT-A-SERVER-RELIES-ON-THE-ORDER-OF-A-REPEATED-NAME",
+          "section": "4.2.2",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "The same for two cookies that share a name and differ in path or domain.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-5.1.1-MUST-PARSE-A-COOKIE-DATE-BY-THE-ALGORITHM",
+          "section": "5.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The date is cut into tokens on the delimiter set the section names, and each token is offered to the time, day, month, and year productions in that order until each has been found once; a two-digit year is corrected as the section states and a value that fails any bound is refused rather than approximated, which leaves a session cookie.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_date"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "split_date_tokens"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "read_date_token"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "hms_time"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "month_of"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.1.4-MUST-COMPUTE-THE-DEFAULT-PATH-BY-THE-ALGORITHM",
+          "section": "5.1.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A cookie with no Path takes the request path up to its last slash, with a path that is empty, does not start with a slash, or has no slash after the first taking the root, which is the algorithm the section gives.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "default_path"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "default_path_segments"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2-MUST-PARSE-THE-FIELD-AS-A-SET-COOKIE-STRING",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each Set-Cookie field value is handed to the parser whole; there is no path that reads part of one or joins two.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_cookie_headers"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2-MUST-SPLIT-THE-NAME-VALUE-PAIR-AS-THE-ALGORITHM-SAYS",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The string is cut at the first semicolon, the head at its first equals sign, and both halves are trimmed; a head with no equals sign is refused rather than read as a bare name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "ip_origins_reject_suffix_domain_cookies_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2-MUST-PARSE-THE-UNPARSED-ATTRIBUTES-AS-THE-ALGORITHM-SAYS",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each remaining piece is cut at its first equals sign into a name compared without regard to case and a trimmed value, and a name outside the known set is skipped rather than failing the field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse_attributes"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.1-MUST-PROCESS-EXPIRES-AS-THE-SECTION-SAYS",
+          "section": "5.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An Expires value is parsed with the section 5.1.1 algorithm and kept as the cookie's expiry; one that does not parse is ignored and leaves a session cookie, and one already in the past leaves a cookie that has expired, which is how a server deletes one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse_attributes"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "expiry_instant"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_date"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.2-MUST-PROCESS-MAX-AGE-AS-THE-SECTION-SAYS",
+          "section": "5.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A Max-Age has to be a decimal integer, takes precedence over Expires, and a value of zero or less makes the cookie already expired; anything else is ignored rather than guessed at.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse_attributes"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "expiry_instant"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.3-MUST-PROCESS-DOMAIN-AS-THE-SECTION-SAYS",
+          "section": "5.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A Domain is lowercased and its leading dot stripped, and the cookie is a host-only one exactly when no Domain was given.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "strip_leading_dot"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_domain_allowed"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "host_only_cookies_never_escape_to_a_subdomain_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.3-SHOULD-IGNORE-A-DOMAIN-THAT-DOES-NOT-COVER-THE-HOST",
+          "section": "5.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A Domain the request host is not inside is refused, and so is any Domain at all when the host is an IP address, which is where a suffix comparison would otherwise let one origin write for another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_domain_allowed"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "ip_address"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "domain_matches"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "ip_origins_reject_suffix_domain_cookies_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.4-MUST-PROCESS-PATH-AS-THE-SECTION-SAYS",
+          "section": "5.2.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A Path that is empty or does not begin with a slash falls back to the default path computed from the request, which is the section's rule; the value is otherwise taken as given and validated for shape.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "default_path"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "valid_path"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.5-MUST-PROCESS-SECURE-AS-THE-SECTION-SAYS",
+          "section": "5.2.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A Secure attribute sets the flag whatever its value is, and the flag then keeps the cookie off a cleartext request; a Secure cookie offered over cleartext is refused at parse time rather than stored and withheld.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse_attributes"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "matching"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "host_only_cookies_never_escape_to_a_subdomain_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.2.6-MUST-PROCESS-HTTPONLY-AS-THE-SECTION-SAYS",
+          "section": "5.2.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The flag exists to be consulted by a non-HTTP API, and there is none here.",
+          "disposition": "NotApplicable",
+          "reason": "The HttpOnly attribute is recorded so that section 5.3 step 10 can refuse a cookie that arrives from a non-HTTP API, and so that such an API can be refused a cookie carrying it. This package has no non-HTTP API: every cookie it stores arrives on a Set-Cookie field of an HTTP response, and every cookie it returns goes onto a Cookie field of an HTTP request. There is no caller that could set or read one by another route, so recording the flag would add a field nothing is able to consult."
+        },
+        {
+          "id": "RFC6265-5.3-MUST-PROCESS-A-RECEIVED-COOKIE-AS-THE-ALGORITHM-SAYS",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A received cookie goes through the whole sequence in one place: the domain is checked against the request host, the path defaulted, the expiry decided with Max-Age ahead of Expires, the persistent flag cleared when neither was given, a replaced cookie's creation time carried over, and the entry either stored or refused; there is no partial acceptance.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "expiry_instant"},
+            {"path": "src/http/client.gleam", "symbol": "store_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "a_refreshed_cookie_keeps_the_creation_time_it_had_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.3-SHOULD-USE-A-PUBLIC-SUFFIX-LIST",
+          "section": "5.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "No public suffix list is consulted, so a Domain naming a registry-level name is refused only by the rules that do not need one.",
+          "disposition": "DocumentedDeviation",
+          "reason": "A public suffix list is a large, frequently changing data set with no authority inside this package's dependency boundary, and bundling a stale copy is worse than not having one: it would refuse names that have since been delegated and admit ones that have since been added. What the list is there to stop is narrowed from the other side instead. A Domain is refused unless the request host is inside it, an IP-address origin may not carry a Domain at all, and a single-label host is host-only by the same rule. What remains admitted is a Domain naming a registry suffix that the request host is genuinely under, which the caller can close by supplying its own store adapter and refusing the entry.",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "cookie_domain_allowed"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "ip_address"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "domain_matches"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "ip_origins_reject_suffix_domain_cookies_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.3-MUST-EVICT-EVERY-EXPIRED-COOKIE",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Expired entries are pruned at the top of every message the store handles and again before any capacity decision, so an expired cookie is never the thing a later put has to make room around, and the store wakes itself at the earliest expiry rather than waiting for traffic.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_client_ffi.erl", "symbol": "prune_policy_items"},
+            {"path": "src/http_client_ffi.erl", "symbol": "policy_store_wait"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_expires_attribute_sets_the_cookie_lifetime_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.3-MUST-EVICT-EXCESS-COOKIES-IN-PRIORITY-ORDER",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Expired cookies go first, then cookies sharing a domain with more than half the store's entry ceiling, then any cookie; only as much as the store is over by is taken from the domain tier, because the clause orders the removal of excess rather than setting a ceiling that holds when there is none.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_client_ffi.erl", "symbol": "retain_policy_capacity"},
+            {"path": "src/http_client_ffi.erl", "symbol": "oldest_over_represented"},
+            {"path": "src/http/client.gleam", "symbol": "cookie_domain_ceiling"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "excess_cookies_go_by_domain_share_then_by_last_access_test"},
+            {"path": "test/client_test.gleam", "symbol": "a_crowded_domain_loses_its_cookies_before_another_domain_does_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.3-MUST-BREAK-TIES-BY-THE-EARLIEST-LAST-ACCESS",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every cookie a request carries is recorded as accessed, which moves it to the front of the store, so the tail of the list is the earliest last access and that is the end the trim takes from; writing a cookie is not what keeps it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_client_ffi.erl", "symbol": "promote_policy_items"},
+            {"path": "src/http_client_ffi.erl", "symbol": "retain_policy_capacity"},
+            {"path": "src/http/client.gleam", "symbol": "apply_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "excess_cookies_go_by_domain_share_then_by_last_access_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.3-MUST-DROP-NON-PERSISTENT-COOKIES-WHEN-THE-SESSION-ENDS",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client is the session: its store lives inside it and dies with it. A cookie carrying neither Expires nor Max-Age has its persistent flag cleared and is never handed to a persistence adapter, so nothing can carry it into a later client; a cookie that came back from an adapter is persistent by construction.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "from_persisted"},
+            {"path": "src/http/client.gleam", "symbol": "persist_cookie_policy"},
+            {"path": "src/http/client.gleam", "symbol": "close"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_cookie_adapter_loads_partition_and_persists_mutations_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.4-MUST-NOT-ATTACH-MORE-THAN-ONE-COOKIE-FIELD",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "One field is set, and only when the request carries none: a caller that wrote its own Cookie field keeps it untouched rather than having a second appended beside it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cookie_store_applies_a_scoped_unexpired_cookie_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.4-MUST-SEND-THE-COOKIE-STRING-AS-THE-VALUE",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The value is the name and value pairs joined with a semicolon and a space, built from the matched list and nothing else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "field_value"},
+            {"path": "src/http/client.gleam", "symbol": "apply_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "the_cookie_field_is_ordered_by_path_length_then_creation_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.4-MUST-COMPUTE-THE-COOKIE-STRING-BY-THE-ALGORITHM",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The subset is the unexpired cookies whose domain matches the request host, exactly for a host-only cookie and by suffix otherwise, whose path matches the request path, and which are not Secure on a cleartext request; every cookie in it is then recorded as accessed, which is the step the algorithm ends with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "matching"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "domain_matches"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "path_matches"},
+            {"path": "src/http/client.gleam", "symbol": "apply_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "host_only_cookies_never_escape_to_a_subdomain_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-5.4-SHOULD-SORT-THE-COOKIE-LIST",
+          "section": "5.4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Longer paths come first, and among equally long paths the cookie created earlier; the creation time survives a Set-Cookie that only replaces a value, so the order does not shift under a refresh.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "matching"},
+            {"path": "src/http/internal/cookie.gleam", "symbol": "Cookie"},
+            {"path": "src/http/client.gleam", "symbol": "store_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "the_cookie_field_is_ordered_by_path_length_then_creation_test"},
+            {"path": "test/client_test.gleam", "symbol": "a_refreshed_cookie_keeps_the_creation_time_it_had_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-6.1-SHOULD-PROVIDE-THE-MINIMUM-CAPABILITIES",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The per-cookie ceiling meets the stated minimum, and the store's defaults are below the per-domain and total ones.",
+          "disposition": "DocumentedDeviation",
+          "reason": "A cookie may occupy 4096 bytes here, which is the minimum this section names. The store's defaults are 256 entries against the 3000 total the section asks for, and half of whatever the entry ceiling is against the 50 per domain. The numbers are a general-use browser's, sized for a process that holds one user's whole browsing state; this is a library whose caller decides how much memory a client may hold, and every bound is that caller's to raise. Defaulting to a store large enough for 3000 cookies would be a resource decision made on the caller's behalf, which is the thing this package's finite-bounds rule exists to avoid.",
+          "implementation": [
+            {"path": "src/http/internal/cookie.gleam", "symbol": "parse"},
+            {"path": "src/http/client.gleam", "symbol": "cookie_domain_ceiling"},
+            {"path": "src/http/client.gleam", "symbol": "defaults"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "cookie_store_is_bounded_partitioned_and_disabled_by_default_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-6.1-SHOULD-A-SERVER-USES-FEW-AND-SMALL-COOKIES",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "How many cookies a deployment sets, and how large, is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-6.1-SHOULD-A-SERVER-DEGRADES-WHEN-A-COOKIE-IS-MISSING",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "What a deployment does when a cookie does not come back is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-6.3-SHOULD-IMPLEMENT-IDNA2008",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "No internationalized name is converted here: a domain has to arrive as an A-label already.",
+          "disposition": "NotApplicable",
+          "reason": "Neither IDNA revision is implemented, and neither is reachable. A cookie's domain is compared against the request host, and the request host reaches the transport as the name the caller supplied and the name the certificate is matched against; converting one here would make the cookie store disagree with the connection about what host was contacted. The conversion belongs at the edge where a user types a name, which is above this package."
+        },
+        {
+          "id": "RFC6265-6.3-MUST-IMPLEMENT-IDNA2003-OTHERWISE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The fallback revision is not implemented either, for the same reason.",
+          "disposition": "NotApplicable",
+          "reason": "This clause is conditional on not implementing IDNA2008, and its subject is the same conversion. No name conversion happens in this package at all: a domain is compared byte for byte against the host the connection was made to, after lowercasing, so there is no point at which a U-label could be accepted and mapped rather than simply not matching."
+        },
+        {
+          "id": "RFC6265-7.2-SHOULD-PROVIDE-A-COOKIE-MANAGEMENT-MECHANISM",
+          "section": "7.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "There is no user interface here, and the caller holds the store itself through its adapter.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a user agent with a user in front of it: the interface through which a person inspects, edits, or turns off their cookies, and what a browser does when a script reaches for one. This package has no user and no scripting host. Its caller is a program, which gets the store itself rather than a window onto it."
+        },
+        {
+          "id": "RFC6265-7.2-SHOULD-PROVIDE-A-WAY-TO-DISABLE-COOKIES",
+          "section": "7.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Cookies are off unless a caller turns them on, so the disabled state is the default rather than a setting to find.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "enable_cookies"},
+            {"path": "src/http/client.gleam", "symbol": "cookie_policy"},
+            {"path": "src/http/client.gleam", "symbol": "defaults"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "cookie_store_is_bounded_partitioned_and_disabled_by_default_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-7.2-MUST-NOT-SEND-A-COOKIE-FIELD-WHEN-DISABLED",
+          "section": "7.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The request path checks the policy before it reads the store, so a disabled client never lists a cookie, let alone attaches one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "apply_cookie_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "cookie_store_is_bounded_partitioned_and_disabled_by_default_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-7.2-MUST-NOT-PROCESS-SET-COOKIE-WHEN-DISABLED",
+          "section": "7.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The response path checks the same policy before it looks at a field, so a disabled client parses nothing and stores nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "capture_response_cookies"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "cookie_store_is_bounded_partitioned_and_disabled_by_default_test"}
+          ]
+        },
+        {
+          "id": "RFC6265-7.2-MUST-TREAT-EVERY-COOKIE-AS-NON-PERSISTENT-WHEN-CONFIGURED",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "There is no session-only setting to be configured into.",
+          "disposition": "NotApplicable",
+          "reason": "This clause is conditional on a user agent offering a session-only mode, and there is none here: a caller either supplies a persistence adapter or does not. Supplying none already gives exactly what the clause describes, because the store lives inside the client and nothing outlives it, so the behaviour exists without a setting to reach it by."
+        },
+        {
+          "id": "RFC6265-7.3-SHOULD-A-SERVER-CHOOSES-REASONABLE-EXPIRY-PERIODS",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "How long a deployment asks a cookie to live is the handler's, though this store caps what it will honour at two years.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.3-SHOULD-A-SERVER-ENCRYPTS-AND-SIGNS-COOKIE-CONTENTS",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "What a cookie's value carries, and whether it is protected, is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.3-SHOULD-A-SERVER-USES-COOKIES-ONLY-OVER-A-SECURE-CHANNEL",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Which channel a deployment serves on is the operator's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.3-SHOULD-A-SERVER-SETS-SECURE-ON-EVERY-COOKIE",
+          "section": "8.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Setting the attribute is the handler's; honouring it is this package's, and it does.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.4-SHOULD-A-SERVER-AVOIDS-SESSION-FIXATION",
+          "section": "8.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Session identifier lifecycle is the application's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.5-SHOULD-NOT-A-SERVER-TRUSTS-COOKIES-ACROSS-PORTS",
+          "section": "8.5",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "What a deployment puts on one host's several ports is the operator's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.6-SHOULD-NOT-A-SERVER-TRUSTS-COOKIES-ACROSS-PATHS",
+          "section": "8.6",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "The same for several paths on one host.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        },
+        {
+          "id": "RFC6265-8.6-SHOULD-NOT-A-SERVER-RELIES-ON-COOKIES-BEING-RETAINED",
+          "section": "8.6",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "A cookie may be evicted at any time, and what a deployment does about that is the handler's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the origin server that writes a Set-Cookie field: what it names, how it spells the value, how many fields it sends, and what it puts in them. This package carries a handler's response fields without composing or rewriting them, so what a deployment sends is the handler's to decide."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 14,
+        "entries": [
+          {
+            "id": 3444,
+            "section": "4.1.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction marks the path and extension attribute productions as repeating rather than single characters. Both belong to the well-behaved grammar a server writes; this parser takes an attribute value as everything up to the next semicolon, which is the corrected reading and was already the liberal one section 5.2 asks for."
+          },
+          {
+            "id": 4148,
+            "section": "5.1.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction makes the trailing non-digit optional in the day, year, and time productions, so a date ending immediately after its digits parses. The tokenizer here reads the leading digits of a token and ignores whatever follows, including nothing, so both the published and the corrected grammar accept the same values."
+          },
+          {
+            "id": 5518,
+            "section": "4.1.1",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction moves a comma in a comment describing which characters a cookie value excludes. The character set itself is unchanged."
+          },
+          {
+            "id": 6093,
+            "section": "3",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction replaces folding with combining in the advice to origin servers. It binds what a server writes, and this package neither combines nor splits a response's Set-Cookie fields: each is parsed on its own."
+          },
+          {
+            "id": 7604,
+            "section": "3",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction narrows the clause to cookie-enabled user agents. This client is one only when a caller enables cookies, and when it is, it processes every Set-Cookie field on a final response whatever the status carries."
+          },
+          {
+            "id": 3663,
+            "section": "5.1.4",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction adds a note that path matching here differs from RFC 3986's path semantics. The rule itself is unchanged, and this package implements it as published."
+          },
+          {
+            "id": 8242,
+            "section": "4.1.1",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction reorders the alternatives of the cookie-value production so the quoted form is tried first. The value is taken verbatim here, quotes and all, so neither ordering changes what is stored."
+          },
+          {
+            "id": 3430,
+            "section": "4.1.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have let the well-behaved Max-Age grammar carry a leading zero. Section 5.2.2's receiving algorithm, which is what this package implements, already accepts any decimal integer and treats a non-positive one as an instruction to expire the cookie."
+          },
+          {
+            "id": 6719,
+            "section": "4.1.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have admitted a Max-Age of zero into the same grammar. It is admitted here for the same reason as the previous one: the receiving algorithm decides, and a zero expires the cookie."
+          },
+          {
+            "id": 3765,
+            "section": "4.1.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have raised the advice against repeating a cookie name to a prohibition. It binds a server either way, and this package stores the last field for a given name, domain, and path, which is what section 5.3 asks of the receiver."
+          },
+          {
+            "id": 4044,
+            "section": "5.3",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have added a note explaining the intent behind clearing the persistent flag. The rule is implemented as published: a cookie carrying neither Expires nor Max-Age has its flag cleared and never reaches a persistence adapter."
+          },
+          {
+            "id": 3931,
+            "section": "5.1.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction concerned which boolean flags the date algorithm's note lists. The parser records exactly the four the algorithm uses, and fills each once."
+          },
+          {
+            "id": 4043,
+            "section": "5.1.4",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have renamed the default-path algorithm to line it up with the server-side description. The algorithm is implemented as published."
+          },
+          {
+            "id": 8877,
+            "section": "5.1.1",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report asks that the month token be matched without regard to case, which the published algorithm leaves implicit. This parser lowercases the token's first three characters before comparing, so it already behaves as the report asks."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC6455",
       "title": "The WebSocket Protocol",
