@@ -1004,7 +1004,714 @@
       }
     },
     {"id":"RFC5280","title":"Internet X.509 Public Key Infrastructure Certificate and Certificate Revocation List (CRL) Profile","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/authentication.gleam","packages/quic_core/test/tls_authentication_test.gleam"]},
-    {"id":"RFC6066","title":"Transport Layer Security (TLS) Extensions: Extension Definitions","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/extension.gleam","packages/quic_core/test/tls_extension_test.gleam"]},
+    {
+      "id": "RFC6066",
+      "title": "Transport Layer Security (TLS) Extensions: Extension Definitions",
+      "map_complete": true,
+      "evidence": [
+        "packages/quic_core/src/quic_core/internal/tls/extension.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/engine.gleam",
+        "packages/quic_core/test/tls_extension_test.gleam",
+        "packages/quic_core/test/tls_engine_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc6066.txt",
+        "document_sha256": "6a33cceaa5e1b6518923d9d04ffaa738bad0417806b3c94a995484e140f5cbc0",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=6066",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 58,
+        "level_counts": {
+          "MUST": 21,
+          "SHOULD": 10,
+          "SHALL": 14,
+          "MUST NOT": 7,
+          "NOT RECOMMENDED": 1,
+          "RECOMMENDED": 3,
+          "SHOULD NOT": 2
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC6066-1.1-MUST-HASH-EXTENSION-MESSAGES",
+          "section": "1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every handshake message carrying one of these extensions is covered by the handshake transcript hash, because the transcript is fed each message whole rather than selectively.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "new_hello_transcript"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "establish_client_handshake_with_transcript"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-1.1-SHOULD-OFFER-EXTENSIONS-ON-A-RESUMPTION-REQUEST",
+          "section": "1.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that cannot know whether its resumption request will be accepted still sends the extensions it would send for a full handshake.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-1.1-MUST-IGNORE-EXTENSIONS-WHEN-RESUMING-A-TLS12-SESSION",
+          "section": "1.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server resuming an older session ignores these extensions and answers without them.",
+          "disposition": "NotApplicable",
+          "reason": "This is the TLS 1.2 abbreviated handshake, where resuming replays a previous session's parameters. TLS 1.3 has no such handshake: resumption is a pre-shared key offered in a full ClientHello, every extension is negotiated afresh, and this package speaks TLS 1.3 alone."
+        },
+        {
+          "id": "RFC6066-3-SHALL-CARRY-A-SERVERNAMELIST",
+          "section": "3",
+          "level": "SHALL",
+          "roles": ["client", "server"],
+          "summary": "The server_name extension_data is a ServerNameList, encoded and decoded as the structure the section defines rather than as a bare name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "encode_server_name"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "decode_server_name"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "decode_server_name_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_extension_test.gleam", "symbol": "round_trips_ordered_tls_extensions_test"},
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-MUST-NOT-REPEAT-A-NAME-TYPE",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A ServerNameList carries at most one name of a given name_type: exactly one host_name entry is encoded, and decoding refuses a list shaped any other way.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "encode_server_name"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "decode_server_name"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_extension_test.gleam", "symbol": "round_trips_ordered_tls_extensions_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-SHOULD-ANSWER-AN-UNRECOGNISED-NAME",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server that understands the extension but not the name either aborts with unrecognized_name or continues with a certificate it does have.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_server_encrypted_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_server_name"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-NOT-RECOMMENDED-WARNING-LEVEL-UNRECOGNISED-NAME",
+          "section": "3",
+          "level": "NOT RECOMMENDED",
+          "roles": ["server"],
+          "summary": "A warning-level unrecognized_name alert is not sent, because what a client does on receiving one is not predictable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_server_encrypted_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-MUST-PREFIX-FUTURE-NAMETYPES-WITH-A-LENGTH",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A data structure for a future NameType begins with a sixteen-bit length so that an implementation which does not know the type can still skip it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever defines a new NameType, and this package defines none. What it does on the reading side is what the rule exists to permit: a list whose single entry is not host_name is refused rather than guessed at, and the entry's own length prefix is what bounds the read."
+        },
+        {
+          "id": "RFC6066-3-RECOMMENDED-SEND-SERVER-NAME-WHEN-KNOWN",
+          "section": "3",
+          "level": "RECOMMENDED",
+          "roles": ["client"],
+          "summary": "A client includes the server_name extension whenever it located the server by a domain name, which is every connection here that was not made to an address literal.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "encode_server_name"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-SHALL-ECHO-THE-EXTENSION-IN-THE-SERVER-HELLO",
+          "section": "3",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A server that acted on the name includes a server_name extension in its own hello.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_server_encrypted_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_accept_encrypted_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-SHALL-SEND-AN-EMPTY-EXTENSION-DATA",
+          "section": "3",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "The server's echoed server_name extension carries an empty extension_data rather than repeating the name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_server_encrypted_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_accept_encrypted_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-SHOULD-REPEAT-THE-NAME-ON-RESUMPTION",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A resumption request carries the same server_name the full handshake carried, which here is guaranteed because the ticket is bound to that name and refused against another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_matches_origin"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-MUST-NOT-RESUME-ACROSS-A-DIFFERENT-NAME",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A session is not resumed when the server_name offered differs from the one the session was established with: the ticket records the name and is refused against any other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_matches_origin"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "open_ticket"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-MUST-NOT-ECHO-THE-EXTENSION-WHEN-RESUMING",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A server hello for a resumed session carries no server_name extension.",
+          "disposition": "NotApplicable",
+          "reason": "The rule is about the TLS 1.2 abbreviated handshake's ServerHello. In TLS 1.3 a resumed connection is a full handshake with a pre-shared key, and this server's hello never carries a server_name extension on any path: the echo it does send belongs to EncryptedExtensions."
+        },
+        {
+          "id": "RFC6066-3-SHOULD-MATCH-AN-APPLICATION-NEGOTIATED-NAME",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Where an application protocol negotiated a server name before upgrading to TLS, the extension carries the same name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-3-SHOULD-NOT-REQUEST-A-DIFFERENT-NAME-LATER",
+          "section": "3",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A client does not ask for a different server name in the application protocol once one was established in the handshake.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-4-SHALL-CARRY-A-MAXFRAGMENTLENGTH-REQUEST",
+          "section": "4",
+          "level": "SHALL",
+          "roles": ["client", "server"],
+          "summary": "The max_fragment_length extension_data carries the enumerated fragment length being requested.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-SHALL-ECHO-THE-NEGOTIATED-LENGTH",
+          "section": "4",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A server's response carries the same MaxFragmentLength value that was requested.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-MUST-ABORT-ON-AN-INVALID-REQUESTED-LENGTH",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A request for a value outside the allowed set aborts the handshake with an illegal_parameter alert.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-MUST-ABORT-ON-A-DIFFERING-RESPONSE",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response naming a length other than the one requested aborts the handshake.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-MUST-APPLY-THE-NEGOTIATED-LENGTH-IMMEDIATELY",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Once a length other than the default is negotiated, both peers begin fragmenting to it at once.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-MUST-DISCARD-AN-OVERSIZE-RECORD",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A record larger than the negotiated ceiling allows is discarded and answered with a record_overflow alert.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-4-SHOULD-NOT-ALERT-ON-DTLS-OVERFLOW",
+          "section": "4",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "Under DTLS an oversize record does not produce a record_overflow alert, because a datagram transport drops records routinely.",
+          "disposition": "NotApplicable",
+          "reason": "The max_fragment_length extension is not offered and not acted on. TLS 1.3 supersedes it with record_size_limit, and QUIC sizes its own records from the path rather than negotiating a fragment length. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-SHALL-SEND-AN-EMPTY-CLIENT-CERTIFICATE-URL-REQUEST",
+          "section": "5",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The client_certificate_url extension_data is empty in the client hello.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-SHALL-SEND-AN-EMPTY-CLIENT-CERTIFICATE-URL-RESPONSE",
+          "section": "5",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "The server's echoed client_certificate_url extension_data is empty.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-USE-AN-ABSOLUTE-URI",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each url in a CertificateURL is an absolute URI reference usable as it stands.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-PAD-WITH-ONE",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The padding byte in a CertificateURL is 0x01.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-SHALL-RETRIEVE-THE-CHAIN",
+          "section": "5",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A server receiving a CertificateURL fetches the chain from the URLs and processes it as if it had arrived in the handshake.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-SUPPORT-THE-HTTP-SCHEME",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server supporting the extension supports the http URI scheme for those URLs.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-NOT-FOLLOW-REDIRECTS",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Retrieval does not follow HTTP redirects.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-NOT-DEPEND-ON-REDIRECTS",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The URLs are not chosen so that retrieval would depend on a redirect.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-SHALL-STRIP-MIME-HEADERS",
+          "section": "5",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A MIME-formatted retrieval response has its headers removed before the body is treated as the certificate data.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-CHECK-THE-SHA1-HASH",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The SHA-1 hash of each retrieved object is checked against the hash the client supplied.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-ABORT-ON-A-HASH-MISMATCH",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An object whose hash does not match aborts the handshake with bad_certificate_hash_value.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-MUST-ALERT-ON-AN-UNOBTAINABLE-CERTIFICATE",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server that cannot retrieve the certificates sends a fatal certificate_unobtainable alert.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-5-SHOULD-LOG-AND-CONTINUE",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client receiving such an alert logs it and continues where it can.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-6-SHALL-CARRY-TRUSTED-AUTHORITIES",
+          "section": "6",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The trusted_ca_keys extension_data carries a TrustedAuthorities list.",
+          "disposition": "NotApplicable",
+          "reason": "The trusted_ca_keys extension is not offered and not acted on. The trust anchors this endpoint uses are configuration, and advertising which ones it holds tells a peer something it does not need. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-6-SHALL-ECHO-TRUSTED-CA-KEYS",
+          "section": "6",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A server that used the hint includes a trusted_ca_keys extension in its hello.",
+          "disposition": "NotApplicable",
+          "reason": "The trusted_ca_keys extension is not offered and not acted on. The trust anchors this endpoint uses are configuration, and advertising which ones it holds tells a peer something it does not need. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-6-SHALL-ECHO-AN-EMPTY-EXTENSION-DATA",
+          "section": "6",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "That echoed extension carries an empty extension_data.",
+          "disposition": "NotApplicable",
+          "reason": "The trusted_ca_keys extension is not offered and not acted on. The trust anchors this endpoint uses are configuration, and advertising which ones it holds tells a peer something it does not need. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-7-SHALL-SEND-AN-EMPTY-TRUNCATED-HMAC",
+          "section": "7",
+          "level": "SHALL",
+          "roles": ["client", "server"],
+          "summary": "The truncated_hmac extension_data is empty.",
+          "disposition": "NotApplicable",
+          "reason": "The truncated_hmac extension is not offered and not acted on. TLS 1.3 has no HMAC to truncate: its record protection is AEAD only, and the extension was deprecated with the ciphersuites that used one. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-7-MUST-USE-TRUNCATED-HMACS-AFTERWARDS",
+          "section": "7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Once negotiated, both peers use the truncated HMAC for the rest of the session.",
+          "disposition": "NotApplicable",
+          "reason": "The truncated_hmac extension is not offered and not acted on. TLS 1.3 has no HMAC to truncate: its record protection is AEAD only, and the extension was deprecated with the ciphersuites that used one. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-SHALL-CARRY-A-CERTIFICATE-STATUS-REQUEST",
+          "section": "8",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The status_request extension_data carries a CertificateStatusRequest.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-MUST-DER-ENCODE-THE-OCSP-NONCE",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The OCSP nonce extension value is a DER-encoded OCTET STRING.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-SHOULD-USE-THE-RESPONDER-HINT",
+          "section": "8",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server acting on the request uses the responder list when choosing an OCSP responder.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-SHOULD-USE-THE-REQUEST-EXTENSIONS",
+          "section": "8",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server acting on the request includes the supplied OCSP request extensions in what it asks the responder.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-MUST-HAVE-ECHOED-THE-EXTENSION",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server returning a CertificateStatus message included a status_request extension in its hello.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-MUST-NOT-SEND-AN-UNSOLICITED-STATUS",
+          "section": "8",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A CertificateStatus message is not sent unless a status_request extension was received.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-8-MUST-CHECK-THE-OCSP-RESPONSE",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that requested and received an OCSP response checks it and aborts if it is not satisfactory.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-9-MUST-NOT-SEND-UNSOLICITED-NEW-ALERTS",
+          "section": "9",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The alerts this document adds are not sent to a peer that never sent the extension they belong to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_server_encrypted_extensions"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_server_name"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-10.1-MUST-CONFORM-TO-RFC5280",
+          "section": "10.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every certificate handled conforms to RFC 5280, which is what the platform decoder enforces before a chain is validated at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "certificate_chain_from_pem"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-10.1-MUST-USE-DER",
+          "section": "10.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Certificates are DER rather than the looser BER, which the decoder requires and a chain that is not is refused by.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "certificate_chain_from_pem"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "trust_store_from_der"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "loads_system_and_explicit_der_trust_stores_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-10.1-SHOULD-BASE64-OVER-SEVEN-BIT-TRANSPORTS",
+          "section": "10.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A certificate carried over a seven-bit transport is base64 encoded.",
+          "disposition": "NotApplicable",
+          "reason": "The transports here are TLS over TCP and QUIC over UDP, both eight-bit clean, and a certificate travels inside the handshake as DER. The base64 form this package does read is PEM, which is a configuration input rather than anything sent over a transport."
+        },
+        {
+          "id": "RFC6066-11.1-MUST-NOT-TRUST-AN-APPLICATION-LEVEL-NAME",
+          "section": "11.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server implementation does not assume the name in the application protocol matches the one in the extension, because a client may present a different one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_server_name"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-11.1-MUST-NOT-OVERFLOW-ON-SERVER-NAME-LENGTHS",
+          "section": "11.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No length field in server_name can drive a read past its buffer: every vector is read against its own remaining bytes and a name over 253 bytes is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "decode_server_name"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "decode_server_name_bytes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam", "symbol": "exact_vector16"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension.gleam", "symbol": "decode_all"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_extension_test.gleam", "symbol": "round_trips_ordered_tls_extensions_test"},
+            {"path": "packages/quic_core/test/tls_extension_test.gleam", "symbol": "rejects_duplicate_and_misordered_tls_extensions_test"},
+            {"path": "packages/quic_core/test/tls_extension_test.gleam", "symbol": "enforces_tls_extension_resource_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC6066-11.3-RECOMMENDED-ENABLE-CLIENT-CERTIFICATE-URL-EXPLICITLY",
+          "section": "11.3",
+          "level": "RECOMMENDED",
+          "roles": ["server"],
+          "summary": "The client_certificate_url extension is enabled deliberately rather than by default.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-11.3-RECOMMENDED-ENABLE-URI-SCHEMES-INDIVIDUALLY",
+          "section": "11.3",
+          "level": "RECOMMENDED",
+          "roles": ["server"],
+          "summary": "URI schemes for that retrieval are enabled one at a time by an administrator, and only a minimal set.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-11.3-SHOULD-AVOID-WEAK-PROTOCOLS",
+          "section": "11.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Protocols offering limited or poorly understood security are not used for that retrieval.",
+          "disposition": "NotApplicable",
+          "reason": "The client_certificate_url extension is not offered and not acted on. Fetching a peer's certificate over HTTP from a URL it chose is an outbound request made on a peer's say-so, which this package does not make; a client certificate is carried in the handshake itself. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        },
+        {
+          "id": "RFC6066-11.6-SHOULD-VALIDATE-OCSP-INDEPENDENTLY",
+          "section": "11.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client requiring OCSP validation contacts the responder itself or abandons the connection when stapling is unavailable.",
+          "disposition": "NotApplicable",
+          "reason": "The status_request extension is not offered and not acted on. No OCSP response is requested, so none is expected, checked, or acted on; revocation is the trust store's to express. A peer that sends it anyway is decoded as a bounded opaque extension and nothing reads its value, so none of this section's processing is ever entered."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 3283,
+            "section": "Appendix A",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction makes the appendix agree with section 3: a ServerNameList carries only one name of any particular name_type, where the published appendix said it could carry more. This codec already encodes exactly one host_name entry and refuses a list shaped otherwise, so the corrected reading is the implemented one."
+          },
+          {
+            "id": 4817,
+            "section": "8",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction names the OCSP responder list field correctly, where the published text used a name the document never defines. It corrects prose about the status_request extension, which is not offered or acted on here."
+          },
+          {
+            "id": 5658,
+            "section": "3",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported addition would say which name to put in the extension when a client reached the service through a DNS SRV record. This package is given the service identity by its caller and sends exactly that, and the same identity is what the certificate is checked against, so no separate choice is made here for the clarification to settle."
+          }
+        ]
+      }
+    },
     {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
     {"id":"RFC6455","title":"The WebSocket Protocol","map_complete":false,"evidence":["src/http/websocket.gleam","test/websocket_test.gleam"]},
     {
