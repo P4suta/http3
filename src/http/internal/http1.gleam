@@ -446,16 +446,12 @@ pub fn parse_trailer_block(
   case bytes {
     <<>> -> Ok([])
     _ -> {
-<<<<<<< Updated upstream
-      use lines <- result.try(split_lines(bytes, maximum_line_bytes, []))
-=======
       use lines <- result.try(split_lines(
         bytes,
         maximum_line_bytes,
         [],
         LineTooLong(maximum_line_bytes),
       ))
->>>>>>> Stashed changes
       parse_headers(lines, maximum_header_count, 0, [], RejectFolding)
     }
   }
