@@ -220,3 +220,14 @@ pub fn tls_option_cipher_profile() -> #(
   #(Int, List(String), List(String)),
   #(Int, List(String), List(String)),
 )
+
+/// Order destinations by RFC 6724 section 6, given for each one the source
+/// address the kernel would choose, or an empty string when there is none.
+@external(erlang, "http_test_ffi", "sorted_destination_order")
+pub fn sorted_destination_order(
+  pairs: List(#(String, String)),
+) -> List(String)
+
+/// Interleave address families across an already ordered list.
+@external(erlang, "http_test_ffi", "interleaved_destination_order")
+pub fn interleaved_destination_order(addresses: List(String)) -> List(String)

@@ -424,3 +424,11 @@
   of its final character set; the platform decoder accepts such a value, so the
   offered key is now required to re-encode to itself, as RFC 4648 section 3.5
   describes.
+- Sorted resolved addresses by RFC 6724 Destination Address Selection before
+  attempting any of them, which RFC 8305 section 4 requires and which was not
+  done: every IPv6 address was tried before every IPv4 one, whatever the host's
+  own connectivity said. The source address for each destination is the one the
+  kernel would choose, asked for by connecting an unbound datagram socket that
+  is never written to, so source selection and its deprecated-address rule stay
+  where the interface state is. The ordered list then interleaves the two
+  families, so an impaired family costs one attempt rather than a run of them.

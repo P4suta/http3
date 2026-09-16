@@ -25,6 +25,8 @@
     packet_too_big_snapshot_race/1,
     packet_too_big_wire_vectors/0,
     server_credentials/0,
+    sorted_destination_order/1,
+    interleaved_destination_order/1,
     start_exclusive_udp_port_guard/0,
     start_task/1,
     start_udp_ecn_echo_server/0,
@@ -741,6 +743,50 @@ cipher_profile(Options) ->
         ])
     end,
     {length(Suites), Names(key_exchange), Names(mac)}.
+
+-spec sorted_destination_order([{binary(), binary()}]) -> [binary()].
+sorted_destination_order(Pairs) ->
+    %% Each pair is a destination address and the source address the kernel
+    %% would choose for it, with <<>> meaning that no source is available.
+    Destinations = [
+        {address_family(Destination), parsed_address(Destination)}
+     || {Destination, _Source} <- Pairs
+    ],
+    Source = fun(_Family, Address) ->
+        case [S || {D, S} <- Pairs, parsed_address(D) =:= Address] of
+            [<<>>] -> error;
+            [Chosen] -> {ok, parsed_address(Chosen)};
+            _ -> error
+        end
+    end,
+    formatted_addresses(
+        http_transport_ffi:sort_destinations(Destinations, Source)
+    ).
+
+-spec interleaved_destination_order([binary()]) -> [binary()].
+interleaved_destination_order(Addresses) ->
+    formatted_addresses(
+        http_transport_ffi:interleave_families([
+            {address_family(Address), parsed_address(Address)}
+         || Address <- Addresses
+        ])
+    ).
+
+-spec formatted_addresses([{atom(), inet:ip_address()}]) -> [binary()].
+formatted_addresses(Addresses) ->
+    [list_to_binary(inet:ntoa(Address)) || {_Family, Address} <- Addresses].
+
+-spec parsed_address(binary()) -> inet:ip_address().
+parsed_address(Address) ->
+    {ok, Parsed} = inet:parse_address(binary_to_list(Address)),
+    Parsed.
+
+-spec address_family(binary()) -> inet | inet6.
+address_family(Address) ->
+    case parsed_address(Address) of
+        {_, _, _, _} -> inet;
+        _ -> inet6
+    end.
 
 -spec exit_now() -> no_return().
 exit_now() ->
