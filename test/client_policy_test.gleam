@@ -50,6 +50,7 @@ pub fn ip_origins_reject_suffix_domain_cookies_test() -> Nil {
       "127.0.0.1",
       "/",
       1000,
+      1_700_000_000_000,
     )
     == None
 }
@@ -62,6 +63,7 @@ pub fn host_only_cookies_never_escape_to_a_subdomain_test() -> Nil {
       "example.com",
       "/",
       1000,
+      1_700_000_000_000,
     )
   let assert Some(domain) =
     cookie.parse(
@@ -70,6 +72,7 @@ pub fn host_only_cookies_never_escape_to_a_subdomain_test() -> Nil {
       "example.com",
       "/",
       1000,
+      1_700_000_000_000,
     )
 
   assert cookie.request_header(
@@ -251,4 +254,78 @@ pub fn a_cached_response_carries_the_age_it_has_accumulated_test() -> Nil {
   let assert Some(entry) =
     cache.entry(outgoing, plain, <<"body":utf8>>, [], 1000)
   assert list.key_find(cache.response(entry, 46_000).headers, "age") == Ok("45")
+}
+
+pub fn an_expires_attribute_sets_the_cookie_lifetime_test() -> Nil {
+  // RFC 6265 section 5.2.1 and section 5.3: a Set-Cookie carrying Expires has
+  // that date as its expiry-time, and Max-Age takes precedence when both are
+  // present. Expiry is held as a monotonic instant, so the date is read as the
+  // time remaining from the wall clock at the moment it is parsed.
+  let monotonic = 5000
+  // 2023-11-14T22:13:20Z.
+  let unix_now = 1_700_000_000_000
+
+  // A date in the past is the way a server deletes a cookie. It is retained
+  // with an expiry that has already passed, never as a fresh session cookie.
+  let assert Some(deleted) =
+    cookie.parse(
+      "sid=gone; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+      gleam_http.Https,
+      "example.com",
+      "/",
+      monotonic,
+      unix_now,
+    )
+  assert deleted.expires_at <= monotonic
+
+  // A date two days out gives exactly that much life, which is also not the
+  // session lifetime an absent date would have produced.
+  let assert Some(dated) =
+    cookie.parse(
+      "sid=kept; Path=/; Expires=Thu, 16 Nov 2023 22:13:20 GMT",
+      gleam_http.Https,
+      "example.com",
+      "/",
+      monotonic,
+      unix_now,
+    )
+  assert dated.expires_at == monotonic + 172_800_000
+
+  // Max-Age wins over Expires whichever order they appear in.
+  let assert Some(capped) =
+    cookie.parse(
+      "sid=short; Path=/; Expires=Wed, 15 Nov 2023 22:13:20 GMT; Max-Age=60",
+      gleam_http.Https,
+      "example.com",
+      "/",
+      monotonic,
+      unix_now,
+    )
+  assert capped.expires_at == monotonic + 60_000
+
+  // Section 5.1.1 accepts the liberal forms too: two-digit years, a lowercase
+  // month, and a non-GMT trailer are all read rather than refused.
+  let assert Some(liberal) =
+    cookie.parse(
+      "sid=liberal; Path=/; Expires=thu, 16-nov-23 22:13:20",
+      gleam_http.Https,
+      "example.com",
+      "/",
+      monotonic,
+      unix_now,
+    )
+  assert liberal.expires_at == monotonic + 172_800_000
+
+  // A value that is not a cookie-date at all leaves the cookie a session
+  // cookie, which is the one-day default, rather than expiring or refusing it.
+  let assert Some(unparsable) =
+    cookie.parse(
+      "sid=session; Path=/; Expires=not-a-date",
+      gleam_http.Https,
+      "example.com",
+      "/",
+      monotonic,
+      unix_now,
+    )
+  assert unparsable.expires_at == monotonic + 86_400_000
 }

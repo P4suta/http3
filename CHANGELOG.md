@@ -349,3 +349,10 @@
   `Age` it had arrived with was served unchanged. The field now counts the time
   held from the age the response already had, and replaces the stored one
   rather than joining it.
+- Honoured the `Expires` attribute on a `Set-Cookie`, which RFC 6265 sections
+  5.2.1 and 5.3 require and which was not parsed at all. A cookie the server
+  expired by sending a date in the past was kept as a fresh session cookie for
+  a day, so a server could not delete one; a cookie with a short stated
+  lifetime was kept for the session default instead. Dates are read with the
+  section 5.1.1 algorithm, `Max-Age` still takes precedence, and the date is
+  turned into a remaining duration at parse time so the store stays monotonic.
