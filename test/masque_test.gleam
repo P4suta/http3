@@ -4140,6 +4140,82 @@ pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
   assert masque.request_path(by_protocol) == "/.well-known/masque/ip/%2A/6/"
 }
 
+pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
+  // RFC 9484 sections 4.2 through 4.5: the HTTP/1.1 mapping is an upgrade to
+  // "connect-ip" answered with 101, and the HTTP/2 and HTTP/3 mapping is an
+  // Extended CONNECT answered in the 2xx range. Each response also has to start
+  // the Capsule Protocol, and no payload may be proxied until one of them has
+  // been read.
+  let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
+  let assert Ok(upgraded) =
+    masque.connect_ip(masque.Http1, "proxy.example", scope, limits())
+  assert masque.request_method(upgraded) == http.Get
+  assert masque.request_authority(upgraded) == "proxy.example"
+  assert masque.request_protocol(upgraded) == None
+  assert masque.request_headers(upgraded)
+    == [
+      #("host", "proxy.example"),
+      #("connection", "Upgrade"),
+      #("upgrade", "connect-ip"),
+      #("capsule-protocol", "?1"),
+    ]
+
+  let tunnel = masque.client_tunnel(upgraded)
+  assert masque.send_datagram(tunnel, <<>>) == Error(masque.NotEstablished)
+
+  let switched = [
+    #("connection", "upgrade"),
+    #("upgrade", "connect-ip"),
+    #("capsule-protocol", "?1"),
+  ]
+  assert masque.confirm(tunnel, 200, switched)
+    == Error(masque.UnexpectedStatus(200))
+  // An upgrade naming the other proxying protocol is not this tunnel, and a
+  // response that never starts the Capsule Protocol carries no capsules.
+  assert masque.confirm(tunnel, 101, [
+      #("connection", "upgrade"),
+      #("upgrade", "connect-udp"),
+      #("capsule-protocol", "?1"),
+    ])
+    == Error(masque.InvalidResponse)
+  assert masque.confirm(tunnel, 101, [
+      #("connection", "upgrade"),
+      #("upgrade", "connect-ip"),
+    ])
+    == Error(masque.InvalidResponse)
+
+  let assert Ok(established) = masque.confirm(tunnel, 101, switched)
+  let packet = <<
+    0x45, 0, 28:size(16), 1:size(16), 0:size(16), 64, 17, 0x8e99:size(16), 192,
+    0, 2, 1, 198, 51, 100, 2, 1, 2, 3, 4, 5, 6, 7, 8,
+  >>
+  assert masque.send_datagram(established, packet) == Ok(<<0, packet:bits>>)
+
+  // Extended CONNECT carries the protocol in a pseudo-header instead, and its
+  // success is any 2xx rather than the protocol switch.
+  let assert Ok(extended) =
+    masque.connect_ip(masque.Http3, "proxy.example", scope, limits())
+  assert masque.request_method(extended) == http.Connect
+  assert masque.request_protocol(extended) == Some("connect-ip")
+  assert masque.request_headers(extended) == [#("capsule-protocol", "?1")]
+  assert masque.request_path(extended)
+    == "/.well-known/masque/ip/198.51.100.0%2F24/17/"
+
+  let extended_tunnel = masque.client_tunnel(extended)
+  assert masque.confirm(extended_tunnel, 101, [#("capsule-protocol", "?1")])
+    == Error(masque.UnexpectedStatus(101))
+  assert masque.confirm(extended_tunnel, 300, [#("capsule-protocol", "?1")])
+    == Error(masque.UnexpectedStatus(300))
+  let assert Ok(_) =
+    masque.confirm(extended_tunnel, 204, [#("capsule-protocol", "?1")])
+  // The upgrade fields belong to the HTTP/1.1 mapping alone.
+  assert masque.confirm(extended_tunnel, 200, [
+      #("capsule-protocol", "?1"),
+      #("upgrade", "connect-ip"),
+    ])
+    == Error(masque.InvalidResponse)
+}
+
 pub fn connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test() -> Nil {
   let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
   let assert Ok(request) =
