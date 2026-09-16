@@ -6349,7 +6349,1693 @@
         ]
       }
     },
-    {"id":"RFC9112","title":"HTTP/1.1","map_complete":false,"evidence":["src/http/internal/http1.gleam","test/http1_request_head_test.gleam"]},
+    {
+      "id": "RFC9112",
+      "title": "HTTP/1.1",
+      "map_complete": true,
+      "evidence": [
+        "src/http/internal/http1.gleam",
+        "src/http/internal/http1/body.gleam",
+        "src/http/internal/http1/encode.gleam",
+        "src/http/internal/http1/exchange.gleam",
+        "src/http/internal/http1/server.gleam",
+        "test/http1_request_head_test.gleam",
+        "test/http1_response_head_test.gleam",
+        "test/http1_body_decoder_test.gleam",
+        "test/http1_encode_test.gleam",
+        "test/http1_exchange_test.gleam",
+        "test/http1_server_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9112.txt",
+        "document_sha256": "e4f426bac6206b67fdf9e0da826154f70588db2133a0a86b15cde4ff725d8937",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9112",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 115,
+        "level_counts": {
+          "MUST": 64,
+          "MUST NOT": 21,
+          "SHOULD": 24,
+          "SHOULD NOT": 5,
+          "RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9112-2.2-MUST-PARSE-AS-OCTETS",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A message is parsed as octets throughout: the head, the field values, and the body are bit arrays, and no step decodes them into text before the framing is settled.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "feed_request"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "feed_response"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-NOT-GENERATE-BARE-CR",
+          "section": "2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An encoder refuses a field value carrying any control byte, so a bare carriage return cannot be written into a head this package produces.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "valid_field_value"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_header_lines"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "head_injection_and_invalid_tokens_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-REJECT-OR-REPLACE-BARE-CR",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A bare carriage return is rejected rather than replaced: line endings are validated across the whole head before it is split, and a control byte in a field value is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_line_endings"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_field_value"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "bare_line_feed_is_rejected_before_the_buffer_limit_test"},
+            {"path": "test/http1_request_head_test.gleam", "symbol": "control_bytes_in_header_values_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-NOT-PREFACE-REQUEST-WITH-CRLF",
+          "section": "2.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A request is written from its start line onward with nothing before it and nothing after the head but the body the framing declares.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_head"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_head_preserves_unknown_method_and_headers_and_adds_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-COUNT-TRAILING-CRLF-IN-LENGTH",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Content-Length is computed from the body bytes the caller supplied, so a line ending the caller put in the body is counted as part of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_head_preserves_unknown_method_and_headers_and_adds_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-SHOULD-IGNORE-LEADING-EMPTY-LINE",
+          "section": "2.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An empty line before a request line is ignored rather than treated as the request line.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The first line of a head is the request line, and an empty one is a typed invalid-request-line error. Skipping leading blank lines means accepting an unbounded run of them or picking an arbitrary bound, and a client that sends one is already sending something this document tells it not to; the connection is refused rather than resynchronized.",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_request_lines"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_request_line"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-NOT-WHITESPACE-AFTER-START-LINE",
+          "section": "2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An encoder writes the first field line immediately after the start line, with no way for a caller to insert whitespace between them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_head"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_header_lines"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "head_injection_and_invalid_tokens_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-MUST-REJECT-WHITESPACE-AFTER-START-LINE",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field line beginning with a space or a tab is rejected as obsolete line folding rather than consumed, which is the reject branch this clause allows.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_header"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "ObsoleteLineFolding"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "obsolete_line_folding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.2-SHOULD-RESPOND-TO-NON-HTTP-REQUEST",
+          "section": "2.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Anything that is not a well-formed request line is answered with 400 and the connection closed, which covers the non-HTTP and TLS-to-a-cleartext-port cases this clause is about.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-2.3-MUST-INTERMEDIARY-SENDS-OWN-VERSION",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An intermediary sends its own HTTP-version in a forwarded message.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-2.3-SHOULD-NOT-DOWNGRADE-PROTOCOL",
+          "section": "2.3",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "An intermediary does not downgrade the protocol version without a specific reason.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-3-SHOULD-501-FOR-LONG-METHOD",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A method longer than this server implements is refused, though with the 400 its malformed-request path uses rather than a 501.",
+          "disposition": "DocumentedDeviation",
+          "reason": "An over-long method is rejected by the line limit before any method comparison happens, and that limit produces the typed error the 400 path reports. Distinguishing an unimplemented method from a malformed line would mean parsing past the bound that stopped it, which is the bound that keeps head parsing finite.",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "split_lines"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "LineTooLong"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "line_limit_is_enforced_on_complete_and_partial_lines_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3-MUST-414-FOR-LONG-TARGET",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A request line over the configured bound is named apart from an over-long field line and answered with 414, on a complete head and on one that has already passed the bound while it is still arriving; the other two parts of a request line are a method token and a fixed version string, so the bound is the bound on the target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "RequestLineTooLong"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "over_long_partial_line"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "split_lines"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "head_failure_status"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "receive_head"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "an_overlong_request_line_is_typed_apart_from_a_header_line_test"},
+            {"path": "test/http1_server_test.gleam", "symbol": "an_overlong_request_target_is_a_414_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3-RECOMMENDED-8000-OCTET-REQUEST-LINE",
+          "section": "3",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The line bound is explicit rather than defaulted, and the server's own configuration carries a value at or above the octet count this clause names.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "request_parser"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "Limits"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "http1_connection_ceilings_refuse_every_value_outside_their_range_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-SHOULD-400-OR-301-FOR-INVALID-REQUEST-LINE",
+          "section": "3.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An invalid request line is answered with 400 and the connection closed; no redirect is guessed at.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-SHOULD-NOT-AUTOCORRECT-REQUEST-LINE",
+          "section": "3.2",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Nothing is corrected: the target is validated as received and a value that does not parse is an error rather than a repaired one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_target"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_request_line"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-MUST-CLIENT-SENDS-HOST",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Exactly one Host field is required of the caller and its absence is a typed encoding error, so no request leaves without one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "require_one_host"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "validate_user_headers"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_requires_exactly_one_host_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-MUST-HOST-MATCHES-AUTHORITY",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The Host the exchange sends is derived from the authority of the target URI it dialled rather than supplied separately.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "request"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-MUST-EMPTY-HOST-WHEN-NO-AUTHORITY",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A target without an authority is not something this client can dial: every request it makes has one, so the empty-Host case cannot arise.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "defaults"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2-MUST-400-WITHOUT-VALID-HOST",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A request with no Host, with more than one, or with one whose authority does not parse is a typed error that becomes a 400 before any handler is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "finish_request_framing"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_host"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "MissingHost"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "DuplicateHost"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "missing_or_duplicate_host_is_rejected_test"},
+            {"path": "test/http1_request_head_test.gleam", "symbol": "ambiguous_or_malformed_host_authorities_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.1-MUST-ORIGIN-FORM-TO-ORIGIN-SERVER",
+          "section": "3.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A direct request carries the path and query of the target URI as its request target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "request"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.1-MUST-EMPTY-PATH-BECOMES-SLASH",
+          "section": "3.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An empty path is sent as a single slash rather than as nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-ABSOLUTE-FORM-TO-PROXY",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A request through a configured forward proxy carries the absolute target URI as its request target.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_proxy"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "authenticated_https_uses_the_same_bounded_exchange_path_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-HOST-WITH-ABSOLUTE-FORM",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The Host field is sent whichever form the request target takes, because it is required of every request this encoder builds.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "require_one_host"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_requires_exactly_one_host_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-PROXY-IGNORES-HOST",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy receiving an absolute-form target ignores the Host field.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-PROXY-REGENERATES-HOST",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A forwarding proxy generates a new Host from the request target.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-ORIGIN-IGNORES-HOST-WITH-ABSOLUTE-FORM",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The authority an absolute-form target carries is the one the request gets, and the Host field is not consulted at all when there is one, so the two cannot disagree about which resource was asked for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "parse_absolute_form"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "TargetParts"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "make_request"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "an_absolute_form_request_target_is_accepted_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.2-MUST-SERVER-ACCEPTS-ABSOLUTE-FORM",
+          "section": "3.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The absolute form is accepted, with the scheme required to be the one the listener serves and the authority required to parse; a path-less target is the root and a query with no path between them is the root carrying that query.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "parse_absolute_form"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "split_authority"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "origin_form"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "an_absolute_form_request_target_is_accepted_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.3-MUST-CONNECT-AUTHORITY-FORM",
+          "section": "3.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A CONNECT carries only the host and port of the tunnel destination, and the server admits one only when that authority has an explicit valid port.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run_tunnel"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_host"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "connect_target_requires_an_explicit_valid_port_before_admission_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.4-MUST-ASTERISK-FORM-FOR-SERVER-OPTIONS",
+          "section": "3.2.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The asterisk form is the target grammar's own alternative for a server-wide OPTIONS, accepted by the parser and produced by the encoder unchanged.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_target"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_target_bytes"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-3.2.4-MUST-PROXY-CONVERTS-EMPTY-PATH-OPTIONS",
+          "section": "3.2.4",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy converts an absolute-form OPTIONS with an empty path into the asterisk form.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-4-SHOULD-IGNORE-REASON-PHRASE",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The reason phrase is carried through as received and nothing branches on it: every decision the client makes reads the status code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_status_line"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "ResponseHead"}
+          ],
+          "tests": [
+            {"path": "test/http1_response_head_test.gleam", "symbol": "fragmented_response_preserves_status_reason_headers_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-4-MUST-SEND-SPACE-BEFORE-EMPTY-REASON",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The status line is built with the separator always present, and every status this server sends carries its registered phrase after it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "response"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_head"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "every_status_line_carries_its_registered_reason_phrase_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-5.1-MUST-400-FOR-WHITESPACE-BEFORE-COLON",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Whitespace between a field name and its colon is a typed error of its own, refused before the field is admitted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_header"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "WhitespaceBeforeColon"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "contains_ows"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "whitespace_before_header_colon_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-5.1-MUST-PROXY-REMOVES-RESPONSE-WHITESPACE",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy removes such whitespace from a response before forwarding it.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-5.2-MUST-NOT-GENERATE-LINE-FOLDING",
+          "section": "5.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An encoder writes each field on one line and refuses a value carrying the control bytes a fold would need.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_header_lines"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "valid_field_value"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "head_injection_and_invalid_tokens_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-5.2-MUST-REJECT-OBS-FOLD-IN-REQUEST",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An obs-fold in a request is a typed error that becomes a 400, which is the reject branch this clause allows.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_header"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "RejectFolding"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "ObsoleteLineFolding"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "obsolete_line_folding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-5.2-MUST-DISCARD-OBS-FOLD-IN-RESPONSE-AT-PROXY",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy or gateway discards or unfolds an obs-fold in a response before forwarding it.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-5.2-MUST-REPLACE-OBS-FOLD-IN-RESPONSE-AT-CLIENT",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A fold in a response is replaced with one space, the continuation's own surrounding whitespace going with the fold it belonged to; a fold with no field before it has nothing to continue and is still refused, and the value is complete before the message fields are analysed so a folded framing field is read as the field it spells.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "unfold"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "folded_line"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "UnfoldToSpace"}
+          ],
+          "tests": [
+            {"path": "test/http1_response_head_test.gleam", "symbol": "obsolete_line_folding_in_a_response_is_unfolded_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-PARSE-CHUNKED",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Chunked is decoded incrementally, with its sizes, extensions, and trailers all parsed rather than skipped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunked"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunk_size"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunk_trailers"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "chunked_body_is_incremental_and_preserves_trailers_and_remainder_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-NOT-CHUNK-TWICE",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A second Transfer-Encoding field is a typed error, and the one field admitted must be exactly chunked, so chunking cannot be stacked.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "analyse_non_content_length_field"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "InvalidTransferEncoding"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "unsupported_transfer_coding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-CHUNKED-LAST-IN-REQUEST",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The only transfer coding this package applies is chunked, so it is always the final one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "chunk"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "chunks_and_final_trailers_are_encoded_without_ambiguity_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-CHUNKED-LAST-OR-CLOSE-IN-RESPONSE",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The same holds for a response: chunked is the only coding written, and a response without an explicit length is close-delimited.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "response"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"}
+          ],
+          "tests": [
+            {"path": "test/http1_response_head_test.gleam", "symbol": "response_without_explicit_length_is_close_delimited_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-NOT-TRANSFER-ENCODING-IN-1XX-OR-204",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A status that carries no body takes no framing field: the encoder refuses a framing header on those statuses and the parser gives them a bodyless framing whatever fields arrive.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "reserved_framing_header"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "unsupported_outgoing_framing_and_status_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-NOT-TRANSFER-ENCODING-IN-CONNECT-2XX",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A successful CONNECT response is a tunnel rather than a framed message, on the encoding side as on the parsing side.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "response_has_no_http_body"}
+          ],
+          "tests": [
+            {"path": "test/http1_response_head_test.gleam", "symbol": "informational_switching_and_successful_connect_have_no_http_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-SHOULD-501-FOR-UNKNOWN-TRANSFER-CODING",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A transfer coding other than chunked is refused, with the 400 this server's malformed-framing path uses rather than a 501.",
+          "disposition": "DocumentedDeviation",
+          "reason": "An unknown coding is a framing failure here, not a feature request: the message length cannot be determined, so the connection is unusable whatever status is sent. It is answered with the 400 the framing path uses and the connection is closed, which is what section 6.3 requires of an unrecoverable framing error.",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "analyse_non_content_length_field"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "InvalidTransferEncoding"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "unsupported_transfer_coding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-NOT-CLIENT-SENDS-TE-WITHOUT-KNOWLEDGE",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Every connection this client makes is HTTP/1.1, so the knowledge this clause requires is a property of the code path rather than a guess.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_head"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "chunked_request_informational_response_and_trailers_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-NOT-SERVER-SENDS-TE-TO-OLDER-CLIENT",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A request that is not HTTP/1.1 is refused before a handler runs, so there is no older client to answer with chunked.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_request_line"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "UnsupportedVersion"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-CLOSE-AFTER-SUCH-A-REQUEST",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A framing failure closes the connection after the error response rather than trying to find the next message in the stream.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.1-MUST-TREAT-HTTP-1.0-TRANSFER-ENCODING-AS-FAULTY",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An HTTP/1.0 message is refused for its version before its fields are weighed.",
+          "disposition": "NotApplicable",
+          "reason": "HTTP/1.0 is not spoken here. The parser accepts one version on the request line and one on the status line, and anything else is a typed unsupported-version error before a message exists, so the conditional this clause opens with cannot arise."
+        },
+        {
+          "id": "RFC9112-6.2-MUST-NOT-CONTENT-LENGTH-WITH-TRANSFER-ENCODING",
+          "section": "6.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The two together are a typed conflict on the way in, and on the way out the encoder writes exactly one framing field and refuses a caller-supplied one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "finish_explicit_framing"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "ConflictingMessageLength"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "transfer_encoding_and_content_length_conflict_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-IGNORE-LENGTH-FIELDS-IN-BODYLESS-RESPONSE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A status or method that cannot carry a body fixes the framing before any Content-Length or Transfer-Encoding field is consulted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "response_has_no_http_body"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "finish_response_framing"}
+          ],
+          "tests": [
+            {"path": "test/http1_response_head_test.gleam", "symbol": "head_and_bodyless_statuses_never_consume_a_message_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-INTERMEDIARY-REMOVES-CONTENT-LENGTH",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A forwarding intermediary removes the Content-Length it received and processes the transfer coding.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-6.3-MUST-CHUNKED-NOT-FINAL-IS-UNDETERMINED",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Any Transfer-Encoding other than a single chunked is refused outright, which is stricter than treating the length as undetermined.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "analyse_non_content_length_field"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "InvalidTransferEncoding"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "unsupported_transfer_coding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-INVALID-CONTENT-LENGTH-IS-INVALID-FRAMING",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A Content-Length that is not a single decimal value, or two of them even when they agree, is a typed framing error rather than a guessed length.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "analyse_content_length_field"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_content_length"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "DuplicateContentLength"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "InvalidContentLength"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "duplicate_content_length_is_rejected_even_when_equal_test"},
+            {"path": "test/http1_request_head_test.gleam", "symbol": "non_decimal_content_length_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-SERVER-400-AND-CLOSE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An unrecoverable framing error in a request is a 400 followed by a close, before any handler is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-PROXY-CLOSES-AND-SENDS-502",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy receiving such a response closes the upstream connection, discards it, and answers 502.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-6.3-MUST-CLIENT-CLOSES-AND-DISCARDS",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A framing error in a response fails the exchange with a typed error and closes the connection rather than returning what was read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "invalid_streamed_body_closes_the_connection_at_the_failure_site_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-TREAT-SHORT-BODY-AS-INCOMPLETE",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A fixed-length body that ends early is incomplete rather than complete: the decoder requires every declared octet before it finishes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "feed_fixed"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "finish"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "fixed_length_requires_all_declared_bytes_before_eof_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-SHOULD-DISTRUST-CLOSE-DELIMITED-COMPLETION",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A close-delimited body completes only at end of stream, and that is the only signal it has; the exchange records the framing so a caller can see which kind it read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "feed_close_delimited"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "finish"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "close_delimited_stream_completes_only_at_eof_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-SHOULD-CLIENT-SENDS-CONTENT-LENGTH",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A request with a known body carries a Content-Length computed from it; chunked is used only when the caller streams.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_head_preserves_unknown_method_and_headers_and_adds_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-CLIENT-SENDS-LENGTH-OR-CHUNKED",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every request with a body carries one of the two, because the encoder writes the framing field itself and refuses a caller-supplied one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "add_framing_header"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "reserved_framing_header"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "caller_cannot_supply_message_length_headers_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-NOT-CHUNKED-WITHOUT-KNOWLEDGE",
+          "section": "6.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The connection is HTTP/1.1 by construction, so chunked is only ever sent where it is acceptable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "chunk"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "chunked_request_informational_response_and_trailers_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-6.3-MUST-NOT-PROCESS-EXTRA-DATA-AS-RESPONSE",
+          "section": "6.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Bytes past the declared length belong to the next message on the connection and are returned as such rather than parsed as a second response.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "feed"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decoded_data"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "content_length_streams_and_returns_next_message_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1-MUST-PARSE-AND-DECODE-CHUNKED",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The chunked decoder is the one body path every recipient here uses for that coding, and it emits data as it arrives rather than at the end.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunked"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunk_data"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "chunked_body_emits_available_data_before_waiting_for_more_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1-MUST-BOUND-CHUNK-SIZE-PARSING",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A chunk size is parsed against an explicit bound and a declared total is refused before its data is retained, so a large hexadecimal numeral fails rather than overflowing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "parse_chunk_size"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "parse_hexadecimal"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "retain_chunk_size"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "declared_chunk_total_is_rejected_before_retaining_its_data_test"},
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "malformed_chunk_size_and_terminator_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1-SHOULD-TREAT-CHUNK-SIZE-PARAMETERS-AS-ERROR",
+          "section": "7.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A chunk size line that is not a hexadecimal numeral followed by well-formed extensions is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "valid_chunk_extension"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "parse_chunk_size"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "malformed_chunk_extensions_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1.1-MUST-IGNORE-UNRECOGNIZED-EXTENSIONS",
+          "section": "7.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An extension is validated for syntax and then skipped: no extension name is recognized, so none can change how a chunk is read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "skip_chunk_extension_value"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "finish_chunk_extension"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "chunk_extensions_accept_bws_tokens_and_escaped_quoted_strings_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1.2-MUST-KEEP-TRAILERS-SEPARATE",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Trailer fields are returned as their own block rather than appended to the header section.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "decode_chunk_trailers"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "valid_trailers"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "chunked_body_is_incremental_and_preserves_trailers_and_remainder_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.1.2-MUST-NOT-MERGE-FORBIDDEN-TRAILERS",
+          "section": "7.1.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A trailer naming a framing, routing, authentication, or content-metadata field is refused outright rather than merged anywhere.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "forbidden_trailer"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "valid_trailers"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "forbidden_framing_trailer_is_rejected_test"},
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "authentication_and_content_metadata_trailers_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.2-SHOULD-TREAT-COMPRESSION-PARAMETERS-AS-ERROR",
+          "section": "7.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A transfer coding other than a bare chunked is refused, parameters or not.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "analyse_non_content_length_field"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "unsupported_transfer_coding_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.3-MUST-REGISTRATION-INCLUDES-FIELDS",
+          "section": "7.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A transfer coding registration includes the stated fields.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no transfer coding: it implements chunked, which this document defines, and refuses every other name."
+        },
+        {
+          "id": "RFC9112-7.3-MUST-NOT-OVERLAP-CONTENT-CODING-NAMES",
+          "section": "7.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A transfer coding name does not collide with a content coding name.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no transfer coding: it implements chunked, which this document defines, and refuses every other name."
+        },
+        {
+          "id": "RFC9112-7.3-SHOULD-NOT-DEFINE-Q-PARAMETER",
+          "section": "7.3",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "A future registration avoids a parameter named q.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no transfer coding: it implements chunked, which this document defines, and refuses every other name."
+        },
+        {
+          "id": "RFC9112-7.3-MUST-CONFORM-TO-TRANSFER-CODING-PURPOSE",
+          "section": "7.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registered value conforms to the purpose of a transfer coding.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no transfer coding: it implements chunked, which this document defines, and refuses every other name."
+        },
+        {
+          "id": "RFC9112-7.4-MUST-NOT-CHUNKED-IN-TE",
+          "section": "7.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No TE field is generated at all, so chunked cannot be named in one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_header_lines"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "request"}
+          ],
+          "tests": [
+            {"path": "test/http1_encode_test.gleam", "symbol": "request_head_preserves_unknown_method_and_headers_and_adds_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-7.4-MUST-TE-REQUIRES-CONNECTION-OPTION",
+          "section": "7.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A sender of TE also names it in the Connection field.",
+          "disposition": "NotApplicable",
+          "reason": "No TE field is generated here. The client asks for no transfer coding beyond the chunked that is always acceptable, so the connection option this clause pairs with it has nothing to accompany."
+        },
+        {
+          "id": "RFC9112-8-MUST-TREAT-INCOMPLETE-RESPONSE-AS-INCOMPLETE",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A body that ends before its framing says it should is a typed incomplete-message error rather than a short success.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "finish"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "feed_fixed"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "fixed_length_requires_all_declared_bytes_before_eof_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.2-MUST-TRACK-OUTSTANDING-REQUESTS",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "One exchange owns its connection for its lifetime, so the list of outstanding requests has exactly one entry and the association cannot be lost.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_pool"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.2-MUST-ASSOCIATE-RESPONSES-IN-ORDER",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Order cannot be confused where there is one request in flight; a pooled connection is handed to the next exchange only after the previous one has finished with it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_pool"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.2-MUST-NOT-TREAT-UNSOLICITED-DATA-AS-RESPONSE",
+          "section": "9.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response is read only while an exchange is waiting for one; a connection with nothing outstanding is not being read from at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "invalid_streamed_body_closes_the_connection_at_the_failure_site_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.2-SHOULD-CLOSE-ON-UNSOLICITED-DATA",
+          "section": "9.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A connection whose exchange has ended is closed or returned to the pool rather than left open reading, so unexpected data ends it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "without_pool"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "invalid_streamed_body_closes_the_connection_at_the_failure_site_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-SHOULD-SUPPORT-PERSISTENT-CONNECTIONS",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Both sides keep connections: the client pools them between exchanges and the server reads the next request on the same connection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_pool"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "pipelined_requests_are_answered_in_wire_order_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-MUST-CLIENT-SENDS-CLOSE-WHEN-UNSUPPORTED",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An exchange that will not reuse its connection says so: the close option is added to the request when pooling is off or the connection is not reusable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "without_pool"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-MUST-SERVER-SENDS-CLOSE-WHEN-UNSUPPORTED",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response this server will not follow with another carries the close option, including every error response it sends before closing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-MUST-SERVER-READS-BODY-OR-CLOSES",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A handler that does not read the request body leaves the connection unusable for another message, and the server closes it rather than looking for the next request in the unread bytes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "rejected_connect_closes_and_never_dispatches_pipelined_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-MUST-CLIENT-READS-BODY-BEFORE-REUSE",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A connection goes back to the pool only when its response body was read to completion; otherwise it is closed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "declared_response_body_over_the_endpoint_limit_is_typed_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3-MUST-NOT-PERSIST-WITH-HTTP-1.0-CLIENT",
+          "section": "9.3",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "A proxy does not hold a persistent connection with an HTTP/1.0 client.",
+          "disposition": "NotApplicable",
+          "reason": "HTTP/1.0 is not spoken here. The parser accepts one version on the request line and one on the status line, and anything else is a typed unsupported-version error before a message exists, so the conditional this clause opens with cannot arise."
+        },
+        {
+          "id": "RFC9112-9.3.2-MUST-RESPOND-IN-REQUEST-ORDER",
+          "section": "9.3.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Pipelined requests are answered in the order they arrived, which is pinned by a test that sends several at once.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "pipelined_requests_are_answered_in_wire_order_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.3.2-SHOULD-RETRY-UNANSWERED-PIPELINED-REQUESTS",
+          "section": "9.3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client retries the requests a failed connection left unanswered.",
+          "disposition": "NotApplicable",
+          "reason": "This client does not pipeline. One exchange owns its connection until it finishes, so a connection failure leaves exactly one request unanswered and that failure is returned to the caller rather than retried behind its back."
+        },
+        {
+          "id": "RFC9112-9.3.2-MUST-NOT-PIPELINE-IMMEDIATELY-AFTER-FAILURE",
+          "section": "9.3.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A retry after a failed connection is not itself pipelined.",
+          "disposition": "NotApplicable",
+          "reason": "This client does not pipeline. There is one request in flight per connection, so no sequence of requests can be replayed onto a new one."
+        },
+        {
+          "id": "RFC9112-9.3.2-SHOULD-NOT-PIPELINE-AFTER-NON-IDEMPOTENT",
+          "section": "9.3.2",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A user agent does not pipeline past a non-idempotent method until its response arrives.",
+          "disposition": "NotApplicable",
+          "reason": "This client does not pipeline. Nothing is sent on a connection until the previous exchange on it has completed, whatever method it used."
+        },
+        {
+          "id": "RFC9112-9.3.2-SHOULD-FORWARD-THEN-CLOSE-AT-INTERMEDIARY",
+          "section": "9.3.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A pipelining intermediary forwards what it received and then closes the outbound connections.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. The client can be pointed at a forward proxy and the server answers requests it is given, but no path in this package receives a message and relays it onward, so there is nothing for a clause about forwarding to bind."
+        },
+        {
+          "id": "RFC9112-9.5-SHOULD-GRACEFUL-CLOSE-ON-TIMEOUT",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A timeout closes the connection through the same shutdown path a normal close uses rather than abandoning the socket.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "with_idle_timeout"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "stop"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "stalled_response_source_is_timed_out_cancelled_and_isolated_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.5-SHOULD-MONITOR-FOR-CLOSURE",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Connections are read continuously while they are open, so a peer's close is observed as it happens rather than at the next write.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "snapshot"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "request_write_half_close_still_allows_the_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.5-SHOULD-SUSTAIN-PERSISTENT-CONNECTIONS",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A connection is kept for the next request unless something about the exchange made it unusable, with its own idle bound rather than a per-request one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "with_idle_timeout"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "with_connection_limits"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "pipelined_requests_are_answered_in_wire_order_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.5-SHOULD-MONITOR-WHILE-SENDING-BODY",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The exchange watches for a response while it is still writing a request body, which is what lets an early error response end the write.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_timeouts"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "expect_continue_defers_the_request_body_until_the_100_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.5-SHOULD-STOP-SENDING-ON-ERROR-RESPONSE",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An error response while the body is going out ends the exchange and closes the connection rather than finishing the write into a socket nobody is reading.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "invalid_streamed_body_closes_the_connection_at_the_failure_site_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-SHOULD-SEND-CLOSE-WHEN-INTENDING-TO-CLOSE",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Both sides announce it: the client adds the close option when it will not reuse the connection, and the server adds it to the last response it will send.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "without_pool"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-NOT-CLIENT-SENDS-MORE-AFTER-CLOSE",
+          "section": "9.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The exchange that announced the close is the last one on that connection: it is not returned to the pool.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "without_pool"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-CLIENT-CLOSES-AFTER-FINAL-RESPONSE",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "It closes the connection once that response has been read, through the guard that claims the close exactly once.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-SERVER-CLOSES-AFTER-RECEIVED-CLOSE",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A request carrying the close option ends the connection after its response, which the server reads from the request's Connection field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "header_contains_token"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "pipelined_requests_are_answered_in_wire_order_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-SHOULD-SERVER-ECHOES-CLOSE",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "That final response carries the close option itself.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "string_headers_contain_token"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-NOT-SERVER-PROCESSES-FURTHER-REQUESTS",
+          "section": "9.6",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Bytes already buffered after a request that ends the connection are discarded rather than dispatched, which a test pins with pipelined bytes behind a rejected CONNECT.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "rejected_connect_closes_and_never_dispatches_pipelined_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-SERVER-CLOSES-AFTER-SENDING-CLOSE",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A response carrying the close option is followed by the close rather than by another read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "malformed_framing_is_rejected_before_any_handler_runs_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-NOT-SERVER-PROCESSES-AFTER-SENDING-CLOSE",
+          "section": "9.6",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Nothing further is read from that connection: the close happens at the same place the response is written.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "send_simple_error"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "rejected_connect_closes_and_never_dispatches_pipelined_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-MUST-CLIENT-CEASES-ON-RECEIVED-CLOSE",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response carrying the close option keeps its connection out of the pool, so no later exchange can pick it up.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "header_contains_token"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.6-SHOULD-NOT-CLIENT-REUSES-AFTER-CLOSE",
+          "section": "9.6",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "Such a connection is never offered for reuse, which is the same mechanism rather than a separate check.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_pool"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "plain_request_and_incremental_response_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.7-MUST-SEND-HTTP-AS-TLS-APPLICATION-DATA",
+          "section": "9.7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A secured connection carries the same byte stream the cleartext one does, written through the TLS socket as application data with no separate record framing of this package's own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "with_ca_certificates"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run_presecured"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "authenticated_https_uses_the_same_bounded_exchange_path_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.8-SHOULD-TREAT-RECEIVED-RESPONSES-AS-COMPLETE",
+          "section": "9.8",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A response whose framing completed is complete whatever happens to the connection afterwards; only a body that had not finished is an incomplete-message error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "finish"},
+            {"path": "src/http/internal/http1/body.gleam", "symbol": "feed_close_delimited"}
+          ],
+          "tests": [
+            {"path": "test/http1_body_decoder_test.gleam", "symbol": "close_delimited_stream_completes_only_at_eof_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.8-SHOULD-RECOVER-FROM-INCOMPLETE-CLOSE",
+          "section": "9.8",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An incomplete close ends that connection with a typed error and leaves the client able to make another; nothing about it is retained.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "invalid_streamed_body_closes_the_connection_at_the_failure_site_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.8-MUST-CLIENT-SENDS-CLOSURE-ALERT",
+          "section": "9.8",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A secured connection is closed through the TLS shutdown path, which sends the closure alert, rather than by dropping the socket.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "run_presecured"},
+            {"path": "src/http/internal/http1/exchange.gleam", "symbol": "claim_connection_close"}
+          ],
+          "tests": [
+            {"path": "test/http1_exchange_test.gleam", "symbol": "authenticated_https_uses_the_same_bounded_exchange_path_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.8-SHOULD-SERVER-TOLERATES-INCOMPLETE-CLOSE",
+          "section": "9.8",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A connection that ends without a closure alert is an ordinary end of stream here: the request that was in flight fails and the listener carries on.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "listen"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "premature_request_eof_is_a_400_and_the_listener_recovers_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-9.8-MUST-SERVER-ATTEMPTS-CLOSURE-ALERT",
+          "section": "9.8",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server closes a secured connection through the TLS shutdown path, which attempts the alert exchange, on the drain path as on the per-connection one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "drain"},
+            {"path": "src/http/internal/http1/server.gleam", "symbol": "stop"}
+          ],
+          "tests": [
+            {"path": "test/http1_server_test.gleam", "symbol": "tls_listener_populates_verified_protocol_context_test"}
+          ]
+        },
+        {
+          "id": "RFC9112-10.1-MUST-UNFOLD-IN-MESSAGE-HTTP",
+          "section": "10.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A recipient of message/http data replaces obsolete line folding with spaces when it consumes it.",
+          "disposition": "NotApplicable",
+          "reason": "The message/http media type is not implemented. Nothing here parses an HTTP message out of a message body: a body is bytes to this package, and the only messages it parses come off a connection."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 4,
+        "entries": [
+          {
+            "id": 7214,
+            "section": "1.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have changed an ABNF cross-reference in the syntax notation section. The grammar this parser implements is the published one, and the reference named is to a rule it reads the same way under either text."
+          },
+          {
+            "id": 7633,
+            "section": "2.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction concerned how the message parsing prose describes line terminators. This parser validates every line ending across the whole head before splitting it and refuses a bare carriage return or line feed outright, which satisfies the published text and the proposed one alike."
+          },
+          {
+            "id": 7744,
+            "section": "1.2",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "An editorial correction to the syntax notation section's own wording. It changes no rule this parser implements."
+          },
+          {
+            "id": 8284,
+            "section": "C.3",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "An editorial correction inside the appendix that collects changes from RFC 7230. It states nothing normative and changes nothing here."
+          }
+        ]
+      }
+    },
     {"id":"RFC9113","title":"HTTP/2","map_complete":false,"evidence":["src/http/internal/http2/connection.gleam","test/http2_connection_test.gleam"]},
     {"id":"RFC9114","title":"HTTP/3","map_complete":false,"evidence":["packages/http3/src/http3/internal/native/connection_state.gleam","packages/http3/test/native/http3_connection_state_test.gleam"]},
     {
