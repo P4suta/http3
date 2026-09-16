@@ -356,3 +356,9 @@
 - Honoured `Cache-Control: no-store` on a request, which RFC 9111 section
   5.2.1.5 requires: the directive was unread, so a response to a request that
   forbade storing anything about it was stored like any other.
+- Held every HTTP message signature component value to the characters RFC 9421
+  sections 2 and 2.2 allow it. A derived value is now printable ASCII and a
+  field value ASCII with tab, so neither can carry the newline that would write
+  an attacker-chosen line into the signature base; the authority and the scheme
+  must also arrive normalized, rather than a default port or an uppercase host
+  being signed as though it were the canonical form.
