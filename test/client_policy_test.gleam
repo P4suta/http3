@@ -329,3 +329,72 @@ pub fn an_expires_attribute_sets_the_cookie_lifetime_test() -> Nil {
     )
   assert unparsable.expires_at == monotonic + 86_400_000
 }
+
+pub fn a_request_that_forbids_storage_is_not_stored_test() -> Nil {
+  // RFC 9111 section 5.2.1.5: a request carrying no-store means no part of it
+  // or of any response to it is stored, in a private cache as much as a shared
+  // one.
+  let outgoing =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [#("cache-control", "no-store")],
+      body: Nil,
+      scheme: gleam_http.Https,
+      host: "example.com",
+      port: None,
+      path: "/resource",
+      query: None,
+    )
+  let incoming =
+    response.Response(
+      status: 200,
+      headers: [#("cache-control", "max-age=600")],
+      body: Nil,
+    )
+  assert cache.key(outgoing) == None
+  assert cache.entry(outgoing, incoming, <<"body":utf8>>, [], 1000) == None
+
+  // The same request without the directive is cacheable, so the refusal is the
+  // directive's doing and not the request's shape.
+  let storable = request.Request(..outgoing, headers: [])
+  assert cache.key(storable) != None
+  assert cache.entry(storable, incoming, <<"body":utf8>>, [], 1000) != None
+
+  // A no-cache request still stores; it governs reuse, not storage.
+  let revalidating =
+    request.Request(..outgoing, headers: [#("cache-control", "no-cache")])
+  assert cache.entry(revalidating, incoming, <<"body":utf8>>, [], 1000) != None
+}
+
+pub fn an_unsafe_method_invalidates_the_stored_response_test() -> Nil {
+  // RFC 9111 section 4.4: a non-error answer to an unsafe request invalidates
+  // the target URI, so the next read does not serve what the write replaced.
+  let read =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: Nil,
+      scheme: gleam_http.Https,
+      host: "example.com",
+      port: None,
+      path: "/resource",
+      query: None,
+    )
+  let write = request.Request(..read, method: gleam_http.Post)
+
+  let assert Some(key) = cache.key(read)
+  assert cache.invalidated_key(write, 200) == Some(key)
+  assert cache.invalidated_key(write, 204) == Some(key)
+
+  // An error answer changes nothing, so it invalidates nothing.
+  assert cache.invalidated_key(write, 500) == None
+  assert cache.invalidated_key(write, 404) == None
+
+  // A safe method invalidates nothing either, whatever it answered.
+  assert cache.invalidated_key(read, 200) == None
+
+  // The key is the exact origin and target, so one origin's write cannot
+  // invalidate another's entry.
+  let elsewhere = request.Request(..write, host: "other.example")
+  assert cache.invalidated_key(elsewhere, 200) != Some(key)
+}
