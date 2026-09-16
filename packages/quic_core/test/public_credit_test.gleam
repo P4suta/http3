@@ -508,8 +508,19 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
   assert junk_done == Ok(Nil)
   assert settled == Ok(Nil)
   assert result.is_ok(identifier)
-  // The flood was observed while it was actually in the actor's mailbox.
-  assert peak.deliveries > 0
+  // What proves the flood happened and that the window is what held it is the
+  // drop count, not the sampler. A refused datagram is one the listener would
+  // not hand over because this connection's window had no room, so a nonzero
+  // count says the window filled and did its work. That count only grows, so
+  // reading it is a fact about the run rather than about the instant it was
+  // read.
+  //
+  // The peak readings below are upper bounds on the same window, taken by
+  // polling the actor's mailbox from outside. A poll can miss a mailbox that
+  // drains between two samples, so a zero reading means the sampler saw
+  // nothing, never that the bound was exceeded; asserting that it saw
+  // something would be asserting about the scheduler.
+  assert result.map(dropped, fn(count) { count > 0 }) == Ok(True)
   // The byte half is what holds this flood. The whole mailbox never carried
   // more than one window of bytes, which thirty-two oversized datagrams
   // already fill, so a single message was admitted far fewer datagrams than
@@ -518,7 +529,6 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
   assert peak.bytes <= byte_credit()
   assert peak.largest < datagram_credit()
   assert peak.datagrams <= datagram_credit()
-  assert result.map(dropped, fn(count) { count > 0 }) == Ok(True)
   assert stopped == Ok(server.Stopped)
 }
 
