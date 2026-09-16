@@ -4406,7 +4406,773 @@
     {"id":"RFC9112","title":"HTTP/1.1","map_complete":false,"evidence":["src/http/internal/http1.gleam","test/http1_request_head_test.gleam"]},
     {"id":"RFC9113","title":"HTTP/2","map_complete":false,"evidence":["src/http/internal/http2/connection.gleam","test/http2_connection_test.gleam"]},
     {"id":"RFC9114","title":"HTTP/3","map_complete":false,"evidence":["packages/http3/src/http3/internal/native/connection_state.gleam","packages/http3/test/native/http3_connection_state_test.gleam"]},
-    {"id":"RFC9180","title":"Hybrid Public Key Encryption","map_complete":false,"evidence":["src/http/ohttp.gleam","test/ohttp_test.gleam"]},
+    {
+      "id": "RFC9180",
+      "title": "Hybrid Public Key Encryption",
+      "map_complete": true,
+      "evidence": [
+        "src/http/ohttp.gleam",
+        "src/http_ohttp_ffi.erl",
+        "test/ohttp_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9180.txt",
+        "document_sha256": "f45a8b7c30231b26d668b1e8168074e5ab514b174d656b67e859895117f1f8f6",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9180",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 54,
+        "level_counts": {
+          "SHOULD": 12,
+          "MUST": 37,
+          "MUST NOT": 4,
+          "RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9180-4-SHOULD-DERIVE-FROM-SUFFICIENT-ENTROPY",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "Key material carries at least as many bytes of entropy as a private key needs, which here is thirty-two drawn from the platform generator for every encapsulation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "random_bytes"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-4-MUST-PREFIX-A-KEM-SUITE-IDENTIFIER",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A labeled derivation inside the KEM uses a suite identifier beginning with KEM followed by that KEM's identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_extract"},
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_expand"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-4-MUST-PREFIX-AN-HPKE-SUITE-IDENTIFIER",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A labeled derivation outside the KEM uses a suite identifier beginning with HPKE followed by the KEM, KDF, and AEAD identifiers.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_extract"},
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_expand"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-4.1-MUST-USE-THE-MATCHING-KDF-CONSTANTS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The KDF constants and calls used inside the KEM are that KEM's own, and the ones outside it are the ciphersuite's, rather than one standing in for the other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_extract"},
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_expand"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "hkdf_extract"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "hkdf_expand"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-4.1-MUST-VALIDATE-KEM-INPUTS-AND-OUTPUTS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Every KEM input and output is validated before use: a public key of the wrong length or all zeroes is refused, and so is an all-zero Diffie-Hellman result.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_public"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-5-MUST-STATE-FUTURE-KEM-MODE-SUPPORT",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A specification defining a new KEM states whether the authenticated modes are supported for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-5.1-MUST-VALIDATE-KEM-INPUTS-AND-OUTPUTS",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The same KEM input and output validation applies on the encryption path as on the decryption one, for the sender as well as the recipient.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-5.1-MUST-PAIR-PSK-WITH-ITS-IDENTIFIER",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The psk and psk_id inputs are supplied together or not at all.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.1-MUST-SET-BOTH-PSK-FIELDS-TOGETHER",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A non-default value for one of psk and psk_id requires a non-default value for the other.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.1.2-MUST-REQUIRE-PSK-ENTROPY",
+          "section": "5.1.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in PSK mode carries at least thirty-two bytes of entropy.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.1.2-SHOULD-SIZE-THE-PSK-AT-NH",
+          "section": "5.1.2",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in PSK mode is Nh bytes long or longer.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.1.4-MUST-REQUIRE-AUTHPSK-ENTROPY",
+          "section": "5.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in AuthPSK mode carries at least thirty-two bytes of entropy.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.1.4-SHOULD-SIZE-THE-AUTHPSK-AT-NH",
+          "section": "5.1.4",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in AuthPSK mode is Nh bytes long or longer.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-5.2-MUST-ERROR-ON-A-SHORT-SEQUENCE-OVERFLOW",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "An implementation using a sequence number shorter than the nonce raises an error rather than wrapping when it would overflow.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-5.2-MUST-NOT-DECRYPT-WITH-A-SENDER-CONTEXT",
+          "section": "5.2",
+          "level": "MUST NOT",
+          "roles": ["client", "gateway"],
+          "summary": "A sender's context is never used to decrypt: the two roles are separate opaque types, so the mistake does not compile.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_response_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_response_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-5.2-MUST-NOT-ENCRYPT-WITH-A-RECIPIENT-CONTEXT",
+          "section": "5.2",
+          "level": "MUST NOT",
+          "roles": ["client", "gateway"],
+          "summary": "A recipient's context is never used to encrypt, for the same reason: the client and gateway contexts are distinct types and each function takes only its own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_response_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_response_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-5.2-MUST-FAIL-ON-SEQUENCE-OVERFLOW",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Seal or Open fails with an error rather than reusing a nonce when the sequence number would overflow.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-5.3-MUST-BOUND-L-FOR-FUTURE-KDFS",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A specification defining a new KDF states a bound for the expansion length L.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-7.1.1-MUST-VALIDATE-DESERIALIZED-PUBLIC-KEYS",
+          "section": "7.1.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A public key read off the wire is validated before use: its length is fixed at decode and an all-zero key is refused before any Diffie-Hellman is attempted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configuration"},
+            {"path": "src/http/ohttp.gleam", "symbol": "parse_encapsulated_request"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.2-MUST-REFUSE-AN-OUT-OF-RANGE-PRIVATE-KEY",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A private key that is an integer outside the curve order's range is refused.",
+          "disposition": "NotApplicable",
+          "reason": "This is a rule for the NIST-curve DHKEMs. The only KEM active here is DHKEM(X25519, HKDF-SHA256), and an identifier for any other is refused when the key configuration is decoded rather than substituted."
+        },
+        {
+          "id": "RFC9180-7.1.2-MUST-CLAMP-ON-SERIALIZATION",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Serializing an X25519 private key clamps it, which the platform primitive does on every use of one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_public"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.2-MUST-CLAMP-ON-DESERIALIZATION",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Deserializing an X25519 private key clamps it, so a key supplied in any form is used in its clamped shape.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_public"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"},
+            {"path": "src/http/ohttp.gleam", "symbol": "gateway_key"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.2-SHOULD-REJECT-A-ZERO-PRIVATE-KEY",
+          "section": "7.1.2",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "A deserialized private key equivalent to zero is caught early, which clamping guarantees for this curve because it always sets a high bit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_public"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.3-SHOULD-SIZE-IKM-AT-NSK",
+          "section": "7.1.3",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "Key material passed to derivation is at least as long as a private key, which here is exactly the thirty-two bytes an X25519 key needs.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "deterministic_client"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.3-SHOULD-DRAW-NSK-BYTES-OF-ENTROPY",
+          "section": "7.1.3",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "That key material carries a private key's worth of entropy, drawn from the platform's strong generator rather than derived from anything reused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-VALIDATE-THE-RECIPIENT-KEY",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The sender validates the recipient's public key before encapsulating to it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configuration"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-VALIDATE-THE-ENCAPSULATED-KEY",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The recipient validates the encapsulated key it was sent before deriving anything from it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "parse_encapsulated_request"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-VALIDATE-THE-SENDER-KEY",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Where a mode carries a sender public key, that key is validated on the same terms as the others.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"},
+            {"path": "src/http/ohttp.gleam", "symbol": "open_request_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-PARTIALLY-VALIDATE-NIST-KEYS",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Public keys on P-256, P-384, and P-521 undergo partial public key validation.",
+          "disposition": "NotApplicable",
+          "reason": "This is a rule for the NIST-curve DHKEMs. The only KEM active here is DHKEM(X25519, HKDF-SHA256), and an identifier for any other is refused when the key configuration is decoded rather than substituted."
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-REJECT-THE-POINT-AT-INFINITY",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A Diffie-Hellman result that is the point at infinity is refused on the NIST curves.",
+          "disposition": "NotApplicable",
+          "reason": "This is a rule for the NIST-curve DHKEMs. The only KEM active here is DHKEM(X25519, HKDF-SHA256), and an identifier for any other is refused when the key configuration is decoded rather than substituted."
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-VALIDATE-X25519-PER-RFC7748",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "X25519 public keys and Diffie-Hellman outputs are validated as RFC 7748 requires, which is what the all-zero checks on both sides implement.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_public"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.4-MUST-ABORT-ON-AN-ALL-ZERO-SHARED-SECRET",
+          "section": "7.1.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A Diffie-Hellman shared secret of all zeroes aborts the operation instead of being carried into the key schedule, which is what a low-order peer key produces.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "x25519_shared"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "bhttp_padding_tamper_and_target_policy_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-7.1.5-MUST-STATE-FUTURE-AUTH-SUPPORT",
+          "section": "7.1.5",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A specification defining a new KEM states whether Auth and AuthPSK modes are supported for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-7.1.5-MUST-SPECIFY-ONE-ENCODING-OF-LENGTH-NPK",
+          "section": "7.1.5",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Such a KEM specifies exactly one public key encoding, whose output length is Npk.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-7.2.1-MUST-BOUND-FUTURE-KDF-PARAMETERS",
+          "section": "7.2.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A specification defining a new KDF states bounds for its variable-length parameters.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-7.2.1-RECOMMENDED-SIXTY-FOUR-BYTE-LIMIT",
+          "section": "7.2.1",
+          "level": "RECOMMENDED",
+          "roles": ["client", "gateway"],
+          "summary": "The variable-length parameters stay within the recommended sixty-four bytes, which they do here because every label and info value is a fixed short constant.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_extract"},
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_expand"},
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.1.1-SHOULD-RESIST-KEY-COMPROMISE-IMPERSONATION",
+          "section": "9.1.1",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "An application needing resistance to key-compromise impersonation takes further steps beyond what the mode gives.",
+          "disposition": "NotApplicable",
+          "reason": "The attack the section describes is on the authenticated modes, where a compromised recipient key lets an attacker forge a sender. Base mode authenticates no sender at all, so there is no sender identity for a compromised key to impersonate; what the gateway does authenticate, the target authority, is checked against an exact allowlist after decapsulation."
+        },
+        {
+          "id": "RFC9180-9.2-MUST-USE-A-KEM-THAT-SUPPORTS-THE-PROPERTIES",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The KEM in use is one HPKE's security analysis covers, and no other identifier is accepted in its place.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_key_configuration"},
+            {"path": "src/http/ohttp.gleam", "symbol": "validate_configuration"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.2-MUST-PRODUCE-A-UNIFORM-SHARED-SECRET",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "The KEM shared secret is a uniformly random string of the KEM's own length, produced by extracting and expanding the Diffie-Hellman result rather than using it directly.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_extract"},
+            {"path": "src/http/ohttp.gleam", "symbol": "labeled_expand"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.2.3-MUST-NOT-REUSE-DERIVATION-KEY-MATERIAL",
+          "section": "9.2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "gateway"],
+          "summary": "Key material given to a derivation is not reused anywhere else, least of all across KEMs.",
+          "disposition": "NotApplicable",
+          "reason": "No derivation from supplied key material happens here: an ephemeral key is generated directly from the platform's strong generator for each encapsulation, and a gateway key is supplied whole rather than derived. There is no ikm to reuse."
+        },
+        {
+          "id": "RFC9180-9.2.3-MUST-NOT-REUSE-ENCAPSULATION-RANDOMNESS",
+          "section": "9.2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "gateway"],
+          "summary": "The randomness behind one encapsulation is never reused for another, because each sealing draws its own from the platform generator.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "seal_request_bytes"},
+            {"path": "src/http/ohttp.gleam", "symbol": "client"},
+            {"path": "src/http/ohttp.gleam", "symbol": "deterministic_client"},
+            {"path": "src/http_ohttp_ffi.erl", "symbol": "random_bytes"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.3-SHOULD-MATCH-THE-KDF-TO-THE-KEM",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "The KDF is chosen for the security level the KEM provides, which here is HKDF-SHA256 alongside DHKEM(X25519, HKDF-SHA256).",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "validate_configuration"},
+            {"path": "src/http/ohttp.gleam", "symbol": "select_algorithm"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.3-SHOULD-MEET-THE-KEM-SECURITY-LEVEL",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "The KDF's security level is at least the KEM's, which HKDF-SHA256 is for this KEM by construction.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "validate_configuration"},
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_algorithms"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.3-SHOULD-MEET-THE-PSK-SECURITY-LEVEL",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "The KDF's security level is at least that of any pre-shared key in use.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-9.4-MUST-USE-AN-IND-CCA2-AEAD",
+          "section": "9.4",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Only the registered AEADs are accepted, and the two implemented are AES-128-GCM and ChaCha20-Poly1305; an unimplemented identifier fails closed rather than falling back.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/ohttp.gleam", "symbol": "decode_algorithms"},
+            {"path": "src/http/ohttp.gleam", "symbol": "select_algorithm"},
+            {"path": "src/http/ohttp.gleam", "symbol": "validate_configuration"}
+          ],
+          "tests": [
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_key_configuration_vector_and_strict_collection_test"},
+            {"path": "test/ohttp_test.gleam", "symbol": "rfc9458_request_and_response_crypto_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9180-9.5-MUST-REQUIRE-PSK-ENTROPY-IN-BOTH-MODES",
+          "section": "9.5",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in either PSK mode carries at least thirty-two bytes of entropy.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-9.5-SHOULD-SIZE-THE-PSK-AT-NH-IN-BOTH-MODES",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "A pre-shared key in either PSK mode is Nh bytes long or longer.",
+          "disposition": "NotApplicable",
+          "reason": "Only base mode is active here. There is no PSK in base mode, so no psk or psk_id field is ever set, carried, or checked for entropy: key_schedule is called with the empty defaults the mode defines and nothing in the API accepts a pre-shared key."
+        },
+        {
+          "id": "RFC9180-9.6-MUST-KEEP-FUTURE-KEM-EXTRACTION-INDEPENDENT",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "A future KEM using the same extraction and expansion internally keeps them modelable as independent functions.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-9.6-MUST-PREVENT-FUTURE-INPUT-COLLISIONS",
+          "section": "9.6",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Inputs to those invocations cannot collide with the ones HPKE makes internally.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the specification that defines a future KEM, KDF, or algorithm, not an implementation of the ones that exist. This package defines none: it implements the registered identifiers it supports and fails closed on every other, never substituting one."
+        },
+        {
+          "id": "RFC9180-9.7.1-MUST-PRESENT-CIPHERTEXTS-IN-ORDER",
+          "section": "9.7.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "Ciphertexts reach Open in the order their Seal produced them.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-9.7.1-MUST-ENFORCE-ORDERING-ACROSS-INVOCATIONS",
+          "section": "9.7.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "An application allowing several Seal or Open calls on one context enforces that ordering itself.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-9.7.1-SHOULD-BIND-ORDERING-INTO-THE-AAD",
+          "section": "9.7.1",
+          "level": "SHOULD",
+          "roles": ["client", "gateway"],
+          "summary": "Whatever determines message order is carried in the associated data so it is authenticated.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-9.7.1-MUST-DETECT-A-LOST-MESSAGE",
+          "section": "9.7.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "An application can tell that a message was lost.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        },
+        {
+          "id": "RFC9180-9.7.1-MUST-DISCARD-THE-CONTEXT-ON-LOSS",
+          "section": "9.7.1",
+          "level": "MUST",
+          "roles": ["client", "gateway"],
+          "summary": "An unrecoverable loss discards the context rather than continuing on it.",
+          "disposition": "NotApplicable",
+          "reason": "A context here encrypts or decrypts exactly one message and is then spent: there is no sequence number in it at all, and the API offers no way to call seal or open on it twice. The ordering, loss detection, and sequence overflow this section governs arise from multiple invocations on one context, which cannot happen."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 8,
+        "entries": [
+          {
+            "id": 6941,
+            "section": "6.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction points the single-shot API description at section 5.1 rather than 5.1.1, so it covers every mode instead of base mode alone. This package uses base mode only and calls the same key schedule the corrected reference names, so the correction changes nothing it does."
+          },
+          {
+            "id": 7121,
+            "section": "Appendix A",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction makes the appendix say that each key pair is written in serialized form and how the serialized names relate to the abstract ones. It clarifies how to read the test vectors; the vectors themselves are unchanged and are the ones this package reproduces."
+          },
+          {
+            "id": 7251,
+            "section": "7.2.1",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The held correction would raise the recommended sixty-four byte limit so that the document's own longer test vector inputs fall inside it. Every label and info value here is a fixed short constant well under either figure, so neither the published limit nor the proposed one binds anything this package sends."
+          },
+          {
+            "id": 7790,
+            "section": "9.1.2",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction names which of the four security notions the cited analysis actually proves for HPKE. It corrects a claim about the authenticated modes in the security considerations, and base mode is the only one active here."
+          },
+          {
+            "id": 7932,
+            "section": "5.2",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction removes a duplicate presentation of the IncrementSeq pseudocode. There is no sequence number in this implementation at all, because a context encrypts exactly one message, so neither copy governs anything here."
+          },
+          {
+            "id": 7933,
+            "section": "5.1",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The held correction asks the key schedule's returned sequence number to be described rather than shown as a bare zero. This implementation carries no sequence number in its context, so the value the correction clarifies does not exist here."
+          },
+          {
+            "id": 7934,
+            "section": "5.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction distinguishes the optional application info string from the internal info used in the key schedule, which the published text left easy to confuse. This package passes one fixed application info and builds the internal value from it exactly as the section specifies, so the clarified reading is the one implemented."
+          },
+          {
+            "id": 7937,
+            "section": "7.1.3",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction supplies the suite identifier that DeriveKeyPair's labeled extraction and expansion use, which the published text omitted. DeriveKeyPair is not used here: an ephemeral key comes straight from the platform generator and a gateway key is supplied whole, so no derivation needs that identifier."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9204",
       "title": "QPACK: Field Compression for HTTP/3",
