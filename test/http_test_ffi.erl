@@ -33,6 +33,7 @@
     stop_udp_echo_server/1,
     stop_exclusive_udp_port_guard/1,
     suspend_system_udp_owner/1,
+    tls_option_cipher_profile/0,
     udp_ecn_echo_snapshot/1,
     udp_loopback_packet/1,
     with_blackhole_first_host/1
@@ -718,6 +719,28 @@ server_credentials() ->
      || {'Certificate', Der, _Encryption} <- public_key:pem_decode(CaPem)
     ],
     {CertificatePem, PrivateKeyPem, CaDer}.
+
+-spec tls_option_cipher_profile() ->
+    {{non_neg_integer(), [binary()], [binary()]},
+     {non_neg_integer(), [binary()], [binary()]}}.
+tls_option_cipher_profile() ->
+    Client = http_transport_ffi:client_tls_options(
+        <<"example.test">>, [], [<<"h2">>]
+    ),
+    Server = http_transport_ffi:server_tls_options(#{}, [<<"h2">>]),
+    {cipher_profile(Client), cipher_profile(Server)}.
+
+-spec cipher_profile([term()]) ->
+    {non_neg_integer(), [binary()], [binary()]}.
+cipher_profile(Options) ->
+    Suites = proplists:get_value(ciphers, Options, []),
+    Names = fun(Key) ->
+        lists:usort([
+            atom_to_binary(maps:get(Key, Suite, undefined), utf8)
+         || Suite <- Suites
+        ])
+    end,
+    {length(Suites), Names(key_exchange), Names(mac)}.
 
 -spec exit_now() -> no_return().
 exit_now() ->

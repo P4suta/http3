@@ -2,6 +2,7 @@
 
 -export([
     accept/2,
+    client_tls_options/3,
     close/1,
     connect/4,
     connect_with_deadlines/6,
@@ -13,6 +14,7 @@
     peer_endpoint/1,
     read/3,
     send/2,
+    server_tls_options/2,
     shutdown_write/1,
     socket_local_endpoint/1,
     stop/1,
@@ -887,6 +889,7 @@ client_tls_options(ServerName, TrustedCertificates, AlpnProtocols) ->
             {match_fun, public_key:pkix_verify_hostname_match_fun(https)}
         ]},
         {versions, ['tlsv1.3', 'tlsv1.2']},
+        {ciphers, forward_secret_cipher_suites()},
         {alpn_advertised_protocols, AlpnProtocols},
         {depth, 10},
         {active, false},
@@ -899,12 +902,48 @@ server_tls_options(CertsKeys, AlpnProtocols) ->
         {certs_keys, [CertsKeys]},
         {verify, verify_none},
         {versions, ['tlsv1.3', 'tlsv1.2']},
+        {ciphers, forward_secret_cipher_suites()},
         {alpn_preferred_protocols, AlpnProtocols},
         {honor_cipher_order, true},
         {reuse_sessions, false},
         {active, false},
         binary
     ].
+
+%% RFC 9325 sections 4.1 and 4.2: a cipher suite built on non-ephemeral
+%% Diffie-Hellman, finite-field or elliptic curve, is not to be negotiated, the
+%% ephemeral finite-field suites are not to be negotiated by a TLS 1.2 peer
+%% either, and forward secrecy is to be supported and preferred. The platform's
+%% default TLS 1.2 list carries static ECDH and TLS_DHE_* suites, so the list is
+%% pinned here rather than inherited. A CBC suite needs the encrypt_then_mac
+%% extension to be safe under section 4.2, which is simpler to satisfy by
+%% carrying no suite that needs it: only AEAD survives. TLS 1.3 spells its own
+%% always-ephemeral key schedule `any`.
+-spec forward_secret_cipher_suites() -> [ssl:erl_cipher_suite()].
+forward_secret_cipher_suites() ->
+    Filters = [
+        {key_exchange, fun(KeyExchange) ->
+            lists:member(KeyExchange, [any, ecdhe_ecdsa, ecdhe_rsa])
+        end},
+        {mac, fun(Mac) -> Mac =:= aead end}
+    ],
+    Offered =
+        ssl:cipher_suites(default, 'tlsv1.3') ++
+            ssl:cipher_suites(default, 'tlsv1.2'),
+    distinct_cipher_suites(ssl:filter_cipher_suites(Offered, Filters), []).
+
+%% The two version lists overlap, and preference is the list order, so the
+%% first occurrence of a suite is the one that is kept.
+-spec distinct_cipher_suites(
+    [ssl:erl_cipher_suite()], [ssl:erl_cipher_suite()]
+) -> [ssl:erl_cipher_suite()].
+distinct_cipher_suites([], Seen) ->
+    lists:reverse(Seen);
+distinct_cipher_suites([Suite | Rest], Seen) ->
+    case lists:member(Suite, Seen) of
+        true -> distinct_cipher_suites(Rest, Seen);
+        false -> distinct_cipher_suites(Rest, [Suite | Seen])
+    end.
 
 -spec valid_server_name(binary()) -> boolean().
 valid_server_name(ServerName) ->

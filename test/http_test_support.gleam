@@ -212,3 +212,11 @@ pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
 /// followed by loopback, restoring the resolver on every exit path.
 @external(erlang, "http_test_ffi", "with_blackhole_first_host")
 pub fn with_blackhole_first_host(body: fn(String) -> value) -> value
+
+/// Return the client and server TLS option cipher profiles: for each side the
+/// number of pinned suites and the distinct key-exchange and MAC names in it.
+@external(erlang, "http_test_ffi", "tls_option_cipher_profile")
+pub fn tls_option_cipher_profile() -> #(
+  #(Int, List(String), List(String)),
+  #(Int, List(String), List(String)),
+)

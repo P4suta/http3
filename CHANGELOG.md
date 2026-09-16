@@ -392,3 +392,9 @@
   the three server protocols did. A handler that sets its own keeps it. The
   field is rendered in the fixed-length format section 5.6.7 prefers, by one
   shared module that is the only place the response path reads a wall clock.
+- Pinned the TLS cipher list on both the client and the server path to the
+  forward-secret AEAD suites. The platform default for TLS 1.2 carries static
+  ECDH and TLS_DHE_* suites, which RFC 9325 section 4.1 says not to negotiate
+  and the first of which offers no forward secrecy at all; inheriting that list
+  offered exactly what the section excludes. TLS 1.3 is unaffected: its own
+  suites are always ephemeral and always AEAD.
