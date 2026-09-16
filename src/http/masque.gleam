@@ -167,6 +167,7 @@ pub type Error {
   RequestIdReused(Int)
   PolicyLimitExceeded(Int)
   DestinationForbidden
+  SourceForbidden
   InvalidIpPacket
   HopLimitExceeded
 }
@@ -978,6 +979,7 @@ pub opaque type ProxyPolicy {
     udp_destinations: List(IpPrefix),
     ip_scopes: List(IpScope),
     destinations: List(DestinationRule),
+    sources: List(IpPrefix),
   )
 }
 
@@ -4283,7 +4285,7 @@ pub fn decode_ip_datagram(
 /// Create an empty finite proxy allowlist.
 pub fn deny_all(limits: Limits) -> Result(ProxyPolicy, Error) {
   use _ <- result.try(validate_limits(limits))
-  Ok(ProxyPolicy(limits, [], [], [], []))
+  Ok(ProxyPolicy(limits, [], [], [], [], []))
 }
 
 /// Add one exact UDP target without wildcard or DNS suffix matching.
@@ -4358,6 +4360,27 @@ pub fn allow_ip_destination(
   }
 }
 
+/// Add one source prefix a peer is allowed to send from.
+///
+/// RFC 9484 section 11 asks for BCP 38 ingress filtering wherever an endpoint
+/// knows the prefix its peer may send from, which it does when it assigned one
+/// in an ADDRESS_ASSIGN capsule or was configured out of band. A policy with no
+/// source prefix is an endpoint that does not know, and it constrains nothing;
+/// the first prefix added makes every source outside it a spoofed one.
+pub fn allow_ip_source(
+  policy: ProxyPolicy,
+  prefix: IpPrefix,
+) -> Result(ProxyPolicy, Error) {
+  use _ <- result.try(validate_prefix(prefix))
+  case list.contains(policy.sources, prefix) {
+    True -> Ok(policy)
+    False -> {
+      use _ <- result.try(require_policy_capacity(policy, 1))
+      Ok(ProxyPolicy(..policy, sources: [prefix, ..policy.sources]))
+    }
+  }
+}
+
 /// Authorize a prepared request. Empty policies always deny.
 pub fn authorize(
   policy: ProxyPolicy,
@@ -4390,6 +4413,10 @@ pub fn forward_ip_packet(
   )
   use parsed <- result.try(parse_ip_packet(packet))
   use #(destination, protocol, hop_limit) <- result.try(packet_routing(parsed))
+  use <- bool.guard(
+    when: !source_allowed(policy.sources, packet_source(parsed)),
+    return: Error(SourceForbidden),
+  )
   use <- bool.guard(
     when: !destination_allowed(policy.destinations, destination, protocol),
     return: Error(DestinationForbidden),
@@ -5070,6 +5097,23 @@ fn require_policy_capacity(
     True -> Error(PolicyLimitExceeded(policy.limits.maximum_policy_rules))
     False -> Ok(Nil)
   }
+}
+
+fn packet_source(packet: ParsedPacket) -> IpAddress {
+  case packet {
+    ParsedIpv4(_, _, _, _, _, _, _, source, _, _, _) -> Ipv4(source)
+    ParsedIpv6(_, _, _, _, _, source, _, _) -> Ipv6(source)
+  }
+}
+
+/// Whether a packet's source is one the peer is allowed to send from.
+///
+/// An empty list is the endpoint that does not know its peer's prefix, so it
+/// admits every source rather than none: unlike the destination rules, these
+/// narrow a policy that is already default-deny on where a packet may go.
+fn source_allowed(prefixes: List(IpPrefix), source: IpAddress) -> Bool {
+  prefixes == []
+  || list.any(prefixes, fn(prefix) { prefix_contains(prefix, source) })
 }
 
 fn destination_allowed(

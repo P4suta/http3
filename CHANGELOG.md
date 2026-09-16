@@ -371,3 +371,8 @@
   characters were refused, so a prefix length longer than its address, a
   length that was not a decimal integer, and an address with bits set below
   its prefix all reached the wire as a scope no proxy can grant.
+- Added `masque.allow_ip_source`, so a CONNECT-IP forwarding policy can carry
+  the prefix its peer is allowed to send from and refuse anything else with
+  the new `SourceForbidden` error. RFC 9484 section 11 asks for BCP 38 ingress
+  filtering wherever an endpoint knows that prefix, and the policy had no way
+  to say it, so a spoofed source was forwarded like any other.

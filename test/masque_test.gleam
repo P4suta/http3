@@ -4140,6 +4140,70 @@ pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
   assert masque.request_path(by_protocol) == "/.well-known/masque/ip/%2A/6/"
 }
 
+pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
+  // RFC 9484 section 11: where an endpoint knows the prefix its peer is allowed
+  // to send from -- because it assigned one in an ADDRESS_ASSIGN capsule, or
+  // because it was configured out of band -- it follows BCP 38 and refuses
+  // anything else. A policy carrying no source prefix is an endpoint that does
+  // not know, and constrains nothing; the first prefix added makes every source
+  // outside it a spoofed one.
+  let packet = <<
+    0x45, 0, 28:size(16), 1:size(16), 0:size(16), 64, 17, 0x8e99:size(16), 192,
+    0, 2, 1, 198, 51, 100, 2, 1, 2, 3, 4, 5, 6, 7, 8,
+  >>
+  let assert Ok(policy) = masque.deny_all(limits())
+  let assert Ok(policy) =
+    masque.allow_ip_destination(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<198, 51, 100, 0>>), 24),
+      Some(17),
+    )
+  let assert Ok(_) = masque.forward_ip_packet(policy, packet, limits())
+
+  let assert Ok(matching) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 0>>), 24),
+    )
+  let assert Ok(_) = masque.forward_ip_packet(matching, packet, limits())
+
+  let assert Ok(elsewhere) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<203, 0, 113, 0>>), 24),
+    )
+  assert masque.forward_ip_packet(elsewhere, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // A prefix in the other address family admits nothing from this one.
+  let assert Ok(other_family) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv6(<<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>), 32),
+    )
+  assert masque.forward_ip_packet(other_family, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // The source is read before the destination, so a spoofed source is refused
+  // as one rather than reported as a forbidden destination.
+  let assert Ok(bare) = masque.deny_all(limits())
+  let assert Ok(bare) =
+    masque.allow_ip_source(
+      bare,
+      masque.IpPrefix(masque.Ipv4(<<203, 0, 113, 0>>), 24),
+    )
+  assert masque.forward_ip_packet(bare, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // A prefix that is not one is refused when the rule is written, not when a
+  // packet arrives.
+  assert masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 1>>), 24),
+    )
+    == Error(masque.InvalidAddress)
+}
+
 pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
   // RFC 9484 section 4.6 gives the "target" variable a grammar -- an IPv6
   // prefix, an IPv4 prefix, a reg-name, or the wildcard -- and three conditions
