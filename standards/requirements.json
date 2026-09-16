@@ -5248,7 +5248,1107 @@
       }
     },
     {"id":"RFC9110","title":"HTTP Semantics","map_complete":false,"evidence":["src/http/client.gleam","test/http_test.gleam"]},
-    {"id":"RFC9111","title":"HTTP Caching","map_complete":false,"evidence":["src/http/internal/cache.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC9111",
+      "title": "HTTP Caching",
+      "map_complete": true,
+      "evidence": [
+        "src/http/internal/cache.gleam",
+        "src/http/client.gleam",
+        "test/client_policy_test.gleam",
+        "test/client_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9111.txt",
+        "document_sha256": "aeb52adb3279d5f23dae34f68af11bd5cef0a0aff7ffcd014c9ca93c5302cf3e",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9111",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 82,
+        "level_counts": {
+          "MUST": 26,
+          "MUST NOT": 38,
+          "SHOULD": 16,
+          "SHOULD NOT": 2
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9111-1.2.2-MUST-CAP-AN-OVERSIZE-DELTA-SECONDS",
+          "section": "1.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A delta-seconds value larger than can be represented, or a calculation that overflows one, is treated as the largest value that can be, which here is the twenty-four hour ceiling every stored lifetime is held to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "remaining_freshness"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3-MUST-NOT-STORE-WITHOUT-THE-STATED-CONDITIONS",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response is stored only when every stated condition holds, and this cache adds more: a GET without Authorization, Range, or a no-store request directive, answered 200 without Vary or Set-Cookie and with an explicit remaining freshness.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_policy_test.gleam", "symbol": "a_request_that_forbids_storage_is_not_stored_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.1-MUST-STORE-EVERY-RECEIVED-HEADER-FIELD",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The whole received header section is stored, unrecognised fields included, rather than a selected subset.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.1-MUST-NOT-STORE-PROXY-SPECIFIC-FIELDS",
+          "section": "3.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A stored response cannot be served under a different proxy than fetched it, because the store lives inside one client whose proxy configuration is fixed when it is built.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/client.gleam", "symbol": "proxy_policy"},
+            {"path": "src/http/client.gleam", "symbol": "start"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.1-MUST-NOT-COMBINE-TRAILERS-WITH-HEADERS",
+          "section": "3.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Trailer fields are retained separately from header fields and are rebuilt as trailers, so neither is ever served as the other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "from_persisted"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.2-MUST-UPDATE-STORED-FIELDS-ON-REVALIDATION",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A revalidating response updates the stored header fields, replacing those it supplies.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-3.2-SHOULD-LIMIT-OMITTED-FIELD-UPDATES",
+          "section": "3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A cache that omits some header fields from such an update limits which ones on an exceptional basis.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-3.3-MUST-NOT-STORE-A-PARTIAL-RESPONSE-WITHOUT-RANGE",
+          "section": "3.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "An incomplete or partial-content response is not stored, which holds here because Range is not supported and only a complete 200 is stored at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.3-MUST-NOT-ANSWER-FROM-AN-INCOMPLETE-RESPONSE",
+          "section": "3.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "An incomplete response is not used to answer a request, which holds because none is ever stored to answer from.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.3-MUST-NOT-SEND-A-PARTIAL-RESPONSE-UNMARKED",
+          "section": "3.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A partial response is never sent without the 206 status that marks it, because the only status this cache stores and serves is 200.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "from_persisted"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-3.4-MUST-UPDATE-FIELDS-WHEN-COMBINING",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Combining a new response with stored ones updates the stored header fields from the new one.",
+          "disposition": "NotApplicable",
+          "reason": "Only a complete 200 response is ever stored. A request carrying Range yields no cache key at all, and no status other than 200 is stored, so no partial or incomplete response exists here to combine, complete, or mark."
+        },
+        {
+          "id": "RFC9111-3.5-MUST-NOT-REUSE-AN-AUTHORIZED-RESPONSE",
+          "section": "3.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A request carrying Authorization yields no cache key at all, so its response is neither stored nor reused, which is stricter than the rule a shared cache is held to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "has_header"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4-MUST-NOT-REUSE-WITHOUT-THE-STATED-CONDITIONS",
+          "section": "4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A stored response is reused only when the request is one this cache would have stored for and the entry is still within the freshness it was stored with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4-MUST-GENERATE-AN-AGE-FIELD",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response served from the store carries an Age field counting the time held plus the age it arrived with, replacing any stored Age rather than joining it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_cached_response_carries_the_age_it_has_accumulated_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4-MUST-WRITE-UNSAFE-METHODS-THROUGH",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An unsafe request always reaches the origin, because only a GET yields a cache key and so only a GET can ever be answered from the store.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "invalidated_key"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_unsafe_method_invalidates_the_stored_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "an_unsafe_request_drops_the_cached_response_for_its_target_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4-MUST-USE-THE-MOST-RECENT-STORED-RESPONSE",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "One entry is held per target, and storing a newer response replaces the older one, so the most recent is the only one there is to use.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "target_key"},
+            {"path": "src/http/client.gleam", "symbol": "store_cache_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "an_unsafe_request_drops_the_cached_response_for_its_target_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4-MUST-REVALIDATE-WITHOUT-A-CLOCK",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A cache with no clock revalidates on every use.",
+          "disposition": "NotApplicable",
+          "reason": "This cache has a clock: every entry's expiry is an instant on the same monotonic counter the store compares against, and the store prunes an expired entry rather than serving it. The condition this rule is written for does not arise."
+        },
+        {
+          "id": "RFC9111-4.1-MUST-NOT-REUSE-WITHOUT-MATCHING-VARY",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response carrying Vary is never stored, so no entry exists whose selecting fields would have to be matched before reuse.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "from_persisted"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "has_header"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.1-SHOULD-PREFER-THE-MOST-RECENT-WITHOUT-VARY",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Where several stored responses exist and some omit Vary, the most recent of those is chosen.",
+          "disposition": "NotApplicable",
+          "reason": "There is never more than one stored response for a target here, and none of them carries Vary, because a response that does is not stored. Neither half of the choice this rule describes can arise."
+        },
+        {
+          "id": "RFC9111-4.2-SHOULD-MATCH-DATES-CASE-INSENSITIVELY",
+          "section": "4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A date field value is matched without regard to case even though the formats are specified as case-sensitive.",
+          "disposition": "NotApplicable",
+          "reason": "No HTTP-date is parsed here. Freshness comes from the max-age directive alone and is held as a monotonic instant, so there is no date to match, round, or reject, and no Expires field is read."
+        },
+        {
+          "id": "RFC9111-4.2-MUST-ROUND-A-COARSE-CLOCK-TOWARD-THE-PAST",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A clock coarser than an HTTP-date rounds toward the past when comparing times.",
+          "disposition": "NotApplicable",
+          "reason": "No HTTP-date is parsed here. Freshness comes from the max-age directive alone and is held as a monotonic instant, so there is no date to match, round, or reject, and no Expires field is read."
+        },
+        {
+          "id": "RFC9111-4.2-MUST-NOT-LET-TIME-ZONES-INFLUENCE-AGE",
+          "section": "4.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No local time zone can influence an age or an expiration here, because both are arithmetic on a monotonic counter that has no zone and no wall-clock origin.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "remaining_freshness"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_cached_response_carries_the_age_it_has_accumulated_test"},
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.2-SHOULD-REJECT-A-NON-GMT-ZONE",
+          "section": "4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A date carrying a zone abbreviation other than GMT is treated as invalid for expiration purposes.",
+          "disposition": "NotApplicable",
+          "reason": "No HTTP-date is parsed here. Freshness comes from the max-age directive alone and is held as a monotonic instant, so there is no date to match, round, or reject, and no Expires field is read."
+        },
+        {
+          "id": "RFC9111-4.2.2-MUST-NOT-GUESS-WHEN-EXPIRY-IS-EXPLICIT",
+          "section": "4.2.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Freshness is never guessed: a response without an explicit max-age is not stored at all, so no heuristic can compete with an explicit expiration or stand in for a missing one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "remaining_freshness"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.2.3-MUST-COUNT-AGE-FROM-REQUEST-INITIATION",
+          "section": "4.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The age a response arrived with is subtracted from its stated lifetime when it is stored, so the entry expires by when the origin said it would rather than by when this cache happened to receive it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "response_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "remaining_freshness"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_policy_test.gleam", "symbol": "a_cached_response_carries_the_age_it_has_accumulated_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.2.4-MUST-NOT-SERVE-STALE-WHEN-PROHIBITED",
+          "section": "4.2.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A stale entry is never served, so no directive prohibiting one can be contravened.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.2.4-MUST-NOT-SERVE-STALE-UNINVITED",
+          "section": "4.2.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A stale entry is never served even when disconnected: an entry that has expired is pruned by the store rather than offered, and the request goes to the origin.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"},
+            {"path": "src/http/client.gleam", "symbol": "store_cache_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.3.1-MUST-SEND-ENTITY-TAGS-WHEN-VALIDATING",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A validating request carries the stored entity tags in the appropriate precondition field.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-4.3.1-SHOULD-SEND-LAST-MODIFIED-WHEN-VALIDATING",
+          "section": "4.3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A validating request carries the stored Last-Modified value where the section's conditions hold.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-4.3.2-SHOULD-ANSWER-A-CONDITIONAL-FROM-THE-STORE",
+          "section": "4.3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A conditional request that a stored response could satisfy is evaluated against that response and answered accordingly, which may mean 304.",
+          "disposition": "DocumentedDeviation",
+          "reason": "A conditional request is answered with the whole stored response rather than a 304. Evaluating the precondition would need the validators this cache does not keep, and answering 200 where 304 would do costs bandwidth and never correctness: the client receives exactly the representation it would have received, and the condition it asked about is one it can still evaluate itself.",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.3.2-MUST-NOT-EVALUATE-ORIGIN-ONLY-PRECONDITIONS",
+          "section": "4.3.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A precondition meant only for an origin server is never evaluated here, because no precondition is evaluated at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.3.2-SHOULD-IGNORE-IF-MODIFIED-SINCE-WITHOUT-LAST-MODIFIED",
+          "section": "4.3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An If-Modified-Since is ignored when the stored response carries no Last-Modified.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.3.2-MUST-NOT-OFFER-A-PARTIAL-ENTITY-TAG",
+          "section": "4.3.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A partially stored response's entity tag is not offered in a precondition union.",
+          "disposition": "NotApplicable",
+          "reason": "Only a complete 200 response is ever stored. A request carrying Range yields no cache key at all, and no status other than 200 is stored, so no partial or incomplete response exists here to combine, complete, or mark."
+        },
+        {
+          "id": "RFC9111-4.3.2-MUST-HANDLE-AN-UNEXPECTED-304-ETAG",
+          "section": "4.3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A 304 naming an entity tag that was not offered is handled as the section directs.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-4.3.3-MUST-PREFER-THE-FULL-RESPONSE",
+          "section": "4.3.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A full response is used to satisfy the request rather than a stored partial one.",
+          "disposition": "NotApplicable",
+          "reason": "Only a complete 200 response is ever stored. A request carrying Range yields no cache key at all, and no status other than 200 is stored, so no partial or incomplete response exists here to combine, complete, or mark."
+        },
+        {
+          "id": "RFC9111-4.3.4-MUST-NOT-USE-A-RESPONSE-WITHOUT-MATCHING-VALIDATORS",
+          "section": "4.3.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A freshening response is not applied to stored responses that share no strong validator with it.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-4.3.4-MUST-UPDATE-FIELDS-FROM-A-304",
+          "section": "4.3.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each identified stored response has its header fields updated from the 304.",
+          "disposition": "NotApplicable",
+          "reason": "This cache never revalidates. It stores a response only while that response is explicitly fresh and serves it only until that freshness lapses, at which point the entry is gone and the request goes to the origin as though nothing had been stored. There is no conditional request to build, no 304 to interpret, and no stale entry to bring back."
+        },
+        {
+          "id": "RFC9111-4.3.5-SHOULD-ACT-ON-A-HEAD-RESPONSE",
+          "section": "4.3.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A 200 answer to an inbound HEAD updates or invalidates the stored responses for that target.",
+          "disposition": "NotApplicable",
+          "reason": "No HEAD request is ever made on this cache's behalf, and a HEAD yields no cache key, so there is no inbound HEAD response for it to act on. A HEAD is also not an unsafe method, so it invalidates nothing on the section 4.4 path either."
+        },
+        {
+          "id": "RFC9111-4.3.5-SHOULD-COMPARE-THE-SELECTED-FIELDS",
+          "section": "4.3.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A stored response whose selected fields match the HEAD response's is updated rather than discarded.",
+          "disposition": "NotApplicable",
+          "reason": "This follows the rule above and rests on the same fact: nothing here issues a HEAD or stores one's answer, so no pair of fields exists to compare."
+        },
+        {
+          "id": "RFC9111-4.3.5-SHOULD-STALE-A-MISMATCHED-STORED-RESPONSE",
+          "section": "4.3.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A stored response whose fields do not match the HEAD response's is treated as stale.",
+          "disposition": "NotApplicable",
+          "reason": "This follows the same rule and the same fact: no HEAD answer reaches this cache, so no stored response is judged against one."
+        },
+        {
+          "id": "RFC9111-4.3.5-MUST-USE-THE-HEAD-FIELDS-WHEN-UPDATING",
+          "section": "4.3.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An update driven by a HEAD response uses the fields that response provided.",
+          "disposition": "NotApplicable",
+          "reason": "No such update happens: nothing here issues a HEAD or stores one's answer, so there are no provided fields to use."
+        },
+        {
+          "id": "RFC9111-4.4-MUST-INVALIDATE-ON-AN-UNSAFE-REQUEST",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A non-error answer to an unsafe request drops the stored response for that target, so the read after a write does not serve what the write replaced.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "invalidated_key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "tombstone"},
+            {"path": "src/http/client.gleam", "symbol": "invalidate_cache_entry"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_unsafe_method_invalidates_the_stored_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "an_unsafe_request_drops_the_cached_response_for_its_target_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-4.4-MUST-NOT-INVALIDATE-ACROSS-ORIGINS",
+          "section": "4.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The invalidated key is the exact scheme, host, port, and target, so a write to one origin cannot reach another origin's entry.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "invalidated_key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "target_key"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "an_unsafe_method_invalidates_the_stored_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.1-SHOULD-TAKE-THE-FIRST-AGE-MEMBER",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An Age field arriving as a list is not guessed at: a response carrying more than one value is declined rather than stored against a value chosen from among them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "response_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "header_values"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.1-SHOULD-IGNORE-AN-INVALID-AGE",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An Age field whose value is not a nonnegative integer is ignored and the response treated as having no age.",
+          "disposition": "DocumentedDeviation",
+          "reason": "A response whose Age cannot be read is declined rather than stored as though it had none. Ignoring the field means assuming an age of zero, which is the unsafe direction: it would keep a response past the point the origin's own lifetime had already run out. Declining costs one extra fetch and cannot serve anything stale.",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "response_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "remaining_freshness"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2-MUST-FORWARD-CACHE-DIRECTIVES",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A proxy passes cache directives through in forwarded messages whether or not it understands them.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here is a proxy. This cache sits inside one client and forwards no message on anyone else's behalf, so it neither relays a directive nor answers for another party."
+        },
+        {
+          "id": "RFC9111-5.2.1.1-MUST-NOT-QUOTE-MAX-AGE",
+          "section": "5.2.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The max-age request directive is not written in its quoted-string form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.1.2-MUST-NOT-QUOTE-MAX-STALE",
+          "section": "5.2.1.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The max-stale request directive is not written in its quoted-string form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.1.3-MUST-NOT-QUOTE-MIN-FRESH",
+          "section": "5.2.1.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The min-fresh request directive is not written in its quoted-string form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.1.5-MUST-NOT-STORE-A-NO-STORE-REQUEST",
+          "section": "5.2.1.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A request carrying no-store yields no cache key, so neither it nor its response is stored.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "request_forbids_storage"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_request_that_forbids_storage_is_not_stored_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.1.5-MUST-NOT-STORE-IN-A-PRIVATE-CACHE-EITHER",
+          "section": "5.2.1.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The directive binds a private cache as much as a shared one, and this one is private.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "request_forbids_storage"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_request_that_forbids_storage_is_not_stored_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.1.5-MUST-NOT-RETAIN-ANY-PART",
+          "section": "5.2.1.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No part of such a request or response is retained anywhere: without a key nothing reaches the store, and the response goes to the caller and is not copied.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "store_cache_entry"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_request_that_forbids_storage_is_not_stored_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.1.5-MUST-NOT-INTENTIONALLY-PERSIST-IT",
+          "section": "5.2.1.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Nothing about such an exchange is written to non-volatile storage either, because the persistence adapter is only ever handed an entry the store accepted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/client.gleam", "symbol": "store_cache_entry"},
+            {"path": "src/http/client.gleam", "symbol": "persist_cache_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "a_request_that_forbids_storage_is_not_stored_test"},
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.1.7-SHOULD-HONOUR-ONLY-IF-CACHED",
+          "section": "5.2.1.7",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A request carrying only-if-cached is answered from the store or with a 504, rather than by going to the origin.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The directive is not read, so such a request is answered from the store when an entry is fresh and forwarded to the origin otherwise. The caller receives the representation it asked for either way; what it loses is the ability to insist that the network is not used, which this client has no other means of expressing and no caller has asked for.",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "key"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2-MUST-OBEY-THE-RESPONSE-DIRECTIVES",
+          "section": "5.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The response directives this section defines are obeyed: no-store, no-cache, and private each prevent storing outright, max-age sets the lifetime, and an unrecognised one is skipped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.1-MUST-NOT-QUOTE-RESPONSE-MAX-AGE",
+          "section": "5.2.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The max-age response directive is not written in its quoted-string form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.2.2-MUST-NOT-REUSE-AFTER-MUST-REVALIDATE",
+          "section": "5.2.2.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response marked must-revalidate is never reused once stale, which holds because no stored response is ever reused once stale, marked or not.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.2-MUST-NOT-IGNORE-MUST-REVALIDATE",
+          "section": "5.2.2.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The directive is never ignored, including when disconnected, because this cache has no path that serves a stale entry under any condition.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "cached_response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.2-MUST-ANSWER-WITH-AN-ERROR-WHEN-DISCONNECTED",
+          "section": "5.2.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A cache that cannot reach the origin for such a response generates an error rather than serving the stale entry.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "cached_response"},
+            {"path": "src/http/client.gleam", "symbol": "run_exchange"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.2-SHOULD-USE-504-FOR-THAT-ERROR",
+          "section": "5.2.2.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The error generated in that case is a 504 unless another status is more applicable.",
+          "disposition": "NotApplicable",
+          "reason": "This client returns a typed transport failure to its caller rather than synthesising an HTTP response it did not receive. A status code is what a proxy puts on the wire for its own client; there is no wire here, and inventing a 504 would make a network failure indistinguishable from one an origin actually sent."
+        },
+        {
+          "id": "RFC9111-5.2.2.3-SHOULD-PAIR-MUST-UNDERSTAND-WITH-NO-STORE",
+          "section": "5.2.2.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A response carrying must-understand also carries no-store, so a cache that does not implement the directive declines to store it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.2.3-SHOULD-IGNORE-NO-STORE-WHEN-UNDERSTOOD",
+          "section": "5.2.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A cache implementing must-understand ignores the accompanying no-store for a status it does understand.",
+          "disposition": "NotApplicable",
+          "reason": "This cache does not implement must-understand, which is what the directive is designed for: it stores only 200 and refuses no-store outright, so it behaves exactly as the pairing intends for a cache that does not understand."
+        },
+        {
+          "id": "RFC9111-5.2.2.4-MUST-NOT-REUSE-A-NO-CACHE-RESPONSE-UNVALIDATED",
+          "section": "5.2.2.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response carrying no-cache is not stored at all here, so it can never be reused without the validation it demands.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.4-SHOULD-NOT-USE-THE-TOKEN-FORM",
+          "section": "5.2.2.4",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "A qualified no-cache directive is written in its quoted-string form rather than as a bare token.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.2.5-MUST-NOT-STORE-A-NO-STORE-RESPONSE",
+          "section": "5.2.2.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response carrying no-store is not stored.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.5-MUST-NOT-STORE-ITS-REQUEST-EITHER",
+          "section": "5.2.2.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Neither is the request that produced it, which holds because the only thing this cache stores is a response and only when its directives permit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.5-MUST-NOT-STORE-IN-EITHER-CACHE-KIND",
+          "section": "5.2.2.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The directive binds a private cache as much as a shared one, and this one is private.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.5-MUST-NOT-RETAIN-ANY-PART-OF-IT",
+          "section": "5.2.2.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No part of such a response is retained: nothing is written to the store and nothing is copied for later.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "store_cache_entry"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.5-MUST-NOT-PERSIST-IT-EITHER",
+          "section": "5.2.2.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Nothing about it reaches non-volatile storage either, because the persistence adapter is only handed an entry the store accepted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/client.gleam", "symbol": "persist_cache_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.6-MUST-NOT-TRANSFORM-THE-PAYLOAD",
+          "section": "5.2.2.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A stored representation is returned byte for byte as it was received, so nothing is transformed whether the directive is present or not.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "entry"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "response"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"},
+            {"path": "test/client_test.gleam", "symbol": "typed_cache_adapter_loads_a_bounded_complete_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.7-MUST-NOT-STORE-A-PRIVATE-RESPONSE-IN-A-SHARED-CACHE",
+          "section": "5.2.2.7",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response carrying private is refused outright here, which is stricter than the rule: a shared cache must decline it, and this private cache declines it too.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.7-MUST-NOT-STORE-THE-LISTED-FIELDS",
+          "section": "5.2.2.7",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A qualified private directive naming fields means only those may not be stored, and here the whole response is declined, which withholds them and everything else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.2.7-SHOULD-NOT-USE-THE-PRIVATE-TOKEN-FORM",
+          "section": "5.2.2.7",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "A qualified private directive is written in its quoted-string form rather than as a bare token.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.2.8-MUST-NOT-REUSE-AFTER-PROXY-REVALIDATE",
+          "section": "5.2.2.8",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A shared cache does not reuse such a response once stale.",
+          "disposition": "NotApplicable",
+          "reason": "This is a private cache: one client's own store, partitioned by that client's network isolation key and never shared between users. The shared-cache rules do not bind it, and the stricter thing it does instead is refuse outright what a shared cache is merely told not to reuse."
+        },
+        {
+          "id": "RFC9111-5.2.2.10-MUST-NOT-REUSE-STALE-WITH-S-MAXAGE",
+          "section": "5.2.2.10",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A shared cache does not reuse a stale response carrying s-maxage until it has revalidated it.",
+          "disposition": "NotApplicable",
+          "reason": "This is a private cache: one client's own store, partitioned by that client's network isolation key and never shared between users. The shared-cache rules do not bind it, and the stricter thing it does instead is refuse outright what a shared cache is merely told not to reuse."
+        },
+        {
+          "id": "RFC9111-5.2.2.10-MUST-NOT-QUOTE-S-MAXAGE",
+          "section": "5.2.2.10",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The s-maxage directive is not written in its quoted-string form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a sender writing the directive. Nothing here writes a Cache-Control directive; this cache reads them and emits none."
+        },
+        {
+          "id": "RFC9111-5.2.3-MUST-IGNORE-UNRECOGNISED-DIRECTIVES",
+          "section": "5.2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A directive this cache does not recognise is skipped rather than refusing the field it appears in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "maximum_age"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "directive_present"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.2.4-MUST-REGISTER-THE-REQUIRED-FIELDS",
+          "section": "5.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registration in the Cache Directive registry includes the name, a reference, and the other fields the section lists.",
+          "disposition": "NotApplicable",
+          "reason": "Filling in a registry template is an action for whoever defines a directive, and this package defines none: it reads the registered directives it needs and skips every other. There is nothing here to register."
+        },
+        {
+          "id": "RFC9111-5.3-MUST-READ-AN-INVALID-EXPIRES-AS-PAST",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An Expires value that is not a valid date, the value zero included, is read as a time already past.",
+          "disposition": "NotApplicable",
+          "reason": "No HTTP-date is parsed here. Freshness comes from the max-age directive alone and is held as a monotonic instant, so there is no date to match, round, or reject, and no Expires field is read."
+        },
+        {
+          "id": "RFC9111-5.3-MUST-PREFER-MAX-AGE-OVER-EXPIRES",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response carrying max-age has its Expires ignored, which holds absolutely here because Expires is never read and max-age is the only source of freshness.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/cache.gleam", "symbol": "freshness_seconds"},
+            {"path": "src/http/internal/cache.gleam", "symbol": "maximum_age"}
+          ],
+          "tests": [
+            {"path": "test/client_policy_test.gleam", "symbol": "cache_subtracts_a_valid_age_from_explicit_freshness_test"},
+            {"path": "test/client_test.gleam", "symbol": "enabled_cache_reuses_only_an_explicitly_fresh_get_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9111-5.3-MUST-PREFER-S-MAXAGE-IN-A-SHARED-CACHE",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A shared cache ignores Expires when s-maxage is present.",
+          "disposition": "NotApplicable",
+          "reason": "This is a private cache: one client's own store, partitioned by that client's network isolation key and never shared between users. The shared-cache rules do not bind it, and the stricter thing it does instead is refuse outright what a shared cache is merely told not to reuse."
+        },
+        {
+          "id": "RFC9111-5.3-MUST-NOT-GENERATE-EXPIRES-WITHOUT-A-CLOCK",
+          "section": "5.3",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "An origin server with no clock does not generate an Expires field unless its value was supplied with the resource.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an origin server generating the field. No listener in this package generates an Expires field: what a response carries is chosen by the handler the deployment supplies, and the cache here only reads."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 2,
+        "entries": [
+          {
+            "id": 7695,
+            "section": "4.3.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have named If-Match and If-Unmodified-Since as inapplicable to a cache in the same sentence that already excludes origin-only preconditions. This cache evaluates no precondition of any kind, so neither the published text nor the proposed one changes what it does."
+          },
+          {
+            "id": 9004,
+            "section": "3.5",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction would have section 3.5 say for Authorization what section 5.2.2.8 says for proxy-revalidate, so the two read alike. This cache yields no key at all for a request carrying Authorization, which withholds both storing and reuse, so it is on the strict side of either reading."
+          }
+        ]
+      }
+    },
     {"id":"RFC9112","title":"HTTP/1.1","map_complete":false,"evidence":["src/http/internal/http1.gleam","test/http1_request_head_test.gleam"]},
     {"id":"RFC9113","title":"HTTP/2","map_complete":false,"evidence":["src/http/internal/http2/connection.gleam","test/http2_connection_test.gleam"]},
     {"id":"RFC9114","title":"HTTP/3","map_complete":false,"evidence":["packages/http3/src/http3/internal/native/connection_state.gleam","packages/http3/test/native/http3_connection_state_test.gleam"]},
