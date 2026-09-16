@@ -899,6 +899,7 @@ fn load_cookie_records(
           record.host_only,
           record.secure,
           record.expires_in_milliseconds,
+          record.age_milliseconds,
           now,
         )
         |> option.to_result(security_policy_error()),
@@ -2285,12 +2286,25 @@ fn capture_cookie_headers(
 }
 
 fn store_cookie_policy(client: Client, entry: cookie.Cookie, now: Int) -> Bool {
+  let partition = policy_partition(client.config.network_isolation_key)
+  // RFC 6265 section 5.3 step 11: replacing a cookie with the same name,
+  // domain, and path keeps the creation time of the one it replaces, so a
+  // server that refreshes a cookie's value does not move it to the end of the
+  // order section 5.4 asks for.
+  let entry = case
+    list.find(policy_store_list(client.cookie_store, partition), fn(retained) {
+      cookie.key(retained) == cookie.key(entry)
+    })
+  {
+    Ok(previous) -> cookie.Cookie(..entry, created_at: previous.created_at)
+    Error(_) -> entry
+  }
   case persist_cookie_policy(client, entry, now) {
     False -> False
     True ->
       policy_store_put(
         client.cookie_store,
-        policy_partition(client.config.network_isolation_key),
+        partition,
         cookie.key(entry),
         entry,
         entry.expires_at,
@@ -2328,6 +2342,7 @@ fn persist_cookie_policy(
               host_only: entry.host_only,
               secure: entry.secure,
               expires_in_milliseconds: entry.expires_at - now,
+              age_milliseconds: int.max(0, now - entry.created_at),
             ),
           )
         }

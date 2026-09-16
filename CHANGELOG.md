@@ -437,3 +437,9 @@
   issued only once the AAAA answer had come back, so a name whose IPv6 answer
   was slow paid for it twice over. The first answer now starts the Resolution
   Delay of section 8, and a straggler is waited for only until that runs out.
+- Ordered the Cookie request field the way RFC 6265 section 5.4 asks: longer
+  paths before shorter ones, and among equally specific cookies the one created
+  first. A cookie's creation time is now recorded, persisted as an age, and kept
+  when a later Set-Cookie replaces its value, which section 5.3 requires, so
+  refreshing a cookie no longer moves it to the end of the field.
+  `client_store.CookieRecord` gains an `age_milliseconds` field.

@@ -384,6 +384,7 @@ pub fn typed_cookie_adapter_loads_partition_and_persists_mutations_test() -> Nil
             host_only: True,
             secure: False,
             expires_in_milliseconds: 60_000,
+            age_milliseconds: 0,
           ),
         ])
       },
@@ -723,6 +724,72 @@ pub fn a_misdirected_request_withdraws_the_alternative_it_answers_for_test() -> 
   let assert Ok(Nil) = server.drain_listener(listener)
   let assert Ok(Nil) = server.stop_listener(listener)
   let assert Ok(Nil) = server.stop(executor)
+  Nil
+}
+
+pub fn a_refreshed_cookie_keeps_the_creation_time_it_had_test() -> Nil {
+  // RFC 6265 section 5.3 step 11: a Set-Cookie that replaces a cookie with the
+  // same name, domain, and path keeps the creation time of the one it replaces.
+  // Without that, refreshing a value moves the cookie to the end of the order
+  // section 5.4 asks for, so a server reading the first of two equally specific
+  // cookies would see a different one after every refresh.
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let respond = fn(socket, fields) {
+    use _ <- result.try(transport.read(socket, 4096, 1000))
+    transport.send(socket, <<
+      "HTTP/1.1 200 OK\r\n":utf8,
+      fields:utf8,
+      "Content-Length: 0\r\nConnection: close\r\n\r\n":utf8,
+    >>)
+  }
+  let server_task =
+    http_test_support.start_task(fn() {
+      use first <- result.try(transport.accept(listener, 1000))
+      use _ <- result.try(respond(
+        first,
+        "Set-Cookie: a=one; Path=/; Max-Age=60\r\n"
+          <> "Set-Cookie: b=two; Path=/; Max-Age=60\r\n",
+      ))
+      use _ <- result.try(transport.close(first))
+
+      // The second response refreshes the cookie that was created first.
+      use second <- result.try(transport.accept(listener, 1000))
+      use _ <- result.try(respond(
+        second,
+        "Set-Cookie: a=refreshed; Path=/; Max-Age=60\r\n",
+      ))
+      use _ <- result.try(transport.close(second))
+
+      use third <- result.try(transport.accept(listener, 1000))
+      use third_read <- result.try(transport.read(third, 4096, 1000))
+      let assert transport.ReadData(third_request, third) = third_read
+      use _ <- result.try(
+        transport.send(third, <<
+          "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n":utf8,
+        >>),
+      )
+      use _ <- result.try(transport.close(third))
+      Ok(third_request)
+    })
+  let assert Ok(config) =
+    client.defaults()
+    |> client.allow_plain_http
+    |> client.enable_cookies(client.StoreLimits(
+      maximum_entries: 8,
+      maximum_bytes: 4096,
+    ))
+  let assert Ok(running) = client.start(config)
+  let assert Ok(_) = client.fetch(running, request_for(port, "/", <<>>))
+  let assert Ok(_) = client.fetch(running, request_for(port, "/", <<>>))
+  let assert Ok(_) = client.fetch(running, request_for(port, "/", <<>>))
+
+  let assert Ok(third_request) = http_test_support.await_task(server_task)
+  let assert Ok(third_text) = bit_array.to_string(third_request)
+  // The refreshed cookie keeps its place ahead of the one set after it.
+  assert string.contains(third_text, "cookie: a=refreshed; b=two\r\n")
+  let assert Ok(Nil) = client.close(running)
+  let assert Ok(Nil) = transport.stop(listener)
   Nil
 }
 

@@ -4,6 +4,7 @@ import gleam/http.{type Scheme, Https}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/string
 
 const session_lifetime_milliseconds = 86_400_000
@@ -20,6 +21,10 @@ pub type Cookie {
     host_only: Bool,
     secure: Bool,
     expires_at: Int,
+    /// The monotonic instant this cookie was first stored, preserved when a
+    /// later Set-Cookie replaces its value, so RFC 6265 section 5.4 can order
+    /// equally specific cookies by age.
+    created_at: Int,
     retained_bytes: Int,
   )
 }
@@ -92,6 +97,7 @@ pub fn parse(
                 host_only: attributes.domain == None,
                 secure: attributes.secure,
                 expires_at:,
+                created_at: now_milliseconds,
                 retained_bytes:,
               ))
             _, _, _, _, _, _ -> None
@@ -110,6 +116,7 @@ pub fn from_persisted(
   host_only: Bool,
   secure: Bool,
   expires_in_milliseconds: Int,
+  age_milliseconds: Int,
   now_milliseconds: Int,
 ) -> Option(Cookie) {
   let domain = string.lowercase(domain)
@@ -127,6 +134,8 @@ pub fn from_persisted(
     retained_bytes <= 4096,
     expires_in_milliseconds > 0
     && expires_in_milliseconds <= maximum_lifetime_milliseconds
+    && age_milliseconds >= 0
+    && age_milliseconds <= maximum_lifetime_milliseconds
   {
     True, True, True, True, True, True ->
       Some(Cookie(
@@ -137,6 +146,7 @@ pub fn from_persisted(
         host_only:,
         secure:,
         expires_at: now_milliseconds + expires_in_milliseconds,
+        created_at: now_milliseconds - age_milliseconds,
         retained_bytes:,
       ))
     _, _, _, _, _, _ -> None
@@ -178,6 +188,34 @@ pub fn key(cookie: Cookie) -> String {
   cookie.domain <> "\u{0000}" <> cookie.path <> "\u{0000}" <> cookie.name
 }
 
+/// Return the unexpired cookies this request carries, in the order RFC 6265
+/// section 5.4 asks for: longer paths before shorter ones, and among equally
+/// long paths the cookie that was created first.
+pub fn matching(
+  cookies: List(Cookie),
+  scheme: Scheme,
+  host: String,
+  path: String,
+  now_milliseconds: Int,
+) -> List(Cookie) {
+  cookies
+  |> list.filter(fn(cookie) {
+    cookie.expires_at > now_milliseconds
+    && case cookie.host_only {
+      True -> string.lowercase(host) == cookie.domain
+      False -> domain_matches(string.lowercase(host), cookie.domain)
+    }
+    && path_matches(path, cookie.path)
+    && { !cookie.secure || scheme == Https }
+  })
+  |> list.sort(by: fn(left, right) {
+    case int.compare(string.byte_size(right.path), string.byte_size(left.path)) {
+      order.Eq -> int.compare(left.created_at, right.created_at)
+      ordering -> ordering
+    }
+  })
+}
+
 /// Build a Cookie request field from the matching, unexpired subset.
 pub fn request_header(
   cookies: List(Cookie),
@@ -187,16 +225,7 @@ pub fn request_header(
   now_milliseconds: Int,
 ) -> Option(String) {
   let pairs =
-    cookies
-    |> list.filter(fn(cookie) {
-      cookie.expires_at > now_milliseconds
-      && case cookie.host_only {
-        True -> string.lowercase(host) == cookie.domain
-        False -> domain_matches(string.lowercase(host), cookie.domain)
-      }
-      && path_matches(path, cookie.path)
-      && { !cookie.secure || scheme == Https }
-    })
+    matching(cookies, scheme, host, path, now_milliseconds)
     |> list.map(fn(cookie) { cookie.name <> "=" <> cookie.value })
   case pairs {
     [] -> None

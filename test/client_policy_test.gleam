@@ -398,3 +398,66 @@ pub fn an_unsafe_method_invalidates_the_stored_response_test() -> Nil {
   let elsewhere = request.Request(..write, host: "other.example")
   assert cache.invalidated_key(elsewhere, 200) != Some(key)
 }
+
+pub fn the_cookie_field_is_ordered_by_path_length_then_creation_test() -> Nil {
+  // RFC 6265 section 5.4: the cookie-list is sorted with the longer paths
+  // first, and cookies whose paths are equally long by the earlier creation
+  // time. Servers are told not to rely on the order, but the order is still the
+  // user agent's to produce, and without it a server reading the first value of
+  // a repeated name sees whichever cookie happened to be stored last.
+  let set = fn(field, path, now) {
+    let assert Some(entry) =
+      cookie.parse(
+        field,
+        gleam_http.Https,
+        "example.com",
+        path,
+        now,
+        1_700_000_000_000,
+      )
+    entry
+  }
+
+  let shallow = set("sid=shallow; Path=/; Max-Age=60", "/", 1000)
+  let deep = set("sid=deep; Path=/a/b; Max-Age=60", "/a/b", 1000)
+  let middle = set("sid=middle; Path=/a; Max-Age=60", "/a", 1000)
+
+  // Longest path first, whatever order the store hands them over in.
+  assert cookie.request_header(
+      [shallow, middle, deep],
+      gleam_http.Https,
+      "example.com",
+      "/a/b",
+      2000,
+    )
+    == Some("sid=deep; sid=middle; sid=shallow")
+  assert cookie.request_header(
+      [deep, shallow, middle],
+      gleam_http.Https,
+      "example.com",
+      "/a/b",
+      2000,
+    )
+    == Some("sid=deep; sid=middle; sid=shallow")
+
+  // Equal path lengths are broken by the earlier creation time, again in both
+  // input orders.
+  let first = set("a=1; Path=/; Max-Age=60", "/", 1000)
+  let second = set("b=2; Path=/; Max-Age=60", "/", 2000)
+  assert cookie.request_header(
+      [second, first],
+      gleam_http.Https,
+      "example.com",
+      "/",
+      3000,
+    )
+    == Some("a=1; b=2")
+  assert cookie.request_header(
+      [first, second],
+      gleam_http.Https,
+      "example.com",
+      "/",
+      3000,
+    )
+    == Some("a=1; b=2")
+}
