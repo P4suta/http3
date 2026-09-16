@@ -456,3 +456,8 @@
   hundred microseconds registered as a fourteen millisecond compression with
   nothing coalesced. The microsecond figure beside the counter still reports the
   raw measurement.
+- Kept a cookie carrying neither Expires nor Max-Age out of any persistence
+  adapter. RFC 6265 section 5.3 clears such a cookie's persistent flag and
+  removes it when the session ends, which for this package is the life of one
+  client; it was being handed to the adapter with the one-day default lifetime
+  and so could outlive the session it belonged to.

@@ -2358,6 +2358,10 @@ fn persist_cookie_policy(
   now: Int,
 ) -> Bool {
   case client.config.cookie_store_adapter {
+    // RFC 6265 section 5.3: a cookie with no Expires and no Max-Age does not
+    // outlive the session, and a client is the session here, so it is held in
+    // memory and never handed to an adapter that would outlive one.
+    _ if !entry.persistent -> True
     None -> True
     Some(adapter) -> {
       let operation = case entry.expires_at <= now {

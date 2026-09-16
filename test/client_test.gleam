@@ -409,7 +409,12 @@ pub fn typed_cookie_adapter_loads_partition_and_persists_mutations_test() -> Nil
       use _ <- result.try(
         transport.send(socket, <<
           "HTTP/1.1 200 OK\r\n":utf8,
+          // Only the first of these outlives the session, so only the first
+          // reaches the adapter. RFC 6265 section 5.3 clears the persistent
+          // flag on a cookie carrying neither Expires nor Max-Age, and removes
+          // every such cookie when the session ends.
           "Set-Cookie: stored=fresh; Path=/; Max-Age=60\r\n":utf8,
+          "Set-Cookie: session=only; Path=/\r\n":utf8,
           "Content-Length: 0\r\nConnection: close\r\n\r\n":utf8,
         >>),
       )
@@ -447,6 +452,9 @@ pub fn typed_cookie_adapter_loads_partition_and_persists_mutations_test() -> Nil
   assert record.name == "stored"
   assert record.value == "fresh"
   assert record.host_only
+  // The session cookie produced no adapter mutation at all, which is what
+  // leaves it unable to outlive this client.
+  assert process.receive(mutations, within: 100) == Error(Nil)
 
   let assert Ok(Nil) = client.close(running)
   let assert Ok(Nil) = transport.stop(listener)

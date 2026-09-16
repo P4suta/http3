@@ -21,6 +21,11 @@ pub type Cookie {
     host_only: Bool,
     secure: Bool,
     expires_at: Int,
+    /// Whether the set-cookie-string carried an Expires or a Max-Age. RFC 6265
+    /// section 5.3 step 8 clears this flag when neither is present, and section
+    /// 5.3's last paragraph removes every cookie carrying a cleared one when the
+    /// session ends, which for this package is the life of one client.
+    persistent: Bool,
     /// The monotonic instant this cookie was first stored, preserved when a
     /// later Set-Cookie replaces its value, so RFC 6265 section 5.4 can order
     /// equally specific cookies by age.
@@ -97,6 +102,8 @@ pub fn parse(
                 host_only: attributes.domain == None,
                 secure: attributes.secure,
                 expires_at:,
+                persistent: attributes.maximum_age_seconds != None
+                  || attributes.expires_at_unix_milliseconds != None,
                 created_at: now_milliseconds,
                 retained_bytes:,
               ))
@@ -146,6 +153,9 @@ pub fn from_persisted(
         host_only:,
         secure:,
         expires_at: now_milliseconds + expires_in_milliseconds,
+        // Only a persistent cookie is ever handed to an adapter, so only a
+        // persistent one can come back from it.
+        persistent: True,
         created_at: now_milliseconds - age_milliseconds,
         retained_bytes:,
       ))
