@@ -22658,7 +22658,1279 @@
         ]
       }
     },
-    {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
+    {
+      "id": "RFC9460",
+      "title": "Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)",
+      "map_complete": true,
+      "evidence": [
+        "src/http/client.gleam",
+        "src/http/internal/alt_svc.gleam",
+        "src/http_transport_ffi.erl",
+        "test/client_test.gleam",
+        "test/client_policy_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9460.txt",
+        "document_sha256": "0741d5743b7b4cd54762e53633b597e442b3d8299b80a9d5f2acec6d9beae433",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9460",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 123,
+        "level_counts": {
+          "SHALL": 12,
+          "SHOULD": 47,
+          "MUST NOT": 20,
+          "MUST": 35,
+          "SHOULD NOT": 5,
+          "REQUIRED": 2,
+          "NOT RECOMMENDED": 2
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9460-2.1-SHALL-SVCPARAMKEY-APPEAR-MOST-ONCE-SVCPARAMS",
+          "section": "2.1",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "A SvcParamKey appears at most once in a record's parameters.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.1-SHALL-SVCPARAM-FORM-PARSED-SPECIFIED-ABOVE",
+          "section": "2.1",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "A parameter given in the generic key form is decoded and the result used as its wire-format value.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.1-SHALL-SVCPARAM-FORM-PARSED-SPECIFIED-ABOVE-2",
+          "section": "2.1",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "That decoded value is what the parameter means, rather than the escaped text it was written as.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.1-SHOULD-PRESENTATION-FORMATS-SUCH-KEYS-USE",
+          "section": "2.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A key whose value is a list is written in presentation format as a comma-separated one.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.1-MUST-NOT-SVCPARAMS-PRESENTATION-FORMAT-APPEAR-ORDER",
+          "section": "2.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Presentation-format parameters may be written in any order but no key is repeated.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.2-SHALL-SVCPARAMKEYS-APPEAR-INCREASING-NUMERIC-ORDER",
+          "section": "2.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Wire-format parameters appear in increasing key order.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.2-MUST-CONSIDER-RR-MALFORMED",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A record is malformed under the stated conditions, and a client decides that before using it.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.2-MUST-RRS-MALFORMED-REJECT-ENTIRE-RRSET",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "One malformed record rejects the whole RRset and the client falls back to ordinary connection establishment.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-2.3-MUST-FOLLOWS-ATTRLEAF-NAMING-PATTERN-ATTRLEAF",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A scheme using these records is registered with IANA under the attribute-leaf naming pattern.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-2.3-SHALL-WHEN-PRIOR-CNAME-SVCB-RECORD",
+          "section": "2.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Each record aliased to through a CNAME or a SVCB record is returned under its own owner name.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.3-MUST-EXAMPLE-TLS-CONTINUE-VALIDATE-TLS",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A TLS client keeps validating certificates against the original service name rather than the aliased one. The alternative is reached under the origin's own name, and the certificate is still checked against that name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "from_https_record"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-2.4.1-SHOULD-WITHIN-SVCB-RRSET-RRS-HAVE",
+          "section": "2.4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Every record in one RRset has the same mode.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.1-MUST-RRSET-CONTAINS-RECORD-ALIASMODE-RECIPIENT",
+          "section": "2.4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An RRset holding an alias record is read as an alias, and the service records in it are ignored.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.1-SHOULD-WHEN-RECEIVING-RRSET-CONTAINING-MULTIPLE",
+          "section": "2.4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Records sharing a priority are tried in a randomised order rather than the order they arrived in.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-SHOULD-SVCB-RRSETS-ONLY-HAVE-SINGLE",
+          "section": "2.4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An alias RRset holds a single record.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-SHOULD-MULTIPLE-ALIASMODE-RRS-PRESENT-RECURSIVE",
+          "section": "2.4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client or resolver seeing several picks one at random.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-SHOULD-NOT-ALIASMODE-TARGETNAME-EQUAL-OWNER-NAME",
+          "section": "2.4.2",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "An alias target is not the owner name it was reached from, which would be a loop.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-MUST-ALIASMODE-RECIPIENTS-IGNORE-SVCPARAMS-PRESENT",
+          "section": "2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Parameters carried on an alias record are ignored.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-MUST-RECURSIVE-RESOLVERS-FOLLOW-CNAMES-NORMAL",
+          "section": "2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "CNAMEs are followed as they would be for any other query.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-MUST-AVOID-UNBOUNDED-ALIAS-CHAINS-RECURSIVE",
+          "section": "2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The number of aliases followed for one resolution is bounded.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-MUST-NOT-LIMIT-ZERO-I-E-IMPLEMENTATIONS",
+          "section": "2.4.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "That bound is not zero.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.2-MUST-LIMIT-ZERO-I-E-IMPLEMENTATIONS",
+          "section": "2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "So at least one alias record can always be followed.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.3-MUST-PROTOCOL-SCHEME-USES-SVCB-DEFINE",
+          "section": "2.4.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A protocol using these records defines how their parameters apply to establishing its connections.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-2.4.3-MUST-UNLESS-SPECIFIED-OTHERWISE-PROTOCOL-MAPPING",
+          "section": "2.4.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A parameter the client does not recognise is ignored unless that mapping says otherwise.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-2.4.3-MUST-REJECT-RR-WHOSE-RECOGNIZED-SVCPARAMS",
+          "section": "2.4.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A record whose recognised parameters contradict each other is rejected.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.4.3-SHOULD-HELP-ZONE-OPERATORS-AVOID-CONDITION",
+          "section": "2.4.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A zone-file implementation checks that consistency when the record is written.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-2.5.2-MUST-SERVICEMODE-SVCB-RRS-TARGETNAME-HAS",
+          "section": "2.5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A service record whose target is the root label is served from its own owner name.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-2.5.2-SHALL-RECORD-HAS-WILDCARD-OWNER-NAME",
+          "section": "2.5.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "A record reached through a wildcard owner name takes the synthesized name from the response.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3-SHALL-PRE-EXISTING-PROTOCOLS-E-G",
+          "section": "3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "A client for a protocol that existed before these records implements the optional behaviour, which is to connect anyway when none is found. A resolver that fails, times out, or returns nothing leaves the ordinary path in place; nothing here depends on a record existing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "refresh_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "with_discovery_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "protocol_discovery_is_bounded_and_can_be_disabled_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-3-SHOULD-SVCB-OPTIONAL-ISSUE-PARALLEL-OTHER",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Such a client issues the other queries it will need in parallel rather than waiting for the record.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The resolver is called before the connection is dialled rather than alongside the address lookup, so the first request to an origin waits for it. The wait is finite and configured, a failure or a timeout leaves the ordinary path in place, and the question is asked only when no usable alternative is already known; what it costs is one bounded round trip on the first request rather than none.",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "refresh_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "with_discovery_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "protocol_discovery_is_bounded_and_can_be_disabled_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-3-SHALL-ONCE-SVCB-RESOLUTION-HAS-CONCLUDED",
+          "section": "3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Once resolution has concluded, an alias that was followed is appended to the client's list of names to try.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3-SHOULD-TRY-HIGHER-PRIORITY-ALTERNATIVES-FIRST",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Higher-priority alternatives are tried first, with lower ones as fallback. A record is used only when its protocol set names h3, which is the one alternative this client can take.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-3.1-SHOULD-DNS-RESPONSES-CRYPTOGRAPHICALLY-PROTECTED-E",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An authentication failure during resolution is treated as a failure of the whole resolution rather than as an absent record. A record is used only when the resolver marked its answer authenticated; an unauthenticated one is dropped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-3.1-SHOULD-ENFORCES-DNSSEC-VALIDATION-ON-AAAA",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client validating DNSSEC on address responses validates these records the same way.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.1-MUST-UNABLE-COMPLETE-SVCB-RESOLUTION-DUE",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A resolution that hits the alias chain limit falls back to the authority endpoint.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.2-SHOULD-CONFIGURATION-ARRANGE-SEPARATE-SVCB-RESOLUTION",
+          "section": "3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client whose resolution would leak its destination arranges a separate procedure with the privacy properties it needs.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.2-MUST-POSSIBLE-SVCB-OPTIONAL-DISABLE-SVCB",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that cannot arrange one disables resolution entirely.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.2-MUST-POSSIBLE-SVCB-OPTIONAL-DISABLE-SVCB-2",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client that relies on these records treats such a configuration as invalid instead.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.2-SHOULD-DOES-USE-SVCB-NAMED-DESTINATIONS",
+          "section": "3.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that does use them with named destinations follows the standard procedure and takes the smallest priority it supports.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-3.2-MUST-WHEN-CONNECTING-USING-SVCB-RECORD",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client connecting through a proxy gives the proxy the final target name and port rather than an address.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-4.1-SHOULD-WHEN-REPLYING-SVCB-QUERY-AUTHORITATIVE",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An authoritative server answering one of these queries returns the address and service records for the targets it names in the additional section.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an authoritative DNS server composing the answer, not a client reading one. This package serves HTTP and operates no DNS zone."
+        },
+        {
+          "id": "RFC9460-4.1-SHOULD-ZONE-SIGNED-SERVER-ALSO-INCLUDE",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A signed zone accompanies those with the DNSSEC records that authenticate them.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an authoritative DNS server composing the answer, not a client reading one. This package serves HTTP and operates no DNS zone."
+        },
+        {
+          "id": "RFC9460-4.2-SHOULD-RECURSIVE-RESOLVERS-AWARE-SVCB-HELP",
+          "section": "4.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A resolver aware of these records helps the client complete the procedure with the fewest round trips.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.2-MUST-NOT-ERRORS-ANOMALIES-OBTAINING-ADDITIONAL-RECORDS",
+          "section": "4.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "An error gathering those additional records does not itself turn the answer into a failure.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.2.1-SHOULD-SVCB-AWARE-DNS-RESOLVERS-APPLY",
+          "section": "4.2.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A synthesising resolver applies the same synthesis to the target's address records.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.2.1-MUST-NOT-DNS-RESOLVERS-EXTRAPOLATE-AAAA-SYNTHESIS",
+          "section": "4.2.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "It does not extrapolate that synthesis to the address hints carried in the parameters.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.3-MUST-RECURSIVE-RESOLVERS-ABLE-CONVEY-SVCB",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A resolver conveys a record carrying parameter keys it does not recognise.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.3-SHOULD-COMPLEX-VALUE-TYPES-WHOSE-INTERPRETATION",
+          "section": "4.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A value whose interpretation might differ between implementations is conveyed rather than rewritten.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.3-MUST-WHEN-RESPONDING-QUERY-INCLUDES-DNSSEC",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A DNSSEC-capable server answering with the DNSSEC OK bit accompanies each RRset with its signatures.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an authoritative DNS server composing the answer, not a client reading one. This package serves HTTP and operates no DNS zone."
+        },
+        {
+          "id": "RFC9460-4.4-SHOULD-SVCB-RECORDS-CONTAIN-IP-ADDRESSES",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A resolver includes the client subnet with these queries, because the records can carry addresses or a subnet-specific target.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.4-MUST-NOT-ACCORDING-SECTION-RFC-RECORDS-FROM",
+          "section": "4.4",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A record from the additional section is not tied to a network.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.4-SHOULD-ACCORDING-SECTION-RFC-RECORDS-FROM",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "So a resolver processing one with a client subnet option treats it accordingly.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-4.4-MUST-AUTHORITATIVE-SERVERS-OMIT-SUCH-RECORDS",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "An authoritative server omits records that are not suitable for a stub resolver asking with a zero prefix length.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an authoritative DNS server composing the answer, not a client reading one. This package serves HTTP and operates no DNS zone."
+        },
+        {
+          "id": "RFC9460-5-SHOULD-OPTIMAL-PERFORMANCE-I-E-MINIMUM",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client keeps a DNS cache, so a resolution that was already done is not repeated.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-5-SHOULD-RESPONSES-ADDITIONAL-SECTION-SVCB-RESPONSE",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Records from the additional section are cached before any follow-up query is made.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-5-SHOULD-IMPROVE-PERFORMANCE-WHEN-USING-NON",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Address queries are issued speculatively alongside the service query where the resolver is not aware of these records.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-5.1-MUST-NOT-ADDRESS-RESPONSE-ARRIVES-BEFORE-CORRESPONDING",
+          "section": "5.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A client that connected optimistically on an early address response does not use that connection once the service response contradicts it.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-5.1-SHOULD-IMPLEMENTING-OPTIMIZATION-WAIT-MILLISECONDS-BEFORE",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Such a client waits the stated interval before starting the optimistic connection.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-5.2-REQUIRED-REQUIRED-WHEN-CHAIN-LENGTH-LIMIT",
+          "section": "5.2",
+          "level": "REQUIRED",
+          "roles": ["server"],
+          "summary": "Truncating the additional section is required when the chain length limit is reached.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-5.2-SHOULD-WHEN-OMITTING-CERTAIN-RRSETS-RECURSIVE",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A resolver omitting RRsets keeps the ones with the smaller priority.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a recursive resolver. This package runs none: it asks the caller's resolver for records about one origin and reads the answer it is given."
+        },
+        {
+          "id": "RFC9460-5.2-MUST-DISCUSSED-SECTION-ABLE-FETCH-ADDITIONAL",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client fetches for itself whatever a record needs that the answer did not include.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-6-MUST-WHEN-FOLLOWING-ALIASMODE-RECORD-SECTION",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A follow-up query for an alias target uses the same record type as the query that reached it.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-7-MUST-NEW-PROTOCOL-MAPPING-DOCUMENT-SPECIFY",
+          "section": "7",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A protocol mapping document names the parameter keys that apply to it and are safe to use.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-7-MUST-NOT-PROTOCOL-MAPPINGS-ALTER-INTERPRETATION-SVCPARAMKEYS",
+          "section": "7",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "It may change how a key is interpreted but not how the key is written or encoded.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-7.1-MUST-NOT-ALPN-PROTOCOL-IDENTIFIERS-DO-UNIQUELY",
+          "section": "7.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "An application protocol identifier that does not name one protocol suite on its own is not used in these records. A record is used only when its protocol set names h3, which is the one alternative this client can take.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-7.1.1-SHALL-ALPN-PRESENTATION-VALUE-COMMA-SEPARATED",
+          "section": "7.1.1",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The alpn parameter is written in presentation format as a comma-separated list of identifiers.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-7.1.1-MUST-THESE-PAIRS-EXACTLY-FILL-SVCPARAMVALUE",
+          "section": "7.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Its encoded pairs fill the parameter value exactly, with nothing left over.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-7.1.1-MUST-NO-DEFAULT-ALPN-PRESENTATION-WIRE",
+          "section": "7.1.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The no-default-alpn parameter carries an empty value in both formats.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-7.1.2-MUST-ESTABLISH-CONNECTION-ENDPOINT",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client establishing a connection follows the stated steps for selecting a protocol from the set the record names. A record is used only when its protocol set names h3, which is the one alternative this client can take.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-7.1.2-SHOULD-NOT-ATTEMPT-CONNECTION-SERVICE-ENDPOINT-WHOSE",
+          "section": "7.1.2",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A client does not connect to an endpoint whose protocol set holds none it supports. A record is used only when its protocol set names h3, which is the one alternative this client can take.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-7.1.2-SHOULD-ZONE-OPERATORS-ENSURE-LEAST-ONE",
+          "section": "7.1.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A zone operator keeps at least one record in each RRset supporting the default transports.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-7.2-SHALL-KEY-PRESENT-USE-AUTHORITY-ENDPOINT",
+          "section": "7.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "A record carrying no port parameter is connected to on the authority's own port. The port a record names is used only when it is the origin's own, because the transport cannot yet carry an authority separate from the address it dialled.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "from_https_record"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-7.2-MUST-NOT-ENABLE-SIMPLER-PARSING-SVCPARAMVALUE-CONTAIN",
+          "section": "7.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A port parameter's value carries no escape sequences.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-AAAA-RECORDS-TARGETNAME-LOCALLY-AVAILABLE",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Address hints are ignored where the target's own address records are already available.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-OTHERWISE-PERFORM-AAAA-QUERIES-TARGETNAME",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Otherwise the client resolves the target and uses those addresses.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-OTHERWISE-PERFORM-AAAA-QUERIES-TARGETNAME-2",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The hints are used only until that resolution answers.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-7.3-SHALL-PRESENTATION-VALUE-COMMA-SEPARATED-LIST",
+          "section": "7.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "An address hint is written in presentation format as a comma-separated list of addresses of its family.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-7.3-MUST-NOT-ENABLE-SIMPLER-PARSING-SVCPARAMVALUE-CONTAIN",
+          "section": "7.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Its value carries no escape sequences.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-LIKE-AAAA-RRSET-LIST-ADDRESSES",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The hinted addresses are an unordered set and are tried in a randomised order.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-BEST-PERFORMANCE-SERVER-OPERATORS-INCLUDE",
+          "section": "7.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server operator publishing a hint for one address family publishes one for the other too.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-NOT-THESE-PARAMETERS-INTENDED-MINIMIZE-ADDITIONAL",
+          "section": "7.3",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Hints are not published where the resolver is expected to supply the address records itself.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-7.3-SHOULD-NOT-WHEN-TARGETNAME-SERVICE-NAME-OWNER",
+          "section": "7.3",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Nor where the target is the service name or the owner name, which the client is already resolving.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-8-SHOULD-SVCB-PROTOCOL-MAPPING-SPECIFY-SET",
+          "section": "8",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A protocol mapping names the keys that become mandatory whenever they appear.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-8-SHALL-PRESENTATION-VALUE-COMMA-SEPARATED-LIST",
+          "section": "8",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The mandatory parameter is written as a comma-separated list of keys, by name or by number.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-8-MUST-NOT-KEYS-APPEAR-ORDER-BUT-APPEAR",
+          "section": "8",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Those keys may be listed in any order but none is listed twice.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-8-MUST-SELF-CONSISTENCY-SECTION-LISTED-KEYS",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A key the list names also appears among the record's own parameters.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-8-MUST-NOT-ENABLE-SIMPLER-PARSING-SVCPARAMVALUE-CONTAIN",
+          "section": "8",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The mandatory parameter's value carries no escape sequences.",
+          "disposition": "NotApplicable",
+          "reason": "The encoded record never reaches this package. A caller installs a resolver and that resolver hands over a decoded value carrying four fields -- a protocol set, a port, whether the answer was authenticated, and how long it lasts -- so the wire and presentation formats this clause governs are the resolver's to read and this package's never to see."
+        },
+        {
+          "id": "RFC9460-8-MUST-NOT-SVCPARAMKEY-ALWAYS-AUTOMATICALLY-MANDATORY-APPEAR",
+          "section": "8",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The mandatory key does not list itself.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-8-SHOULD-NOT-OTHER-AUTOMATICALLY-MANDATORY-KEYS-APPEAR",
+          "section": "8",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "Nor does it list the keys a mapping has already made automatically mandatory.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-9-MUST-NOT-PERFORM-SVCB-QUERIES-ACCEPT-SVCB",
+          "section": "9",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No SVCB query is performed and no SVCB response is accepted for either HTTP scheme. This client asks its resolver for HTTPS records rather than SVCB ones, and makes no query of its own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "with_https_record_resolver"},
+            {"path": "src/http/client.gleam", "symbol": "refresh_https_records"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-9-SHOULD-DESCRIBED-SECTION-EITHER-IMPLEMENT-THESE",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client restricting the destination port implements the relevant keys or ignores the records that carry them.",
+          "disposition": "NotApplicable",
+          "reason": "The typed record this package is handed carries a protocol set, a port, an authentication flag, and an expiry. The parameter this clause governs is not among them, so it is neither read nor acted on; a resolver that understands it decides what to do with it before this package is called."
+        },
+        {
+          "id": "RFC9460-9.1-MUST-NOT-ALWAYS-CONVERT-HTTP-URLS-HTTPS",
+          "section": "9.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A client converts an http URL to https before making one of these queries, so the two schemes do not diverge.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.1-MUST-EXAMPLE-CONTINUE-VALIDATE-TLS-CERTIFICATE",
+          "section": "9.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "TLS certificate names are still validated against the origin rather than against the record's target. The alternative is reached under the origin's own name, and the certificate is still checked against that name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "from_https_record"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-9.2.2-MUST-NOT-DNSSEC-SIGNING-VERIFICATION-WHICH-WOULD",
+          "section": "9.2.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The resolution process is modelled as an untrusted channel unless it is signed and verified. A record is used only when the resolver marked its answer authenticated; an unauthenticated one is dropped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/client.gleam", "symbol": "HttpsRecord"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-9.2.3-NOT-RECOMMENDED-SHORTENING-TTL-COMPENSATE-INCORRECT-CACHING",
+          "section": "9.2.3",
+          "level": "NOT RECOMMENDED",
+          "roles": ["server"],
+          "summary": "A TTL is not shortened to compensate for resolvers that cache incorrectly.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-9.2.3-SHOULD-INSTEAD-SERVER-OPERATORS-MAINTAIN-COMPATIBILITY",
+          "section": "9.2.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server operator keeps serving what expired records promised until the clients holding them have moved on.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-9.3-SHOULD-IMPLEMENT-SUPPORT-BOTH-ALT-SVC",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client holding both a cached alternative service and one of these records reconciles them rather than using one blindly. A record is asked for only when no usable alternative is already known, so the two sources do not race to overwrite each other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "refresh_https_records"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_alt_svc_enables_http3_for_a_replayable_origin_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-9.3-SHOULD-ALT-AUTHORITIES-CARRY-SAME-SVCPARAMS",
+          "section": "9.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An alternative authority carries the same parameters as its origin unless a difference is known to be safe.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-9.4-MUST-NOT-USE-HTTPS-RR-RESPONSE-UNLESS",
+          "section": "9.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A record's response is used only by a client that supports Server Name Indication and sends the name in it. The transport always sends the server name, so a record's answer is never used without one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "valid_server_name"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-9.5-SHOULD-PRIOR-MAKING-HTTP-SCHEME-REQUEST",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client makes one of these lookups before an http-scheme request, to find whether the origin publishes one.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.5-SHOULD-DO-SO-CONSTRUCT-CORRESPONDING-HTTPS",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "It builds the corresponding https URL by the stated steps to do so.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.5-SHOULD-HTTPS-RR-QUERY-HTTPS-URL",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A response carrying an alias record or a compatible service record redirects the request to that https URL.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.5-MUST-NOT-RECEIPT-INCOMPATIBLE-SERVICEMODE-RR-DOES",
+          "section": "9.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "An incompatible service record does not trigger that redirect.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.5-MUST-NOT-ORIGINS-PUBLISH-HTTPS-RRS-THEREFORE",
+          "section": "9.5",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "An origin publishing these records does not rely on the user to work around a client that cannot use them.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-9.6-SHOULD-EXAMPLE-SUPPORT-HTTPS-RRS-IMPLEMENT",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client implementing a protocol layered on HTTP applies the record it found to that protocol's own handshake.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-9.6-SHOULD-WHEN-HTTP-USED-CONTEXT-WHERE",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Where a URL or a redirect does not apply, such as a connection to a proxy, the client applies what it found some other way.",
+          "disposition": "NotApplicable",
+          "reason": "This client performs no scheme upgrade from these records. It asks about the origin it was already going to dial, over the scheme the caller chose, and uses what comes back only to select a protocol for that same origin."
+        },
+        {
+          "id": "RFC9460-10.1-SHOULD-WHEN-USING-GENERIC-SVCB-RR",
+          "section": "10.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A zone owner aliasing with the generic record type picks target names that say which scheme they are for.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-10.2-SHOULD-AVOID-DELAY-USING-NON-CONFORMING",
+          "section": "10.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A domain owner keeps the number of alias records small, because each one costs a round trip on a resolver that does not help.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-10.2-SHOULD-AVOID-DELAY-USING-NON-CONFORMING-2",
+          "section": "10.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The same holds for the chains those aliases form.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-10.2-SHOULD-DOMAIN-OWNERS-AVOID-USING-TARGETNAME",
+          "section": "10.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A target name below a DNAME is avoided, because it makes responses slower and larger for no gain.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-10.2-NOT-RECOMMENDED-ALSO-ZONE-STRUCTURES-REQUIRE-FOLLOWING",
+          "section": "10.2",
+          "level": "NOT RECOMMENDED",
+          "roles": ["server"],
+          "summary": "A zone needing more than eight aliases followed is not published.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-11-SHOULD-SERVER-OPERATORS-IMPLEMENTING-STANDARD-ALSO",
+          "section": "11",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A server operator implementing this document also implements TLS 1.3 and certificate status stapling.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a zone operator, a domain owner, or a server operator publishing the records. This package publishes no DNS zone and no records of its own; it reads what a caller's resolver gives it."
+        },
+        {
+          "id": "RFC9460-11-MUST-SPECIFICATION-USE-SVCB-PROTOCOL-HAVE",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A specification using these records with a protocol registers its scheme under the record type.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-11-MUST-SCHEME-HAVE-ENTRY-UNIFORM-RESOURCE",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "That scheme has an entry in the URI schemes registry.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-11-MUST-SCHEME-HAVE-ENTRY-UNIFORM-RESOURCE-2",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "And a defined specification for how it uses the record.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-12-REQUIRED-SVCB-HTTPS-RRS-PERMIT-DISTRIBUTION",
+          "section": "12",
+          "level": "REQUIRED",
+          "roles": ["client"],
+          "summary": "A client is required to verify that an alternative endpoint is authoritative for the origin, because these records travel over an untrusted channel. The alternative is used only when the answer was authenticated and its port is the origin's own, and the connection to it still verifies the origin's certificate.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "store_https_records"},
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "supports_same_port"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-12-MUST-ENSURE-THEIR-DNS-CACHE-PARTITIONED",
+          "section": "12",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client's DNS cache is partitioned per local network, or flushed when the network changes. The store holding what a record established is partitioned by the network isolation key, so a record learned on one network is not used on another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "network_isolation_key"},
+            {"path": "src/http/client.gleam", "symbol": "with_network_isolation_key"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_alt_svc_enables_http3_for_a_replayable_origin_test"}
+          ]
+        },
+        {
+          "id": "RFC9460-12-SHOULD-MIGHT-SUBJECT-SUCH-ATTACKS-IGNORE",
+          "section": "12",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that might be attacked this way ignores an alias record naming the root label.",
+          "disposition": "NotApplicable",
+          "reason": "The query is the caller's resolver's. This client asks it once for an origin, under a finite timeout, and only when protocol discovery is enabled and no usable alternative is already known; the alias chains, the follow-up queries, and the ordering this clause governs happen inside that resolver and are not observable here."
+        },
+        {
+          "id": "RFC9460-12-SHOULD-SAME-CONCERNS-APPLY-SRV-RECORDS",
+          "section": "12",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A mapping document says how its protocol mitigates the same class of redirection attack.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever writes a protocol mapping for these records, or registers a key or a scheme for one. This package writes no mapping and registers nothing."
+        },
+        {
+          "id": "RFC9460-14.3.1-MUST-REGISTRATION-INCLUDE-FOLLOWING-FIELDS",
+          "section": "14.3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A parameter key registration includes the stated fields.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no parameter key and no scheme."
+        },
+        {
+          "id": "RFC9460-14.3.1-MUST-CHARACTERS-REGISTERED-NAME-FIELD-ENTRY",
+          "section": "14.3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Its registered name is lowercase alphanumeric characters and hyphens.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no parameter key and no scheme."
+        },
+        {
+          "id": "RFC9460-14.3.1-MUST-NOT-NAME-START-KEY-INVALID",
+          "section": "14.3.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The name does not begin with either reserved prefix.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no parameter key and no scheme."
+        },
+        {
+          "id": "RFC9460-14.3.1-MUST-DESIGNATED-EXPERT-ENSURE-REFERENCE-STABLE",
+          "section": "14.3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The designated expert checks that the reference is stable, public, and says how the value is converted.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers no parameter key and no scheme."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 3,
+        "entries": [
+          {
+            "id": 7871,
+            "section": "2.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction concerned the wire-format section's own wording about parameter ordering. This package never sees a record's encoded form -- its resolver hands over a decoded value -- so neither the published text nor the proposed one describes anything it does."
+          },
+          {
+            "id": 8168,
+            "section": "2.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "A second rejected correction to the same wire-format section, and inapplicable here for the same reason: no encoded record is parsed."
+          },
+          {
+            "id": 8787,
+            "section": "2.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "A third rejected correction to that section, likewise about how the wire format is described rather than about what a client does with a decoded record."
+          }
+        ]
+      }
+    },
     {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
     {
       "id": "RFC9525",
