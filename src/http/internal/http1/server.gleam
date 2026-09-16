@@ -994,8 +994,9 @@ fn receive_and_handle_request(
     |> result.map_error(fn(_) { protocol_error() }),
   )
   case receive_head(socket, parser, buffered, config) {
-    Error(failure) -> {
-      let _sent = send_simple_error(socket, 400, "Bad Request", config)
+    Error(#(status, failure)) -> {
+      let _sent =
+        send_simple_error(socket, status, reason_phrase(status), config)
       Error(failure)
     }
     Ok(#(socket, head, remaining)) -> {
@@ -1027,21 +1028,30 @@ fn receive_and_handle_request(
   }
 }
 
+/// Read one request head, naming the status its failure is answered with.
+///
+/// RFC 9112 section 3 asks for 414 when a request target is longer than the
+/// server will parse, which the parser names apart from any other framing
+/// failure. Every other failure keeps the 400 this section's own error handling
+/// calls for.
 fn receive_head(
   socket: transport.Socket,
   parser: http1.RequestParser,
   input: BitArray,
   config: Config,
-) -> Result(#(transport.Socket, http1.RequestHead, BitArray), error.Error) {
+) -> Result(
+  #(transport.Socket, http1.RequestHead, BitArray),
+  #(Int, error.Error),
+) {
   case http1.feed_request(parser, input) {
-    Error(_) -> Error(protocol_error())
-    Ok(http1.RequestReady(head, remaining)) -> {
-      use <- require(
-        bit_array.byte_size(remaining) <= config.maximum_stream_buffer_bytes,
-        resource_error(),
-      )
-      Ok(#(socket, head, remaining))
-    }
+    Error(failure) -> Error(#(head_failure_status(failure), protocol_error()))
+    Ok(http1.RequestReady(head, remaining)) ->
+      case
+        bit_array.byte_size(remaining) <= config.maximum_stream_buffer_bytes
+      {
+        False -> Error(#(400, resource_error()))
+        True -> Ok(#(socket, head, remaining))
+      }
     Ok(http1.NeedMore(parser)) ->
       case
         transport.read(
@@ -1050,11 +1060,18 @@ fn receive_head(
           config.idle_timeout_milliseconds,
         )
       {
-        Error(failure) -> Error(map_transport_error(failure))
-        Ok(transport.ReadEnd(_)) -> Error(protocol_error())
+        Error(failure) -> Error(#(400, map_transport_error(failure)))
+        Ok(transport.ReadEnd(_)) -> Error(#(400, protocol_error()))
         Ok(transport.ReadData(bytes, socket)) ->
           receive_head(socket, parser, bytes, config)
       }
+  }
+}
+
+fn head_failure_status(failure: http1.Error) -> Int {
+  case failure {
+    http1.RequestLineTooLong(_) -> 414
+    _ -> 400
   }
 }
 
@@ -1554,12 +1571,19 @@ fn make_request(
     |> result.map_error(fn(_) { protocol_error() }),
   )
   use target <- result.try(bytes_to_string(head.target))
-  use #(path, query) <- result.try(parse_target(method, target))
+  use parts <- result.try(parse_target(method, target, scheme))
+  let TargetParts(path, query, target_authority) = parts
   use headers <- result.try(headers_to_strings(head.headers))
-  use authority <- result.try(
-    find_header(headers, "host")
-    |> result.map_error(fn(_) { protocol_error() }),
-  )
+  // RFC 9112 section 3.2.2: an absolute-form target carries the authority the
+  // request is for, and the Host field is ignored in its favour. Where there is
+  // no such authority the Host field is the only one there is, and section 3.2
+  // requires it.
+  use authority <- result.try(case target_authority {
+    Some(authority) -> Ok(authority)
+    None ->
+      find_header(headers, "host")
+      |> result.map_error(fn(_) { protocol_error() })
+  })
   use #(host, port) <- result.try(parse_authority(authority))
   Ok(request.Request(
     method:,
@@ -1591,24 +1615,77 @@ fn make_request_or_reject(
   }
 }
 
+/// What a request needs from its target.
+///
+/// The authority is present only for the absolute form, which RFC 9112 section
+/// 3.2.2 says is the one a server uses in place of the Host field. Carrying it
+/// here rather than reading the Host field twice is what makes the two
+/// impossible to disagree about which resource was asked for.
+type TargetParts {
+  TargetParts(path: String, query: Option(String), authority: Option(String))
+}
+
 fn parse_target(
   method: gleam_http.Method,
   target: String,
-) -> Result(#(String, Option(String)), error.Error) {
+  scheme: gleam_http.Scheme,
+) -> Result(TargetParts, error.Error) {
   case method, target {
     gleam_http.Connect, target -> {
       use _ <- result.try(parse_connect_authority(target))
-      Ok(#(target, None))
+      Ok(TargetParts(target, None, None))
     }
-    gleam_http.Options, "*" -> Ok(#("*", None))
+    gleam_http.Options, "*" -> Ok(TargetParts("*", None, None))
     _, target ->
       case string.starts_with(target, "/") {
-        False -> Error(protocol_error())
-        True ->
-          case string.split_once(target, on: "?") {
-            Ok(#(path, query)) -> Ok(#(path, Some(query)))
-            Error(Nil) -> Ok(#(target, None))
-          }
+        True -> Ok(origin_form(target, None))
+        False -> parse_absolute_form(target, scheme)
+      }
+  }
+}
+
+fn origin_form(target: String, authority: Option(String)) -> TargetParts {
+  case string.split_once(target, on: "?") {
+    Ok(#(path, query)) -> TargetParts(path, Some(query), authority)
+    Error(Nil) -> TargetParts(target, None, authority)
+  }
+}
+
+/// Read an absolute-form request target.
+///
+/// The scheme has to be the one this listener serves. A target naming the other
+/// one is a request for a resource this connection cannot be answering, and
+/// answering it anyway would let the scheme a client asked for and the scheme
+/// its bytes travelled under differ.
+fn parse_absolute_form(
+  target: String,
+  scheme: gleam_http.Scheme,
+) -> Result(TargetParts, error.Error) {
+  use #(target_scheme, rest) <- result.try(
+    string.split_once(target, on: "://")
+    |> result.map_error(fn(_) { protocol_error() }),
+  )
+  use <- require(
+    string.lowercase(target_scheme) == gleam_http.scheme_to_string(scheme),
+    protocol_error(),
+  )
+  let #(authority, path) = split_authority(rest)
+  use <- require(authority != "", protocol_error())
+  use _ <- result.try(parse_authority(authority))
+  Ok(origin_form(path, Some(authority)))
+}
+
+/// Split an absolute form's authority from the path and query after it.
+///
+/// A query may follow the authority with no path between them, in which case
+/// the path is the root the origin form would have spelled explicitly.
+fn split_authority(rest: String) -> #(String, String) {
+  case string.split_once(rest, on: "/") {
+    Ok(#(authority, tail)) -> #(authority, "/" <> tail)
+    Error(Nil) ->
+      case string.split_once(rest, on: "?") {
+        Ok(#(authority, query)) -> #(authority, "/?" <> query)
+        Error(Nil) -> #(rest, "/")
       }
   }
 }
@@ -1981,6 +2058,7 @@ fn reason_phrase(status: Int) -> String {
     405 -> "Method Not Allowed"
     408 -> "Request Timeout"
     413 -> "Content Too Large"
+    414 -> "URI Too Long"
     417 -> "Expectation Failed"
     421 -> "Misdirected Request"
     429 -> "Too Many Requests"

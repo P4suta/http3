@@ -4,7 +4,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
@@ -74,6 +74,143 @@ pub fn malformed_framing_is_rejected_before_any_handler_runs_test() -> Nil {
   let assert Ok(text) = bit_array.to_string(received)
   assert string.starts_with(text, "HTTP/1.1 400 Bad Request\r\n")
   assert process.receive(called, within: 20) == Error(Nil)
+
+  stop_server(listener, executor)
+}
+
+pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
+  // RFC 9112 section 3.2.2: a server accepts the absolute form of request
+  // target even though most clients send it only to a proxy, and when it does,
+  // it ignores the Host field and uses the authority the target carries. The
+  // two cannot then disagree about which resource was asked for, which is the
+  // ambiguity a request-smuggling attempt lives in.
+  let seen = process.new_subject()
+  let handler = fn(request: Request(body.Body), _) {
+    process.send(seen, #(
+      request.host,
+      request.port,
+      request.path,
+      request.query,
+    ))
+    Ok(response.Response(status: 204, headers: [], body: body.empty()))
+  }
+  let #(executor, listener, port) = cleartext_server(handler)
+
+  let assert Ok(client) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      client,
+      bit_array.from_string(
+        "GET http://target.example:8080/a/b?q=1 HTTP/1.1\r\n"
+        <> "Host: other.example\r\nConnection: close\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, received)) = read_to_end(client, [])
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 204 No Content\r\n")
+  assert process.receive(seen, within: 1000)
+    == Ok(#("target.example", Some(8080), "/a/b", Some("q=1")))
+
+  // An absolute form with no path is the root, and an authority with no port
+  // keeps the port unstated rather than inventing one.
+  let assert Ok(rooted) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      rooted,
+      bit_array.from_string(
+        "GET http://target.example HTTP/1.1\r\nHost: other.example\r\n"
+        <> "Connection: close\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, _)) = read_to_end(rooted, [])
+  assert process.receive(seen, within: 1000)
+    == Ok(#("target.example", None, "/", None))
+
+  // The scheme has to be the one this listener serves: a secured target on a
+  // cleartext connection is not a request this server can answer.
+  let assert Ok(mismatched) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      mismatched,
+      bit_array.from_string(
+        "GET https://target.example/ HTTP/1.1\r\nHost: target.example\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, refused)) = read_to_end(mismatched, [])
+  let assert Ok(refused_text) = bit_array.to_string(refused)
+  assert string.starts_with(refused_text, "HTTP/1.1 400 Bad Request\r\n")
+  assert process.receive(seen, within: 20) == Error(Nil)
+
+  // An absolute form whose authority does not parse is refused rather than
+  // falling back to the Host field.
+  let assert Ok(bad) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      bad,
+      bit_array.from_string(
+        "GET http:///a HTTP/1.1\r\nHost: other.example\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, bad_bytes)) = read_to_end(bad, [])
+  let assert Ok(bad_text) = bit_array.to_string(bad_bytes)
+  assert string.starts_with(bad_text, "HTTP/1.1 400 Bad Request\r\n")
+  assert process.receive(seen, within: 20) == Error(Nil)
+
+  stop_server(listener, executor)
+}
+
+pub fn an_overlong_request_target_is_a_414_test() -> Nil {
+  // RFC 9112 section 3: a server that receives a request target longer than any
+  // URI it wishes to parse answers 414 rather than the 400 every other framing
+  // failure gets. The bound is the configured line bound, because the other two
+  // parts of a request line are a method token and a fixed version string.
+  let called = process.new_subject()
+  let handler = fn(_, _) {
+    process.send(called, Nil)
+    Ok(response.Response(status: 204, headers: [], body: body.empty()))
+  }
+  let assert Ok(executor) = server.start(server.defaults(), handler)
+  let assert Ok(config) =
+    server.http1_defaults()
+    |> server.allow_http1_cleartext
+    |> server.with_http1_limits(
+      maximum_head_bytes: 4096,
+      maximum_header_count: 16,
+      maximum_line_bytes: 64,
+      maximum_body_bytes: 1024,
+      maximum_stream_buffer_bytes: 4096,
+    )
+  let assert Ok(listener) =
+    server.listen_http1(executor, <<127, 0, 0, 1>>, 0, config)
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+
+  let assert Ok(client) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      client,
+      bit_array.from_string(
+        "GET /" <> string.repeat("a", 200) <> " HTTP/1.1\r\nHost: a\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, received)) = read_to_end(client, [])
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 414 URI Too Long\r\n")
+  assert process.receive(called, within: 20) == Error(Nil)
+
+  // A field line over the same bound is still the generic framing failure.
+  let assert Ok(other) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      other,
+      bit_array.from_string(
+        "GET / HTTP/1.1\r\nHost: a\r\nX-Note: "
+        <> string.repeat("a", 200)
+        <> "\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, second)) = read_to_end(other, [])
+  let assert Ok(second_text) = bit_array.to_string(second)
+  assert string.starts_with(second_text, "HTTP/1.1 400 Bad Request\r\n")
 
   stop_server(listener, executor)
 }
@@ -833,6 +970,7 @@ pub fn every_status_line_carries_its_registered_reason_phrase_test() -> Nil {
     #(405, "Method Not Allowed"),
     #(408, "Request Timeout"),
     #(413, "Content Too Large"),
+    #(414, "URI Too Long"),
     #(417, "Expectation Failed"),
     #(421, "Misdirected Request"),
     #(429, "Too Many Requests"),

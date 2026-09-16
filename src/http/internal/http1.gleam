@@ -86,6 +86,7 @@ pub type Error {
   NonByteAligned
   HeadTooLarge(maximum: Int)
   LineTooLong(maximum: Int)
+  RequestLineTooLong(maximum: Int)
   TooManyHeaders(maximum: Int)
   InvalidLineEnding
   InvalidRequestLine
@@ -195,9 +196,12 @@ fn parse_complete_request(
     |> result.replace_error(InvalidLineEnding),
   )
   use <- require(valid_line_endings(head_lines), InvalidLineEnding)
-  use lines <- result.try(
-    split_lines(head_lines, limits.maximum_line_bytes, []),
-  )
+  use lines <- result.try(split_lines(
+    head_lines,
+    limits.maximum_line_bytes,
+    [],
+    RequestLineTooLong(limits.maximum_line_bytes),
+  ))
   use head <- result.try(parse_request_lines(lines, limits.maximum_header_count))
   use remaining <- result.try(
     bit_array.slice(
@@ -217,7 +221,7 @@ fn retain_incomplete_request(
   use <- require(valid_line_endings(combined), InvalidLineEnding)
   use <- require(
     partial_lines_within_limit(combined, limits.maximum_line_bytes, 0),
-    LineTooLong(limits.maximum_line_bytes),
+    over_long_partial_line(combined, limits.maximum_line_bytes),
   )
   use <- require(
     bit_array.byte_size(combined) < limits.maximum_head_bytes,
@@ -241,9 +245,12 @@ fn parse_complete_response(
     |> result.replace_error(InvalidLineEnding),
   )
   use <- require(valid_line_endings(head_lines), InvalidLineEnding)
-  use lines <- result.try(
-    split_lines(head_lines, limits.maximum_line_bytes, []),
-  )
+  use lines <- result.try(split_lines(
+    head_lines,
+    limits.maximum_line_bytes,
+    [],
+    LineTooLong(limits.maximum_line_bytes),
+  ))
   use head <- result.try(parse_response_lines(
     lines,
     limits.maximum_header_count,
@@ -283,9 +290,13 @@ fn parse_request_lines(
   case lines {
     [request_line, ..header_lines] -> {
       use #(method, target) <- result.try(parse_request_line(request_line))
-      use headers <- result.try(
-        parse_headers(header_lines, maximum_header_count, 0, []),
-      )
+      use headers <- result.try(parse_headers(
+        header_lines,
+        maximum_header_count,
+        0,
+        [],
+        RejectFolding,
+      ))
       use fields <- result.try(analyse_message_fields(
         headers,
         MessageFields(None, False, 0),
@@ -305,9 +316,13 @@ fn parse_response_lines(
   case lines {
     [status_line, ..header_lines] -> {
       use #(status, reason) <- result.try(parse_status_line(status_line))
-      use headers <- result.try(
-        parse_headers(header_lines, maximum_header_count, 0, []),
-      )
+      use headers <- result.try(parse_headers(
+        header_lines,
+        maximum_header_count,
+        0,
+        [],
+        UnfoldToSpace,
+      ))
       use fields <- result.try(analyse_message_fields(
         headers,
         MessageFields(None, False, 0),
@@ -359,19 +374,66 @@ fn parse_status_line(line: BitArray) -> Result(#(Int, BitArray), Error) {
   }
 }
 
+/// What a recipient does with an obsolete line folding.
+///
+/// RFC 9112 section 5.2 gives the two directions different answers. A server
+/// receiving one in a request rejects the message, because a value assembled
+/// from several lines is a value a downstream reader could reassemble
+/// differently. A user agent receiving one in a response replaces each fold
+/// with a space, because there is no downstream to disagree with and refusing
+/// would make a response unreadable over something the sender chose.
+type Folding {
+  RejectFolding
+  UnfoldToSpace
+}
+
 fn parse_headers(
   lines: List(BitArray),
   maximum: Int,
   count: Int,
   reversed: List(Header),
+  folding: Folding,
 ) -> Result(List(Header), Error) {
   case lines {
     [] -> Ok(list.reverse(reversed))
-    [line, ..rest] -> {
-      use <- require(count < maximum, TooManyHeaders(maximum))
-      use header <- result.try(parse_header(line))
-      parse_headers(rest, maximum, count + 1, [header, ..reversed])
-    }
+    [line, ..rest] ->
+      case folded_line(line), folding, reversed {
+        True, UnfoldToSpace, [previous, ..earlier] -> {
+          use continued <- result.try(unfold(previous, line))
+          parse_headers(rest, maximum, count, [continued, ..earlier], folding)
+        }
+        True, _, _ -> Error(ObsoleteLineFolding)
+        False, _, _ -> {
+          use <- require(count < maximum, TooManyHeaders(maximum))
+          use header <- result.try(parse_header(line))
+          parse_headers(rest, maximum, count + 1, [header, ..reversed], folding)
+        }
+      }
+  }
+}
+
+fn folded_line(line: BitArray) -> Bool {
+  case line {
+    <<0x20, _:bytes>> | <<0x09, _:bytes>> -> True
+    _ -> False
+  }
+}
+
+/// Replace one fold with a single space.
+///
+/// The continuation's own leading and trailing whitespace goes with the fold it
+/// belonged to, so the space this leaves is the one this section asks for
+/// rather than that one plus whatever the sender indented with.
+fn unfold(previous: Header, line: BitArray) -> Result(Header, Error) {
+  use <- require(valid_field_value(line), InvalidHeaderValue)
+  use continuation <- result.try(trim_ows(line))
+  let Header(name, value) = previous
+  case value {
+    // A field whose own value was empty is continued by the fold alone: the
+    // space this section asks for would be leading whitespace, which is not
+    // part of a field value.
+    <<>> -> Ok(Header(name, continuation))
+    _ -> Ok(Header(name, <<value:bits, 0x20, continuation:bits>>))
   }
 }
 
@@ -384,8 +446,17 @@ pub fn parse_trailer_block(
   case bytes {
     <<>> -> Ok([])
     _ -> {
+<<<<<<< Updated upstream
       use lines <- result.try(split_lines(bytes, maximum_line_bytes, []))
-      parse_headers(lines, maximum_header_count, 0, [])
+=======
+      use lines <- result.try(split_lines(
+        bytes,
+        maximum_line_bytes,
+        [],
+        LineTooLong(maximum_line_bytes),
+      ))
+>>>>>>> Stashed changes
+      parse_headers(lines, maximum_header_count, 0, [], RejectFolding)
     }
   }
 }
@@ -560,6 +631,7 @@ fn split_lines(
   bytes: BitArray,
   maximum_line_bytes: Int,
   reversed: List(BitArray),
+  first_line_error: Error,
 ) -> Result(List(BitArray), Error) {
   case bytes {
     <<>> -> Ok(list.reverse(reversed))
@@ -567,10 +639,10 @@ fn split_lines(
       case find_crlf(bytes, 0) {
         None -> Error(InvalidLineEnding)
         Some(length) -> {
-          use <- require(
-            length <= maximum_line_bytes,
-            LineTooLong(maximum_line_bytes),
-          )
+          use <- require(length <= maximum_line_bytes, case reversed {
+            [] -> first_line_error
+            _ -> LineTooLong(maximum_line_bytes)
+          })
           use line <- result.try(
             bit_array.slice(bytes, at: 0, take: length)
             |> result.replace_error(InvalidLineEnding),
@@ -583,7 +655,12 @@ fn split_lines(
             )
             |> result.replace_error(InvalidLineEnding),
           )
-          split_lines(rest, maximum_line_bytes, [line, ..reversed])
+          split_lines(
+            rest,
+            maximum_line_bytes,
+            [line, ..reversed],
+            first_line_error,
+          )
         }
       }
   }
@@ -639,6 +716,20 @@ fn valid_line_endings(bytes: BitArray) -> Bool {
     <<0x0a, _:bytes>> -> False
     <<_, rest:bytes>> -> valid_line_endings(rest)
     _ -> False
+  }
+}
+
+/// Name the bound an incomplete request head broke.
+///
+/// The first line of a request head is the request line, whose three parts are
+/// a method token, the request target, and a fixed version string; the target
+/// is the only one a peer can make long. RFC 9112 section 3 asks a server for
+/// 414 rather than a generic framing error when that is what happened, so a
+/// first line already past the bound is named apart from a field line that is.
+fn over_long_partial_line(bytes: BitArray, maximum: Int) -> Error {
+  case find_crlf(bytes, 0) {
+    Some(length) if length <= maximum -> LineTooLong(maximum)
+    _ -> RequestLineTooLong(maximum)
   }
 }
 

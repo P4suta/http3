@@ -363,6 +363,18 @@
   lifetime was kept for the session default instead. Dates are read with the
   section 5.1.1 algorithm, `Max-Age` still takes precedence, and the date is
   turned into a remaining duration at parse time so the store stays monotonic.
+- Replaced an obsolete line folding in a response with a space rather than
+  refusing the message, which RFC 9112 section 5.2 requires of a user agent.
+  A request carrying one is still rejected, which the same section requires of
+  a server; a fold with no field before it is refused in both directions.
+- Answered 414 rather than 400 when a request line passes the configured line
+  bound, which RFC 9112 section 3 requires of an over-long request target. The
+  parser names that case apart from an over-long field line, which keeps the
+  generic framing failure.
+- Accepted the absolute form of request target, which RFC 9112 section 3.2.2
+  requires of a server. The authority it carries is the one the request gets
+  and the Host field is not consulted at all, so the two cannot disagree; the
+  scheme has to be the one the listener serves.
 - Reported a send held by an exhausted endpoint memory grant as a transient
   endpoint overload even once the stream's own buffer ceiling had filled behind
   it. The tie between the two exhausted bounds went to the ceiling, so the
