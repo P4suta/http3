@@ -254,3 +254,84 @@ pub fn resolved_addresses_interleave_the_two_families_test() -> Nil {
     == ["2001:db8::1", "2001:db8::2"]
   assert interleave([]) == []
 }
+
+pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
+  // RFC 8305 section 3: the two queries are issued as close together as
+  // possible and resolution is asynchronous, so neither family waits on the
+  // other's answer. The first answer starts the Resolution Delay of section 8,
+  // and a straggler is waited for only until that runs out.
+  //
+  // The delays here are far apart on purpose: two seconds against fifty
+  // milliseconds, so the assertions hold with a wide margin on a loaded host
+  // rather than resting on the clock.
+  let trace = http_test_support.family_resolution_trace
+
+  // Both answer at once: nothing is delayed, and both are present.
+  let #(elapsed, six, four) = trace(0, 0, 0)
+  assert six
+  assert four
+  assert elapsed < 500
+
+  // The AAAA answer never arrives. Sequential lookups would have cost the whole
+  // two seconds before the A answer was even asked for; here the A answer is
+  // already in and the wait ends with the Resolution Delay.
+  let #(elapsed, six, four) = trace(2000, 0, 0)
+  assert !six
+  assert four
+  assert elapsed < 500
+
+  // The same in the other direction, which is the case that matters least but
+  // must not behave differently.
+  let #(elapsed, six, four) = trace(0, 2000, 0)
+  assert six
+  assert !four
+  assert elapsed < 500
+
+  // A straggler inside the Resolution Delay is still taken.
+  let #(_, six, four) = trace(10, 0, 0)
+  assert six
+  assert four
+
+  // A query that dies without answering counts as answering nothing and does
+  // not hold the other family, which still answers in full.
+  let #(elapsed, six, four) = trace(-1, 0, 0)
+  assert !six
+  assert four
+  assert elapsed < 500
+
+  // Both dying leaves nothing, and returns rather than waiting.
+  let #(elapsed, six, four) = trace(-1, -1, 0)
+  assert !six
+  assert !four
+  assert elapsed < 500
+}
+
+pub fn a_resolved_name_is_sorted_and_interleaved_before_it_is_attempted_test() -> Nil {
+  // The production resolution path, not the two steps on their own: both
+  // families are gathered, ordered by RFC 6724, and then interleaved. The
+  // concurrency of the two queries is pinned separately, in
+  // both_address_families_are_asked_for_at_once_test, because the timing of a
+  // real resolver is not something a host file can control.
+  //
+  // The vectors hold whether or not the host has IPv6 connectivity. 3ffe::/16
+  // carries precedence 1 in the default policy table, below the IPv4-mapped
+  // prefix, so it sorts after an IPv4 address on a host that can reach it; on a
+  // host that cannot, rule 1 puts it last for want of a source. Either way it
+  // does not lead, which the unsorted concatenation of the two families would
+  // have had it do.
+  assert http_test_support.resolved_host_order(
+      "http-order-one.test",
+      ["127.0.0.2", "127.0.0.3"],
+      ["3ffe::1"],
+    )
+    == ["127.0.0.2", "3ffe::1", "127.0.0.3"]
+
+  // The IPv6 loopback carries precedence 50, the highest in the table, so here
+  // IPv6 leads and the interleave pulls the single IPv4 address to second.
+  assert http_test_support.resolved_host_order(
+      "http-order-two.test",
+      ["127.0.0.2"],
+      ["::1", "3ffe::1"],
+    )
+    == ["::1", "127.0.0.2", "3ffe::1"]
+}

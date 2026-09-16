@@ -432,3 +432,8 @@
   is never written to, so source selection and its deprecated-address rule stay
   where the interface state is. The ordered list then interleaves the two
   families, so an impaired family costs one attempt rather than a run of them.
+- Asked for both address families at once instead of one after the other, which
+  RFC 8305 section 3 requires of the resolution step: the A query used to be
+  issued only once the AAAA answer had come back, so a name whose IPv6 answer
+  was slow paid for it twice over. The first answer now starts the Resolution
+  Delay of section 8, and a straggler is waited for only until that runs out.

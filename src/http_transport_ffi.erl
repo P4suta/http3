@@ -17,6 +17,8 @@
     server_tls_options/2,
     sort_destinations/2,
     interleave_families/1,
+    resolve_families/1,
+    resolve_host/1,
     shutdown_write/1,
     socket_local_endpoint/1,
     stop/1,
@@ -30,6 +32,8 @@
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
 %% Nothing is sent to it; the port only completes the connect.
 -define(SOURCE_PROBE_PORT, 9).
+%% RFC 8305 section 8: the recommended Resolution Delay.
+-define(RESOLUTION_DELAY, 50).
 %% RFC 8305 section 8: the recommended Connection Attempt Delay.
 -define(CONNECTION_ATTEMPT_DELAY, 250).
 %% A TLS alert description carries peer-supplied certificate names, so the text
@@ -613,22 +617,108 @@ resolve_with_deadline(Host, Deadline, TimeoutCode) ->
 -spec resolve_host(string()) ->
     {ok, [{family(), inet:ip_address()}]} | {error, term()}.
 resolve_host(Host) ->
+    %% RFC 8305 section 3: both queries are issued together rather than one
+    %% after the other, so neither family waits on the other's answer, and the
+    %% second answer is waited for only until the Resolution Delay expires. A
+    %% name that has no AAAA record therefore costs that delay rather than a
+    %% full lookup, and one whose AAAA answer is slow is not held behind it.
+    {V6, V4} = resolved_families(Host),
     %% Each family is cut to the ceiling before sorting, so the number of source
     %% probes is bounded by twice it however many addresses the name carries,
     %% and the ordered list is cut again afterwards.
-    V6 = lists:sublist(
-        resolved_family(Host, inet6), ?MAXIMUM_RESOLVED_ADDRESSES
-    ),
-    V4 = lists:sublist(
-        resolved_family(Host, inet), ?MAXIMUM_RESOLVED_ADDRESSES
-    ),
-    Sorted = sort_destinations(V6 ++ V4, fun connected_source/2),
+    Candidates = lists:sublist(V6, ?MAXIMUM_RESOLVED_ADDRESSES)
+        ++ lists:sublist(V4, ?MAXIMUM_RESOLVED_ADDRESSES),
+    Sorted = sort_destinations(Candidates, fun connected_source/2),
     Addresses = lists:sublist(
         interleave_families(Sorted), ?MAXIMUM_RESOLVED_ADDRESSES
     ),
     case Addresses of
         [] -> {error, nxdomain};
         _ -> {ok, Addresses}
+    end.
+
+%% Ask for both families at once and return what answered, waiting for the
+%% second answer only until the Resolution Delay runs out.
+-spec resolved_families(string()) ->
+    {[{family(), inet:ip_address()}], [{family(), inet:ip_address()}]}.
+resolved_families(Host) ->
+    Answers = resolve_families([
+        {inet6, fun() -> resolved_family(Host, inet6) end},
+        {inet, fun() -> resolved_family(Host, inet) end}
+    ]),
+    {maps:get(inet6, Answers, []), maps:get(inet, Answers, [])}.
+
+%% Run every query at once and return the answers that arrived, keyed by family.
+%%
+%% RFC 8305 section 3 asks for the queries to be issued as close together as
+%% possible and for resolution to be asynchronous, and it bounds the wait for a
+%% straggler by the Resolution Delay rather than by the whole lookup: the first
+%% answer starts that clock, and whatever has not arrived when it runs out is
+%% left out. A query that dies without answering counts as answering nothing, so
+%% one broken family never holds the other.
+-spec resolve_families([{family(), fun(() -> term())}]) -> map().
+resolve_families(Queries) ->
+    Parent = self(),
+    Reference = make_ref(),
+    Pending = maps:from_list([
+        spawn_monitor(fun() -> Parent ! {Reference, self(), Family, Query()} end)
+     || {Family, Query} <- Queries
+    ]),
+    Answers = collect_family_answers(Reference, Pending, #{}, infinity),
+    maps:foreach(fun(Worker, Monitor) ->
+        exit(Worker, kill),
+        receive {'DOWN', Monitor, process, Worker, _Reason} -> ok
+        after 0 -> ok
+        end
+    end, Pending),
+    flush_family_answers(Reference),
+    Answers.
+
+-spec collect_family_answers(reference(), map(), map(), timeout()) -> map().
+collect_family_answers(Reference, Pending, Answers, Timeout) ->
+    case map_size(Pending) of
+        0 -> Answers;
+        _ ->
+            receive
+                {Reference, Worker, Family, Addresses}
+                    when is_map_key(Worker, Pending) ->
+                    Next = case map_size(Answers) of
+                        0 -> ?RESOLUTION_DELAY;
+                        _ -> Timeout
+                    end,
+                    collect_family_answers(
+                        Reference,
+                        maps:remove(Worker, Pending),
+                        Answers#{Family => Addresses},
+                        Next
+                    );
+                {'DOWN', Monitor, process, Worker, _Reason}
+                    when is_map_key(Worker, Pending) ->
+                    case maps:get(Worker, Pending) of
+                        Monitor ->
+                            collect_family_answers(
+                                Reference,
+                                maps:remove(Worker, Pending),
+                                Answers,
+                                Timeout
+                            );
+                        _Other ->
+                            collect_family_answers(
+                                Reference, Pending, Answers, Timeout
+                            )
+                    end
+            after Timeout ->
+                Answers
+            end
+    end.
+
+-spec flush_family_answers(reference()) -> ok.
+flush_family_answers(Reference) ->
+    receive
+        {Reference, _Worker, _Family, _Addresses} ->
+            flush_family_answers(Reference)
+    after 0 ->
+        ok
     end.
 
 -spec resolved_family(string(), family()) ->

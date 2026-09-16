@@ -26,6 +26,8 @@
     packet_too_big_wire_vectors/0,
     server_credentials/0,
     sorted_destination_order/1,
+    family_resolution_trace/3,
+    resolved_host_order/3,
     interleaved_destination_order/1,
     start_exclusive_udp_port_guard/0,
     start_task/1,
@@ -786,6 +788,55 @@ address_family(Address) ->
     case parsed_address(Address) of
         {_, _, _, _} -> inet;
         _ -> inet6
+    end.
+
+%% Run the concurrent family resolution with each family's answer delayed by the
+%% given number of milliseconds, where a negative delay means the query dies
+%% without answering. Returns how long the whole collection took and which
+%% families were represented in the result.
+-spec family_resolution_trace(integer(), integer(), integer()) ->
+    {non_neg_integer(), boolean(), boolean()}.
+family_resolution_trace(SixDelay, FourDelay, _Unused) ->
+    Query = fun(Delay, Answer) ->
+        fun() ->
+            case Delay < 0 of
+                true -> exit(resolution_failed);
+                false -> timer:sleep(Delay)
+            end,
+            Answer
+        end
+    end,
+    Started = erlang:monotonic_time(millisecond),
+    Answers = http_transport_ffi:resolve_families([
+        {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
+        {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
+    ]),
+    Elapsed = erlang:monotonic_time(millisecond) - Started,
+    {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}.
+
+%% Register one name with the given IPv4 and IPv6 addresses in the host file,
+%% resolve it through the production path, and return the resolved order.
+-spec resolved_host_order(binary(), [binary()], [binary()]) -> [binary()].
+resolved_host_order(Name, FourAddresses, SixAddresses) ->
+    Host = binary_to_list(Name),
+    PreviousLookup = inet_db:res_option(lookup),
+    ok = inet_db:set_lookup([file | lists:delete(file, PreviousLookup)]),
+    Registered = FourAddresses ++ SixAddresses,
+    lists:foreach(
+        fun(Address) -> ok = inet_db:add_host(parsed_address(Address), [Host]) end,
+        Registered
+    ),
+    try
+        case http_transport_ffi:resolve_host(Host) of
+            {ok, Addresses} -> formatted_addresses(Addresses);
+            {error, _Reason} -> []
+        end
+    after
+        lists:foreach(
+            fun(Address) -> inet_db:del_host(parsed_address(Address)) end,
+            Registered
+        ),
+        ok = inet_db:set_lookup(PreviousLookup)
     end.
 
 -spec exit_now() -> no_return().

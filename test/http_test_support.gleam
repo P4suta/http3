@@ -231,3 +231,22 @@ pub fn sorted_destination_order(
 /// Interleave address families across an already ordered list.
 @external(erlang, "http_test_ffi", "interleaved_destination_order")
 pub fn interleaved_destination_order(addresses: List(String)) -> List(String)
+
+/// Run one concurrent family resolution with each family's answer delayed by
+/// the given milliseconds, where a negative delay makes that query die without
+/// answering. Returns the elapsed milliseconds and which families answered.
+@external(erlang, "http_test_ffi", "family_resolution_trace")
+pub fn family_resolution_trace(
+  ipv6_delay: Int,
+  ipv4_delay: Int,
+  unused: Int,
+) -> #(Int, Bool, Bool)
+
+/// Register one host name with the given IPv4 and IPv6 addresses, resolve it
+/// through the production path, and return the order that came back.
+@external(erlang, "http_test_ffi", "resolved_host_order")
+pub fn resolved_host_order(
+  name: String,
+  ipv4: List(String),
+  ipv6: List(String),
+) -> List(String)
