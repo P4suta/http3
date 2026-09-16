@@ -159,6 +159,63 @@ pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
   stop_server(listener, executor)
 }
 
+pub fn a_response_carries_a_date_the_server_generated_test() -> Nil {
+  // RFC 9110 section 6.6.1: an origin server with a clock sends a Date field in
+  // every 2xx, 3xx, and 4xx response. The handler does not have to remember to:
+  // the server adds one when the response it was given carries none, in the
+  // preferred format section 5.6.7 names.
+  let handler = fn(request: Request(body.Body), _) {
+    case request.path {
+      "/own" ->
+        Ok(response.Response(
+          status: 200,
+          headers: [#("date", "Tue, 20 Apr 2021 02:07:55 GMT")],
+          body: body.empty(),
+        ))
+      "/informational" ->
+        Ok(response.Response(status: 204, headers: [], body: body.empty()))
+      _ -> Ok(response.Response(status: 200, headers: [], body: body.empty()))
+    }
+  }
+  let #(executor, listener, port) = cleartext_server(handler)
+
+  let assert Ok(text) = one_request(port, "/added")
+  assert string.contains(text, "\r\ndate: ")
+  // The preferred format is the fixed-length one: a day name, a two-digit day,
+  // a three-letter month, a four-digit year, and GMT.
+  let assert Ok(#(_, after)) = string.split_once(text, "\r\ndate: ")
+  let assert Ok(#(value, _)) = string.split_once(after, "\r\n")
+  assert string.length(value) == 29
+  assert string.ends_with(value, " GMT")
+  assert string.contains(value, ",")
+
+  // A handler that set its own Date keeps it: the server adds one, it does not
+  // replace one.
+  let assert Ok(own) = one_request(port, "/own")
+  assert string.contains(own, "date: Tue, 20 Apr 2021 02:07:55 GMT\r\n")
+  // Exactly one, so the server added none beside the handler's.
+  assert list.length(string.split(own, "date: ")) == 2
+
+  // A bodyless success is still a 2xx and still carries one.
+  let assert Ok(informational) = one_request(port, "/informational")
+  assert string.contains(informational, "\r\ndate: ")
+
+  stop_server(listener, executor)
+}
+
+fn one_request(port: Int, path: String) -> Result(String, Nil) {
+  let assert Ok(socket) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(
+      socket,
+      bit_array.from_string(
+        "GET " <> path <> " HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+      ),
+    )
+  let assert Ok(#(_, received)) = read_to_end(socket, [])
+  bit_array.to_string(received) |> result.replace_error(Nil)
+}
+
 pub fn an_overlong_request_target_is_a_414_test() -> Nil {
   // RFC 9112 section 3: a server that receives a request target longer than any
   // URI it wishes to parse answers 414 rather than the 400 every other framing

@@ -387,3 +387,8 @@
   cause a caller was told depended on which of them reached zero first -- an
   ordering it neither chose nor could observe, and one that reported a bare
   operation timeout on a slow host where the ceiling filled first.
+- Sent a Date field in every 2xx, 3xx, and 4xx response, which RFC 9110
+  section 6.6.1 requires of an origin server with a clock and which none of
+  the three server protocols did. A handler that sets its own keeps it. The
+  field is rendered in the fixed-length format section 5.6.7 prefers, by one
+  shared module that is the only place the response path reads a wall clock.

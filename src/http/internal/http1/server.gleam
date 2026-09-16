@@ -14,6 +14,7 @@ import gleam/uri.{Uri}
 import http/body
 import http/context
 import http/error
+import http/internal/date
 import http/internal/http1
 import http/internal/http1/body as http1_body
 import http/internal/http1/encode
@@ -1812,7 +1813,11 @@ fn write_response(
   config: Config,
 ) -> Result(transport.Socket, error.Error) {
   use framing <- result.try(response_framing(method, response))
-  use headers <- result.try(response_headers(response.headers, close))
+  use headers <- result.try(response_headers(
+    response.status,
+    response.headers,
+    close,
+  ))
   use head <- result.try(
     encode.response(
       response.status,
@@ -1861,9 +1866,11 @@ fn response_framing(
 }
 
 fn response_headers(
+  status: Int,
   headers: List(#(String, String)),
   close: Bool,
 ) -> Result(List(http1.Header), error.Error) {
+  let headers = date.with_date(status: status, headers: headers)
   use converted <- result.try(convert_response_headers(headers, close, []))
   case close {
     True ->
