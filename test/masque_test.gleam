@@ -4004,6 +4004,43 @@ pub fn rfc9298_datagram_capsule_admission_discards_before_payload_test() -> Nil 
     == masque.UdpReceiverSnapshot(True, 1, 1, 1, 1, 1)
 }
 
+pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
+  // RFC 9484 section 4.6, as corrected by erratum 8444: a "target" or
+  // "ipproto" left at the wildcard is percent-encoded, because RFC 6570 simple
+  // expansion escapes every character outside the unreserved set and "*" is
+  // not in it. A bare "*" names a different path than the template expands to,
+  // so a proxy matching the template would not recognise the request.
+  let assert Ok(unscoped) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(None, None),
+      limits(),
+    )
+  assert masque.request_path(unscoped) == "/.well-known/masque/ip/%2A/%2A/"
+
+  // Each variable is expanded on its own, so one wildcard beside one value is
+  // encoded in the wildcard position only.
+  let assert Ok(targeted) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(Some("198.51.100.0/24"), None),
+      limits(),
+    )
+  assert masque.request_path(targeted)
+    == "/.well-known/masque/ip/198.51.100.0%2F24/%2A/"
+
+  let assert Ok(by_protocol) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(None, Some(6)),
+      limits(),
+    )
+  assert masque.request_path(by_protocol) == "/.well-known/masque/ip/%2A/6/"
+}
+
 pub fn connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test() -> Nil {
   let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
   let assert Ok(request) =

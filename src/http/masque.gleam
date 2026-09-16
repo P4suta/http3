@@ -1557,6 +1557,14 @@ pub fn connect_udp(
   prepare_request(Udp(target), protocol, proxy_authority, path, limits)
 }
 
+/// The wildcard an omitted `target` or `ipproto` expands to.
+///
+/// RFC 9484 section 4.6 writes the wildcard as `*`, and erratum 8444 records
+/// that it still goes through RFC 6570 simple expansion, which escapes every
+/// character outside the unreserved set. The literal is spelled percent-encoded
+/// here because there is no expansion step left to do it.
+const wildcard_variable = "%2A"
+
 /// Prepare the RFC 9484 default-template CONNECT-IP request.
 pub fn connect_ip(
   protocol: Protocol,
@@ -1569,11 +1577,11 @@ pub fn connect_ip(
   use _ <- result.try(validate_scope(scope))
   let IpScope(target, protocol_number) = scope
   let encoded_target = case target {
-    None -> "*"
+    None -> wildcard_variable
     Some(value) -> uri.percent_encode(value)
   }
   let encoded_protocol = case protocol_number {
-    None -> "*"
+    None -> wildcard_variable
     Some(value) -> int.to_string(value)
   }
   let path =

@@ -356,3 +356,8 @@
 - Honoured `Cache-Control: no-store` on a request, which RFC 9111 section
   5.2.1.5 requires: the directive was unread, so a response to a request that
   forbade storing anything about it was stored like any other.
+- Percent-encoded the wildcard `target` and `ipproto` variables in a
+  CONNECT-IP request path, which RFC 9484 section 4.6 requires as corrected by
+  erratum 8444: the path was expanded with a bare `*`, which RFC 6570 simple
+  expansion does not produce, so a request scoped to everything named a
+  different path than the one the proxy's template matches.
