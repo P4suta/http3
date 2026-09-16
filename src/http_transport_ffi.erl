@@ -18,6 +18,7 @@
     stop/1,
     transfer_listener_owner/2,
     transfer_owner/2,
+    unix_millisecond/0,
     upgrade_client_tls/5,
     upgrade_server_tls/5
 ]).
@@ -40,6 +41,16 @@
     socket := term(),
     buffered := binary()
 }.
+
+%% Wall-clock milliseconds since the Unix epoch.
+%%
+%% This is the only clock here that can be compared with a date a peer sent,
+%% which is what an HTTP field carrying an absolute time needs. It is read once
+%% at the moment such a field is parsed and turned into a remaining duration, so
+%% nothing retains it and no deadline is measured against it.
+-spec unix_millisecond() -> integer().
+unix_millisecond() ->
+    erlang:system_time(millisecond).
 
 -spec monotonic_millisecond() -> integer().
 monotonic_millisecond() ->
