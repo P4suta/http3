@@ -209,7 +209,9 @@ pub fn matching(
     && { !cookie.secure || scheme == Https }
   })
   |> list.sort(by: fn(left, right) {
-    case int.compare(string.byte_size(right.path), string.byte_size(left.path)) {
+    case
+      int.compare(string.byte_size(right.path), string.byte_size(left.path))
+    {
       order.Eq -> int.compare(left.created_at, right.created_at)
       ordering -> ordering
     }
@@ -218,7 +220,8 @@ pub fn matching(
 
 /// Serialize an already matched and ordered cookie list as a Cookie field.
 pub fn field_value(cookies: List(Cookie)) -> Option(String) {
-  let pairs = list.map(cookies, fn(cookie) { cookie.name <> "=" <> cookie.value })
+  let pairs =
+    list.map(cookies, fn(cookie) { cookie.name <> "=" <> cookie.value })
   case pairs {
     [] -> None
     _ -> Some(string.join(pairs, with: "; "))

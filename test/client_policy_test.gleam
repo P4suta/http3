@@ -522,6 +522,5 @@ pub fn excess_cookies_go_by_domain_share_then_by_last_access_test() -> Nil {
 
   // An entry that belongs to no group is never over-represented, which is how
   // every store other than the cookie one behaves.
-  assert trace(2, 1, [put("a", ""), put("b", ""), put("c", "")])
-    == ["c", "b"]
+  assert trace(2, 1, [put("a", ""), put("b", ""), put("c", "")]) == ["c", "b"]
 }

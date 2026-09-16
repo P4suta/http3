@@ -823,7 +823,9 @@ pub fn a_crowded_domain_loses_its_cookies_before_another_domain_does_test() -> N
   }
   let server_task =
     http_test_support.start_task(fn() {
-      use _ <- result.try(exchange("Set-Cookie: keep=me; Path=/; Max-Age=60\r\n"))
+      use _ <- result.try(exchange(
+        "Set-Cookie: keep=me; Path=/; Max-Age=60\r\n",
+      ))
       use _ <- result.try(exchange("Set-Cookie: a=1; Path=/; Max-Age=60\r\n"))
       use _ <- result.try(exchange("Set-Cookie: b=2; Path=/; Max-Age=60\r\n"))
       use _ <- result.try(exchange("Set-Cookie: c=3; Path=/; Max-Age=60\r\n"))

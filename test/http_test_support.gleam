@@ -224,9 +224,7 @@ pub fn tls_option_cipher_profile() -> #(
 /// Order destinations by RFC 6724 section 6, given for each one the source
 /// address the kernel would choose, or an empty string when there is none.
 @external(erlang, "http_test_ffi", "sorted_destination_order")
-pub fn sorted_destination_order(
-  pairs: List(#(String, String)),
-) -> List(String)
+pub fn sorted_destination_order(pairs: List(#(String, String))) -> List(String)
 
 /// Interleave address families across an already ordered list.
 @external(erlang, "http_test_ffi", "interleaved_destination_order")
@@ -271,3 +269,8 @@ pub fn grouped_policy_store_trace(
 /// resolver configuration on every exit path.
 @external(erlang, "http_test_ffi", "with_loopback_hosts")
 pub fn with_loopback_hosts(names: List(String), body: fn() -> value) -> value
+
+/// Which of the given compression and send-batch pairs the relay counts as a
+/// material burst compression.
+@external(erlang, "http_test_ffi", "material_burst_compressions")
+pub fn material_burst_compressions(samples: List(#(Int, Int))) -> List(Bool)

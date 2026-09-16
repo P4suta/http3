@@ -449,3 +449,10 @@
   first. The store had no per-cookie access time at all, so it dropped whichever
   cookie had been written longest ago; sending a cookie now records that it was
   used. Expired cookies were already evicted ahead of both tiers.
+- Counted a material burst compression only when more than one datagram left in
+  the same send. The relay sends one at a time, so the figure it was thresholding
+  reduced to the decrease in its own per-packet delay between two packets: one
+  waiting fifteen milliseconds for a scheduler slot followed by one waiting two
+  hundred microseconds registered as a fourteen millisecond compression with
+  nothing coalesced. The microsecond figure beside the counter still reports the
+  raw measurement.

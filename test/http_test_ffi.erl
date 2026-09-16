@@ -30,6 +30,7 @@
     resolved_host_order/3,
     grouped_policy_store_trace/3,
     with_loopback_hosts/2,
+    material_burst_compressions/1,
     interleaved_destination_order/1,
     start_exclusive_udp_port_guard/0,
     start_task/1,
@@ -881,6 +882,18 @@ with_loopback_hosts(Names, Run) when is_list(Names), is_function(Run, 0) ->
         inet_db:del_host(?LOOPBACK_ADDRESS),
         ok = inet_db:set_lookup(PreviousLookup)
     end.
+
+%% Which of the given {Compression, BatchPackets} pairs the relay counts as a
+%% material burst compression.
+-spec material_burst_compressions([{non_neg_integer(), pos_integer()}]) ->
+    [boolean()].
+material_burst_compressions(Samples) ->
+    [
+        http_masque_udp_ffi:material_burst_compression(
+            Compression, BatchPackets
+        )
+     || {Compression, BatchPackets} <- Samples
+    ].
 
 -spec exit_now() -> no_return().
 exit_now() ->
