@@ -2257,7 +2257,14 @@ fn capture_cookie_headers(
     [#(name, value), ..rest] -> {
       case
         string.lowercase(name),
-        cookie.parse(value, scheme, host, path, now)
+        cookie.parse(
+          value,
+          scheme,
+          host,
+          path,
+          now,
+          transport.unix_millisecond(),
+        )
       {
         "set-cookie", Some(parsed) -> {
           let _stored = store_cookie_policy(client, parsed, now)
