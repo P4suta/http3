@@ -155,6 +155,9 @@ fn raw_transfer_listener_owner(
 @external(erlang, "http_transport_ffi", "monotonic_millisecond")
 fn raw_monotonic_millisecond() -> Int
 
+@external(erlang, "http_transport_ffi", "unix_millisecond")
+fn raw_unix_millisecond() -> Int
+
 /// Bind one passive IPv4 or IPv6 listener. Port zero requests an ephemeral
 /// port from the operating system.
 pub fn listen(
@@ -421,6 +424,16 @@ pub fn transfer_listener_owner(
 /// arithmetic. It must never be persisted or interpreted as wall time.
 pub fn monotonic_millisecond() -> Int {
   raw_monotonic_millisecond()
+}
+
+/// Return wall-clock milliseconds since the Unix epoch.
+///
+/// This is the only clock here comparable with a date a peer sent. Read it
+/// where such a field is parsed, turn it into a remaining duration there, and
+/// measure the deadline itself on the monotonic counter: wall time can move
+/// backwards, and a retained deadline measured against it moves with it.
+pub fn unix_millisecond() -> Int {
+  raw_unix_millisecond()
 }
 
 /// Close a stream idempotently.
