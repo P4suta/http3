@@ -369,6 +369,26 @@
   an attacker-chosen line into the signature base; the authority and the scheme
   must also arrive normalized, rather than a default port or an uppercase host
   being signed as though it were the canonical form.
+- Percent-encoded the wildcard `target` and `ipproto` variables in a
+  CONNECT-IP request path, which RFC 9484 section 4.6 requires as corrected by
+  erratum 8444: the path was expanded with a bare `*`, which RFC 6570 simple
+  expansion does not produce, so a request scoped to everything named a
+  different path than the one the proxy's template matches.
+- Walked the IPv6 extension header chain before matching a forwarded packet
+  against a CONNECT-IP destination rule, which RFC 9484 section 4.8 requires:
+  the fixed header's Next Header field was read as the packet's protocol, so a
+  rule naming an upper layer refused traffic carrying it behind an extension,
+  and a rule naming an extension admitted whatever that extension carried.
+- Validated the CONNECT-IP `target` variable against the RFC 9484 section 4.6
+  grammar before expanding it into a request path. Only the reserved
+  characters were refused, so a prefix length longer than its address, a
+  length that was not a decimal integer, and an address with bits set below
+  its prefix all reached the wire as a scope no proxy can grant.
+- Added `masque.allow_ip_source`, so a CONNECT-IP forwarding policy can carry
+  the prefix its peer is allowed to send from and refuse anything else with
+  the new `SourceForbidden` error. RFC 9484 section 11 asks for BCP 38 ingress
+  filtering wherever an endpoint knows that prefix, and the policy had no way
+  to say it, so a spoofed source was forwarded like any other.
 - Replaced an obsolete line folding in a response with a space rather than
   refusing the message, which RFC 9112 section 5.2 requires of a user agent.
   A request carrying one is still rejected, which the same section requires of

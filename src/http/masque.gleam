@@ -167,6 +167,7 @@ pub type Error {
   RequestIdReused(Int)
   PolicyLimitExceeded(Int)
   DestinationForbidden
+  SourceForbidden
   InvalidIpPacket
   HopLimitExceeded
 }
@@ -978,6 +979,7 @@ pub opaque type ProxyPolicy {
     udp_destinations: List(IpPrefix),
     ip_scopes: List(IpScope),
     destinations: List(DestinationRule),
+    sources: List(IpPrefix),
   )
 }
 
@@ -1557,6 +1559,14 @@ pub fn connect_udp(
   prepare_request(Udp(target), protocol, proxy_authority, path, limits)
 }
 
+/// The wildcard an omitted `target` or `ipproto` expands to.
+///
+/// RFC 9484 section 4.6 writes the wildcard as `*`, and erratum 8444 records
+/// that it still goes through RFC 6570 simple expansion, which escapes every
+/// character outside the unreserved set. The literal is spelled percent-encoded
+/// here because there is no expansion step left to do it.
+const wildcard_variable = "%2A"
+
 /// Prepare the RFC 9484 default-template CONNECT-IP request.
 pub fn connect_ip(
   protocol: Protocol,
@@ -1569,11 +1579,11 @@ pub fn connect_ip(
   use _ <- result.try(validate_scope(scope))
   let IpScope(target, protocol_number) = scope
   let encoded_target = case target {
-    None -> "*"
+    None -> wildcard_variable
     Some(value) -> uri.percent_encode(value)
   }
   let encoded_protocol = case protocol_number {
-    None -> "*"
+    None -> wildcard_variable
     Some(value) -> int.to_string(value)
   }
   let path =
@@ -4275,7 +4285,7 @@ pub fn decode_ip_datagram(
 /// Create an empty finite proxy allowlist.
 pub fn deny_all(limits: Limits) -> Result(ProxyPolicy, Error) {
   use _ <- result.try(validate_limits(limits))
-  Ok(ProxyPolicy(limits, [], [], [], []))
+  Ok(ProxyPolicy(limits, [], [], [], [], []))
 }
 
 /// Add one exact UDP target without wildcard or DNS suffix matching.
@@ -4350,6 +4360,27 @@ pub fn allow_ip_destination(
   }
 }
 
+/// Add one source prefix a peer is allowed to send from.
+///
+/// RFC 9484 section 11 asks for BCP 38 ingress filtering wherever an endpoint
+/// knows the prefix its peer may send from, which it does when it assigned one
+/// in an ADDRESS_ASSIGN capsule or was configured out of band. A policy with no
+/// source prefix is an endpoint that does not know, and it constrains nothing;
+/// the first prefix added makes every source outside it a spoofed one.
+pub fn allow_ip_source(
+  policy: ProxyPolicy,
+  prefix: IpPrefix,
+) -> Result(ProxyPolicy, Error) {
+  use _ <- result.try(validate_prefix(prefix))
+  case list.contains(policy.sources, prefix) {
+    True -> Ok(policy)
+    False -> {
+      use _ <- result.try(require_policy_capacity(policy, 1))
+      Ok(ProxyPolicy(..policy, sources: [prefix, ..policy.sources]))
+    }
+  }
+}
+
 /// Authorize a prepared request. Empty policies always deny.
 pub fn authorize(
   policy: ProxyPolicy,
@@ -4381,7 +4412,11 @@ pub fn forward_ip_packet(
     return: Error(DatagramLimitExceeded(limits.maximum_datagram_bytes)),
   )
   use parsed <- result.try(parse_ip_packet(packet))
-  let #(destination, protocol, hop_limit) = packet_routing(parsed)
+  use #(destination, protocol, hop_limit) <- result.try(packet_routing(parsed))
+  use <- bool.guard(
+    when: !source_allowed(policy.sources, packet_source(parsed)),
+    return: Error(SourceForbidden),
+  )
   use <- bool.guard(
     when: !destination_allowed(policy.destinations, destination, protocol),
     return: Error(DestinationForbidden),
@@ -4862,19 +4897,148 @@ fn is_ascii_digit(value: Int) -> Bool {
 }
 
 fn validate_scope(scope: IpScope) -> Result(Nil, Error) {
-  let valid_target = case scope.target {
-    None -> True
-    Some(value) ->
-      value != "*"
-      && safe_ascii(value, 1024)
-      && !string.contains(value, "%")
-      && !string.contains(value, "?")
-      && !string.contains(value, "#")
-      && !string.contains(value, " ")
+  use _ <- result.try(validate_optional_protocol(scope.ip_protocol))
+  case scope.target {
+    None -> Ok(Nil)
+    Some(value) -> validate_scope_target(value)
   }
-  case valid_target && valid_optional_protocol(scope.ip_protocol) {
-    True -> Ok(Nil)
-    False -> Error(InvalidScope)
+}
+
+/// Validate a `target` variable against the RFC 9484 section 4.6 grammar.
+///
+/// Figure 6 admits an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard,
+/// which the scope spells as an absent target. The section then adds three
+/// conditions the grammar cannot state: the prefix length is a decimal integer,
+/// it is no larger than the address it qualifies, and every bit of the address
+/// below it is zero. The last two are the conditions `validate_prefix` already
+/// holds a capsule's prefix to, so a prefix written into a request and a prefix
+/// read out of a capsule answer to one rule rather than two.
+///
+/// The value arrives unencoded and is percent-encoded on expansion, so a
+/// percent sign in it would be expanded twice and the separators a URI reserves
+/// would survive into the path; all four are refused here rather than escaped.
+fn validate_scope_target(target: String) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: target == "*"
+      || !safe_ascii(target, 1024)
+      || string.contains(target, "%")
+      || string.contains(target, "?")
+      || string.contains(target, "#")
+      || string.contains(target, " "),
+    return: Error(InvalidScope),
+  )
+  case string.split(target, on: "/") {
+    [address] ->
+      case valid_target_host(address) {
+        True -> Ok(Nil)
+        False -> Error(InvalidScope)
+      }
+    [address, length] -> validate_target_prefix(address, length)
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn validate_target_prefix(
+  address: String,
+  length: String,
+) -> Result(Nil, Error) {
+  use parsed <- result.try(case string.contains(address, ":") {
+    True -> result.map(ipv6_address_bytes(address), Ipv6)
+    False -> result.map(ipv4_address_bytes(address), Ipv4)
+  })
+  use bits <- result.try(prefix_length_value(length))
+  // The prefix rule is shared with the capsule path, which reports a malformed
+  // address; a malformed variable is a malformed scope.
+  validate_prefix(IpPrefix(parsed, bits)) |> result.replace_error(InvalidScope)
+}
+
+/// Read the `1*3DIGIT` prefix length. Its range is checked against the address.
+fn prefix_length_value(length: String) -> Result(Int, Error) {
+  let digits = string.to_utf_codepoints(length)
+  use <- bool.guard(
+    when: digits == []
+      || list.length(digits) > 3
+      || !list.all(digits, fn(digit) {
+      digit |> string.utf_codepoint_to_int |> is_ascii_digit
+    }),
+    return: Error(InvalidScope),
+  )
+  int.parse(length) |> result.replace_error(InvalidScope)
+}
+
+fn ipv4_address_bytes(address: String) -> Result(BitArray, Error) {
+  case string.split(address, on: ".") {
+    [first, second, third, fourth] -> {
+      use octets <- result.map(list.try_map(
+        [first, second, third, fourth],
+        octet_value,
+      ))
+      list.fold(octets, <<>>, fn(bytes, octet) { <<bytes:bits, octet>> })
+    }
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn octet_value(octet: String) -> Result(Int, Error) {
+  use <- bool.guard(when: !valid_ipv4_octet(octet), return: Error(InvalidScope))
+  int.parse(octet) |> result.replace_error(InvalidScope)
+}
+
+/// Expand an IPv6 literal into its sixteen bytes.
+///
+/// The syntax is checked first, so the two halves of a `::` are known to hold
+/// fewer than eight groups between them and the run of zeros that separates
+/// them is whatever is left.
+fn ipv6_address_bytes(address: String) -> Result(BitArray, Error) {
+  use <- bool.guard(
+    when: !valid_ipv6_address(address),
+    return: Error(InvalidScope),
+  )
+  case string.split(address, on: "::") {
+    [only] -> ipv6_groups(only)
+    [left, right] -> {
+      use head <- result.try(ipv6_groups(left))
+      use tail <- result.try(ipv6_groups(right))
+      let zeros = 16 - bit_array.byte_size(head) - bit_array.byte_size(tail)
+      case zeros >= 0 {
+        True -> Ok(<<head:bits, 0:size(zeros)-unit(8), tail:bits>>)
+        False -> Error(InvalidScope)
+      }
+    }
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn ipv6_groups(value: String) -> Result(BitArray, Error) {
+  case value {
+    "" -> Ok(<<>>)
+    _ -> ipv6_segments(string.split(value, on: ":"), <<>>)
+  }
+}
+
+fn ipv6_segments(
+  segments: List(String),
+  accumulator: BitArray,
+) -> Result(BitArray, Error) {
+  case segments {
+    [] -> Ok(accumulator)
+    [segment, ..rest] -> {
+      use bytes <- result.try(ipv6_segment_bytes(segment))
+      ipv6_segments(rest, <<accumulator:bits, bytes:bits>>)
+    }
+  }
+}
+
+/// One group, or the dotted-quad tail RFC 4291 allows in the last position.
+fn ipv6_segment_bytes(segment: String) -> Result(BitArray, Error) {
+  case string.contains(segment, ".") {
+    True -> ipv4_address_bytes(segment)
+    False -> {
+      use value <- result.map(
+        int.base_parse(segment, 16) |> result.replace_error(InvalidScope),
+      )
+      <<value:size(16)>>
+    }
   }
 }
 
@@ -4933,6 +5097,23 @@ fn require_policy_capacity(
     True -> Error(PolicyLimitExceeded(policy.limits.maximum_policy_rules))
     False -> Ok(Nil)
   }
+}
+
+fn packet_source(packet: ParsedPacket) -> IpAddress {
+  case packet {
+    ParsedIpv4(_, _, _, _, _, _, _, source, _, _, _) -> Ipv4(source)
+    ParsedIpv6(_, _, _, _, _, source, _, _) -> Ipv6(source)
+  }
+}
+
+/// Whether a packet's source is one the peer is allowed to send from.
+///
+/// An empty list is the endpoint that does not know its peer's prefix, so it
+/// admits every source rather than none: unlike the destination rules, these
+/// narrow a policy that is already default-deny on where a packet may go.
+fn source_allowed(prefixes: List(IpPrefix), source: IpAddress) -> Bool {
+  prefixes == []
+  || list.any(prefixes, fn(prefix) { prefix_contains(prefix, source) })
 }
 
 fn destination_allowed(
@@ -5089,18 +5270,80 @@ fn parse_ipv4(
   }
 }
 
-fn packet_routing(packet: ParsedPacket) -> #(IpAddress, Int, Int) {
+fn packet_routing(
+  packet: ParsedPacket,
+) -> Result(#(IpAddress, Int, Int), Error) {
   case packet {
-    ParsedIpv4(_, _, _, _, _, hop, protocol, _, destination, _, _) -> #(
-      Ipv4(destination),
-      protocol,
-      hop,
-    )
-    ParsedIpv6(_, _, _, next_header, hop, _, destination, _) -> #(
-      Ipv6(destination),
-      next_header,
-      hop,
-    )
+    ParsedIpv4(_, _, _, _, _, hop, protocol, _, destination, _, _) ->
+      Ok(#(Ipv4(destination), protocol, hop))
+    ParsedIpv6(_, _, _, next_header, hop, _, destination, payload) -> {
+      use protocol <- result.map(upper_layer_protocol(
+        next_header,
+        payload,
+        maximum_extension_headers,
+      ))
+      #(Ipv6(destination), protocol, hop)
+    }
+  }
+}
+
+/// The Internet Protocol Numbers that name an IPv6 extension header.
+///
+/// RFC 8200 section 4.1 lists them: Hop-by-Hop Options, Routing, Fragment,
+/// Authentication, Destination Options, and the three later headers that reuse
+/// the same shape. Encapsulating Security Payload is absent on purpose: what
+/// follows it is encrypted, so it is the outermost number a scoping rule can
+/// see rather than something to walk past.
+const extension_header_numbers = [0, 43, 44, 51, 60, 135, 139, 140]
+
+/// The most extension headers one packet may carry before it is refused.
+///
+/// RFC 8200 section 4.1 gives a recommended order with eight positions. The
+/// chain is walked once for every forwarded packet, so its length is fixed here
+/// rather than by the packet.
+const maximum_extension_headers = 8
+
+/// Walk the extension chain to the outermost non-extension protocol number.
+///
+/// RFC 9484 section 4.8 requires this of anything that scopes or routes by
+/// Internet Protocol Number: the fixed header's Next Header field names the
+/// first extension, not what the packet carries. A chain that cannot be walked
+/// to its end resolves to no number at all, because matching a rule against a
+/// number the walk merely reached would admit whatever the unread remainder
+/// turned out to be.
+fn upper_layer_protocol(
+  next_header: Int,
+  rest: BitArray,
+  remaining: Int,
+) -> Result(Int, Error) {
+  use <- bool.guard(
+    when: !list.contains(extension_header_numbers, next_header),
+    return: Ok(next_header),
+  )
+  use <- bool.guard(when: remaining <= 0, return: Error(InvalidIpPacket))
+  use #(following, length) <- result.try(extension_header(next_header, rest))
+  use tail <- result.try(
+    bit_array.slice(rest, length, bit_array.byte_size(rest) - length)
+    |> result.replace_error(InvalidIpPacket),
+  )
+  upper_layer_protocol(following, tail, remaining - 1)
+}
+
+/// Read one extension header's own Next Header field and its length in bytes.
+///
+/// The Fragment header is always eight bytes and its second octet is reserved.
+/// The Authentication header counts in four-byte units excluding the first two,
+/// and every other extension counts in eight-byte units excluding the first
+/// one; RFC 8200 section 4 and RFC 4302 section 2.2 give both forms.
+fn extension_header(header: Int, rest: BitArray) -> Result(#(Int, Int), Error) {
+  case rest {
+    <<following, length, _remainder:bits>> ->
+      case header {
+        44 -> Ok(#(following, 8))
+        51 -> Ok(#(following, { length + 2 } * 4))
+        _ -> Ok(#(following, { length + 1 } * 8))
+      }
+    _ -> Error(InvalidIpPacket)
   }
 }
 

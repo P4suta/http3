@@ -4649,7 +4649,1567 @@
       }
     },
     {"id":"RFC9000","title":"QUIC: A UDP-Based Multiplexed and Secure Transport","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/flow_control.gleam","packages/quic_core/src/quic_core/internal/stream_state.gleam","packages/quic_core/src/quic_core/internal/connection_state.gleam","packages/quic_core/test/flow_control_test.gleam","packages/quic_core/test/stream_state_test.gleam","packages/quic_core/test/connection_state_test.gleam","packages/quic_core/test/public_credit_test.gleam"]},
-    {"id":"RFC9001","title":"Using TLS to Secure QUIC","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/initial_crypto.gleam","packages/quic_core/test/initial_crypto_test.gleam"]},
+    {
+      "id": "RFC9001",
+      "title": "Using TLS to Secure QUIC",
+      "map_complete": true,
+      "evidence": [
+        "packages/quic_core/src/quic_core/internal/connection_state.gleam",
+        "packages/quic_core/src/quic_core/internal/key_phase.gleam",
+        "packages/quic_core/src/quic_core/internal/aead_usage.gleam",
+        "packages/quic_core/src/quic_core/internal/initial_crypto.gleam",
+        "packages/quic_core/src/quic_core/internal/packet_protection.gleam",
+        "packages/quic_core/src/quic_core/internal/traffic_keys.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/engine.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/handshake.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/hello.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/authentication.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/resumption.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/transcript.gleam",
+        "packages/quic_core/test/connection_state_test.gleam",
+        "packages/quic_core/test/key_phase_test.gleam",
+        "packages/quic_core/test/aead_usage_test.gleam",
+        "packages/quic_core/test/initial_crypto_test.gleam",
+        "packages/quic_core/test/packet_protection_test.gleam",
+        "packages/quic_core/test/traffic_keys_test.gleam",
+        "packages/quic_core/test/tls_engine_test.gleam",
+        "packages/quic_core/test/tls_handshake_test.gleam",
+        "packages/quic_core/test/tls_authentication_test.gleam",
+        "packages/quic_core/test/tls_anti_replay_test.gleam",
+        "packages/quic_core/test/tls_resumption_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9001.txt",
+        "document_sha256": "3bbaecdf5afd278052a2c48348ce118c4ff8d0cf6b9915549858171b3f98a591",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9001",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 104,
+        "level_counts": {
+          "MUST": 59,
+          "SHOULD": 18,
+          "MUST NOT": 24,
+          "SHOULD NOT": 1,
+          "RECOMMENDED": 2
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9001-4-MUST-RETRANSMIT-CRYPTO-AT-SAME-LEVEL",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "CRYPTO data belongs to the packet number space it was sent in, and a retransmission is queued back into that space's own queue with that space's keys; a discarded space takes its queue with it rather than moving the data up a level.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "queue_crypto"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "packet_keys_for"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4-SHOULD-COALESCE-PACKETS",
+          "section": "4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Packets of different types are coalesced into one datagram when they are ready together, and a received datagram is processed as a sequence of coalesced packets.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "protect_long_packet"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "receive_protected_long_packet"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "derives_initial_keys_and_processes_coalesced_wire_packets_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.2-MUST-SEND-HANDSHAKE-DONE",
+          "section": "4.1.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server emits HANDSHAKE_DONE at the transition that completes the handshake, and a client receiving one before that transition is a state violation rather than an early confirmation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "HandshakeDoneFrame"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "HandshakeDoneStateViolation"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "owns_tls_handshake_and_post_handshake_ticket_end_to_end_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.3-MUST-NOT-EXTEND-PAST-PREVIOUS-LEVEL",
+          "section": "4.1.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "CRYPTO data at a level already superseded cannot extend past what was received there: the reassembler for a discarded level is gone with the level, and a level's queue is emptied when its keys are.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "create_crypto_reassembler"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "discarding_packet_keys_releases_recovery_and_congestion_state_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.3-MUST-TREAT-VIOLATION-AS-PROTOCOL-ERROR",
+          "section": "4.1.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A CRYPTO frame arriving where this document forbids it is a typed protocol violation rather than data.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "CryptoFrameAtZeroRtt"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "ProtocolViolation"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "datagram_application_data_is_forbidden_at_initial_and_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.3-MUST-TREAT-UNCONSUMED-DATA-AS-ERROR",
+          "section": "4.1.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Keys for a higher level arrive as a TLS engine action, and the level being left is discarded with its reassembler and queue, so data the engine did not consume cannot survive the transition unnoticed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "install_traffic_keys"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.4-SHOULD-BUFFER-UNDECRYPTABLE-PACKETS",
+          "section": "4.1.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A packet whose keys are not yet installed is dropped rather than buffered.",
+          "disposition": "DocumentedDeviation",
+          "reason": "Buffering packets for keys that may never arrive is an unbounded queue in everything but name, and this package admits none. A peer that sends ahead of the handshake loses those packets and retransmits them, which is the cost this choice accepts in exchange for a fixed memory bound.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "keys_available"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "packet_keys_for"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "enforces_server_amplification_and_key_availability_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.1.4-SHOULD-CONTINUE-RESPONDING",
+          "section": "4.1.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Packets at levels whose keys are installed keep being processed while TLS works: each level is its own space with its own keys, and one level waiting stops none of the others.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "keys_available"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "receive_protected_long_packet"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "enforces_server_amplification_and_key_availability_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.2-MUST-NOT-OFFER-TLS-BELOW-1.3",
+          "section": "4.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The one supported version is offered: the ClientHello carries the TLS 1.3 supported_versions extension and no legacy version list is constructed at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.2-MUST-TERMINATE-ON-OLDER-TLS",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A peer that does not select TLS 1.3 in supported_versions fails the handshake with a typed error rather than continuing at an older version.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "handle_server"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.4-MUST-AUTHENTICATE-SERVER",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The client validates the server's chain against a trust store and the identity against the name it dialled, and there is no client path that skips it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "trust_store_from_pem"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "system_trust_store"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.4-MUST-NOT-POST-HANDSHAKE-CLIENT-AUTH",
+          "section": "4.4",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Client authentication happens inside the handshake or not at all; nothing in the server emits a message after the handshake other than a session ticket.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_client_certificate_request"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.4-MUST-NOT-SEND-POST-HANDSHAKE-CERTIFICATE-REQUEST",
+          "section": "4.4",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The one CertificateRequest this server can build is written into the handshake flight beside EncryptedExtensions, and no post-handshake path constructs one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "encode_client_certificate_request"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "prepare_server_client_flight"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "required_client_certificate_authenticates_redacted_identity_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.4-MUST-TREAT-POST-HANDSHAKE-REQUEST-AS-ERROR",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "After the handshake the client accepts NewSessionTicket and nothing else: any other message, CertificateRequest included, is an unexpected-message error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_post_handshake_message"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "UnexpectedMessage"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "issues_fragments_stores_and_reuses_post_handshake_ticket_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.5-SHOULD-NOT-REUSE-TICKETS",
+          "section": "4.5",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A stored ticket is consumed when it is offered, so a second connection cannot present the same one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_offer"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "seal_client_hello"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.6.1-MUST-NOT-EARLY-DATA-SIZE-OTHER-THAN-MAX",
+          "section": "4.6.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A ticket offering early data carries the only value this document allows, and the encoder has no way to write another.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "server_policy"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "reject_early_data"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "server_policy_can_reject_early_data_without_rejecting_resumption_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.6.1-MUST-REJECT-OTHER-EARLY-DATA-SIZE",
+          "section": "4.6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A NewSessionTicket whose early_data extension carries any other size is refused when the ticket is stored rather than used later.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_post_handshake_message"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "decode_new_session_ticket"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "issues_fragments_stores_and_reuses_post_handshake_ticket_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.6.2-MUST-NOT-PROCESS-REJECTED-ZERO-RTT",
+          "section": "4.6.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Rejecting early data discards the 0-RTT keys at the same transition, so there is nothing left to process a 0-RTT packet with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "reject_early_data"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "server_policy"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "server_policy_can_reject_early_data_without_rejecting_resumption_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.6.2-SHOULD-TREAT-ZERO-RTT-ACK-AS-ERROR",
+          "section": "4.6.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "An acknowledgment naming a packet number in a space whose keys were discarded is refused by that space rather than applied.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/packet_space.gleam", "symbol": "on_ack"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_space.gleam", "symbol": "discard"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.6.2-MUST-RESET-STREAM-STATE-ON-REJECTION",
+          "section": "4.6.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A rejection requeues the stream data that went out in 0-RTT rather than leaving it counted as sent, so the streams resume from the state the handshake actually established.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "EarlyDataRejected"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.7-SHOULD-PREFER-RETRY-OVER-COOKIE",
+          "section": "4.7",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Address validation is the Retry token, which is what this server issues and checks; the TLS cookie extension is not used for it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "set_initial_token_bytes"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "maximum_initial_token_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "ignores_a_new_token_no_initial_can_repeat_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.8-MUST-NOT-CLOSE-WITH-TLS-CLOSE-NOTIFY",
+          "section": "4.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A connection ends with CONNECTION_CLOSE carrying a QUIC error code, and a TLS alert description reaches the peer inside the CRYPTO_ERROR range rather than as a TLS record.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "close"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "no_application_protocol_error_code"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "server_queues_crypto_error_for_alpn_mismatch_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9-MUST-RETRANSMIT-AT-SAME-LEVEL",
+          "section": "4.9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each level keeps its own CRYPTO queue and its own keys, so a retransmission leaves at the level the original did.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "queue_crypto"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "packet_keys_for"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9-MUST-SEND-NEW-DATA-AT-HIGHEST-LEVEL",
+          "section": "4.9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "New data is queued at the level currently available for writing, which advances as keys are installed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "queue_aligned_crypto"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "install_traffic_keys"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.1-MUST-CLIENT-DISCARD-INITIAL-ON-HANDSHAKE-SEND",
+          "section": "4.9.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The engine emits the Initial discard with the first Handshake flight, and the state applies it as one transition that drops the keys, the space, and the queue together.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "DiscardKeys"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "handle_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_one_hello_retry_request_and_discards_initial_keys_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.1-MUST-SERVER-DISCARD-INITIAL-ON-HANDSHAKE-RECEIPT",
+          "section": "4.9.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server does the same on its side of the same transition.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "DiscardKeys"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "handle_client"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "owns_tls_handshake_and_post_handshake_ticket_end_to_end_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.1-MUST-NOT-SEND-INITIAL-AFTER-DISCARD",
+          "section": "4.9.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Discarding the level empties its queue and clears its keys, and a space that has been discarded reports itself so rather than producing a packet.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "packet_space_discarded"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "discarding_packet_keys_releases_recovery_and_congestion_state_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.2-MUST-DISCARD-HANDSHAKE-ON-CONFIRMATION",
+          "section": "4.9.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Handshake keys go when the handshake is confirmed, in the same transition that records the confirmation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "handshake_confirmed"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "owns_tls_handshake_and_post_handshake_ticket_end_to_end_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.3-SHOULD-CLIENT-DISCARD-ZERO-RTT-KEYS",
+          "section": "4.9.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The client discards 0-RTT keys when the handshake installs the 1-RTT ones, and on rejection at the moment it learns of the rejection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "DiscardKeys"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.3-MUST-SERVER-DISCARD-ZERO-RTT-KEYS",
+          "section": "4.9.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server discards them at the same transition rather than on a timer, which is earlier than the bound this clause sets.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "DiscardKeys"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "select"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-4.9.3-RECOMMENDED-THREE-PTO-ZERO-RTT-RETENTION",
+          "section": "4.9.3",
+          "level": "RECOMMENDED",
+          "roles": ["server"],
+          "summary": "The recommended three-PTO retention window is not used because the keys are gone at the handshake transition instead, which is inside it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "discarding_packet_keys_releases_recovery_and_congestion_state_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.1-MUST-TLS-PROVIDES-KEY-EXPORT",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Other TLS versions provide an equivalent key export function.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a future version of QUIC or of TLS. This package implements the two versions that exist, each with the salt and labels its own document fixes, and defines neither a new version nor a new cipher suite."
+        },
+        {
+          "id": "RFC9001-5.2-SHOULD-NEW-SALT-PER-VERSION",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Each QUIC version derives Initial keys from its own salt, which is what version 1 and version 2 each do here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/initial_crypto.gleam", "symbol": "derive_initial"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/initial_crypto_test.gleam", "symbol": "derives_rfc9001_v1_initial_material_test"},
+            {"path": "packages/quic_core/test/initial_crypto_test.gleam", "symbol": "derives_rfc9369_v2_initial_material_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.2-MUST-USE-HKDF-EXPAND-LABEL-FOR-INITIAL",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Initial secrets are expanded with the TLS 1.3 HKDF-Expand-Label construction, pinned against this document's vectors.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/initial_crypto.gleam", "symbol": "hkdf_label"},
+            {"path": "packages/quic_core/src/quic_core/internal/initial_crypto.gleam", "symbol": "derive_initial"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/initial_crypto_test.gleam", "symbol": "encodes_rfc9001_hkdf_labels_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.3-MUST-NOT-NEGOTIATE-SUITE-WITHOUT-HEADER-PROTECTION",
+          "section": "5.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The suites that can be negotiated are the ones this package implements, and each has its header protection algorithm; a suite without one cannot be selected because it cannot be represented.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "CipherSuite"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "decode_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/traffic_keys_test.gleam", "symbol": "supports_sha384_traffic_secrets_and_rejects_ccm_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.3-MUST-NOT-REJECT-UNSUPPORTED-OFFERED-SUITE",
+          "section": "5.3",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A ClientHello offering suites this server does not implement is not refused for that: the server selects one it does implement from the list and ignores the rest.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "select_cipher_suite"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.3-MUST-UPDATE-KEYS-BEFORE-AEAD-LIMIT",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Encrypted packets are counted per key set and a key update is required before the confidentiality limit for the negotiated AEAD is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "needs_key_update"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_encrypted"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "limits"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.4.1-MUST-SPECIFY-HEADER-PROTECTION-ALGORITHM",
+          "section": "5.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A cipher suite used with QUIC has a header protection algorithm specified for it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a cipher suite for use with QUIC. This package specifies none: it implements the three this document defines, with the header protection algorithm and the AEAD limits each of them is given here."
+        },
+        {
+          "id": "RFC9001-5.4.2-MUST-DISCARD-SHORT-PACKETS",
+          "section": "5.4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A packet too short to contain a complete header protection sample yields a typed error instead of a sample taken from whatever bytes are there.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "header_protection_sample"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "unprotect_header"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/packet_protection_test.gleam", "symbol": "rejects_invalid_header_protection_inputs_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.5-MUST-DISCARD-HIGHER-NUMBERED-DUPLICATES",
+          "section": "5.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A packet number already received is not processed twice: each space records what it has received and refuses a repeat.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/packet_space.gleam", "symbol": "receive"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_space.gleam", "symbol": "received_ranges"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "protects_and_processes_short_header_stream_packet_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.5-MUST-DISCARD-FAILED-KEY-UPDATE-PACKET",
+          "section": "5.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A packet whose key phase bit differs but which no candidate key set can unprotect is dropped, and the peer update is committed only after one of them succeeds.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "decrypt_short_packet"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "apply_authenticated_key_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-NOT-ZERO-RTT-WITHOUT-APPLICATION-REQUEST",
+          "section": "5.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "0-RTT is off unless the caller asks for it: a resuming client is started through a separate entry point and early data only goes out when the application queued it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client_resuming"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_resumed"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-APPLICATION-PROFILE-DEFINES-ZERO-RTT-USE",
+          "section": "5.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An application protocol using QUIC defines what may be sent in 0-RTT.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application protocol that runs over QUIC, or the extension that defines itself, rather than the transport that carries it. This package is the transport: it offers 0-RTT to whoever uses it and enforces the replay protections, but it writes no application profile of its own."
+        },
+        {
+          "id": "RFC9001-5.6-SHOULD-STOP-SENDING-REJECTED-ZERO-RTT",
+          "section": "5.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A rejection discards the 0-RTT keys and empties the 0-RTT queue in the same transition, so nothing further leaves at that level.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "discard_level"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "EarlyDataRejected"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-NOT-SERVER-PROTECT-WITH-ZERO-RTT-KEYS",
+          "section": "5.6",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "0-RTT write keys are installed on the client side only; the server holds the read side and has nothing to protect a packet with at that level.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "install_traffic_keys"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "traffic_keys_for_level"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-NOT-CLIENT-DECRYPT-ZERO-RTT",
+          "section": "5.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A client installs no 0-RTT read keys, so a 0-RTT packet arriving at one has no candidate key set.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "install_traffic_keys"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "keys_available"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "enforces_server_amplification_and_key_availability_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-CLIENT-DISCARD-ZERO-RTT-PACKETS",
+          "section": "5.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Such a packet is dropped rather than held: a level with no keys yields no decryption and the datagram's remaining coalesced packets are still processed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "keys_available"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "receive_protected_long_packet"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "derives_initial_keys_and_processes_coalesced_wire_packets_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.6-MUST-NOT-SEND-ZERO-RTT-AFTER-ONE-RTT-KEYS",
+          "section": "5.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Installing 1-RTT keys is the same transition that discards the 0-RTT ones, so the level is gone before the higher one is usable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "DiscardKeys"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "sends_stream_data_in_zero_rtt_and_requeues_it_on_rejection_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.7-MUST-NOT-DECRYPT-ONE-RTT-BEFORE-HANDSHAKE",
+          "section": "5.7",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "1-RTT processing is gated on the handshake being complete, and a packet arriving at that level before then is not decrypted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "handshake_confirmed"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "require_key_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "application_pto_is_unarmed_before_handshake_confirmation_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.7-MUST-NOT-SERVER-PROCESS-ONE-RTT-EARLY",
+          "section": "5.7",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The same gate binds the server, whose key phase state does not exist until both 1-RTT key directions are installed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "initialize_key_phase_if_ready"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "require_key_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "application_pto_is_unarmed_before_handshake_confirmation_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-5.7-MUST-NOT-CLIENT-PROCESS-ONE-RTT-EARLY",
+          "section": "5.7",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "And the client, which holds 1-RTT secrets earlier than the server does and still will not process a packet with them before the handshake completes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "initialize_key_phase_if_ready"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "handshake_confirmed"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "application_pto_is_unarmed_before_handshake_confirmation_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6-MUST-NOT-SEND-TLS-KEYUPDATE",
+          "section": "6",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The KeyUpdate message is one of the two this package marks forbidden in QUIC; nothing constructs one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/handshake.gleam", "symbol": "forbidden_in_quic"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/handshake.gleam", "symbol": "KeyUpdate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_handshake_test.gleam", "symbol": "identifies_messages_forbidden_by_quic_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6-MUST-TREAT-TLS-KEYUPDATE-AS-ERROR",
+          "section": "6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Receiving one is refused by the transcript, which will not admit a message QUIC forbids, and by post-handshake processing, which accepts only a session ticket.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/transcript.gleam", "symbol": "forbidden_in_quic"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_handshake_test.gleam", "symbol": "identifies_messages_forbidden_by_quic_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.1-MUST-NOT-UPDATE-BEFORE-CONFIRMATION",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An update before the handshake is confirmed is refused by the key phase state, which records the confirmation as its own transition.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "confirm_handshake"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.1-MUST-NOT-UPDATE-WITHOUT-ACKNOWLEDGMENT",
+          "section": "6.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A second update requires an acknowledgment of a packet sent in the current phase, which the state tracks per phase rather than per connection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "acknowledge"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "record_sent"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.1-MUST-RETAIN-OLD-KEYS-UNTIL-NEW-SUCCEEDS",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The previous read keys are kept beside the current and next ones, and a packet in the old phase is still unprotected while they are held.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "commit_peer_update"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.1-SHOULD-RETAIN-OLD-KEYS-FOR-A-TIME",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "They are held for three times the probe timeout from the update, after which they are dropped rather than kept indefinitely.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.2-MUST-UPDATE-SEND-KEYS-IN-RESPONSE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A peer update that authenticates moves this endpoint's own write keys to the matching phase as part of committing it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "commit_peer_update"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "write_keys"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.2-MUST-UPDATE-BEFORE-ACKNOWLEDGING",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The commit happens where the packet is authenticated, before any frame it carries is processed or any acknowledgment for it is built.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "apply_authenticated_key_phase"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "transition_authenticated_key_phase"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "updates_one_rtt_keys_on_wire_and_unlocks_after_ack_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.3-MUST-NOT-TIMING-SIDE-CHANNEL-ON-KEY-PHASE",
+          "section": "6.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An apparent update takes the same work as any other packet: the candidate key sets are already derived and held, so a wrong phase bit costs one failed authentication rather than a key derivation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "decryption_candidates"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.3-SHOULD-RETAIN-NEXT-KEYS",
+          "section": "6.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The next key set is part of the state rather than derived per packet, so it survives a packet that was discarded after it was consulted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "new"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.3-MUST-RETAIN-TWO-READ-KEY-SETS",
+          "section": "6.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Current and next read keys are both held, and the previous set is held too while its retention window lasts.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_keys"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "candidate_keys"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.4-MUST-MONOTONIC-KEYS-BY-PACKET-NUMBER",
+          "section": "6.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A phase records the first packet number sent in it, so numbers issued after an update are protected with the keys of that phase or a later one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "record_sent"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.4-MUST-TREAT-OLD-KEYS-ON-HIGHER-NUMBER-AS-ERROR",
+          "section": "6.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A packet unprotected with the previous keys whose number is at or above the first received in the new phase is a typed key update error rather than accepted data.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "record_received"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.5-SHOULD-WAIT-THREE-PTO-BEFORE-NEXT-UPDATE",
+          "section": "6.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The next update is refused until three times the probe timeout has passed since the last one, held as a monotonic instant rather than a counter.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "earliest_next_update_milliseconds"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.5-SHOULD-RETAIN-OLD-READ-KEYS-THREE-PTO",
+          "section": "6.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The previous read keys carry the instant they stop being offered, which is three probe timeouts after the update that displaced them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.5-SHOULD-DISCARD-OLD-READ-KEYS-AFTER",
+          "section": "6.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "After that instant they are not offered as a candidate at all, so a packet in the old phase no longer decrypts.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "read_candidates"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-COUNT-ENCRYPTED-PACKETS",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every packet protected with a key set is counted against that set, and the count resets when the keys do.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_encrypted"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "encrypted_packets"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "reset_encryption"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-STOP-AT-CONFIDENTIALITY-LIMIT",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Reaching the confidentiality limit for the negotiated AEAD stops those keys being used rather than merely being noted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_encrypted"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "limits"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-UPDATE-BEFORE-CONFIDENTIALITY-LIMIT",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The usage state reports that an update is needed before the limit is reached, and the connection initiates one at that point.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "needs_key_update"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-STOP-CONNECTION-WHEN-LIMIT-UNAVOIDABLE",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "When no update is possible or the integrity limit is reached, the usage state fails rather than returning keys, which ends the connection instead of continuing on exhausted ones.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_authentication_failure"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "rejects_unsupported_or_invalid_usage_state_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-RECOMMENDED-CLOSE-WITH-AEAD-LIMIT-REACHED",
+          "section": "6.6",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The usage failure is surfaced as a typed AEAD error the connection closes on, before the state this clause warns about is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "AeadUsageFailure"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "record_encrypted_packet"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-COUNT-AUTHENTICATION-FAILURES",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Failed authentications are counted across the whole connection rather than per key set, which is how this clause scopes them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_authentication_failure"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "restore"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-STOP-AT-INTEGRITY-LIMIT",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Exceeding the integrity limit for the negotiated AEAD is a typed error rather than another discarded packet.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_authentication_failure"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "limits"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-6.6-MUST-SUITES-DEFINE-AEAD-LIMITS",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A cipher suite specified for use with QUIC defines its AEAD limits.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a cipher suite for use with QUIC. This package specifies none: it implements the three this document defines, with the header protection algorithm and the AEAD limits each of them is given here."
+        },
+        {
+          "id": "RFC9001-6.6-MUST-SPECIFY-BOTH-LIMITS",
+          "section": "6.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Those limits cover both authenticated packets and failed ones.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a cipher suite for use with QUIC. This package specifies none: it implements the three this document defines, with the header protection algorithm and the AEAD limits each of them is given here."
+        },
+        {
+          "id": "RFC9001-7-SHOULD-DISTRUST-UNAUTHENTICATED-INITIAL-DATA",
+          "section": "7",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Initial packets are protected with keys derived from a public value, and what this package takes from one before the handshake authenticates is bounded: a connection ID, a token it echoes back, and CRYPTO bytes the TLS engine validates.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "observe_peer_initial_connection_id"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "set_initial_token_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "ignores_a_new_token_no_initial_can_repeat_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-USE-ALPN",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every handshake carries ALPN: the client offers protocols and the server selects one, with no path that leaves the application protocol unnamed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_application_protocol"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-CLOSE-WITH-NO-APPLICATION-PROTOCOL",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A failure to agree closes the connection with the alert description this clause names, carried in QUIC's CRYPTO_ERROR range.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "no_application_protocol_error_code"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "server_queues_crypto_error_for_alpn_mismatch_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-CLIENT-USES-SAME-ERROR",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The client uses that same code, which is one constant rather than a per-role choice.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "no_application_protocol_error_code"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "close"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-SELECT-COMPATIBLE-PROTOCOL",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server selects from the protocols the client offered, in the server's own order of preference.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_application_protocol"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-SERVER-CLOSES-WHEN-INCOMPATIBLE",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Finding nothing compatible is that same connection error rather than a handshake that continues without a protocol.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "no_application_protocol_error_code"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "server_queues_crypto_error_for_alpn_mismatch_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.1-MUST-CLIENT-CLOSES-WHEN-INCOMPATIBLE",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A server naming a protocol the client did not offer is refused with the same code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_application_protocol"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "handle_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.2-MUST-SEND-TRANSPORT-PARAMETERS-EXTENSION",
+          "section": "8.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Both roles write the quic_transport_parameters extension into their handshake, and neither has a path that omits it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "QuicTransportParameters"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.2-MUST-CLOSE-WHEN-EXTENSION-ABSENT",
+          "section": "8.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A ClientHello or EncryptedExtensions without it is a typed error: the extension is required rather than defaulted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_transport_parameters"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_transport_parameters"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "require_extension"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "client_queues_transport_close_for_nonempty_grease_parameter_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.2-MUST-NOT-SEND-EXTENSION-WITHOUT-QUIC",
+          "section": "8.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "This TLS engine exists only to carry QUIC handshakes; there is no TCP transport here to send the extension over.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "QuicTransportParameters"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "EncryptionLevel"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "applies_tls_actions_keys_parameters_and_crypto_queue_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.2-MUST-ALERT-WHEN-TRANSPORT-IS-NOT-QUIC",
+          "section": "8.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An implementation that supports the extension alerts when it arrives over a transport that is not QUIC.",
+          "disposition": "NotApplicable",
+          "reason": "There is no transport here other than QUIC. This engine is reached only from the QUIC connection state; it has no TLS-over-TCP path on which the extension could arrive out of place."
+        },
+        {
+          "id": "RFC9001-8.3-MUST-NOT-SEND-END-OF-EARLY-DATA",
+          "section": "8.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "EndOfEarlyData is one of the two messages this package marks forbidden in QUIC, and nothing constructs one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/handshake.gleam", "symbol": "forbidden_in_quic"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/handshake.gleam", "symbol": "EndOfEarlyData"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_handshake_test.gleam", "symbol": "identifies_messages_forbidden_by_quic_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.3-MUST-TREAT-CRYPTO-IN-ZERO-RTT-AS-ERROR",
+          "section": "8.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A CRYPTO frame in a 0-RTT packet is a typed protocol violation naming exactly that, on the receive side and on the send side both.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "CryptoFrameAtZeroRtt"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "CryptoSendAtZeroRtt"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "datagram_application_data_is_forbidden_at_initial_and_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.4-MUST-NOT-REQUEST-COMPATIBILITY-MODE",
+          "section": "8.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The ClientHello carries an empty legacy_session_id, which is what asking for compatibility mode would fill in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "legacy_session_id"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-8.4-SHOULD-TREAT-NONEMPTY-SESSION-ID-AS-ERROR",
+          "section": "8.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A ClientHello whose legacy_session_id is not empty is accepted and the field echoed empty rather than treated as a protocol violation.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The field is decoded and carried but never read as a condition. A client that fills it in has asked for a mode this server does not implement and does not enter: the ServerHello echoes an empty session id, so the compatibility-mode records the client would then expect never arrive and the handshake fails on its own terms rather than on this check.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "decode_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "legacy_session_id"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.2-MUST-IMPLEMENT-REPLAY-PROTECTIONS",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Early data is admitted once per ticket: a bounded cache records a domain-separated fingerprint of each accepted attempt and refuses the second, and a rejected ticket takes its early data with it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "record_verified"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "fingerprint"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "contains"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_anti_replay_test.gleam", "symbol": "rejects_replay_bounds_memory_and_prunes_expired_entries_test"},
+            {"path": "packages/quic_core/test/tls_anti_replay_test.gleam", "symbol": "derives_domain_separated_replay_fingerprint_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.2-MUST-NOT-TICKETS-CARRY-APPLICATION-SEMANTICS",
+          "section": "9.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A ticket carries the resumption state this package puts in it and nothing an application chose: there is no interface through which an application could add anything.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "server_policy"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "select"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "selects_authenticated_psk_and_accepts_first_early_use_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.2-MUST-CLIENTS-TREAT-TICKETS-AS-OPAQUE",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A stored ticket is an opaque value to the client: it is presented and matched against the origin it was issued for, and nothing reads inside it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_offer"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_matches_origin"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "previous_ticket_key_resumes_during_bounded_rotation_window_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.2-MUST-APPLICATION-DESCRIBES-ZERO-RTT-USE",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An application protocol using QUIC describes its 0-RTT use and its replay mitigations.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application protocol that runs over QUIC, or the extension that defines itself, rather than the transport that carries it. This package is the transport: it offers 0-RTT to whoever uses it and enforces the replay protections, but it writes no application profile of its own."
+        },
+        {
+          "id": "RFC9001-9.2-MUST-EXTENSIONS-ADDRESS-REPLAY",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A QUIC extension describes how replay affects it or forbids itself in 0-RTT.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application protocol that runs over QUIC, or the extension that defines itself, rather than the transport that carries it. This package is the transport: it offers 0-RTT to whoever uses it and enforces the replay protections, but it writes no application profile of its own."
+        },
+        {
+          "id": "RFC9001-9.2-MUST-APPLICATIONS-BOUND-EXTENSION-SEMANTICS",
+          "section": "9.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An application protocol forbids extensions carrying application semantics in 0-RTT or mitigates the replay.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application protocol that runs over QUIC, or the extension that defines itself, rather than the transport that carries it. This package is the transport: it offers 0-RTT to whoever uses it and enforces the replay protections, but it writes no application profile of its own."
+        },
+        {
+          "id": "RFC9001-9.3-MUST-PAD-CLIENT-HELLO-PACKET",
+          "section": "9.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The datagram carrying a ClientHello is padded to the 1200-byte floor every QUIC path carries, which is enforced at construction rather than checked afterwards.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "minimum_datagram_bytes"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "minimum_initial_payload_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/connection_state_test.gleam", "symbol": "derives_initial_keys_and_processes_coalesced_wire_packets_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.4-MUST-HEADER-PROTECTION-VARIANTS-USE-PRF",
+          "section": "9.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A future header protection variant built on this construction uses a PRF.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a future version of QUIC or of TLS. This package implements the two versions that exist, each with the salt and labels its own document fixes, and defines neither a new version nor a new cipher suite."
+        },
+        {
+          "id": "RFC9001-9.5-MUST-RECEIVE-PATH-FREE-OF-SIDE-CHANNELS",
+          "section": "9.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Header protection removal, packet number recovery, and payload decryption each run to completion on fixed-size inputs, and the authenticator comparison is the constant-time one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "unprotect_header"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "unprotect_payload"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "nonce"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "compares_authenticators_in_constant_time_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.5-MUST-SEND-PATH-FREE-OF-SIDE-CHANNELS",
+          "section": "9.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The sending side is the same construction in reverse, with the packet number encoded into a fixed field before protection rather than branched on.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "protect_header"},
+            {"path": "packages/quic_core/src/quic_core/internal/packet_protection.gleam", "symbol": "protect_payload"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/traffic_keys_test.gleam", "symbol": "matches_rfc9001_chacha20_short_packet_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.5-SHOULD-GENERATE-NEXT-KEYS-AFTER-UPDATE",
+          "section": "9.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Committing a peer update derives and stores the following key set at the same moment, so the next update costs no derivation on the receive path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "commit_peer_update"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "next_secret"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "distinguishes_reordered_old_packets_from_peer_updates_test"}
+          ]
+        },
+        {
+          "id": "RFC9001-9.6-SHOULD-NEW-LABELS-PER-VERSION",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A new QUIC version defines new key derivation labels.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a future version of QUIC or of TLS. This package implements the two versions that exist, each with the salt and labels its own document fixes, and defines neither a new version nor a new cipher suite."
+        },
+        {
+          "id": "RFC9001-9.6-SHOULD-NEW-SALT-PER-VERSION",
+          "section": "9.6",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A new QUIC version defines a new initial salt.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a future version of QUIC or of TLS. This package implements the two versions that exist, each with the salt and labels its own document fixes, and defines neither a new version nor a new cipher suite."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 1,
+        "entries": [
+          {
+            "id": 7785,
+            "section": "5",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have the nonce formed from a 32-bit reconstructed packet number rather than the 62 bits the published text names. Both readings produce the same nonce: the number is left-padded with zeros to the width of the initialization vector, and a QUIC packet number never exceeds 2^62-1, so the padded value is identical either way. The nonce is built here by padding the number to the IV width and taking the exclusive or, which is what both texts describe, and it matches this document's own test vectors."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9002",
       "title": "QUIC Loss Detection and Congestion Control",
@@ -29076,7 +30636,1545 @@
         ]
       }
     },
-    {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
+    {
+      "id": "RFC9484",
+      "title": "Proxying IP in HTTP",
+      "map_complete": true,
+      "evidence": [
+        "src/http/masque.gleam",
+        "test/masque_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9484.txt",
+        "document_sha256": "e99ea1ad133839a8c1a980334cc6d5f4c289d13bccea0563e540182a6e612b26",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9484",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 110,
+        "level_counts": {
+          "MUST": 50,
+          "MUST NOT": 10,
+          "SHOULD": 15,
+          "SHALL": 29,
+          "SHALL NOT": 1,
+          "SHOULD NOT": 3,
+          "RECOMMENDED": 1,
+          "NOT RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9484-3-MUST-LEVEL-THREE-OR-LOWER-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The built-in CONNECT-IP URI Template uses only simple level-one variable expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-ABSOLUTE-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The fixed template is absolute: a validated proxy authority and the well-known absolute path, with no caller template syntax accepted anywhere.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NONEMPTY-TEMPLATE-COMPONENTS",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Scheme, authority, and path are each non-empty: the authority is validated before a request exists and the path is the well-known location.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-PATH-START-WITH-SLASH",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every generated CONNECT-IP path starts with the slash-prefixed well-known MASQUE location.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-VARIABLES-IN-PATH",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Both template variables are expanded only into ordered path segments, never into an authority or a query.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-EMPTY-TARGET-VARIABLES",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A target that is present is non-empty; absence is the wildcard and expands to its own percent-encoded literal rather than to nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"},
+            {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-NONASCII-TEMPLATE",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The template literals are ASCII and a target carrying anything outside visible ASCII is refused before expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-VISIBLE-ASCII-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every byte of the expanded path lies in 0x21 through 0x7e: the literals do, and a variable is checked against that range and then percent-encoded.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-FORBIDDEN-TEMPLATE-EXPANSIONS",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The built-in template uses none of the reserved, fragment, label, path-segment, or path-style expansion operators.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-SHOULD-VALIDATE-TEMPLATE",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Template validity holds by construction, and the two values expanded into it are validated before any request is returned.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-REJECT-DETECTED-INVALID-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An invalid authority or scope returns a typed error instead of a request, so nothing is sent to the proxy.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-SHOULD-OFFER-DEFAULT-LOCATION",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An IP proxy deployment should serve the default well-known template location for clients that have no other configuration.",
+          "disposition": "DocumentedDeviation",
+          "reason": "This package has a CONNECT-UDP listener at the default location and no CONNECT-IP one. Its IP side is the client request, the capsule codec, and a forwarding policy, so there is nothing yet for a default location to answer with.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4-SHALL-EXPAND-TEMPLATE",
+          "section": "4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The path a request carries is already expanded: both variables are substituted when the request is prepared, not by the adapter that sends it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4-MUST-ENCRYPTED-TRANSPORT",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "IP proxying runs over TLS, QUIC, or equivalent encryption.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection the request is carried on, and this module opens none: preparing a request returns metadata for an HTTP adapter to send. Which connection carries it, and whether that connection is encrypted, is decided by the caller that dials it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-VALIDATE-DECODED-VARIABLES",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An IP proxy validates the decoded target and ipproto against the section 4.6 requirements.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-TREAT-INVALID-AS-MALFORMED",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A request whose variables fail those requirements is treated as malformed.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-RESOLVE-DNS-BEFORE-REPLY",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A target that is a DNS name is resolved before the proxy answers the request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-REJECT-ON-ERROR",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An error during that process rejects the request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-SHOULD-SEND-PROXY-STATUS",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Such a rejection carries details in a Proxy-Status field.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-HOLD-ASSIGNMENTS-WHILE-OPEN",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "Address and route assignments are held for as long as the request stream is open.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-CLOSE-STREAM-ON-TEARDOWN",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy tearing a tunnel down for inactivity closes the request stream as it does so.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-CLIENT-ABORT-ON-FAILURE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Any response other than a successful one leaves the tunnel unestablished and every payload path returns a typed failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "client_tunnel"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-GET",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The HTTP/1.1 mapping emits the GET method.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-SINGLE-HOST",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits exactly one Host field holding the validated proxy authority.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-CONNECTION-UPGRADE",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits a Connection field whose token is Upgrade.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-UPGRADE-CONNECT-IP",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits one Upgrade field whose value is connect-ip.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-MUST-ERROR-ON-MALFORMED-H1",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A recipient answers a malformed HTTP/1.1 IP proxying request with an error.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.2-SHOULD-USE-400-FOR-MALFORMED-H1",
+          "section": "4.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "That error should be 400 Bad Request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-STATUS-101",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Only 101 is read as HTTP/1.1 success; every other status leaves the tunnel unestablished.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-RESPONSE-CONNECTION-UPGRADE",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a Connection field containing Upgrade, matched case-insensitively.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "headers_contain_token"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-RESPONSE-UPGRADE-CONNECT-IP",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires one Upgrade field equal to connect-ip, so an answer naming the UDP protocol is not this tunnel.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "single_token_header"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-START-CAPSULE-PROTOCOL",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a true Capsule-Protocol field and no framing field that would contradict it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "capsule_protocol_enabled"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-MUST-ABORT-INVALID-H1-RESPONSE",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response missing any of those is a failed attempt: a typed error is returned and no payload path opens.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-CONNECT",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The HTTP/2 and HTTP/3 mapping uses the CONNECT method.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-CONNECT-IP-PROTOCOL",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It carries connect-ip as the Extended CONNECT protocol.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "request_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-PROXY-AUTHORITY",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The authority is the validated IP proxy's, which is the only authority a CONNECT-IP request has.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_authority"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-NOT-EMPTY-H2-H3-PATH-SCHEME",
+          "section": "4.4",
+          "level": "SHALL NOT",
+          "roles": ["client"],
+          "summary": "The path is the expanded well-known location and is never empty; the scheme is the caller's encrypted transport rather than something this request can blank out.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-EXPANDED-PATH",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The path handed to the adapter is the one expansion produced, including the percent-encoding of every reserved character in a variable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-SHALL-H2-H3-STATUS-2XX",
+          "section": "4.5",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Every status from 200 through 299 is read as Extended CONNECT success, and nothing outside that range is.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-SHALL-H2-H3-START-CAPSULE-PROTOCOL",
+          "section": "4.5",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a true Capsule-Protocol field, and the upgrade fields that belong to the HTTP/1.1 mapping are refused here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "capsule_protocol_enabled"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-MUST-ABORT-INVALID-H2-H3-RESPONSE",
+          "section": "4.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response failing either requirement returns a typed error and never unlocks the datagram path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-SHOULD-ADVERTISE-RESOLVED-ROUTES",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A proxy resolving a hostname target advertises routes for the addresses it resolved.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.6-MUST-FOLLOW-VARIABLE-FORMAT",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A target is an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard, and an ipproto is a decimal number or the wildcard; anything else is refused before expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "valid_target_host"},
+            {"path": "src/http/masque.gleam", "symbol": "ipv6_address_bytes"},
+            {"path": "src/http/masque.gleam", "symbol": "ipv4_address_bytes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-PERCENT-ENCODE-IPV6-COLONS",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Expansion percent-encodes every colon in an IPv6 literal or prefix.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-SHALL-PERCENT-ENCODE-PREFIX-SLASH",
+          "section": "4.6",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The slash introducing a prefix length is percent-encoded by the same expansion, so it reaches the path as %2F rather than as a segment boundary.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-PREFIX-LENGTH-IN-RANGE",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A prefix length is one to three decimal digits and no larger than the address it qualifies, checked against the parsed literal rather than against a fixed bound.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prefix_length_value"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_target_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-ZERO-BITS-BELOW-PREFIX",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every bit of the address below the prefix length is zero, held to the same rule a prefix arriving in a capsule is held to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_target_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-IPPROTO-RANGE-OR-WILDCARD",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An ipproto is an integer from 0 through 255, and an absent one expands to the percent-encoded wildcard.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "valid_optional_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"},
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-MATCHING-REQUEST-ID",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An assignment answering a request carries that request's Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ZERO-UNSOLICITED-REQUEST-ID",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An assignment answering nothing carries a zero Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ASSIGN-IP-VERSION-4-OR-6",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An Assigned Address carries IP version 4 or 6; the decoder matches those two bytes and refuses every other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "IpAddress"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"},
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-IPV4-32-BITS",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes the address field at 32 bits, which is the width the decoder reads and the encoder writes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"},
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-IPV6-128-BITS",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes it at 128 bits in the same two places.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ASSIGN-PREFIX-WITHIN-ADDRESS",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "The prefix length is no larger than the address field in bits, compared against the width the version fixed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "address_number"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ZERO-ASSIGN-BITS-BELOW-PREFIX",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Every bit below the prefix length is zero, on the way in and on the way out.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_assigned"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ERROR-ON-MALFORMED-ASSIGN",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error rather than a partly-read assignment, which is what the caller turns into the Capsule Protocol error handling.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_assigned"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-REQUEST-WHEN-EXPECTING-ASSIGNMENT",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An endpoint that expects an assignment asks for one: requesting addresses is the only way this state produces an ADDRESS_REQUEST capsule, and it is how a client opens.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_addresses"},
+            {"path": "src/http/masque.gleam", "symbol": "ip_state"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-NOT-REUSE-REQUEST-ID",
+          "section": "4.7.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A Request ID this tunnel has already used is refused with a typed error naming it, so it cannot be reused within the request.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_addresses"},
+            {"path": "src/http/masque.gleam", "symbol": "reject_reused_ids"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-NOT-ZERO-REQUEST-ID",
+          "section": "4.7.2",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "A Requested Address with a zero Request ID is refused, which is what separates a request from the unsolicited assignment that uses zero.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-REQUEST-IP-VERSION-4-OR-6",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A Requested Address carries IP version 4 or 6 and nothing else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-REQUEST-IPV4-32-BITS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes its address field at 32 bits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-REQUEST-IPV6-128-BITS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes it at 128 bits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-REQUEST-PREFIX-WITHIN-ADDRESS",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Its prefix length is no larger than that width.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ZERO-REQUEST-BITS-BELOW-PREFIX",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Every bit below it is zero.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ERROR-ON-MALFORMED-REQUEST",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error instead of a partly-read request.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_requested"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHOULD-ASSIGN-ON-REQUEST",
+          "section": "4.7.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An endpoint receiving an ADDRESS_REQUEST assigns addresses and answers with an ADDRESS_ASSIGN.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-EVERY-REQUESTED-ADDRESS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "Every Requested Address gets an Assigned Address with a matching Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-WITH-ASSIGNED-VALUES",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An address that was assigned is answered with the values assigned.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-REJECTION-ALL-ZERO",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An address that was not assigned is answered with an all-zero address.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-REJECTION-MAX-PREFIX",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "That rejection carries the maximum prefix length for its family.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHOULD-NOT-REPEAT-REJECTIONS",
+          "section": "4.7.2",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "Those rejections are not repeated in later ADDRESS_ASSIGN capsules.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ABORT-ON-EMPTY-REQUEST",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An ADDRESS_REQUEST carrying no Requested Address is a typed capsule error rather than a request for nothing, which the caller turns into the stream abort.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"},
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ROUTE-IP-VERSION-4-OR-6",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An IP Address Range carries IP version 4 or 6.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"},
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-SHALL-ROUTE-IPV4-32-BITS",
+          "section": "4.7.3",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes both bound fields at 32 bits, and a range whose two bounds are in different address spaces has no decoding at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-SHALL-ROUTE-IPV6-128-BITS",
+          "section": "4.7.3",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes both at 128 bits in the same single pattern.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-START-NOT-AFTER-END",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "The start address is less than or equal to the end address, compared once as integers after both bounds are decoded together.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "parse_route"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ERROR-ON-MALFORMED-ROUTE",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error rather than a partly-read advertisement.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-RANGES",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Consecutive ranges satisfy the stated ordering, checked pairwise across the whole capsule rather than only at its ends.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "routes_are_ordered"},
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-VERSION",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A preceding range's IP version is no greater than the following one's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-PROTOCOL",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Within one version, its IP protocol is no greater than the following one's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-ADDRESS",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Within one version and protocol, its end address is strictly less than the following one's start.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ABORT-ON-UNORDERED-ROUTES",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A received advertisement that does not meet those requirements is a typed error rather than a set of routes, which the caller turns into the stream abort.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "apply_ip_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-NOT-SEND-OVERLAPPING-ROUTES",
+          "section": "4.7.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "An advertisement whose ranges overlap in the forbidden way is refused when it is built, so this endpoint cannot send one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "routes_have_forbidden_overlap"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ABORT-ON-DETECTED-OVERLAP",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Validating the overlap rule is optional, and this endpoint does validate it, so a received overlap is a typed error rather than a silently accepted route set.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "routes_have_forbidden_overlap"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.8-MUST-WALK-EXTENSION-CHAIN",
+          "section": "4.8",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Scoping by Internet Protocol Number reads the outermost non-extension number, walking the IPv6 extension chain by each header's own length, bounded at eight headers and refusing a packet whose chain cannot be resolved.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "upper_layer_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "extension_header"},
+            {"path": "src/http/masque.gleam", "symbol": "extension_header_numbers"},
+            {"path": "src/http/masque.gleam", "symbol": "maximum_extension_headers"},
+            {"path": "src/http/masque.gleam", "symbol": "packet_routing"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scoping_walks_the_ipv6_extension_header_chain_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-5-MUST-NOT-REALLOCATE-CONTEXT-ID",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "The only Context ID an IP tunnel has is the zero this document allocates for IP packets, and there is no operation anywhere that allocates or reallocates one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-6-SHALL-DROP-OR-BUFFER-UNKNOWN-CONTEXT",
+          "section": "6",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "A datagram carrying any Context ID other than zero is refused with that ID rather than buffered, and the receiver that classifies capsules drops before it stores anything.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "receive_proxy_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "classify_proxy_datagram_capsule_context"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"},
+            {"path": "test/masque_test.gleam", "symbol": "rfc9298_proxy_receiver_drops_without_buffering_and_requires_abort_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-7.2-MUST-ENSURE-1280-LINK-MTU",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An endpoint operating as a router with IPv6 guarantees an IP tunnel link MTU of at least 1280 bytes.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2-MUST-PROBE-WITH-ICMPV6-ECHO",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Without an out-of-band guarantee, that MTU is established with 1232-byte ICMPv6 echo requests.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2-MUST-ABORT-WHEN-MTU-TOO-LOW",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An endpoint detecting a QUIC MTU too low for 1280 bytes of IPv6 aborts the request stream.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2.1-SHOULD-SIGNAL-ERRORS-WITH-ICMP",
+          "section": "7.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "A forwarding error should be signalled to the peer by generating an ICMP packet and sending it in an HTTP Datagram.",
+          "disposition": "DocumentedDeviation",
+          "reason": "Forwarding refusals are returned to the caller as typed errors naming the reason -- a forbidden source, a forbidden destination, an exhausted hop count, a malformed packet -- and nothing generates an ICMP packet for the IP tunnel. The CONNECT-UDP path does generate Packet Too Big; the IP path leaves the choice to the caller holding the error, so a peer learns of the drop only from its own loss detection.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_forwarding_rejects_a_spoofed_source_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-7.2.1-SHOULD-PROCESS-PROXIED-ICMP",
+          "section": "7.2.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that advertises no routes should read the ICMP its peer proxies to it, which is how it learns of forwarding errors.",
+          "disposition": "DocumentedDeviation",
+          "reason": "An inbound IP packet is decoded and handed to the caller whole, with no ICMP interpretation of any kind: this package neither reads an ICMP type nor maps one onto the tunnel state. A caller that wants these errors reads them from the packets it is given.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-9-SHOULD-DEFINE-EXTENSION-CAPSULES",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "An extension that needs to exchange configuration defines new capsule types for it.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-9-RECOMMENDED-ORDER-ADDRESSING-EXTENSIONS",
+          "section": "9",
+          "level": "RECOMMENDED",
+          "roles": ["client", "proxy"],
+          "summary": "An addressing extension specifies that its capsules precede ADDRESS_ASSIGN and take effect only once that capsule is parsed.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-9-SHOULD-ORDER-ROUTING-EXTENSIONS",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "A routing extension does the same with respect to ROUTE_ADVERTISEMENT.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-10-SHOULD-AVOID-INCREASING-BURSTINESS",
+          "section": "10",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "Forwarding neither holds nor groups packets: each accepted packet becomes exactly one datagram as it is forwarded, so the sequence leaving is the sequence arriving.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10-SHOULD-NOT-QUEUE-FOR-BATCHING",
+          "section": "10",
+          "level": "SHOULD NOT",
+          "roles": ["client", "proxy"],
+          "summary": "There is no queue on the IP path at all, so no packet waits for another to make a larger batch.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10-SHOULD-PREFER-HTTP3",
+          "section": "10",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "IP proxying should run over HTTP/3, where a QUIC DATAGRAM frame keeps the tunnel unreliable.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The caller states the protocol, because peer capability and deployment policy are outside this codec. HTTP/3 is supported and is the mapping this package's own transport uses; what it will not do is silently override a caller that asked for one of the other two.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.1-SHOULD-NOT-CAPSULE-OVERSIZED-PACKET",
+          "section": "10.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "proxy"],
+          "summary": "A packet too large for the datagram limit is refused with that limit rather than re-sent reliably in a DATAGRAM capsule, so the tunnel's unreliability is not quietly traded away.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.1-SHOULD-DROP-AND-SEND-PACKET-TOO-BIG",
+          "section": "10.1",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "Such a packet should be dropped and an ICMP Packet Too Big sent to whoever sent it.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The packet is dropped -- encoding refuses it and returns the limit that refused it -- but no ICMP Packet Too Big is generated for the IP tunnel. The CONNECT-UDP path does generate one from its own socket; the IP path has no socket of its own and leaves the notification to the caller holding the typed error.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.2-MUST-MARK-NOT-ECT-OUTSIDE-CONGESTION-CONTROL",
+          "section": "10.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A QUIC sender with congestion control disabled marks every outer IP header Not-ECT.",
+          "disposition": "NotApplicable",
+          "reason": "Congestion control cannot be disabled anywhere in the supported transport configuration: neither the public HTTP configuration nor the QUIC core has such a mode, so there are no QUIC packets outside congestion control to mark."
+        },
+        {
+          "id": "RFC9484-10.3-MUST-NOT-COPY-INNER-DSCP",
+          "section": "10.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "An inner packet's differentiated services field is carried through untouched as payload and is never read to mark an outer header: the tunnel payload reaches the transport as opaque bytes behind a context identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.3-MUST-NOT-COALESCE-UNEQUAL-DSCP",
+          "section": "10.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "One datagram carries exactly one inner packet, so no two packets share an outer one whatever they are marked with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-SHOULD-RESTRICT-TO-AUTHENTICATED-USERS",
+          "section": "11",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An HTTP server offering IP proxying restricts it to authenticated users.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-11-SHOULD-AVOID-PERSISTENT-ASSIGNMENT",
+          "section": "11",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A proxy avoids assigning the same address or prefix to the same client over time.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-11-MUST-FOLLOW-BCP38",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Where the prefix a peer may send from is known, the policy carries it and every packet from outside it is refused before the destination is even examined; a policy with no such prefix is the endpoint that does not know, and constrains nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "allow_ip_source"},
+            {"path": "src/http/masque.gleam", "symbol": "source_allowed"},
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_forwarding_rejects_a_spoofed_source_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-MUST-SCOPE-FORWARDED-ICMP",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy forwarding ICMP on a shared external address inspects the invoking packet and forwards only to the client whose scope matches it.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here shares an external address between clients, because nothing here assigns addresses or holds more than one tunnel's policy, and nothing here originates or relays an ICMP packet on the IP path. The condition the clause opens with cannot arise."
+        },
+        {
+          "id": "RFC9484-11-NOT-RECOMMENDED-DSCP-IN-PRIVATE-CONTEXTS",
+          "section": "11",
+          "level": "NOT RECOMMENDED",
+          "roles": ["client", "proxy"],
+          "summary": "An inner packet's DSCP is never transferred to an outer header, so the flow-level information that transfer would expose stays inside the tunnel.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-MUST-NOT-FORWARD-CAPSULES-BEFORE-SUCCESS",
+          "section": "11",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "An intermediary re-encoding a request to HTTP/1.1 forwards no capsule until it has parsed a successful response.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here re-encodes a request between HTTP versions: a prepared request names one protocol and is carried by an adapter for that protocol. The ordering the clause protects is enforced on the client path anyway, where no payload may be sent until a response has been confirmed."
+        },
+        {
+          "id": "RFC9484-12.2-MUST-REGISTRY-ENTRIES-DISTINCT",
+          "section": "12.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Entries in the IP Proxying Capsule Type registry have distinct values in the stated column.",
+          "disposition": "NotApplicable",
+          "reason": "This governs IANA registry allocation rather than endpoint behaviour. This package registers nothing; it reads the three capsule types this document defines and treats every other type as unknown."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 1,
+        "entries": [
+          {
+            "id": 8444,
+            "section": "4.6",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": true,
+            "reason": "Section 4.6 writes the wildcard as `*`, which reads as the literal that reaches the wire. The correction records that the variable still goes through RFC 6570 simple expansion, which escapes every character outside the unreserved set, so the wildcard is transmitted as %2A; it corrects the section 4.2 and 4.4 examples for the same reason. The path was built with a bare `*`, so an unscoped request named a path no proxy expanding the same template has a route for. The corrected spelling is applied.",
+            "implementation": [
+              {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"},
+              {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+            ],
+            "tests": [
+              {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+            ]
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9525",
       "title": "Service Identity in TLS",
