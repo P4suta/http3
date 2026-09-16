@@ -250,3 +250,24 @@ pub fn resolved_host_order(
   ipv4: List(String),
   ipv6: List(String),
 ) -> List(String)
+
+/// One step for a grouped policy store trace: store a key under a group, or
+/// record that the named keys have just been used.
+pub type PolicyStep {
+  Put(key: String, group: String)
+  Touch(keys: List(String))
+}
+
+/// Drive a grouped policy store through the steps and return the keys it kept,
+/// most recently accessed first.
+@external(erlang, "http_test_ffi", "grouped_policy_store_trace")
+pub fn grouped_policy_store_trace(
+  maximum_entries: Int,
+  maximum_per_group: Int,
+  steps: List(PolicyStep),
+) -> List(String)
+
+/// Run `body` with every given name resolving to loopback, restoring the
+/// resolver configuration on every exit path.
+@external(erlang, "http_test_ffi", "with_loopback_hosts")
+pub fn with_loopback_hosts(names: List(String), body: fn() -> value) -> value

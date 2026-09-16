@@ -793,6 +793,76 @@ pub fn a_refreshed_cookie_keeps_the_creation_time_it_had_test() -> Nil {
   Nil
 }
 
+pub fn a_crowded_domain_loses_its_cookies_before_another_domain_does_test() -> Nil {
+  // RFC 6265 section 5.3: excess cookies go in priority order, and a cookie
+  // sharing a domain with more than a predetermined number of others goes
+  // before any other cookie. The number here is half the store's entry ceiling.
+  //
+  // One cookie is set for the first host and then three for the second, on a
+  // store of three. The first host's cookie is the oldest of the four, so it is
+  // the one a store that only counted last access would drop; what has to
+  // survive is that one, at the expense of the crowded host's oldest.
+  let first = "cookie-crowd-one.test"
+  let second = "cookie-crowd-two.test"
+  use <- http_test_support.with_loopback_hosts([first, second])
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let exchange = fn(fields) {
+    use socket <- result.try(transport.accept(listener, 1000))
+    use read <- result.try(transport.read(socket, 4096, 1000))
+    let assert transport.ReadData(received, socket) = read
+    use _ <- result.try(
+      transport.send(socket, <<
+        "HTTP/1.1 200 OK\r\n":utf8,
+        fields:utf8,
+        "Content-Length: 0\r\nConnection: close\r\n\r\n":utf8,
+      >>),
+    )
+    use _ <- result.try(transport.close(socket))
+    Ok(received)
+  }
+  let server_task =
+    http_test_support.start_task(fn() {
+      use _ <- result.try(exchange("Set-Cookie: keep=me; Path=/; Max-Age=60\r\n"))
+      use _ <- result.try(exchange("Set-Cookie: a=1; Path=/; Max-Age=60\r\n"))
+      use _ <- result.try(exchange("Set-Cookie: b=2; Path=/; Max-Age=60\r\n"))
+      use _ <- result.try(exchange("Set-Cookie: c=3; Path=/; Max-Age=60\r\n"))
+      exchange("")
+    })
+  let assert Ok(config) =
+    client.defaults()
+    |> client.allow_plain_http
+    |> client.enable_cookies(client.StoreLimits(
+      maximum_entries: 3,
+      maximum_bytes: 4096,
+    ))
+  let assert Ok(running) = client.start(config)
+  let named = fn(host) {
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: <<>>,
+      scheme: gleam_http.Http,
+      host: host,
+      port: Some(port),
+      path: "/",
+      query: None,
+    )
+  }
+  let assert Ok(_) = client.fetch(running, named(first))
+  let assert Ok(_) = client.fetch(running, named(second))
+  let assert Ok(_) = client.fetch(running, named(second))
+  let assert Ok(_) = client.fetch(running, named(second))
+  let assert Ok(_) = client.fetch(running, named(first))
+
+  let assert Ok(final_request) = http_test_support.await_task(server_task)
+  let assert Ok(final_text) = bit_array.to_string(final_request)
+  assert string.contains(final_text, "cookie: keep=me\r\n")
+  let assert Ok(Nil) = client.close(running)
+  let assert Ok(Nil) = transport.stop(listener)
+  Nil
+}
+
 pub fn enabled_cookie_store_applies_a_scoped_unexpired_cookie_test() -> Nil {
   let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
   let assert Ok(#(_, port)) = transport.local_endpoint(listener)

@@ -443,3 +443,9 @@
   when a later Set-Cookie replaces its value, which section 5.3 requires, so
   refreshing a cookie no longer moves it to the end of the field.
   `client_store.CookieRecord` gains an `age_milliseconds` field.
+- Evicted excess cookies in the order RFC 6265 section 5.3 requires: a cookie
+  sharing a domain with more than half the store's entry ceiling goes before any
+  other cookie, and within either tier the cookie accessed longest ago goes
+  first. The store had no per-cookie access time at all, so it dropped whichever
+  cookie had been written longest ago; sending a cookie now records that it was
+  used. Expired cookies were already evicted ahead of both tiers.

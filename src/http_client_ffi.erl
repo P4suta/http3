@@ -21,11 +21,14 @@
     new_connection_guard/0,
     new_http2_pool/3,
     new_lifecycle/3,
+    new_grouped_policy_store/3,
     new_policy_store/2,
     new_race_cancellation/0,
     policy_store_get/3,
     policy_store_list/2,
     policy_store_put/6,
+    policy_store_put_grouped/7,
+    policy_store_touch/3,
     register_socket/3,
     race_cancelled/1,
     state/1,
@@ -42,7 +45,8 @@
 -type cleanup() :: fun(() -> term()).
 -type http2_session() :: {binary(), term(), term(), cleanup(), integer()}.
 -type policy_store() :: #{state := atomics:atomics_ref(), owner := pid()}.
--type policy_item() :: {binary(), binary(), term(), integer(), pos_integer()}.
+-type policy_item() ::
+    {binary(), binary(), term(), integer(), pos_integer(), binary()}.
 
 -spec call_policy_adapter(fun(), pos_integer()) ->
     {ok, term()} | {error, integer()}.
@@ -109,25 +113,50 @@ call_https_resolver(_Resolver, _Host, _Port, _TimeoutMilliseconds) ->
 new_policy_store(MaximumEntries, MaximumBytes)
     when MaximumEntries > 0, MaximumEntries =< 65536,
          MaximumBytes > 0, MaximumBytes =< 67108864 ->
-    State = atomics:new(1, [{signed, false}]),
-    Owner = spawn(fun() ->
-        policy_store_loop(State, [], MaximumEntries, MaximumBytes)
-    end),
-    #{state => State, owner => Owner};
+    %% A store whose items carry no group has no group ceiling to reach, so the
+    %% whole entry ceiling stands in for it.
+    new_grouped_policy_store(MaximumEntries, MaximumBytes, MaximumEntries);
 new_policy_store(_MaximumEntries, _MaximumBytes) ->
     new_policy_store(1, 1).
+
+%% A store whose items carry a group, none of which may occupy more than
+%% MaximumPerGroup entries once the store is over its own ceiling.
+-spec new_grouped_policy_store(integer(), integer(), integer()) ->
+    policy_store().
+new_grouped_policy_store(MaximumEntries, MaximumBytes, MaximumPerGroup)
+    when MaximumEntries > 0, MaximumEntries =< 65536,
+         MaximumBytes > 0, MaximumBytes =< 67108864,
+         MaximumPerGroup > 0, MaximumPerGroup =< MaximumEntries ->
+    State = atomics:new(1, [{signed, false}]),
+    Owner = spawn(fun() ->
+        policy_store_loop(
+            State, [], MaximumEntries, MaximumBytes, MaximumPerGroup
+        )
+    end),
+    #{state => State, owner => Owner};
+new_grouped_policy_store(_MaximumEntries, _MaximumBytes, _MaximumPerGroup) ->
+    new_grouped_policy_store(1, 1, 1).
 
 -spec policy_store_put(
     policy_store(), binary(), binary(), term(), integer(), integer()
 ) -> boolean().
-policy_store_put(
+policy_store_put(Store, Partition, Key, Value, ExpiresAt, RetainedBytes) ->
+    policy_store_put_grouped(
+        Store, Partition, Key, Value, ExpiresAt, RetainedBytes, <<>>
+    ).
+
+-spec policy_store_put_grouped(
+    policy_store(), binary(), binary(), term(), integer(), integer(), binary()
+) -> boolean().
+policy_store_put_grouped(
     #{state := State, owner := Owner},
     Partition,
     Key,
     Value,
     ExpiresAt,
-    RetainedBytes
-) when is_binary(Partition), is_binary(Key),
+    RetainedBytes,
+    Group
+) when is_binary(Partition), is_binary(Key), is_binary(Group),
        is_integer(ExpiresAt), RetainedBytes > 0 ->
     case safe_state(State) of
         0 ->
@@ -140,7 +169,8 @@ policy_store_put(
                 Key,
                 Value,
                 ExpiresAt,
-                RetainedBytes
+                RetainedBytes,
+                Group
             },
             receive
                 {Reference, Stored} when is_boolean(Stored) -> Stored
@@ -149,8 +179,29 @@ policy_store_put(
             end;
         _ -> false
     end;
-policy_store_put(_Store, _Partition, _Key, _Value, _ExpiresAt, _Bytes) ->
+policy_store_put_grouped(
+    _Store, _Partition, _Key, _Value, _ExpiresAt, _Bytes, _Group
+) ->
     false.
+
+%% Record that these keys have just been used, which is the last-access date
+%% RFC 6265 section 5.3 breaks eviction ties by.
+-spec policy_store_touch(policy_store(), binary(), [binary()]) -> nil.
+policy_store_touch(#{state := State, owner := Owner}, Partition, Keys)
+    when is_binary(Partition), is_list(Keys) ->
+    case safe_state(State) of
+        0 ->
+            Reference = make_ref(),
+            Owner ! {policy_touch, self(), Reference, Partition, Keys},
+            receive
+                {Reference, done} -> nil
+            after ?OWNER_TIMEOUT ->
+                nil
+            end;
+        _ -> nil
+    end;
+policy_store_touch(_Store, _Partition, _Keys) ->
+    nil.
 
 -spec policy_store_list(policy_store(), binary()) -> [term()].
 policy_store_list(#{state := State, owner := Owner}, Partition)
@@ -205,11 +256,15 @@ close_policy_store(_Store) ->
     nil.
 
 -spec policy_store_loop(
-    atomics:atomics_ref(), [policy_item()], pos_integer(), pos_integer()
+    atomics:atomics_ref(), [policy_item()], pos_integer(), pos_integer(),
+    pos_integer()
 ) -> no_return().
-policy_store_loop(State, Existing, MaximumEntries, MaximumBytes) ->
+policy_store_loop(State, Existing, MaximumEntries, MaximumBytes, PerGroup) ->
     Now = erlang:monotonic_time(millisecond),
     Items = prune_policy_items(Existing, Now, []),
+    Continue = fun(Next) ->
+        policy_store_loop(State, Next, MaximumEntries, MaximumBytes, PerGroup)
+    end,
     receive
         {
             policy_put,
@@ -219,7 +274,8 @@ policy_store_loop(State, Existing, MaximumEntries, MaximumBytes) ->
             Key,
             Value,
             ExpiresAt,
-            RetainedBytes
+            RetainedBytes,
+            Group
         } ->
             WithoutPrevious = remove_policy_item(
                 Partition, Key, Items, []
@@ -227,14 +283,10 @@ policy_store_loop(State, Existing, MaximumEntries, MaximumBytes) ->
             case RetainedBytes =< MaximumBytes of
                 false ->
                     Sender ! {Reference, false},
-                    policy_store_loop(
-                        State, WithoutPrevious, MaximumEntries, MaximumBytes
-                    );
+                    Continue(WithoutPrevious);
                 true when ExpiresAt =< Now ->
                     Sender ! {Reference, true},
-                    policy_store_loop(
-                        State, WithoutPrevious, MaximumEntries, MaximumBytes
-                    );
+                    Continue(WithoutPrevious);
                 true ->
                     Updated = retain_policy_capacity(
                         [
@@ -243,57 +295,51 @@ policy_store_loop(State, Existing, MaximumEntries, MaximumBytes) ->
                                 Key,
                                 Value,
                                 ExpiresAt,
-                                RetainedBytes
+                                RetainedBytes,
+                                Group
                             }
                             | WithoutPrevious
                         ],
                         MaximumEntries,
                         MaximumBytes,
-                        0,
-                        0,
-                        []
+                        PerGroup
                     ),
                     Sender ! {Reference, true},
-                    policy_store_loop(
-                        State, Updated, MaximumEntries, MaximumBytes
-                    )
+                    Continue(Updated)
             end;
         {policy_list, Sender, Reference, Partition} ->
             Values = [
                 Value
-             || {ItemPartition, _Key, Value, _ExpiresAt, _Bytes} <- Items,
+             || {ItemPartition, _Key, Value, _ExpiresAt, _Bytes, _Group}
+                    <- Items,
                 ItemPartition =:= Partition
             ],
             Sender ! {Reference, Values},
-            policy_store_loop(State, Items, MaximumEntries, MaximumBytes);
+            Continue(Items);
+        {policy_touch, Sender, Reference, Partition, Keys} ->
+            Sender ! {Reference, done},
+            Continue(promote_policy_items(Partition, Keys, Items));
         {policy_get, Sender, Reference, Partition, Key} ->
             case find_policy_item(Partition, Key, Items) of
                 {ok, Value} ->
                     Sender ! {Reference, {ok, Value}},
-                    policy_store_loop(
-                        State,
-                        promote_policy_item(Partition, Key, Items),
-                        MaximumEntries,
-                        MaximumBytes
-                    );
+                    Continue(promote_policy_item(Partition, Key, Items));
                 error ->
                     Sender ! {Reference, missing},
-                    policy_store_loop(
-                        State, Items, MaximumEntries, MaximumBytes
-                    )
+                    Continue(Items)
             end;
         {policy_close, Sender, Reference} ->
             Sender ! {Reference, done},
             exit(normal)
     after policy_store_wait(Items, Now) ->
-        policy_store_loop(State, Items, MaximumEntries, MaximumBytes)
+        Continue(Items)
     end.
 
 -spec prune_policy_items([policy_item()], integer(), [policy_item()]) ->
     [policy_item()].
 prune_policy_items([], _Now, Retained) ->
     lists:reverse(Retained);
-prune_policy_items([{_, _, _, ExpiresAt, _} | Rest], Now, Retained)
+prune_policy_items([{_, _, _, ExpiresAt, _, _} | Rest], Now, Retained)
     when ExpiresAt =< Now ->
     prune_policy_items(Rest, Now, Retained);
 prune_policy_items([Item | Rest], Now, Retained) ->
@@ -307,7 +353,7 @@ remove_policy_item(_Partition, _Key, [], Retained) ->
 remove_policy_item(
     Partition,
     Key,
-    [{Partition, Key, _Value, _ExpiresAt, _Bytes} | Rest],
+    [{Partition, Key, _Value, _ExpiresAt, _Bytes, _Group} | Rest],
     Retained
 ) ->
     lists:reverse(Retained, Rest);
@@ -321,7 +367,7 @@ find_policy_item(_Partition, _Key, []) ->
 find_policy_item(
     Partition,
     Key,
-    [{Partition, Key, Value, _ExpiresAt, _Bytes} | _Rest]
+    [{Partition, Key, Value, _ExpiresAt, _Bytes, _Group} | _Rest]
 ) ->
     {ok, Value};
 find_policy_item(Partition, Key, [_Item | Rest]) ->
@@ -340,12 +386,99 @@ promote_policy_item(_Partition, _Key, [], Earlier) ->
 promote_policy_item(
     Partition,
     Key,
-    [{Partition, Key, _Value, _ExpiresAt, _Bytes} = Found | Rest],
+    [{Partition, Key, _Value, _ExpiresAt, _Bytes, _Group} = Found | Rest],
     Earlier
 ) ->
     [Found | lists:reverse(Earlier, Rest)];
 promote_policy_item(Partition, Key, [Item | Rest], Earlier) ->
     promote_policy_item(Partition, Key, Rest, [Item | Earlier]).
+
+%% Move every named key to the front, in the order given, so the cookies a
+%% request carried become the most recently accessed and the tail of the list
+%% stays the earliest last access.
+-spec promote_policy_items(binary(), [binary()], [policy_item()]) ->
+    [policy_item()].
+promote_policy_items(Partition, Keys, Items) ->
+    lists:foldl(
+        fun(Key, Acc) -> promote_policy_item(Partition, Key, Acc) end,
+        Items,
+        lists:reverse(Keys)
+    ).
+
+%% RFC 6265 section 5.3: when excess entries have to go, the ones that share a
+%% group with more than the ceiling's worth of others go before the rest, and
+%% within either tier the earliest last access goes first. The list is held most
+%% recently accessed first, so its tail is that order already. Expired entries
+%% are gone before this runs, which is the tier above both of these.
+%%
+%% Only as many as the store is over by are taken from the over-represented
+%% tier: the clause sets a priority order for removing excess, not a ceiling
+%% that holds when there is no excess to remove.
+-spec retain_policy_capacity(
+    [policy_item()], pos_integer(), pos_integer(), pos_integer()
+) -> [policy_item()].
+retain_policy_capacity(Items, MaximumEntries, MaximumBytes, MaximumPerGroup) ->
+    case policy_items_fit(Items, MaximumEntries, MaximumBytes, 0, 0) of
+        true ->
+            Items;
+        false ->
+            case oldest_over_represented(Items, MaximumPerGroup) of
+                {ok, Item} ->
+                    retain_policy_capacity(
+                        lists:delete(Item, Items),
+                        MaximumEntries,
+                        MaximumBytes,
+                        MaximumPerGroup
+                    );
+                error ->
+                    retain_policy_capacity(
+                        Items, MaximumEntries, MaximumBytes, 0, 0, []
+                    )
+            end
+    end.
+
+-spec policy_items_fit(
+    [policy_item()], pos_integer(), pos_integer(), non_neg_integer(),
+    non_neg_integer()
+) -> boolean().
+policy_items_fit([], _MaximumEntries, _MaximumBytes, _Count, _Bytes) ->
+    true;
+policy_items_fit(
+    [{_, _, _, _, ItemBytes, _} | Rest], MaximumEntries, MaximumBytes,
+    Count, Bytes
+) ->
+    Count + 1 =< MaximumEntries andalso
+        Bytes + ItemBytes =< MaximumBytes andalso
+        policy_items_fit(
+            Rest, MaximumEntries, MaximumBytes, Count + 1, Bytes + ItemBytes
+        ).
+
+%% The last entry, and so the earliest accessed, belonging to a group that holds
+%% more than the ceiling. An entry whose group is empty belongs to no group and
+%% is never over-represented, which is how every store but the cookie one
+%% behaves.
+-spec oldest_over_represented([policy_item()], pos_integer()) ->
+    {ok, policy_item()} | error.
+oldest_over_represented(Items, MaximumPerGroup) ->
+    Counts = lists:foldl(
+        fun
+            ({_, _, _, _, _, <<>>}, Acc) -> Acc;
+            ({_, _, _, _, _, Group}, Acc) ->
+                Acc#{Group => maps:get(Group, Acc, 0) + 1}
+        end,
+        #{},
+        Items
+    ),
+    Over = [
+        Item
+     || {_, _, _, _, _, Group} = Item <- Items,
+        Group =/= <<>>,
+        maps:get(Group, Counts, 0) > MaximumPerGroup
+    ],
+    case lists:reverse(Over) of
+        [Oldest | _] -> {ok, Oldest};
+        [] -> error
+    end.
 
 -spec retain_policy_capacity(
     [policy_item()],
@@ -362,7 +495,7 @@ retain_policy_capacity(
 ) when Count >= MaximumEntries ->
     lists:reverse(Acc);
 retain_policy_capacity(
-    [{_, _, _, _, ItemBytes} = Item | Rest],
+    [{_, _, _, _, ItemBytes, _} = Item | Rest],
     MaximumEntries,
     MaximumBytes,
     Count,
@@ -388,7 +521,7 @@ policy_store_wait([], _Now) ->
 policy_store_wait(Items, Now) ->
     Earliest = lists:min([
         ExpiresAt
-     || {_Partition, _Key, _Value, ExpiresAt, _Bytes} <- Items
+     || {_Partition, _Key, _Value, ExpiresAt, _Bytes, _Group} <- Items
     ]),
     erlang:max(1, erlang:min(2147483647, Earliest - Now)).
 

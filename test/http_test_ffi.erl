@@ -28,6 +28,8 @@
     sorted_destination_order/1,
     family_resolution_trace/3,
     resolved_host_order/3,
+    grouped_policy_store_trace/3,
+    with_loopback_hosts/2,
     interleaved_destination_order/1,
     start_exclusive_udp_port_guard/0,
     start_task/1,
@@ -836,6 +838,47 @@ resolved_host_order(Name, FourAddresses, SixAddresses) ->
             fun(Address) -> inet_db:del_host(parsed_address(Address)) end,
             Registered
         ),
+        ok = inet_db:set_lookup(PreviousLookup)
+    end.
+
+%% Drive a grouped policy store through a script and return the keys it kept,
+%% most recently accessed first. A step is {put, Key, Group} or {touch, Keys}.
+-spec grouped_policy_store_trace(
+    pos_integer(), pos_integer(), [{put, binary(), binary()} | {touch, [binary()]}]
+) -> [binary()].
+grouped_policy_store_trace(MaximumEntries, MaximumPerGroup, Steps) ->
+    Store = http_client_ffi:new_grouped_policy_store(
+        MaximumEntries, 1048576, MaximumPerGroup
+    ),
+    Partition = <<"test">>,
+    Expiry = erlang:monotonic_time(millisecond) + 600000,
+    lists:foreach(
+        fun
+            ({put, Key, Group}) ->
+                true = http_client_ffi:policy_store_put_grouped(
+                    Store, Partition, Key, Key, Expiry, 1, Group
+                );
+            ({touch, Keys}) ->
+                nil = http_client_ffi:policy_store_touch(Store, Partition, Keys)
+        end,
+        Steps
+    ),
+    Kept = http_client_ffi:policy_store_list(Store, Partition),
+    nil = http_client_ffi:close_policy_store(Store),
+    Kept.
+
+%% Run `Run` with every given name resolving to loopback, restoring the
+%% resolver configuration on every exit path.
+-spec with_loopback_hosts([binary()], fun(() -> term())) -> term().
+with_loopback_hosts(Names, Run) when is_list(Names), is_function(Run, 0) ->
+    PreviousLookup = inet_db:res_option(lookup),
+    ok = inet_db:set_lookup([file | lists:delete(file, PreviousLookup)]),
+    Hosts = [binary_to_list(Name) || Name <- Names],
+    ok = inet_db:add_host(?LOOPBACK_ADDRESS, Hosts),
+    try
+        Run()
+    after
+        inet_db:del_host(?LOOPBACK_ADDRESS),
         ok = inet_db:set_lookup(PreviousLookup)
     end.
 

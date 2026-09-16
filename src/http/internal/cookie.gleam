@@ -216,6 +216,15 @@ pub fn matching(
   })
 }
 
+/// Serialize an already matched and ordered cookie list as a Cookie field.
+pub fn field_value(cookies: List(Cookie)) -> Option(String) {
+  let pairs = list.map(cookies, fn(cookie) { cookie.name <> "=" <> cookie.value })
+  case pairs {
+    [] -> None
+    _ -> Some(string.join(pairs, with: "; "))
+  }
+}
+
 /// Build a Cookie request field from the matching, unexpired subset.
 pub fn request_header(
   cookies: List(Cookie),
@@ -224,13 +233,7 @@ pub fn request_header(
   path: String,
   now_milliseconds: Int,
 ) -> Option(String) {
-  let pairs =
-    matching(cookies, scheme, host, path, now_milliseconds)
-    |> list.map(fn(cookie) { cookie.name <> "=" <> cookie.value })
-  case pairs {
-    [] -> None
-    _ -> Some(string.join(pairs, with: "; "))
-  }
+  field_value(matching(cookies, scheme, host, path, now_milliseconds))
 }
 
 fn parse_attributes(raw: List(String), attributes: Attributes) -> Attributes {
