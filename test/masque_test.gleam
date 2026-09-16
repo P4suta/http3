@@ -4004,6 +4004,340 @@ pub fn rfc9298_datagram_capsule_admission_discards_before_payload_test() -> Nil 
     == masque.UdpReceiverSnapshot(True, 1, 1, 1, 1, 1)
 }
 
+pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
+  // RFC 9484 section 4.8: an Internet Protocol Number names both an upper layer
+  // and an IPv6 extension header, so an endpoint that scopes by that number
+  // walks the chain of extensions and matches the outermost non-extension
+  // number. Reading the Next Header field of the fixed header instead matches
+  // the first extension, which is the wrong end of the chain in both
+  // directions: traffic the rule allows is refused, and traffic it does not
+  // allow is forwarded under the extension's own number.
+  let source = <<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>
+  let destination = <<0x20, 0x01, 0x0d, 0xb8, 0:size(88), 1>>
+  let prefix = masque.IpPrefix(masque.Ipv6(source), 32)
+  // Hop-by-Hop Options carrying UDP: Next Header 17, Hdr Ext Len 0, then six
+  // octets of Pad6 to fill the fixed eight-octet minimum.
+  let hop_by_hop = <<17, 0, 1, 4, 0, 0, 0, 0>>
+  let udp = <<1000:size(16), 2000:size(16), 8:size(16), 0:size(16)>>
+  let extended = <<
+    6:4, 0:8, 0:20, 16:size(16), 0, 64, source:bits, destination:bits,
+    hop_by_hop:bits, udp:bits,
+  >>
+
+  let assert Ok(empty) = masque.deny_all(limits())
+  let assert Ok(upper) = masque.allow_ip_destination(empty, prefix, Some(17))
+  let assert Ok(forwarded) = masque.forward_ip_packet(upper, extended, limits())
+  let assert <<_before:bytes-size(7), hop_limit, _after:bits>> = forwarded
+  assert hop_limit == 63
+
+  // The extension's own number is not what the packet carries, so a rule
+  // written for Hop-by-Hop Options does not admit the UDP inside it.
+  let assert Ok(extension) = masque.allow_ip_destination(empty, prefix, Some(0))
+  assert masque.forward_ip_packet(extension, extended, limits())
+    == Error(masque.DestinationForbidden)
+
+  // The walk continues through more than one extension.
+  let destination_options = <<6, 0, 1, 4, 0, 0, 0, 0>>
+  let tcp = <<1000:size(16), 2000:size(16), 0:size(64), 0x50, 0x02, 0:size(32)>>
+  let chained = <<
+    6:4,
+    0:8,
+    0:20,
+    36:size(16),
+    0,
+    64,
+    source:bits,
+    destination:bits,
+    <<60, 0, 1, 4, 0, 0, 0, 0>>:bits,
+    destination_options:bits,
+    tcp:bits,
+  >>
+  let assert Ok(over_tcp) = masque.allow_ip_destination(empty, prefix, Some(6))
+  assert masque.forward_ip_packet(over_tcp, chained, limits())
+    != Error(masque.DestinationForbidden)
+
+  // A chain whose length field runs past the packet cannot be resolved, so the
+  // packet is refused rather than matched against whatever was reached.
+  let truncated = <<
+    6:4,
+    0:8,
+    0:20,
+    8:size(16),
+    0,
+    64,
+    source:bits,
+    destination:bits,
+    <<17, 3, 0, 0, 0, 0, 0, 0>>:bits,
+  >>
+  assert masque.forward_ip_packet(upper, truncated, limits())
+    == Error(masque.InvalidIpPacket)
+
+  // The walk is bounded rather than led by the packet. Eight extensions, the
+  // number of positions RFC 8200 section 4.1 lays out, still resolve; a ninth
+  // is refused instead of walked.
+  let padding = <<0, 0, 1, 4, 0, 0, 0, 0>>
+  let last = <<17, 0, 1, 4, 0, 0, 0, 0>>
+  let eight =
+    list.fold([1, 2, 3, 4, 5, 6, 7], last, fn(chain, _) {
+      <<padding:bits, chain:bits>>
+    })
+  let at_the_bound = <<
+    6:4, 0:8, 0:20, 72:size(16), 0, 64, source:bits, destination:bits,
+    eight:bits, udp:bits,
+  >>
+  let assert Ok(_) = masque.forward_ip_packet(upper, at_the_bound, limits())
+
+  let past_the_bound = <<
+    6:4, 0:8, 0:20, 80:size(16), 0, 64, source:bits, destination:bits,
+    padding:bits, eight:bits, udp:bits,
+  >>
+  assert masque.forward_ip_packet(upper, past_the_bound, limits())
+    == Error(masque.InvalidIpPacket)
+
+  // A packet with no extension headers at all still matches its own number.
+  let plain = <<
+    6:4, 0:8, 0:20, 8:size(16), 17, 64, source:bits, destination:bits, udp:bits,
+  >>
+  let assert Ok(_) = masque.forward_ip_packet(upper, plain, limits())
+  assert masque.forward_ip_packet(extension, plain, limits())
+    == Error(masque.DestinationForbidden)
+}
+
+pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
+  // RFC 9484 section 4.6, as corrected by erratum 8444: a "target" or
+  // "ipproto" left at the wildcard is percent-encoded, because RFC 6570 simple
+  // expansion escapes every character outside the unreserved set and "*" is
+  // not in it. A bare "*" names a different path than the template expands to,
+  // so a proxy matching the template would not recognise the request.
+  let assert Ok(unscoped) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(None, None),
+      limits(),
+    )
+  assert masque.request_path(unscoped) == "/.well-known/masque/ip/%2A/%2A/"
+
+  // Each variable is expanded on its own, so one wildcard beside one value is
+  // encoded in the wildcard position only.
+  let assert Ok(targeted) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(Some("198.51.100.0/24"), None),
+      limits(),
+    )
+  assert masque.request_path(targeted)
+    == "/.well-known/masque/ip/198.51.100.0%2F24/%2A/"
+
+  let assert Ok(by_protocol) =
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(None, Some(6)),
+      limits(),
+    )
+  assert masque.request_path(by_protocol) == "/.well-known/masque/ip/%2A/6/"
+}
+
+pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
+  // RFC 9484 section 11: where an endpoint knows the prefix its peer is allowed
+  // to send from -- because it assigned one in an ADDRESS_ASSIGN capsule, or
+  // because it was configured out of band -- it follows BCP 38 and refuses
+  // anything else. A policy carrying no source prefix is an endpoint that does
+  // not know, and constrains nothing; the first prefix added makes every source
+  // outside it a spoofed one.
+  let packet = <<
+    0x45, 0, 28:size(16), 1:size(16), 0:size(16), 64, 17, 0x8e99:size(16), 192,
+    0, 2, 1, 198, 51, 100, 2, 1, 2, 3, 4, 5, 6, 7, 8,
+  >>
+  let assert Ok(policy) = masque.deny_all(limits())
+  let assert Ok(policy) =
+    masque.allow_ip_destination(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<198, 51, 100, 0>>), 24),
+      Some(17),
+    )
+  let assert Ok(_) = masque.forward_ip_packet(policy, packet, limits())
+
+  let assert Ok(matching) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 0>>), 24),
+    )
+  let assert Ok(_) = masque.forward_ip_packet(matching, packet, limits())
+
+  let assert Ok(elsewhere) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<203, 0, 113, 0>>), 24),
+    )
+  assert masque.forward_ip_packet(elsewhere, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // A prefix in the other address family admits nothing from this one.
+  let assert Ok(other_family) =
+    masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv6(<<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>), 32),
+    )
+  assert masque.forward_ip_packet(other_family, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // The source is read before the destination, so a spoofed source is refused
+  // as one rather than reported as a forbidden destination.
+  let assert Ok(bare) = masque.deny_all(limits())
+  let assert Ok(bare) =
+    masque.allow_ip_source(
+      bare,
+      masque.IpPrefix(masque.Ipv4(<<203, 0, 113, 0>>), 24),
+    )
+  assert masque.forward_ip_packet(bare, packet, limits())
+    == Error(masque.SourceForbidden)
+
+  // A prefix that is not one is refused when the rule is written, not when a
+  // packet arrives.
+  assert masque.allow_ip_source(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 1>>), 24),
+    )
+    == Error(masque.InvalidAddress)
+}
+
+pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
+  // RFC 9484 section 4.6 gives the "target" variable a grammar -- an IPv6
+  // prefix, an IPv4 prefix, a reg-name, or the wildcard -- and three conditions
+  // the grammar cannot state: a prefix length is decimal, no larger than the
+  // address it qualifies, and every bit of the address below it is zero. A
+  // target that meets none of these still expands into a path, so the request
+  // would name a scope the proxy has to reject.
+  let scoped = fn(target) {
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(Some(target), None),
+      limits(),
+    )
+  }
+
+  let assert Ok(_) = scoped("198.51.100.0/24")
+  let assert Ok(_) = scoped("2001:db8::/32")
+  let assert Ok(_) = scoped("example.com")
+  let assert Ok(_) = scoped("192.0.2.1")
+  let assert Ok(_) = scoped("2001:db8::42")
+
+  // A colon in a literal is percent-encoded on expansion, and so is the slash
+  // that introduces a prefix length.
+  let assert Ok(literal) = scoped("2001:db8::/32")
+  assert masque.request_path(literal)
+    == "/.well-known/masque/ip/2001%3Adb8%3A%3A%2F32/%2A/"
+
+  // Bits below the prefix length are set, so the target names an address where
+  // it claims to name a network.
+  assert scoped("198.51.100.1/24") == Error(masque.InvalidScope)
+  assert scoped("2001:db8::1/32") == Error(masque.InvalidScope)
+
+  // A length longer than the address, and a length that is not a decimal
+  // integer at all.
+  assert scoped("198.51.100.0/33") == Error(masque.InvalidScope)
+  assert scoped("2001:db8::/129") == Error(masque.InvalidScope)
+  assert scoped("198.51.100.0/x") == Error(masque.InvalidScope)
+  assert scoped("198.51.100.0/") == Error(masque.InvalidScope)
+
+  // A name is not a prefix, so it carries no length.
+  assert scoped("example.com/24") == Error(masque.InvalidScope)
+  // Figure 6 ends in reg-name, so a dotted string that is not an address is
+  // still a name and is carried as one. A string with colons in it can only
+  // have been meant as an IPv6 literal, so a malformed one is refused.
+  let assert Ok(_) = scoped("198.51.100.256")
+  assert scoped("2001:db8:::1") == Error(masque.InvalidScope)
+
+  // The policy side reads the same grammar, so a scope that cannot be
+  // requested cannot be allowed either.
+  let assert Ok(policy) = masque.deny_all(limits())
+  assert masque.allow_ip_scope(
+      policy,
+      masque.IpScope(Some("198.51.100.1/24"), None),
+    )
+    == Error(masque.InvalidScope)
+}
+
+pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
+  // RFC 9484 sections 4.2 through 4.5: the HTTP/1.1 mapping is an upgrade to
+  // "connect-ip" answered with 101, and the HTTP/2 and HTTP/3 mapping is an
+  // Extended CONNECT answered in the 2xx range. Each response also has to start
+  // the Capsule Protocol, and no payload may be proxied until one of them has
+  // been read.
+  let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
+  let assert Ok(upgraded) =
+    masque.connect_ip(masque.Http1, "proxy.example", scope, limits())
+  assert masque.request_method(upgraded) == http.Get
+  assert masque.request_authority(upgraded) == "proxy.example"
+  assert masque.request_protocol(upgraded) == None
+  assert masque.request_headers(upgraded)
+    == [
+      #("host", "proxy.example"),
+      #("connection", "Upgrade"),
+      #("upgrade", "connect-ip"),
+      #("capsule-protocol", "?1"),
+    ]
+
+  let tunnel = masque.client_tunnel(upgraded)
+  assert masque.send_datagram(tunnel, <<>>) == Error(masque.NotEstablished)
+
+  let switched = [
+    #("connection", "upgrade"),
+    #("upgrade", "connect-ip"),
+    #("capsule-protocol", "?1"),
+  ]
+  assert masque.confirm(tunnel, 200, switched)
+    == Error(masque.UnexpectedStatus(200))
+  // An upgrade naming the other proxying protocol is not this tunnel, and a
+  // response that never starts the Capsule Protocol carries no capsules.
+  assert masque.confirm(tunnel, 101, [
+      #("connection", "upgrade"),
+      #("upgrade", "connect-udp"),
+      #("capsule-protocol", "?1"),
+    ])
+    == Error(masque.InvalidResponse)
+  assert masque.confirm(tunnel, 101, [
+      #("connection", "upgrade"),
+      #("upgrade", "connect-ip"),
+    ])
+    == Error(masque.InvalidResponse)
+
+  let assert Ok(established) = masque.confirm(tunnel, 101, switched)
+  let packet = <<
+    0x45, 0, 28:size(16), 1:size(16), 0:size(16), 64, 17, 0x8e99:size(16), 192,
+    0, 2, 1, 198, 51, 100, 2, 1, 2, 3, 4, 5, 6, 7, 8,
+  >>
+  assert masque.send_datagram(established, packet) == Ok(<<0, packet:bits>>)
+
+  // Extended CONNECT carries the protocol in a pseudo-header instead, and its
+  // success is any 2xx rather than the protocol switch.
+  let assert Ok(extended) =
+    masque.connect_ip(masque.Http3, "proxy.example", scope, limits())
+  assert masque.request_method(extended) == http.Connect
+  assert masque.request_protocol(extended) == Some("connect-ip")
+  assert masque.request_headers(extended) == [#("capsule-protocol", "?1")]
+  assert masque.request_path(extended)
+    == "/.well-known/masque/ip/198.51.100.0%2F24/17/"
+
+  let extended_tunnel = masque.client_tunnel(extended)
+  assert masque.confirm(extended_tunnel, 101, [#("capsule-protocol", "?1")])
+    == Error(masque.UnexpectedStatus(101))
+  assert masque.confirm(extended_tunnel, 300, [#("capsule-protocol", "?1")])
+    == Error(masque.UnexpectedStatus(300))
+  let assert Ok(_) =
+    masque.confirm(extended_tunnel, 204, [#("capsule-protocol", "?1")])
+  // The upgrade fields belong to the HTTP/1.1 mapping alone.
+  assert masque.confirm(extended_tunnel, 200, [
+      #("capsule-protocol", "?1"),
+      #("upgrade", "connect-ip"),
+    ])
+    == Error(masque.InvalidResponse)
+}
+
 pub fn connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test() -> Nil {
   let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
   let assert Ok(request) =
@@ -4119,6 +4453,61 @@ pub fn permanent_ip_capsules_have_exact_wire_vectors_test() -> Nil {
 // A route advertisement is peer input. Every bound the validator checks is
 // checked here, because the ordering and overlap scans read these ranges as
 // plain integers and cannot re-decide a malformed one.
+// An address capsule is peer input too. Every field the decoder reads has a
+// bound, and the bounds are the ones RFC 9484 sections 4.7.1 and 4.7.2 state.
+pub fn address_capsules_reject_malformed_entries_test() -> Nil {
+  let assign = fn(payload) {
+    masque.decode_capsule(http3_capsule.Extension(1, payload), limits())
+  }
+  let request = fn(payload) {
+    masque.decode_capsule(http3_capsule.Extension(2, payload), limits())
+  }
+
+  // An IP Version that is neither 4 nor 6 names no address length at all.
+  assert assign(<<0, 5, 192, 0, 2, 0, 24>>) == Error(masque.InvalidAddress)
+  // A prefix longer than the address it qualifies.
+  assert assign(<<0, 4, 192, 0, 2, 0, 33>>) == Error(masque.InvalidAddress)
+  assert assign(<<0, 6, 0:size(128), 129>>) == Error(masque.InvalidAddress)
+  // Bits set below the prefix length.
+  assert assign(<<0, 4, 192, 0, 2, 1, 24>>) == Error(masque.InvalidAddress)
+  // An entry that ends before its fields do.
+  assert assign(<<0, 4, 192, 0>>) == Error(masque.InvalidAddress)
+  let assert Ok(Some(_)) = assign(<<0, 4, 192, 0, 2, 0, 24>>)
+
+  // A Request ID answers a request, so zero is not one, and the same one
+  // cannot appear twice in a capsule.
+  assert request(<<0, 4, 0, 0, 0, 0, 32>>) == Error(masque.InvalidAddress)
+  assert request(<<1, 4, 0, 0, 0, 0, 32, 1, 4, 0, 0, 0, 0, 32>>)
+    == Error(masque.InvalidAddress)
+  // RFC 9484 section 4.7.2: a capsule with no Requested Address at all aborts
+  // the request stream rather than being read as a request for nothing.
+  assert request(<<>>) == Error(masque.InvalidCapsule)
+  let assert Ok(Some(_)) = request(<<1, 4, 0, 0, 0, 0, 32>>)
+
+  // The same bounds hold on the way out, so a malformed entry cannot be built
+  // and sent either.
+  assert masque.encode_capsule(
+      masque.AddressAssign([
+        masque.AssignedAddress(
+          0,
+          masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 1>>), 24),
+        ),
+      ]),
+      limits(),
+    )
+    == Error(masque.InvalidAddress)
+  assert masque.encode_capsule(
+      masque.AddressRequest([
+        masque.RequestedAddress(
+          0,
+          masque.IpPrefix(masque.Ipv4(<<0, 0, 0, 0>>), 32),
+        ),
+      ]),
+      limits(),
+    )
+    == Error(masque.InvalidAddress)
+}
+
 pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil {
   let reversed =
     masque.IpRoute(

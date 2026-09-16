@@ -15904,7 +15904,1545 @@
       }
     },
     {"id":"RFC9460","title":"Service Binding and Parameter Specification via the DNS (SVCB and HTTPS Resource Records)","map_complete":false,"evidence":["src/http/client.gleam","test/client_policy_test.gleam"]},
-    {"id":"RFC9484","title":"Proxying IP in HTTP","map_complete":false,"evidence":["src/http/masque.gleam","test/masque_test.gleam"]},
+    {
+      "id": "RFC9484",
+      "title": "Proxying IP in HTTP",
+      "map_complete": true,
+      "evidence": [
+        "src/http/masque.gleam",
+        "test/masque_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9484.txt",
+        "document_sha256": "e99ea1ad133839a8c1a980334cc6d5f4c289d13bccea0563e540182a6e612b26",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9484",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 110,
+        "level_counts": {
+          "MUST": 50,
+          "MUST NOT": 10,
+          "SHOULD": 15,
+          "SHALL": 29,
+          "SHALL NOT": 1,
+          "SHOULD NOT": 3,
+          "RECOMMENDED": 1,
+          "NOT RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9484-3-MUST-LEVEL-THREE-OR-LOWER-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The built-in CONNECT-IP URI Template uses only simple level-one variable expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-ABSOLUTE-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The fixed template is absolute: a validated proxy authority and the well-known absolute path, with no caller template syntax accepted anywhere.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NONEMPTY-TEMPLATE-COMPONENTS",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Scheme, authority, and path are each non-empty: the authority is validated before a request exists and the path is the well-known location.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-PATH-START-WITH-SLASH",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every generated CONNECT-IP path starts with the slash-prefixed well-known MASQUE location.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-VARIABLES-IN-PATH",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Both template variables are expanded only into ordered path segments, never into an authority or a query.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-EMPTY-TARGET-VARIABLES",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A target that is present is non-empty; absence is the wildcard and expands to its own percent-encoded literal rather than to nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"},
+            {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-NONASCII-TEMPLATE",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The template literals are ASCII and a target carrying anything outside visible ASCII is refused before expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-VISIBLE-ASCII-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every byte of the expanded path lies in 0x21 through 0x7e: the literals do, and a variable is checked against that range and then percent-encoded.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "safe_ascii"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-NOT-FORBIDDEN-TEMPLATE-EXPANSIONS",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The built-in template uses none of the reserved, fragment, label, path-segment, or path-style expansion operators.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-SHOULD-VALIDATE-TEMPLATE",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Template validity holds by construction, and the two values expanded into it are validated before any request is returned.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-MUST-REJECT-DETECTED-INVALID-TEMPLATE",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An invalid authority or scope returns a typed error instead of a request, so nothing is sent to the proxy.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-3-SHOULD-OFFER-DEFAULT-LOCATION",
+          "section": "3",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An IP proxy deployment should serve the default well-known template location for clients that have no other configuration.",
+          "disposition": "DocumentedDeviation",
+          "reason": "This package has a CONNECT-UDP listener at the default location and no CONNECT-IP one. Its IP side is the client request, the capsule codec, and a forwarding policy, so there is nothing yet for a default location to answer with.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4-SHALL-EXPAND-TEMPLATE",
+          "section": "4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The path a request carries is already expanded: both variables are substituted when the request is prepared, not by the adapter that sends it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4-MUST-ENCRYPTED-TRANSPORT",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "IP proxying runs over TLS, QUIC, or equivalent encryption.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection the request is carried on, and this module opens none: preparing a request returns metadata for an HTTP adapter to send. Which connection carries it, and whether that connection is encrypted, is decided by the caller that dials it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-VALIDATE-DECODED-VARIABLES",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An IP proxy validates the decoded target and ipproto against the section 4.6 requirements.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-TREAT-INVALID-AS-MALFORMED",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A request whose variables fail those requirements is treated as malformed.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-RESOLVE-DNS-BEFORE-REPLY",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A target that is a DNS name is resolved before the proxy answers the request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-REJECT-ON-ERROR",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An error during that process rejects the request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-SHOULD-SEND-PROXY-STATUS",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "Such a rejection carries details in a Proxy-Status field.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-HOLD-ASSIGNMENTS-WHILE-OPEN",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "Address and route assignments are held for as long as the request stream is open.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-CLOSE-STREAM-ON-TEARDOWN",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy tearing a tunnel down for inactivity closes the request stream as it does so.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.1-MUST-CLIENT-ABORT-ON-FAILURE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Any response other than a successful one leaves the tunnel unestablished and every payload path returns a typed failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "client_tunnel"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-GET",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The HTTP/1.1 mapping emits the GET method.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-SINGLE-HOST",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits exactly one Host field holding the validated proxy authority.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-CONNECTION-UPGRADE",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits a Connection field whose token is Upgrade.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-SHALL-H1-UPGRADE-CONNECT-IP",
+          "section": "4.2",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It emits one Upgrade field whose value is connect-ip.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.2-MUST-ERROR-ON-MALFORMED-H1",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A recipient answers a malformed HTTP/1.1 IP proxying request with an error.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.2-SHOULD-USE-400-FOR-MALFORMED-H1",
+          "section": "4.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "That error should be 400 Bad Request.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-STATUS-101",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Only 101 is read as HTTP/1.1 success; every other status leaves the tunnel unestablished.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-RESPONSE-CONNECTION-UPGRADE",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a Connection field containing Upgrade, matched case-insensitively.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "headers_contain_token"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-RESPONSE-UPGRADE-CONNECT-IP",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires one Upgrade field equal to connect-ip, so an answer naming the UDP protocol is not this tunnel.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "single_token_header"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-SHALL-H1-START-CAPSULE-PROTOCOL",
+          "section": "4.3",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a true Capsule-Protocol field and no framing field that would contradict it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "capsule_protocol_enabled"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.3-MUST-ABORT-INVALID-H1-RESPONSE",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response missing any of those is a failed attempt: a typed error is returned and no payload path opens.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-CONNECT",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The HTTP/2 and HTTP/3 mapping uses the CONNECT method.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-CONNECT-IP-PROTOCOL",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "It carries connect-ip as the Extended CONNECT protocol.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"},
+            {"path": "src/http/masque.gleam", "symbol": "kind_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "request_protocol"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-PROXY-AUTHORITY",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The authority is the validated IP proxy's, which is the only authority a CONNECT-IP request has.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_authority"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_authority"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-NOT-EMPTY-H2-H3-PATH-SCHEME",
+          "section": "4.4",
+          "level": "SHALL NOT",
+          "roles": ["client"],
+          "summary": "The path is the expanded well-known location and is never empty; the scheme is the caller's encrypted transport rather than something this request can blank out.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.4-SHALL-H2-H3-EXPANDED-PATH",
+          "section": "4.4",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The path handed to the adapter is the one expansion produced, including the percent-encoding of every reserved character in a variable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "request_path"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-SHALL-H2-H3-STATUS-2XX",
+          "section": "4.5",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Every status from 200 through 299 is read as Extended CONNECT success, and nothing outside that range is.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-SHALL-H2-H3-START-CAPSULE-PROTOCOL",
+          "section": "4.5",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "Success requires a true Capsule-Protocol field, and the upgrade fields that belong to the HTTP/1.1 mapping are refused here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "capsule_protocol_enabled"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.5-MUST-ABORT-INVALID-H2-H3-RESPONSE",
+          "section": "4.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A response failing either requirement returns a typed error and never unlocks the datagram path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "confirm"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-SHOULD-ADVERTISE-RESOLVED-ROUTES",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A proxy resolving a hostname target advertises routes for the addresses it resolved.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-4.6-MUST-FOLLOW-VARIABLE-FORMAT",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A target is an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard, and an ipproto is a decimal number or the wildcard; anything else is refused before expansion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"},
+            {"path": "src/http/masque.gleam", "symbol": "valid_target_host"},
+            {"path": "src/http/masque.gleam", "symbol": "ipv6_address_bytes"},
+            {"path": "src/http/masque.gleam", "symbol": "ipv4_address_bytes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-PERCENT-ENCODE-IPV6-COLONS",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Expansion percent-encodes every colon in an IPv6 literal or prefix.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-SHALL-PERCENT-ENCODE-PREFIX-SLASH",
+          "section": "4.6",
+          "level": "SHALL",
+          "roles": ["client"],
+          "summary": "The slash introducing a prefix length is percent-encoded by the same expansion, so it reaches the path as %2F rather than as a segment boundary.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_scope_target"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-PREFIX-LENGTH-IN-RANGE",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A prefix length is one to three decimal digits and no larger than the address it qualifies, checked against the parsed literal rather than against a fixed bound.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "prefix_length_value"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_target_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-ZERO-BITS-BELOW-PREFIX",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every bit of the address below the prefix length is zero, held to the same rule a prefix arriving in a capsule is held to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_target_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.6-MUST-IPPROTO-RANGE-OR-WILDCARD",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An ipproto is an integer from 0 through 255, and an absent one expands to the percent-encoded wildcard.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "valid_optional_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"},
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scope_target_follows_the_variable_format_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-MATCHING-REQUEST-ID",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An assignment answering a request carries that request's Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ZERO-UNSOLICITED-REQUEST-ID",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An assignment answering nothing carries a zero Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ASSIGN-IP-VERSION-4-OR-6",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An Assigned Address carries IP version 4 or 6; the decoder matches those two bytes and refuses every other.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "IpAddress"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"},
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-IPV4-32-BITS",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes the address field at 32 bits, which is the width the decoder reads and the encoder writes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"},
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-SHALL-ASSIGN-IPV6-128-BITS",
+          "section": "4.7.1",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes it at 128 bits in the same two places.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ASSIGN-PREFIX-WITHIN-ADDRESS",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "The prefix length is no larger than the address field in bits, compared against the width the version fixed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "address_number"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ZERO-ASSIGN-BITS-BELOW-PREFIX",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Every bit below the prefix length is zero, on the way in and on the way out.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_assigned"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-ERROR-ON-MALFORMED-ASSIGN",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error rather than a partly-read assignment, which is what the caller turns into the Capsule Protocol error handling.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_assigned"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.1-MUST-REQUEST-WHEN-EXPECTING-ASSIGNMENT",
+          "section": "4.7.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An endpoint that expects an assignment asks for one: requesting addresses is the only way this state produces an ADDRESS_REQUEST capsule, and it is how a client opens.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_addresses"},
+            {"path": "src/http/masque.gleam", "symbol": "ip_state"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-NOT-REUSE-REQUEST-ID",
+          "section": "4.7.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A Request ID this tunnel has already used is refused with a typed error naming it, so it cannot be reused within the request.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "request_addresses"},
+            {"path": "src/http/masque.gleam", "symbol": "reject_reused_ids"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-NOT-ZERO-REQUEST-ID",
+          "section": "4.7.2",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "A Requested Address with a zero Request ID is refused, which is what separates a request from the unsolicited assignment that uses zero.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-REQUEST-IP-VERSION-4-OR-6",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A Requested Address carries IP version 4 or 6 and nothing else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-REQUEST-IPV4-32-BITS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes its address field at 32 bits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-REQUEST-IPV6-128-BITS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes it at 128 bits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-REQUEST-PREFIX-WITHIN-ADDRESS",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Its prefix length is no larger than that width.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ZERO-REQUEST-BITS-BELOW-PREFIX",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Every bit below it is zero.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_prefix"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ERROR-ON-MALFORMED-REQUEST",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error instead of a partly-read request.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_requested"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_address"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.2-SHOULD-ASSIGN-ON-REQUEST",
+          "section": "4.7.2",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An endpoint receiving an ADDRESS_REQUEST assigns addresses and answers with an ADDRESS_ASSIGN.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-EVERY-REQUESTED-ADDRESS",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "Every Requested Address gets an Assigned Address with a matching Request ID.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-WITH-ASSIGNED-VALUES",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An address that was assigned is answered with the values assigned.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-REJECTION-ALL-ZERO",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "An address that was not assigned is answered with an all-zero address.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHALL-ANSWER-REJECTION-MAX-PREFIX",
+          "section": "4.7.2",
+          "level": "SHALL",
+          "roles": ["proxy"],
+          "summary": "That rejection carries the maximum prefix length for its family.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-SHOULD-NOT-REPEAT-REJECTIONS",
+          "section": "4.7.2",
+          "level": "SHOULD NOT",
+          "roles": ["proxy"],
+          "summary": "Those rejections are not repeated in later ADDRESS_ASSIGN capsules.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-4.7.2-MUST-ABORT-ON-EMPTY-REQUEST",
+          "section": "4.7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An ADDRESS_REQUEST carrying no Requested Address is a typed capsule error rather than a request for nothing, which the caller turns into the stream abort.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_requested"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "address_capsules_reject_malformed_entries_test"},
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ROUTE-IP-VERSION-4-OR-6",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An IP Address Range carries IP version 4 or 6.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"},
+            {"path": "test/masque_test.gleam", "symbol": "permanent_ip_capsules_have_exact_wire_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-SHALL-ROUTE-IPV4-32-BITS",
+          "section": "4.7.3",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 4 fixes both bound fields at 32 bits, and a range whose two bounds are in different address spaces has no decoding at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-SHALL-ROUTE-IPV6-128-BITS",
+          "section": "4.7.3",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "Version 6 fixes both at 128 bits in the same single pattern.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-START-NOT-AFTER-END",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "The start address is less than or equal to the end address, compared once as integers after both bounds are decoded together.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "parse_route"},
+            {"path": "src/http/masque.gleam", "symbol": "address_range"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ERROR-ON-MALFORMED-ROUTE",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A malformed field yields a typed capsule error rather than a partly-read advertisement.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-RANGES",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Consecutive ranges satisfy the stated ordering, checked pairwise across the whole capsule rather than only at its ends.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "routes_are_ordered"},
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-VERSION",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A preceding range's IP version is no greater than the following one's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-PROTOCOL",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Within one version, its IP protocol is no greater than the following one's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ORDER-BY-ADDRESS",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Within one version and protocol, its end address is strictly less than the following one's start.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "route_precedes"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ABORT-ON-UNORDERED-ROUTES",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A received advertisement that does not meet those requirements is a typed error rather than a set of routes, which the caller turns into the stream abort.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"},
+            {"path": "src/http/masque.gleam", "symbol": "apply_ip_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "route_advertisement_rejects_malformed_and_unordered_ranges_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-NOT-SEND-OVERLAPPING-ROUTES",
+          "section": "4.7.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "An advertisement whose ranges overlap in the forbidden way is refused when it is built, so this endpoint cannot send one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "routes_have_forbidden_overlap"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.7.3-MUST-ABORT-ON-DETECTED-OVERLAP",
+          "section": "4.7.3",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Validating the overlap rule is optional, and this endpoint does validate it, so a received overlap is a typed error rather than a silently accepted route set.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "validate_routes"},
+            {"path": "src/http/masque.gleam", "symbol": "routes_have_forbidden_overlap"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_capsule"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "capsule_state_rejects_reuse_overlap_bombs_and_provisional_types_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-4.8-MUST-WALK-EXTENSION-CHAIN",
+          "section": "4.8",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Scoping by Internet Protocol Number reads the outermost non-extension number, walking the IPv6 extension chain by each header's own length, bounded at eight headers and refusing a packet whose chain cannot be resolved.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "upper_layer_protocol"},
+            {"path": "src/http/masque.gleam", "symbol": "extension_header"},
+            {"path": "src/http/masque.gleam", "symbol": "extension_header_numbers"},
+            {"path": "src/http/masque.gleam", "symbol": "maximum_extension_headers"},
+            {"path": "src/http/masque.gleam", "symbol": "packet_routing"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_scoping_walks_the_ipv6_extension_header_chain_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-5-MUST-NOT-REALLOCATE-CONTEXT-ID",
+          "section": "5",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "The only Context ID an IP tunnel has is the zero this document allocates for IP packets, and there is no operation anywhere that allocates or reallocates one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-6-SHALL-DROP-OR-BUFFER-UNKNOWN-CONTEXT",
+          "section": "6",
+          "level": "SHALL",
+          "roles": ["client", "proxy"],
+          "summary": "A datagram carrying any Context ID other than zero is refused with that ID rather than buffered, and the receiver that classifies capsules drops before it stores anything.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "receive_proxy_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "classify_proxy_datagram_capsule_context"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"},
+            {"path": "test/masque_test.gleam", "symbol": "rfc9298_proxy_receiver_drops_without_buffering_and_requires_abort_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-7.2-MUST-ENSURE-1280-LINK-MTU",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An endpoint operating as a router with IPv6 guarantees an IP tunnel link MTU of at least 1280 bytes.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2-MUST-PROBE-WITH-ICMPV6-ECHO",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Without an out-of-band guarantee, that MTU is established with 1232-byte ICMPv6 echo requests.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2-MUST-ABORT-WHEN-MTU-TOO-LOW",
+          "section": "7.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "An endpoint detecting a QUIC MTU too low for 1280 bytes of IPv6 aborts the request stream.",
+          "disposition": "NotApplicable",
+          "reason": "Section 7.2 opens by saying its requirements repeat what applies to IP routers in general and might not apply to an implementation that relies on external software for routing. This is such an implementation: forwarding here is a policy decision and a hop count, returning bytes to the caller. It owns no interface, no routing table, and no link whose MTU it could guarantee."
+        },
+        {
+          "id": "RFC9484-7.2.1-SHOULD-SIGNAL-ERRORS-WITH-ICMP",
+          "section": "7.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "A forwarding error should be signalled to the peer by generating an ICMP packet and sending it in an HTTP Datagram.",
+          "disposition": "DocumentedDeviation",
+          "reason": "Forwarding refusals are returned to the caller as typed errors naming the reason -- a forbidden source, a forbidden destination, an exhausted hop count, a malformed packet -- and nothing generates an ICMP packet for the IP tunnel. The CONNECT-UDP path does generate Packet Too Big; the IP path leaves the choice to the caller holding the error, so a peer learns of the drop only from its own loss detection.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"},
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_forwarding_rejects_a_spoofed_source_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-7.2.1-SHOULD-PROCESS-PROXIED-ICMP",
+          "section": "7.2.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that advertises no routes should read the ICMP its peer proxies to it, which is how it learns of forwarding errors.",
+          "disposition": "DocumentedDeviation",
+          "reason": "An inbound IP packet is decoded and handed to the caller whole, with no ICMP interpretation of any kind: this package neither reads an ICMP type nor maps one onto the tunnel state. A caller that wants these errors reads them from the packets it is given.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "decode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-9-SHOULD-DEFINE-EXTENSION-CAPSULES",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "An extension that needs to exchange configuration defines new capsule types for it.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-9-RECOMMENDED-ORDER-ADDRESSING-EXTENSIONS",
+          "section": "9",
+          "level": "RECOMMENDED",
+          "roles": ["client", "proxy"],
+          "summary": "An addressing extension specifies that its capsules precede ADDRESS_ASSIGN and take effect only once that capsule is parsed.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-9-SHOULD-ORDER-ROUTING-EXTENSIONS",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "A routing extension does the same with respect to ROUTE_ADVERTISEMENT.",
+          "disposition": "NotApplicable",
+          "reason": "This document defines no extension to IP proxying, so there is nothing here for the clause to bind. It reads the three capsule types RFC 9484 registers and drops every other type unread."
+        },
+        {
+          "id": "RFC9484-10-SHOULD-AVOID-INCREASING-BURSTINESS",
+          "section": "10",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "Forwarding neither holds nor groups packets: each accepted packet becomes exactly one datagram as it is forwarded, so the sequence leaving is the sequence arriving.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10-SHOULD-NOT-QUEUE-FOR-BATCHING",
+          "section": "10",
+          "level": "SHOULD NOT",
+          "roles": ["client", "proxy"],
+          "summary": "There is no queue on the IP path at all, so no packet waits for another to make a larger batch.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10-SHOULD-PREFER-HTTP3",
+          "section": "10",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "IP proxying should run over HTTP/3, where a QUIC DATAGRAM frame keeps the tunnel unreliable.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The caller states the protocol, because peer capability and deployment policy are outside this codec. HTTP/3 is supported and is the mapping this package's own transport uses; what it will not do is silently override a caller that asked for one of the other two.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "connect_ip"},
+            {"path": "src/http/masque.gleam", "symbol": "prepare_request"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_request_and_response_mapping_is_exact_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.1-SHOULD-NOT-CAPSULE-OVERSIZED-PACKET",
+          "section": "10.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "proxy"],
+          "summary": "A packet too large for the datagram limit is refused with that limit rather than re-sent reliably in a DATAGRAM capsule, so the tunnel's unreliability is not quietly traded away.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.1-SHOULD-DROP-AND-SEND-PACKET-TOO-BIG",
+          "section": "10.1",
+          "level": "SHOULD",
+          "roles": ["client", "proxy"],
+          "summary": "Such a packet should be dropped and an ICMP Packet Too Big sent to whoever sent it.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The packet is dropped -- encoding refuses it and returns the limit that refused it -- but no ICMP Packet Too Big is generated for the IP tunnel. The CONNECT-UDP path does generate one from its own socket; the IP path has no socket of its own and leaves the notification to the caller holding the typed error.",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.2-MUST-MARK-NOT-ECT-OUTSIDE-CONGESTION-CONTROL",
+          "section": "10.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "A QUIC sender with congestion control disabled marks every outer IP header Not-ECT.",
+          "disposition": "NotApplicable",
+          "reason": "Congestion control cannot be disabled anywhere in the supported transport configuration: neither the public HTTP configuration nor the QUIC core has such a mode, so there are no QUIC packets outside congestion control to mark."
+        },
+        {
+          "id": "RFC9484-10.3-MUST-NOT-COPY-INNER-DSCP",
+          "section": "10.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "An inner packet's differentiated services field is carried through untouched as payload and is never read to mark an outer header: the tunnel payload reaches the transport as opaque bytes behind a context identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-10.3-MUST-NOT-COALESCE-UNEQUAL-DSCP",
+          "section": "10.3",
+          "level": "MUST NOT",
+          "roles": ["client", "proxy"],
+          "summary": "One datagram carries exactly one inner packet, so no two packets share an outer one whatever they are marked with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"},
+            {"path": "src/http/masque.gleam", "symbol": "send_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-SHOULD-RESTRICT-TO-AUTHENTICATED-USERS",
+          "section": "11",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "An HTTP server offering IP proxying restricts it to authenticated users.",
+          "disposition": "NotApplicable",
+          "reason": "There is no CONNECT-IP proxy listener here. This package prepares the client's request, reads the capsules a proxy sends it, and applies a forwarding policy to packets that have already been accepted; nothing in it accepts a CONNECT-IP request, resolves a target name, or answers one. The clause binds the endpoint that does, and the UDP listener this package does have is not it."
+        },
+        {
+          "id": "RFC9484-11-SHOULD-AVOID-PERSISTENT-ASSIGNMENT",
+          "section": "11",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A proxy avoids assigning the same address or prefix to the same client over time.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here assigns an address. This endpoint asks for one with an ADDRESS_REQUEST capsule and reads the ADDRESS_ASSIGN it gets back; what an assignment holds, and which request it answers, is chosen by the endpoint doing the assigning. The capsule codec carries whichever fields it is handed and holds them to the wire bounds, which is a different obligation from this one."
+        },
+        {
+          "id": "RFC9484-11-MUST-FOLLOW-BCP38",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Where the prefix a peer may send from is known, the policy carries it and every packet from outside it is refused before the destination is even examined; a policy with no such prefix is the endpoint that does not know, and constrains nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "allow_ip_source"},
+            {"path": "src/http/masque.gleam", "symbol": "source_allowed"},
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_forwarding_rejects_a_spoofed_source_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-MUST-SCOPE-FORWARDED-ICMP",
+          "section": "11",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy forwarding ICMP on a shared external address inspects the invoking packet and forwards only to the client whose scope matches it.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here shares an external address between clients, because nothing here assigns addresses or holds more than one tunnel's policy, and nothing here originates or relays an ICMP packet on the IP path. The condition the clause opens with cannot arise."
+        },
+        {
+          "id": "RFC9484-11-NOT-RECOMMENDED-DSCP-IN-PRIVATE-CONTEXTS",
+          "section": "11",
+          "level": "NOT RECOMMENDED",
+          "roles": ["client", "proxy"],
+          "summary": "An inner packet's DSCP is never transferred to an outer header, so the flow-level information that transfer would expose stays inside the tunnel.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/masque.gleam", "symbol": "forward_ip_packet"},
+            {"path": "src/http/masque.gleam", "symbol": "encode_ip_datagram"}
+          ],
+          "tests": [
+            {"path": "test/masque_test.gleam", "symbol": "connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test"}
+          ]
+        },
+        {
+          "id": "RFC9484-11-MUST-NOT-FORWARD-CAPSULES-BEFORE-SUCCESS",
+          "section": "11",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "An intermediary re-encoding a request to HTTP/1.1 forwards no capsule until it has parsed a successful response.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here re-encodes a request between HTTP versions: a prepared request names one protocol and is carried by an adapter for that protocol. The ordering the clause protects is enforced on the client path anyway, where no payload may be sent until a response has been confirmed."
+        },
+        {
+          "id": "RFC9484-12.2-MUST-REGISTRY-ENTRIES-DISTINCT",
+          "section": "12.2",
+          "level": "MUST",
+          "roles": ["client", "proxy"],
+          "summary": "Entries in the IP Proxying Capsule Type registry have distinct values in the stated column.",
+          "disposition": "NotApplicable",
+          "reason": "This governs IANA registry allocation rather than endpoint behaviour. This package registers nothing; it reads the three capsule types this document defines and treats every other type as unknown."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 1,
+        "entries": [
+          {
+            "id": 8444,
+            "section": "4.6",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": true,
+            "reason": "Section 4.6 writes the wildcard as `*`, which reads as the literal that reaches the wire. The correction records that the variable still goes through RFC 6570 simple expansion, which escapes every character outside the unreserved set, so the wildcard is transmitted as %2A; it corrects the section 4.2 and 4.4 examples for the same reason. The path was built with a bare `*`, so an unscoped request named a path no proxy expanding the same template has a route for. The corrected spelling is applied.",
+            "implementation": [
+              {"path": "src/http/masque.gleam", "symbol": "wildcard_variable"},
+              {"path": "src/http/masque.gleam", "symbol": "connect_ip"}
+            ],
+            "tests": [
+              {"path": "test/masque_test.gleam", "symbol": "connect_ip_percent_encodes_the_wildcard_variables_test"}
+            ]
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9525",
       "title": "Service Identity in TLS",

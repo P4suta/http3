@@ -1446,6 +1446,12 @@ self_test() ->
     true = source_span_changed(10, 20, [{20, 30}]),
     true = source_span_changed(10, 20, [{15, 15}]),
     false = source_span_changed(10, 20, [{1, 9}, {21, 30}]),
+    %% A size unit in a bit-syntax element is a type specifier, not a node, so
+    %% its integer is never read as a line number.
+    [400, 401] = lists:usort(syntax_lines(
+        {bin_element, erl_anno:new(400), {integer, erl_anno:new(400), 0},
+         {var, erl_anno:new(401), 'Zeros'}, [{unit, 8}, integer]}
+    )),
     SingleRegion = #{artifact_first_line => 10,
                      artifact_last_line => 20,
                      source_first_line => 2,
@@ -3128,6 +3134,12 @@ clause_lines({clause, Anno, _Patterns, _Guards, Body}) ->
     lists:usort([Line || Line <- [anno_line(Anno) | syntax_lines(Body)],
                          Line > 0]).
 
+%% A bit-syntax element's fifth position holds type specifiers, not code: a
+%% size unit is spelled {unit, Integer}, whose shape is indistinguishable from
+%% an annotated node and whose integer would otherwise be read as a line number.
+%% Only the annotation, the value, and the size carry positions.
+syntax_lines({bin_element, Anno, Value, Size, _TypeSpecifiers}) ->
+    [anno_line(Anno) | syntax_lines(Value) ++ syntax_lines(Size)];
 syntax_lines(Value) when is_tuple(Value) ->
     Own = case tuple_size(Value) >= 2 andalso is_atom(element(1, Value)) of
               true -> [anno_line(element(2, Value))];
