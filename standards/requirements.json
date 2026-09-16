@@ -8037,7 +8037,3137 @@
       }
     },
     {"id":"RFC9113","title":"HTTP/2","map_complete":false,"evidence":["src/http/internal/http2/connection.gleam","test/http2_connection_test.gleam"]},
-    {"id":"RFC9114","title":"HTTP/3","map_complete":false,"evidence":["packages/http3/src/http3/internal/native/connection_state.gleam","packages/http3/test/native/http3_connection_state_test.gleam"]},
+    {
+      "id": "RFC9114",
+      "title": "HTTP/3",
+      "map_complete": true,
+      "evidence": [
+        "packages/http3/src/http3/internal/native/connection_state.gleam",
+        "packages/http3/src/http3/internal/native/frame.gleam",
+        "packages/http3/src/http3/internal/native/frame_parser.gleam",
+        "packages/http3/src/http3/internal/native/header_semantics.gleam",
+        "packages/http3/src/http3/internal/native/control.gleam",
+        "packages/http3/src/http3/internal/native/error_code.gleam",
+        "packages/http3/src/http3/internal/native/message_stream.gleam",
+        "packages/http3/src/http3/internal/native/stream_registry.gleam",
+        "packages/http3/src/http3/internal/native/push.gleam",
+        "packages/http3/src/http3/internal/native/drain.gleam",
+        "packages/http3/src/http3/client.gleam",
+        "packages/http3/src/http3/server.gleam",
+        "packages/http3/test/native/http3_connection_state_test.gleam",
+        "packages/http3/test/native/http3_frame_test.gleam",
+        "packages/http3/test/native/http3_frame_parser_test.gleam",
+        "packages/http3/test/native/http3_header_semantics_test.gleam",
+        "packages/http3/test/native/http3_control_test.gleam",
+        "packages/http3/test/native/http3_error_code_test.gleam",
+        "packages/http3/test/native/http3_message_stream_test.gleam",
+        "packages/http3/test/native/http3_stream_registry_test.gleam",
+        "packages/http3/test/native/http3_push_test.gleam",
+        "packages/http3/test/native/http3_protocol_test.gleam",
+        "packages/http3/test/native/http3_drain_test.gleam",
+        "packages/http3/test/client_test.gleam",
+        "packages/http3/test/server_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9114.txt",
+        "document_sha256": "6b84555c88eeebcf5d2b2e1d9d7b58630abc97ab877b2cf62dee4cd635db34e4",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9114",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 214,
+        "level_counts": {
+          "MUST": 99,
+          "MUST NOT": 53,
+          "SHOULD": 51,
+          "SHOULD NOT": 10,
+          "RECOMMENDED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9114-3.1-MUST-VERIFY-SERVER-CERTIFICATE",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The server certificate is verified against the name the client dialled, through the same chain and identity validation every TLS handshake in this package uses.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "trust_store_from_pem"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.1-MUST-NOT-TRUST-UNVERIFIED-SERVER",
+          "section": "3.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A certificate that does not verify fails the handshake, so no connection exists to make a request on.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.1-SHOULD-FALL-BACK-TO-TCP",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client that cannot reach a server over QUIC falls back to a TCP-based version of HTTP.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The protocol a request uses is the caller's choice: this package offers HTTP/1.1, HTTP/2, and HTTP/3 as separate entry points and fails an HTTP/3 connection with a typed error rather than silently dialling something else. A caller that wants the fallback writes it; what this will not do is take a transport decision away from it.",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "connect"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_reports_peer_termination_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.1.2-MUST-CONFIRM-NON-HTTPS-SCHEME",
+          "section": "3.1.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Only the https scheme is dialled: a request carries it in the scheme pseudo-header and a message naming any other scheme is refused, so there is no non-https origin to confirm willingness for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_scheme"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_http_scheme"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_request_control_fields_and_content_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.2-MUST-INDICATE-TARGET-HOST",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The handshake carries the server name the client dialled, which is also the name the certificate is checked against.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "connect"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "server_name_patterns_are_strict_and_single_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.2-MUST-SEND-SNI-FOR-DOMAIN-NAME",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A name that is not an address literal is sent as the Server Name Indication, and one that is an address literal is recognised as such rather than sent as a name.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "is_ip_address"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "a_service_identity_must_already_be_an_a_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.2-MUST-SEND-SETTINGS-FIRST",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Bootstrapping the connection opens the control stream and writes SETTINGS as its first frame, before any other frame can be queued on it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "control_stream_id"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.3-MUST-VALIDATE-CERTIFICATE-FOR-NEW-ORIGIN",
+          "section": "3.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A connection is validated for the origin it was opened for and is never reused for another.",
+          "disposition": "NotApplicable",
+          "reason": "This client opens one connection per origin and hands it to the caller; nothing coalesces a second origin onto an existing connection. The ORIGIN frame is decoded and surfaced as an event rather than acted on, so the condition this clause opens with does not arise."
+        },
+        {
+          "id": "RFC9114-3.3-MUST-NOT-REUSE-UNACCEPTABLE-CONNECTION",
+          "section": "3.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A connection whose certificate is not acceptable for a new origin is not reused for it.",
+          "disposition": "NotApplicable",
+          "reason": "This client opens one connection per origin and hands it to the caller; nothing coalesces a second origin onto an existing connection. The ORIGIN frame is decoded and surfaced as an event rather than acted on, so the condition this clause opens with does not arise."
+        },
+        {
+          "id": "RFC9114-3.3-SHOULD-OPEN-NEW-CONNECTION-INSTEAD",
+          "section": "3.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A new connection is opened for that origin instead.",
+          "disposition": "NotApplicable",
+          "reason": "This client opens one connection per origin and hands it to the caller; nothing coalesces a second origin onto an existing connection. The ORIGIN frame is decoded and surfaced as an event rather than acted on, so the condition this clause opens with does not arise."
+        },
+        {
+          "id": "RFC9114-3.3-SHOULD-REVALIDATE-OTHER-ORIGINS",
+          "section": "3.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Other origins already associated with the connection are revalidated when a verification failure might apply to them too.",
+          "disposition": "NotApplicable",
+          "reason": "No origin is ever associated with a connection other than the one it was opened for, so there is no second origin to revalidate."
+        },
+        {
+          "id": "RFC9114-3.3-SHOULD-NOT-OPEN-MULTIPLE-CONNECTIONS",
+          "section": "3.3",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A client does not open more than one connection to the same address and port.",
+          "disposition": "DocumentedDeviation",
+          "reason": "A connection is a value the caller holds and sends as many requests on as it likes, and the one-shot send opens one for a single request. Nothing pools HTTP/3 connections or coalesces two callers onto one, so two callers asking for the same authority get two connections; the HTTP/2 path does pool, and the HTTP/3 one does not yet.",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "connect"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "send"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_multiplexes_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.3-SHOULD-USE-ONE-CONNECTION-PER-CONFIGURATION",
+          "section": "3.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Connections differing only in configuration are not multiplied beyond what those configurations need.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The same reason: the caller decides how many connections exist, because it holds them. A configuration is part of the value it opened the connection with, so two configurations are two connections by construction, but so are two callers with the same one.",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "new"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "connect"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_multiplexes_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-3.3-SHOULD-SEND-GOAWAY-BEFORE-CLOSING",
+          "section": "3.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A close begins with GOAWAY: the drain state emits it, waits for the requests it named, and only then closes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "start_drain"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "refine_drain"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "close_drained"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-SINGLE-REQUEST-PER-STREAM",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A request stream carries one request: opening one allocates a stream and the message state machine admits exactly one header section before the body.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "open_request"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "new"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "receive_headers"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "sequences_request_body_trailers_and_finish_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-REJECT-SECOND-MESSAGE-ON-STREAM",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A second request, or a second final response after one, is a typed frame-unexpected error rather than a new message.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "receive_headers"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "permits_informational_responses_and_bounds_body_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-REJECT-INVALID-FRAME-SEQUENCE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A frame arriving where the stream's state does not admit it is the frame-unexpected connection error, on a request stream as on a control stream.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-REJECT-PUSH-PROMISE-ON-PUSH-STREAM",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A push stream admits the frames a response is made of and nothing else, so a promise arriving on one is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_push_stream_frame"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "reordered_push_stream_waits_for_promise_and_pending_fin_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-NOT-USE-TRANSFER-ENCODING",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Transfer-Encoding is one of the connection-specific fields this validator refuses outright, in a header section and in a trailer section alike.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_connection_specific"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "forbidden_trailer"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-CLOSE-STREAM-AFTER-REQUEST",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Finishing a request closes the sending direction, and the request state machine will not admit another byte after it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "finish_send"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "finish"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_rejects_request_data_after_finish_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-NOT-DELAY-CLOSE-FOR-RESPONSE",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The send side closes when the request body ends rather than when a response arrives; only an extended CONNECT stream stays open in both directions.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "finish_send"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "establish_connect"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "connect_mode_allows_data_but_forbids_more_headers_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-CLOSE-STREAM-AFTER-FINAL-RESPONSE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A final response ends with the stream's send side closed, which is the same transition that releases the transaction.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "finish_send"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "send_response_headers"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "static_request_response_round_trip_cleans_transaction_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-SHOULD-PROCESS-PARTIAL-MESSAGES",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A message is delivered as it arrives: the header section is surfaced before the body, and each data frame as it is parsed rather than at the end.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "receive_data"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "body_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-SHOULD-ABORT-INCOMPLETE-REQUEST-RESPONSE",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A request stream that ends before the message is complete ends the transaction with a typed error rather than leaving a half-read request for a handler.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_finish"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "finish"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "enforces_declared_content_length_at_stream_end_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-SHOULD-USE-NO-ERROR-TO-STOP-SENDING",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Asking the peer to stop sending on a request stream uses the no-error code, which is what the error-code mapping returns for a stop that is not a failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "NoError"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "effective"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-MUST-NOT-DISCARD-COMPLETE-RESPONSES",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response that completed is delivered whatever happens to the request direction afterwards; cancellation removes the stream's remaining input, not a message already handed over.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_stream_reset"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "locally_aborted_stream_discards_already_pulled_peer_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1-SHOULD-CONTINUE-SENDING-CONTENT",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A response arriving while the request body is still going out does not stop the send: the two directions are independent until one of them is reset.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "send_data"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "finish_send"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_observes_early_response_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-RECOMMENDED-RESPOND-RATHER-THAN-CANCEL",
+          "section": "4.1.1",
+          "level": "RECOMMENDED",
+          "roles": ["server"],
+          "summary": "A handler that refuses a request answers with a status; cancelling is what happens when the stream cannot carry a response at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "send_response_headers"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "graceful_stop_types_rejected_and_new_client_work_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-CANCEL-BY-TERMINATING-STREAM",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A cancellation resets the directions that are still open rather than writing anything further on them, and is idempotent when it arrives twice.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_stream_reset"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "server_request_cancellation_resets_both_directions_idempotently_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-ABORT-WITH-REQUEST-REJECTED",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A request refused without being processed is aborted with the request-rejected code, which the drain path uses for everything past its cutoff.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestRejected"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "refine"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-MUST-NOT-REJECT-PROCESSED-REQUESTS",
+          "section": "4.1.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The rejected code is only used past the drain cutoff, where by construction nothing has been processed; a request already in a handler is cancelled instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "refine"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestRejected"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestCancelled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-ABANDON-WITH-REQUEST-CANCELLED",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A response abandoned after partial processing uses the request-cancelled code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestCancelled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-CLIENT-USES-REQUEST-CANCELLED",
+          "section": "4.1.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A client cancelling a request uses that same code, which is what the public cancellation path emits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestCancelled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_cancellation_is_idempotent_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-MUST-NOT-CLIENT-USES-REQUEST-REJECTED",
+          "section": "4.1.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "No client path emits the rejected code: cancellation has one code and it is the cancelled one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel_push"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_cancellation_is_idempotent_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-NOT-USE-PARTIAL-RESPONSE",
+          "section": "4.1.1",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A cancelled stream's already-pulled bytes are discarded rather than delivered as a response.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_stream_reset"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "locally_aborted_stream_discards_already_pulled_peer_bytes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.1-SHOULD-NOT-RETRY-NON-IDEMPOTENT",
+          "section": "4.1.1",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A request is never retried automatically: a cancellation or a peer close is returned to the caller as a typed outcome, with the retryable ones named apart from the rest.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "receive_goaway"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "phase"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "Cancellation"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.2-MUST-NOT-FORWARD-MALFORMED-MESSAGE",
+          "section": "4.1.2",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "An intermediary does not forward a malformed message.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. This package is an HTTP/3 client and an HTTP/3 server; no path in it receives a message and relays it onward, and no path translates between HTTP versions, so there is nothing for a clause about an intermediary to bind."
+        },
+        {
+          "id": "RFC9114-4.1.2-MUST-TREAT-MALFORMED-AS-STREAM-ERROR",
+          "section": "4.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every semantic failure the header validator names becomes the message-error code on that stream rather than a connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "MessageError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.1.2-MUST-NOT-ACCEPT-MALFORMED-RESPONSE",
+          "section": "4.1.2",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A response is validated with the same rules a request is, so a malformed one is an error rather than a delivered message.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_response"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_response_status_and_rejects_http_upgrade_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-LOWERCASE-FIELD-NAMES",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field name is lowercase on the way out, and the encoder has no path that writes one that is not.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_name"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "UppercaseFieldName"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-TREAT-UPPERCASE-AS-MALFORMED",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An uppercase character in a received field name is a typed malformed-message error of its own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "UppercaseFieldName"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_name_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-NOT-GENERATE-CONNECTION-SPECIFIC-FIELDS",
+          "section": "4.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Connection, Keep-Alive, Proxy-Connection, Transfer-Encoding, and Upgrade are refused when a message is built as well as when one is read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_connection_specific"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "ConnectionSpecificField"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_http3_forbidden_header_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-TREAT-CONNECTION-SPECIFIC-AS-MALFORMED",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Receiving one is the malformed-message error rather than a field that is ignored.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_connection_specific"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-NOT-TE-OTHER-THAN-TRAILERS",
+          "section": "4.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A TE field may carry trailers and nothing else; any other value is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidTeField"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2-MUST-INTERMEDIARY-REMOVES-CONNECTION-FIELDS",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An intermediary translating from HTTP/1.x removes the connection-specific fields.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. This package is an HTTP/3 client and an HTTP/3 server; no path in it receives a message and relays it onward, and no path translates between HTTP versions, so there is nothing for a clause about an intermediary to bind."
+        },
+        {
+          "id": "RFC9114-4.2.1-MUST-CONCATENATE-COOKIE-LINES",
+          "section": "4.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Several cookie field lines are joined into one value with the separator this section names before the message is used.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_regular_field"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_smuggling_prone_regular_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.2.2-SHOULD-NOT-EXCEED-PEER-FIELD-SECTION-SIZE",
+          "section": "4.2.2",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The peer's advertised maximum field section size bounds what this endpoint sends, and is itself advertised from the configured limits rather than assumed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Setting"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-NOT-UNDEFINED-PSEUDO-HEADERS",
+          "section": "4.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The pseudo-headers this validator knows are the ones this document defines plus the negotiated extended-connect one; any other name beginning with a colon is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_pseudo"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "UnexpectedPseudoHeader"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-NOT-REQUEST-PSEUDO-IN-RESPONSE",
+          "section": "4.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A response admits the status pseudo-header and nothing else, so a request pseudo-header in one is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_response"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "UnexpectedPseudoHeader"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_response_status_and_rejects_http_upgrade_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-NOT-RESPONSE-PSEUDO-IN-REQUEST",
+          "section": "4.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A request admits the four request pseudo-headers and nothing else, so the status in one is refused the same way.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_request"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "UnexpectedPseudoHeader"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-NOT-PSEUDO-IN-TRAILERS",
+          "section": "4.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A trailer section carrying any pseudo-header is a typed error of its own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "PseudoHeaderInTrailers"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "trailers_forbid_pseudo_and_framing_fields_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-TREAT-INVALID-PSEUDO-AS-MALFORMED",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every pseudo-header failure is a malformed message rather than a field that is dropped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "MessageError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-PSEUDO-BEFORE-REGULAR",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The validator records that a regular field has been seen and refuses a pseudo-header after it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "PseudoHeaderAfterRegular"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "scan"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3-MUST-TREAT-LATE-PSEUDO-AS-MALFORMED",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "That refusal is the malformed-message error rather than a reordering.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "PseudoHeaderAfterRegular"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-NOT-USERINFO-IN-AUTHORITY",
+          "section": "4.3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An authority carrying userinfo is refused: the validator admits a host and an optional port and nothing before them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_authority"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidAuthority"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_request_control_fields_and_content_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-OMIT-AUTHORITY-WHEN-TRANSLATING",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An intermediary translating from HTTP/1.1 omits the authority pseudo-header where the request line had none.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. This package is an HTTP/3 client and an HTTP/3 server; no path in it receives a message and relays it onward, and no path translates between HTTP versions, so there is nothing for a clause about an intermediary to bind."
+        },
+        {
+          "id": "RFC9114-4.3.1-SHOULD-USE-AUTHORITY-NOT-HOST",
+          "section": "4.3.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A request this client builds carries the authority pseudo-header, and a Host field beside it has to agree with it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_host_match"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "AuthorityHostMismatch"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_request_control_fields_and_content_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-CREATE-HOST-WHEN-TRANSLATING",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "An intermediary converting to HTTP/1.1 creates a Host field from the authority.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here forwards a message on another party's behalf. This package is an HTTP/3 client and an HTTP/3 server; no path in it receives a message and relays it onward, and no path translates between HTTP versions, so there is nothing for a clause about an intermediary to bind."
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-NOT-EMPTY-PATH",
+          "section": "4.3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An empty path is refused for an http or https request; the root is spelled as a single slash.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_request_path"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidPath"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_relative_path_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-PATH-IS-SLASH-WHEN-ABSENT",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A request with no path component carries the slash, which is what the path validator requires a path to begin with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_request_path"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_relative_path_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-EXACTLY-ONE-METHOD-SCHEME-PATH",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each of the three is required exactly once outside CONNECT: a missing one and a repeated one are separate typed errors.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_ordinary_request"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "MissingPseudoHeader"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "DuplicatePseudoHeader"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-AUTHORITY-OR-HOST-FOR-MANDATORY-AUTHORITY",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An http or https request carries the authority pseudo-header or a Host field, and a request with neither is a typed missing-pseudo-header error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_ordinary_request"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_host_match"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_empty_host_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-NOT-EMPTY-AUTHORITY-OR-HOST",
+          "section": "4.3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Neither may be empty when present.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_authority"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidAuthority"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_empty_host_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-AUTHORITY-AND-HOST-AGREE",
+          "section": "4.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "When both are present they have to carry the same value, compared rather than assumed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_host_match"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "AuthorityHostMismatch"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "DuplicateHost"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_request_control_fields_and_content_length_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.1-MUST-NOT-AUTHORITY-WITHOUT-MANDATORY-COMPONENT",
+          "section": "4.3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Only the two schemes with a mandatory authority are admitted here, so there is no scheme without one for an authority to accompany.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "is_http_scheme"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_scheme"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_non_https_request_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.3.2-MUST-STATUS-IN-ALL-RESPONSES",
+          "section": "4.3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A response without a status pseudo-header, or with one that is not three decimal digits in range, is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_response"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "parse_status"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidStatus"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_response_status_and_rejects_http_upgrade_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.4-MUST-CONSTRUCT-CONNECT-AS-SPECIFIED",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A CONNECT request carries the authority and omits the scheme and path, and the extended form carries the protocol only when the peer negotiated it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_connect"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_extended_connect"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "ExtendedConnectNotEnabled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_header_semantics_test.gleam", "symbol": "validates_connect_and_negotiated_extended_connect_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.4-MUST-REJECT-OTHER-FRAMES-IN-TUNNEL",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A tunnel stream admits data and nothing else: a second header section on one is a typed frame error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "establish_connect"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "receive_headers"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "connect_mode_allows_data_but_forbids_more_headers_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.4-SHOULD-NOT-HALF-CLOSE-TUNNEL",
+          "section": "4.4",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A tunnel's two directions are ended together by the cancellation path rather than one at a time.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "establish_connect"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "server_request_cancellation_resets_both_directions_idempotently_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.4-MUST-CLOSE-TCP-ON-ERROR",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "A proxy closes the tunnelled TCP connection when the stream or the QUIC connection fails.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the proxy that opens the TCP connection a CONNECT tunnel carries. This package terminates CONNECT as a stream whose bytes it hands to the caller; it opens no TCP connection of its own on the far side, so the far side's lifecycle is the caller's."
+        },
+        {
+          "id": "RFC9114-4.4-MUST-CLOSE-TCP-ON-RESET",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["proxy"],
+          "summary": "It does the same when the client resets the stream or stops reading.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the proxy that opens the TCP connection a CONNECT tunnel carries. This package terminates CONNECT as a stream whose bytes it hands to the caller; it opens no TCP connection of its own on the far side, so the far side's lifecycle is the caller's."
+        },
+        {
+          "id": "RFC9114-4.4-SHOULD-MIRROR-RESET-DIRECTION",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "It mirrors a reset onto the other direction.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the proxy that opens the TCP connection a CONNECT tunnel carries. This package terminates CONNECT as a stream whose bytes it hands to the caller; it opens no TCP connection of its own on the far side, so the far side's lifecycle is the caller's."
+        },
+        {
+          "id": "RFC9114-4.4-SHOULD-SEND-TCP-RST",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "It sends a TCP segment with the reset bit where the platform allows it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the proxy that opens the TCP connection a CONNECT tunnel carries. This package terminates CONNECT as a stream whose bytes it hands to the caller; it opens no TCP connection of its own on the far side, so the far side's lifecycle is the caller's."
+        },
+        {
+          "id": "RFC9114-4.4-SHOULD-RESTRICT-CONNECT-PORTS",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["proxy"],
+          "summary": "A proxy supporting CONNECT restricts it to known ports.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the proxy that opens the TCP connection a CONNECT tunnel carries. This package terminates CONNECT as a stream whose bytes it hands to the caller; it opens no TCP connection of its own on the far side, so the far side's lifecycle is the caller's."
+        },
+        {
+          "id": "RFC9114-4.6-SHOULD-SEQUENTIAL-PUSH-IDS",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Promises are allocated in sequence from zero, which is what makes the allowed maximum a bound rather than a set.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "allocate_promise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-ID-ERROR-FOR-UNPERMITTED-PUSH-STREAM",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A push stream whose push ID was never permitted is a typed not-allowed error, which the registry raises before the stream is opened.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "PushIdNotAllowed"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "open"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "IdError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "enforces_push_direction_id_and_resource_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-SAME-FIELDS-FOR-REPEATED-PROMISE",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Promising one push ID twice with different fields is a typed inconsistency rather than a second promise.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InconsistentDuplicatePromise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-SAME-ORDER-FOR-REPEATED-PROMISE",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The comparison is of the field list as promised, so a reordering is a mismatch too.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InconsistentDuplicatePromise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-AUTHORITATIVE-PROMISED-AUTHORITY",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A promised request is validated as a request, so its authority is one this endpoint could have answered rather than an arbitrary string.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InvalidPromisedRequest"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "rejects_unsafe_or_content_bearing_promised_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-VERIFY-PUSHED-ORIGIN",
+          "section": "4.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A promise for an origin this connection was not opened for is refused rather than verified separately, because this client associates one origin with one connection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "next_push"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_rejects_origin_mismatch_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-NOT-TRUST-UNVERIFIED-PUSH-ORIGIN",
+          "section": "4.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "That refusal is what keeps the server from becoming authoritative for an origin it was not validated for.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "next_push"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "streaming_client_rejects_origin_mismatch_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-SHOULD-CANCEL-UNWANTED-PROMISE",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A promise the caller does not want is cancelled through the public cancellation path, which announces the cancellation to the server.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel_push"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "announce_cancellation"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-NOT-USE-CANCELLED-PUSH-RESPONSE",
+          "section": "4.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A cancelled push is terminal: its stream is released and its bytes are not delivered.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "release"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "AlreadyTerminal"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-SHOULD-PROMISE-BEFORE-REFERENCING-RESPONSE",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A push stream cannot be opened before its promise exists: opening one for an unpromised push ID is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "open_stream"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "MissingPush"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-SHOULD-ABORT-UNPROMISED-PUSH-STREAM",
+          "section": "4.6",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A push stream whose promise never arrives expires on a bounded timer rather than being held indefinitely, and its buffered data is dropped with it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "expire_pending_pushes"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "expire_pending"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-4.6-MUST-NOT-STORE-UNCACHEABLE-PUSH",
+          "section": "4.6",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "A promised request that is not safe, or that carries content, is refused outright, so nothing uncacheable reaches a cache through this path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "UnsafePromisedRequest"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "rejects_unsafe_or_content_bearing_promised_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.1-SHOULD-OPEN-NEW-CONNECTION-AFTER-IDLE",
+          "section": "5.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "An idle connection ends on its own bounded timer and a later request opens a new one; nothing tries to reuse a connection past the idle period.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "with_keepalive"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "connect"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_keepalive_interval_is_bounded_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.1-SHOULD-NOT-SERVER-KEEPS-CONNECTIONS-OPEN",
+          "section": "5.1",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "The server's keepalive is bounded and off by default, so an idle connection is allowed to end rather than held open.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "with_keepalive"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "server_keepalive_interval_is_bounded_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-SHOULD-CANCEL-REQUESTS-PAST-GOAWAY",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Sending GOAWAY names a cutoff and everything past it is rejected rather than left waiting.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "start"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "refine"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-SHOULD-CONTINUE-CANCELLING-LATER-ARRIVALS",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Requests arriving after the cutoff keep being rejected for as long as the drain lasts.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "receive_request"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "refine"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-MUST-NOT-NEW-WORK-AFTER-PEER-GOAWAY",
+          "section": "5.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A peer's GOAWAY stops new requests and new promises on that connection, and the requests past its identifier are detached as retryable.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "receive_goaway"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "open_request"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "promise_push"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-SHOULD-SERVER-SENDS-GOAWAY-IN-ADVANCE",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A graceful stop begins with GOAWAY rather than a close, which is what the two-stage drain is.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "start_drain"},
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "stop"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "graceful_stop_drains_active_request_and_rejects_accept_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-MUST-NOT-INCREASE-GOAWAY-IDENTIFIER",
+          "section": "5.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A second GOAWAY may only narrow: the drain refines its cutoff downward and never upward.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "refine"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "IncreasingGoAwayIdentifier"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-MUST-ID-ERROR-ON-LARGER-GOAWAY",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Receiving a larger identifier than before is a typed error that becomes the id-error connection code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "IncreasingGoAwayIdentifier"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "IdError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.2-SHOULD-CLOSE-WITH-NO-ERROR",
+          "section": "5.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A completed graceful shutdown closes with the no-error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "close_drained"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "NoError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "fixed_drain_timeout_returns_transport_cleanup_targets_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-5.4-MUST-ASSUME-REQUESTS-PROCESSED-WITHOUT-GOAWAY",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Only the requests a GOAWAY named as past its cutoff are reported retryable; a connection that ends without one leaves every request in flight reported as a failure the caller must decide about.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "receive_goaway"},
+            {"path": "packages/http3/src/http3/internal/native/drain.gleam", "symbol": "phase"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "Cancellation"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_reports_peer_termination_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.1-SHOULD-PERMIT-UNIDIRECTIONAL-STREAMS",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The transport parameters this server offers permit the unidirectional streams HTTP/3 needs before any of them is opened.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "with_limits"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.1-SHOULD-PERMIT-100-REQUEST-STREAMS",
+          "section": "6.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The configured request-stream concurrency is explicit and its default is at or above the hundred this clause names.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "with_limits"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "server_multiplexes_concurrent_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.1-MUST-REJECT-SERVER-INITIATED-BIDIRECTIONAL",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A bidirectional stream from the server is refused: the request-stream validator admits only client-initiated bidirectional identifiers.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "StreamCreationError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "enforces_push_direction_id_and_resource_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-MUST-ALLOW-THREE-UNIDIRECTIONAL-STREAMS",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The three critical streams are opened together at bootstrap, so the parameters that admit them are the ones this endpoint offers.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-SHOULD-PROVIDE-FLOW-CONTROL-CREDIT",
+          "section": "6.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Each unidirectional stream is opened with credit from the configured limits rather than from a default the peer would have to guess.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-SHOULD-CREATE-CRITICAL-STREAMS-FIRST",
+          "section": "6.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Bootstrap is the first thing a connection does and opens all three before any request stream exists.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "open_request"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-MUST-ABORT-OR-DISCARD-UNKNOWN-STREAM-TYPE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A stream whose type this endpoint does not know is not registered: its preface decodes to an unknown type and the stream is abandoned rather than read further.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "InvalidStreamType"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-SHOULD-USE-STREAM-CREATION-ERROR",
+          "section": "6.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Aborting such a stream uses the stream-creation error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "StreamCreationError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-MUST-NOT-UNKNOWN-STREAM-IS-CONNECTION-ERROR",
+          "section": "6.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An unknown stream type ends that stream and nothing else: the connection state is untouched by it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "open"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-SHOULD-NOT-DISCARD-BEFORE-READING-TYPE",
+          "section": "6.2",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The preface is read before anything is decided about the stream, and a truncated one is retained rather than discarded.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "TruncatedPreface"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-MUST-NOT-DISCARD-STATE-CHANGING-STREAMS",
+          "section": "6.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The stream types that change connection state are the ones this registry knows, and each is registered rather than discarded.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "open"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "Kind"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2-MUST-TOLERATE-EARLY-STREAM-CLOSURE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A unidirectional stream that ends before its preface is complete is a truncated preface rather than a connection failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "TruncatedPreface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "close"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-ONE-CONTROL-STREAM-WITH-SETTINGS-FIRST",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Bootstrap opens exactly one control stream and writes SETTINGS as its first frame.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "control_stream_id"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-MISSING-SETTINGS-IS-ERROR",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Any other frame first on a peer's control stream is the typed missing-settings error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "MissingSettings"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "MissingSettings"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-REJECT-SECOND-CONTROL-STREAM",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A second stream claiming to be a control stream is a typed duplicate rather than a replacement.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "DuplicateControlStream"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "open"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-NOT-CLOSE-CONTROL-STREAM",
+          "section": "6.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nothing in this endpoint closes its own control stream; the drain closes the connection instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "close_drained"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "control_stream_id"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "fixed_drain_timeout_returns_transport_cleanup_targets_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-NOT-ASK-PEER-TO-CLOSE-CONTROL-STREAM",
+          "section": "6.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "No path resets or stops a peer's critical stream either.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "ClosedCriticalStream"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "peer_reset_of_critical_stream_is_connection_error_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-MUST-CLOSED-CRITICAL-STREAM-IS-ERROR",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A critical stream closing or being reset is the closed-critical-stream connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "ClosedCriticalStream"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "close"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "ClosedCriticalStream"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "peer_reset_of_critical_stream_is_connection_error_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.1-SHOULD-PROVIDE-CONTROL-STREAM-CREDIT",
+          "section": "6.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The control stream's credit comes from the configured limits like every other stream's, rather than being left at whatever the transport defaults to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.2-MUST-REJECT-CLIENT-PUSH-STREAM",
+          "section": "6.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A push stream from a client is a typed error of its own rather than an unknown stream.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "PushStreamFromClient"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "enforces_push_direction_id_and_resource_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.2-SHOULD-NOT-ABORT-BEFORE-PUSH-HEADER",
+          "section": "6.2.2",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "The push stream header is read before anything is decided, and a stream still waiting for its promise is held on a bounded timer rather than aborted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "expire_pending"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "reordered_push_stream_waits_for_promise_and_pending_fin_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.2-MUST-PUSH-ID-USED-ONCE",
+          "section": "6.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A push ID names one push stream: opening a second with the same one is a typed duplicate.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "DuplicatePushId"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "DuplicatePushStream"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.2-MUST-REJECT-DUPLICATE-PUSH-STREAM-HEADER",
+          "section": "6.2.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Detecting that duplicate is the typed error the client raises rather than a second stream it accepts.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "DuplicatePushId"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "open"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "enforces_push_direction_id_and_resource_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.3-MUST-NOT-RESERVED-STREAM-HAS-MEANING",
+          "section": "6.2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A reserved stream type decodes to an unknown type and changes nothing about the connection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "InvalidStreamType"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-6.2.3-SHOULD-RESET-WITH-NO-ERROR",
+          "section": "6.2.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Resetting such a stream uses the no-error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "NoError"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "effective"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.1-MUST-PAYLOAD-MATCHES-DESCRIPTION",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each frame type decodes into exactly the fields its description names, and a payload that does not is a typed error rather than a partly read frame.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "matches_rfc_wire_shapes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.1-MUST-FRAME-ERROR-ON-LENGTH-MISMATCH",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Bytes left over after a frame's fields, and a payload that ends before them, are both the frame-error connection code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Truncated"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.1-MUST-VERIFY-REDUNDANT-LENGTHS",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A frame carrying an inner length has it checked against the frame length rather than trusted, which is what the origin frame's strict framing pins.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"},
+            {"path": "packages/http3/src/http3/internal/native/origin.gleam", "symbol": "decode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "origin_frames_are_typed_empty_bounded_and_strictly_framed_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.1-MUST-TRUNCATED-LAST-FRAME-IS-ERROR",
+          "section": "7.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A stream ending mid-frame finishes the parser with a typed error rather than with the bytes it had.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame_parser.gleam", "symbol": "finish"},
+            {"path": "packages/http3/src/http3/internal/native/frame_parser.gleam", "symbol": "buffered_bytes"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_parser_test.gleam", "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.1-MUST-DATA-BELONGS-TO-A-MESSAGE",
+          "section": "7.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Data reaches a message stream or it reaches nothing: the request path routes it through the transaction, and there is no other consumer.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/message_stream.gleam", "symbol": "receive_data"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_message_stream_test.gleam", "symbol": "sequences_request_body_trailers_and_finish_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.1-MUST-DATA-ON-CONTROL-IS-FRAME-UNEXPECTED",
+          "section": "7.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The control stream admits the control frames and unknown types; a data frame on it is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.2-MUST-HEADERS-ON-CONTROL-IS-FRAME-UNEXPECTED",
+          "section": "7.2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A header section on the control stream is the same error, from the same dispatch.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-SHOULD-SERVER-ABORTS-CANCELLED-RESOURCE",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A cancelled push stops being produced: the push state goes terminal and its stream is released.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "release"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-SHOULD-TERMINATE-OPEN-PUSH-STREAM",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "An open push stream is terminated abruptly rather than finished when its push is cancelled.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "cancel_push"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-SHOULD-SEND-CANCEL-PUSH",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A promise that will not be fulfilled is announced to the peer rather than left outstanding.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "announce_cancellation"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "client_goaway_controls_pushes_and_server_promises_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-SHOULD-NOT-CANCEL-AFTER-PUSH-STREAM",
+          "section": "7.2.3",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "Once a push stream exists the client resets that stream instead, which is what cancelling a push with an open stream does here.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "cancel_push"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "open_stream"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "cancels_and_expires_push_streams_deterministically_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-SHOULD-ABORT-PUSH-STREAM-WITH-CANCELLED",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "That reset carries the request-cancelled code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "RequestCancelled"},
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "cancel_push"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-MUST-CANCEL-PUSH-ONLY-ON-CONTROL",
+          "section": "7.2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Cancel-push is a control-stream frame; anywhere else it is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-MUST-ID-ERROR-FOR-TOO-LARGE-PUSH-ID",
+          "section": "7.2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A cancel naming a push ID past what the connection allows is the typed not-allowed error, which becomes the id-error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "PushIdNotAllowed"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "IdError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.3-MUST-ID-ERROR-FOR-UNPROMISED-CANCEL",
+          "section": "7.2.3",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A cancel for a push ID this server never promised is the typed missing-push error, which becomes the same code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "MissingPush"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "cancel"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-SETTINGS-FIRST-ON-CONTROL",
+          "section": "7.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "SETTINGS is written first on the control stream and read first from the peer's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "MissingSettings"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-NOT-SEND-SETTINGS-TWICE",
+          "section": "7.2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Bootstrap happens once per connection and refuses to install the critical streams a second time, so a second SETTINGS cannot be written.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "CriticalStreamsAlreadyInstalled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-SECOND-SETTINGS-IS-FRAME-UNEXPECTED",
+          "section": "7.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A second SETTINGS from the peer is a typed duplicate that becomes the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "DuplicateSettings"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-NOT-SETTINGS-OFF-CONTROL-STREAM",
+          "section": "7.2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nothing writes SETTINGS anywhere but the control stream, because bootstrap is the only place it is produced.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-SETTINGS-ELSEWHERE-IS-FRAME-UNEXPECTED",
+          "section": "7.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "SETTINGS arriving on a request stream is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-NOT-REPEAT-SETTING-IDENTIFIER",
+          "section": "7.2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A repeated identifier inside one SETTINGS frame is a typed duplicate at decode time.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "DuplicateSetting"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4-MUST-IGNORE-UNKNOWN-SETTINGS",
+          "section": "7.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An identifier this endpoint does not understand is preserved and otherwise ignored rather than refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Setting"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.1-SHOULD-SEND-A-GREASE-SETTING",
+          "section": "7.2.4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "An endpoint includes at least one reserved setting in its SETTINGS frame so that peers keep tolerating unknown ones.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The SETTINGS frame this endpoint sends carries the settings it means and nothing else. Greasing is implemented in the QUIC layer, where the reserved bit is negotiated per connection; the HTTP layer does not yet add a reserved setting of its own. The receiving half of the rule is met: an unknown identifier is preserved and ignored.",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Setting"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.1-MUST-NOT-RESERVED-SETTING-HAS-MEANING",
+          "section": "7.2.4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A reserved identifier is one of the unknown ones: preserved, and read by nothing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Setting"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.1-MUST-NOT-SEND-HTTP2-SETTINGS",
+          "section": "7.2.4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The identifiers HTTP/2 used are prohibited here and the encoder has no way to write one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "ProhibitedSetting"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.1-MUST-HTTP2-SETTING-IS-SETTINGS-ERROR",
+          "section": "7.2.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Receiving one is a typed prohibited-setting error that becomes the settings-error connection code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "ProhibitedSetting"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "SettingsError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-NOT-SEND-WHAT-PEER-SETTINGS-FORBID",
+          "section": "7.2.4.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "What this endpoint sends is bounded by the peer's settings as received: datagrams are refused until the peer's setting admits them, and the field section size is the peer's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "datagrams_available"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "binds_http_datagrams_to_an_explicit_extension_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-SHOULD-USE-INITIAL-VALUES-BEFORE-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A request may be sent before the peer's SETTINGS arrives, bounded by the defaults this document gives until it does.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "open_request"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "static_request_response_round_trip_cleans_transaction_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-NOT-WAIT-FOR-PEER-BEFORE-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Bootstrap writes SETTINGS without reading anything from the peer first.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-SEND-SETTINGS-IMMEDIATELY",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "It is the first frame written on the connection rather than one queued behind anything.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "control_stream_id"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-SHOULD-NOT-WAIT-INDEFINITELY-FOR-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "A request is not held for the peer's SETTINGS: the defaults apply until it arrives.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "open_request"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "static_request_response_round_trip_cleans_transaction_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-SHOULD-PROCESS-DATAGRAMS-IN-ORDER",
+          "section": "7.2.4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Frames are processed in the order they arrive on each stream, with the control stream's SETTINGS applied before the frames that follow it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame_parser.gleam", "symbol": "push"},
+            {"path": "packages/http3/src/http3/internal/native/frame_parser.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_parser_test.gleam", "symbol": "parses_fragmented_and_coalesced_frames_incrementally_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-SHOULD-STORE-SERVER-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A resumption ticket carries the settings the connection it came from used, so a resumed connection starts from them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "with_resumption_ticket"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "bounded_client_round_trip_over_real_udp_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-COMPLY-WITH-STORED-SETTINGS-IN-ZERO-RTT",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Early data is bounded by the stored settings, or by the defaults when nothing is stored, rather than by what the new connection will turn out to allow.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "with_resumption_ticket"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "bounded_client_round_trip_over_real_udp_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-COMPLY-WITH-NEW-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Once the server's SETTINGS arrives it replaces whatever was assumed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-NOT-ACCEPT-INCOMPATIBLE-ZERO-RTT",
+          "section": "7.2.4.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "A server that cannot confirm the remembered settings are compatible rejects the early data rather than accepting it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "with_limits"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/server_test.gleam", "symbol": "bounded_server_round_trip_over_real_udp_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-NOT-REDUCE-LIMITS-AFTER-ACCEPTING-ZERO-RTT",
+          "section": "7.2.4.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The settings this server sends come from its configuration and are the same ones a resumed connection was told about, so accepting early data cannot be followed by a smaller limit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/server.gleam", "symbol": "with_limits"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-SEND-ALL-NON-DEFAULT-SETTINGS",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every configured limit that differs from its default is written into the SETTINGS frame rather than left implicit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "bootstrap"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "advertises_configured_qpack_limits_in_settings_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-INCOMPATIBLE-ZERO-RTT-SETTINGS-IS-ERROR",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Settings that contradict what early data was sent under are a connection error rather than a quiet renegotiation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "SettingsError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.4.2-MUST-OMITTED-SETTING-AFTER-ZERO-RTT-IS-ERROR",
+          "section": "7.2.4.2",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A setting the client understands that is missing from the new frame is treated the same way.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "peer_settings_received"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "SettingsError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-NOT-PUSH-ID-ABOVE-CLIENT-MAXIMUM",
+          "section": "7.2.5",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Allocating a promise past what the client permitted is a typed not-allowed error rather than a promise the client will refuse.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "allocate_promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "PushIdNotAllowed"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-ID-ERROR-FOR-PROMISE-ABOVE-MAXIMUM",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Receiving one is the same typed error, which becomes the id-error connection code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "PushIdNotAllowed"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "IdError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-REPEATED-PROMISE-HAS-SAME-FIELDS",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The second promise for a push ID is compared against the first rather than replacing it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InconsistentDuplicatePromise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-REPEATED-PROMISE-HAS-SAME-ORDER",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "That comparison includes the order and both halves of each field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InconsistentDuplicatePromise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-SHOULD-CLIENT-COMPARES-REPEATED-PROMISES",
+          "section": "7.2.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The client does compare them: a mismatch is detected rather than the later promise silently winning.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-MISMATCHED-PROMISE-IS-GENERAL-ERROR",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A detected mismatch is a connection error rather than a discarded promise.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InconsistentDuplicatePromise"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "GeneralProtocolError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-SHOULD-ASSOCIATE-MATCHING-PROMISE-WITH-EACH-STREAM",
+          "section": "7.2.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A promise repeated identically on another request stream is recorded against that stream too rather than dropped.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "get"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-SHOULD-NOT-REUSE-PUSH-ID-OVER-TIME",
+          "section": "7.2.5",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Push IDs are allocated in sequence and never returned to the pool, so none is reused at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "allocate_promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "tracked"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-PROMISE-ON-CONTROL-IS-FRAME-UNEXPECTED",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A promise on the control stream is the frame-unexpected connection error, from the control dispatch that admits no such frame.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-NOT-CLIENT-SENDS-PROMISE",
+          "section": "7.2.5",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Promising is a server operation here: the client role has no path that produces one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "promise_push"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "role"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.5-MUST-SERVER-REJECTS-RECEIVED-PROMISE",
+          "section": "7.2.5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A promise arriving at a server is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "role"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.6-MUST-GOAWAY-IDENTIFIER-IS-RIGHT-KIND",
+          "section": "7.2.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A GOAWAY identifier that is not a client-initiated bidirectional stream identifier is a typed invalid-identifier error that becomes the id-error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "InvalidGoAwayIdentifier"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "IdError"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.6-MUST-GOAWAY-OFF-CONTROL-IS-FRAME-UNEXPECTED",
+          "section": "7.2.6",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A GOAWAY on any other stream is the frame-unexpected connection error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_protocol_test.gleam", "symbol": "maps_http_datagram_wire_and_setting_errors_to_registered_codes_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.7-MUST-MAX-PUSH-ID-ONLY-ON-CONTROL",
+          "section": "7.2.7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Max-push-id is a control-stream frame and is the frame-unexpected connection error anywhere else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "receive_request_frame"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.7-MUST-NOT-SERVER-SENDS-MAX-PUSH-ID",
+          "section": "7.2.7",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Permitting pushes is a client operation: the server role has no path that produces the frame.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "permit_pushes"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "role"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_drain_test.gleam", "symbol": "client_goaway_controls_pushes_and_server_promises_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.7-MUST-CLIENT-REJECTS-RECEIVED-MAX-PUSH-ID",
+          "section": "7.2.7",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Receiving one at a client is a typed error naming the wrong direction, which becomes the frame-unexpected code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "PushControlFromServer"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.7-MUST-MAX-PUSH-ID-NEVER-DECREASES",
+          "section": "7.2.7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A smaller maximum than before is a typed decrease error that becomes the id-error code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "PushIdDecreased"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "PushIdDecreased"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "validates_goaway_push_and_datagram_constraints_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.8-MUST-NOT-RESERVED-FRAME-HAS-MEANING",
+          "section": "7.2.8",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A frame type this endpoint does not know decodes to an unknown frame and is ignored wherever unknown frames are allowed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Unknown"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "round_trips_core_extension_and_concatenated_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.8-MUST-NOT-SEND-HTTP2-FRAME-TYPES",
+          "section": "7.2.8",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The frame types HTTP/2 used are prohibited and the encoder has no way to write one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "ProhibitedHttp2FrameType"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-7.2.8-MUST-HTTP2-FRAME-IS-FRAME-UNEXPECTED",
+          "section": "7.2.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Receiving one is a typed prohibited-type error that becomes the frame-unexpected connection code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "ProhibitedHttp2FrameType"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "FrameUnexpected"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-8-MUST-TOLERATE-UNEXPECTED-ERROR-CODES",
+          "section": "8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An error code this endpoint does not know is decoded as unknown and treated as no error rather than as a failure of its own.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "ReservedOrUnknown"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "effective"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-8.1-SHOULD-GREASE-ERROR-CODES",
+          "section": "8.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "An endpoint sometimes sends a reserved error code where it would have sent no-error, so that peers keep tolerating unknown ones.",
+          "disposition": "DocumentedDeviation",
+          "reason": "This endpoint sends the code it means. The receiving half is met -- a reserved code is decoded as unknown and treated as no error -- but nothing substitutes a random reserved code for the no-error one, because a deterministic close is easier to reason about in the diagnostics this package emits than one that varies per connection.",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "ReservedOrUnknown"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "effective"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_error_code_test.gleam", "symbol": "maps_registered_and_unknown_application_errors_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-9-MUST-IGNORE-UNKNOWN-EXTENSIBLE-VALUES",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Unknown frame types, setting identifiers, error codes, and stream types are each ignored in the place they appear rather than refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Unknown"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "ExtensionIgnored"},
+            {"path": "packages/http3/src/http3/internal/native/error_code.gleam", "symbol": "ReservedOrUnknown"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "round_trips_core_extension_and_concatenated_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-9-MUST-DISCARD-UNKNOWN-STREAM-TYPES",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A unidirectional stream whose type is unknown is not registered and is abandoned rather than read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "decode_preface"},
+            {"path": "packages/http3/src/http3/internal/native/stream_registry.gleam", "symbol": "InvalidStreamType"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_stream_registry_test.gleam", "symbol": "parses_and_registers_each_unidirectional_stream_type_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-9-SHOULD-REQUIRED-PLACEMENT-STILL-ENFORCED",
+          "section": "9",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A known frame required to be somewhere is still required there: SETTINGS first on the control stream is enforced whatever else the peer sends.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "receive"},
+            {"path": "packages/http3/src/http3/internal/native/control.gleam", "symbol": "MissingSettings"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_control_test.gleam", "symbol": "requires_and_validates_settings_before_control_frames_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-9-MUST-NEGOTIATE-SEMANTIC-EXTENSIONS",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The two extensions this package implements are negotiated before use: datagrams need the peer's setting and extended CONNECT needs the peer's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "datagrams_available"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "ExtendedConnectNotEnabled"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "binds_http_datagrams_to_an_explicit_extension_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-9-MUST-EXTENSION-DEFAULT-DISABLES-IT",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Both settings default to the value that leaves the extension off, so a peer that says nothing gets neither.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "default_config"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "datagrams_available"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "binds_http_datagrams_to_an_explicit_extension_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.3-MUST-INVALID-FIELD-NAME-IS-MALFORMED",
+          "section": "10.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field name that is not a token, or is empty, is a typed malformed-message error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_name_bytes"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidFieldName"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "EmptyFieldName"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_non_token_header_name_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.3-MUST-INVALID-FIELD-VALUE-IS-MALFORMED",
+          "section": "10.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field value carrying a character a field value may not hold is the same kind of error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "validate_value_bytes"},
+            {"path": "packages/http3/src/http3/internal/native/header_semantics.gleam", "symbol": "InvalidFieldValue"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "client_rejects_control_character_in_header_value_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.4-MUST-TENANTS-CANNOT-PUSH-FOR-EACH-OTHER",
+          "section": "10.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A promised request is validated against the connection it is promised on, so a promise for an authority this connection is not serving is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "promise"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "InvalidPromisedRequest"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_push_test.gleam", "symbol": "rejects_unsafe_or_content_bearing_promised_requests_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.5-SHOULD-LIMIT-OUTSTANDING-PUSH-IDS",
+          "section": "10.5",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The push limit is explicit, bounded, and can be set to zero, which is what a client that accepts no pushes does.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/client.gleam", "symbol": "with_push_limit"},
+            {"path": "packages/http3/src/http3/internal/native/push.gleam", "symbol": "permit_through"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/client_test.gleam", "symbol": "server_push_limit_is_bounded_and_can_be_disabled_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.5-SHOULD-BOUND-FEATURE-USE",
+          "section": "10.5",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Every accumulating resource this connection holds is counted and bounded, and the counts are observable rather than implicit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "resource_counts"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "blocked_connection_bytes"},
+            {"path": "packages/http3/src/http3/internal/native/connection_state.gleam", "symbol": "pending_priority_count"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_connection_state_test.gleam", "symbol": "qpack_blocked_backlogs_share_one_connection_byte_ceiling_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.6-MUST-NOT-COMPRESS-MIXED-CONFIDENTIAL-DATA",
+          "section": "10.6",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "An endpoint does not compress a field section mixing confidential and attacker-controlled data.",
+          "disposition": "NotApplicable",
+          "reason": "Which fields are indexed is the caller's, and the caller is the one that knows which of its own values are secret. This package indexes only what it is told to index and never adds a field to the dynamic table on its own, so the judgement this clause asks for stays where the knowledge is."
+        },
+        {
+          "id": "RFC9114-10.6-MUST-NOT-COMPRESS-DATA-OF-UNKNOWN-ORIGIN",
+          "section": "10.6",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Compression is not used where the source of the data cannot be determined.",
+          "disposition": "NotApplicable",
+          "reason": "Which fields are indexed is the caller's, and the caller is the one that knows where its own values came from. This package indexes only what it is told to index and never adds a field to the dynamic table on its own."
+        },
+        {
+          "id": "RFC9114-10.8-MUST-FRAME-LENGTH-MATCHES-FIELDS",
+          "section": "10.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A frame's declared length is checked against the fields it decodes into, so a length that claims more or less than the payload holds is a typed error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "decode"},
+            {"path": "packages/http3/src/http3/internal/native/frame.gleam", "symbol": "Truncated"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/native/http3_frame_test.gleam", "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-10.9-MUST-APPLY-ZERO-RTT-ANTI-REPLAY",
+          "section": "10.9",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Early data is admitted once per ticket by the bounded replay cache in the TLS layer, and a second attempt with the same ticket is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "record_verified"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "fingerprint"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_anti_replay_test.gleam", "symbol": "rejects_replay_bounds_memory_and_prunes_expired_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9114-11.2.1-SHOULD-AVOID-UNRELATED-FRAME-VALUES",
+          "section": "11.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A value present in only one of the two frame registries is not assigned to something unrelated in the other.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.1-MUST-FRAME-REGISTRATION-FIELDS",
+          "section": "11.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A permanent frame-type registration includes the stated fields.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.1-MUST-FRAME-SPECIFICATION-DESCRIBES-LAYOUT",
+          "section": "11.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Its specification describes the frame layout and semantics.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.1-MUST-NOT-ASSIGN-RESERVED-FRAME-VALUES",
+          "section": "11.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The reserved frame-type codepoints are not assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.1-MUST-NOT-LIST-RESERVED-FRAME-VALUES",
+          "section": "11.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nor are they listed as assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.2-SHOULD-AVOID-UNRELATED-SETTING-VALUES",
+          "section": "11.2.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A value present in only one of the two settings registries is not assigned to something unrelated in the other.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.2-MUST-SETTING-REGISTRATION-FIELDS",
+          "section": "11.2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A permanent settings registration includes the stated fields.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.2-SHOULD-DEFAULT-IS-MOST-RESTRICTIVE",
+          "section": "11.2.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A registered setting's default is the most restrictive value.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.2-MUST-NOT-ASSIGN-RESERVED-SETTING-VALUES",
+          "section": "11.2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The reserved settings codepoints are not assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.2-MUST-NOT-LIST-RESERVED-SETTING-VALUES",
+          "section": "11.2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nor are they listed as assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.3-MUST-ERROR-REGISTRATION-FIELDS",
+          "section": "11.2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A permanent error-code registration includes the stated field.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.3-MUST-NOT-ASSIGN-RESERVED-ERROR-VALUES",
+          "section": "11.2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The reserved error-code codepoints are not assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.3-MUST-NOT-LIST-RESERVED-ERROR-VALUES",
+          "section": "11.2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nor are they listed as assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.4-MUST-STREAM-TYPE-REGISTRATION-FIELDS",
+          "section": "11.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A permanent stream-type registration includes the stated fields.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.4-MUST-STREAM-TYPE-SPECIFICATION-DESCRIBES-LAYOUT",
+          "section": "11.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Its specification describes the stream type's layout and semantics.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.4-MUST-NOT-ASSIGN-RESERVED-STREAM-VALUES",
+          "section": "11.2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The reserved stream-type codepoints are not assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        },
+        {
+          "id": "RFC9114-11.2.4-MUST-NOT-LIST-RESERVED-STREAM-VALUES",
+          "section": "11.2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nor are they listed as assigned.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it implements the frame types, settings, error codes, and stream types this document defines and treats every other value as unknown."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 6,
+        "entries": [
+          {
+            "id": 7014,
+            "section": "4.3.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction fixes the pseudo-header section's own wording about which fields a CONNECT request omits. The validator already treats CONNECT as its own shape, requiring the authority and refusing the scheme and path, which is what the corrected text says."
+          },
+          {
+            "id": 7238,
+            "section": "4.2.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would have changed how the field section size is described as being counted. This endpoint advertises its own limit from configuration and bounds what it sends by the peer's advertised one, which is the same behaviour under either wording."
+          },
+          {
+            "id": 7702,
+            "section": "10.7",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "An editorial correction inside a security consideration about padding and traffic analysis. It states nothing this endpoint does differently: no padding decision is taken here, because the transport owns packet construction."
+          },
+          {
+            "id": 7780,
+            "section": "7.2.6",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction clarifies which stream identifiers a GOAWAY frame may carry in each direction. The control-stream validator already refuses an identifier that is not a client-initiated bidirectional one, which is the corrected reading."
+          },
+          {
+            "id": 8190,
+            "section": "7.2.6",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "A second proposed correction to the same section, rejected in favour of the one that was verified. This endpoint follows the verified text."
+          },
+          {
+            "id": 8999,
+            "section": "7.2.4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report concerns how the SETTINGS section describes an endpoint's obligation when it receives an identifier it does not understand. This endpoint preserves such an identifier and reads it with nothing, which satisfies the published text and the reported reading alike."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9180",
       "title": "Hybrid Public Key Encryption",
