@@ -4453,6 +4453,61 @@ pub fn permanent_ip_capsules_have_exact_wire_vectors_test() -> Nil {
 // A route advertisement is peer input. Every bound the validator checks is
 // checked here, because the ordering and overlap scans read these ranges as
 // plain integers and cannot re-decide a malformed one.
+// An address capsule is peer input too. Every field the decoder reads has a
+// bound, and the bounds are the ones RFC 9484 sections 4.7.1 and 4.7.2 state.
+pub fn address_capsules_reject_malformed_entries_test() -> Nil {
+  let assign = fn(payload) {
+    masque.decode_capsule(http3_capsule.Extension(1, payload), limits())
+  }
+  let request = fn(payload) {
+    masque.decode_capsule(http3_capsule.Extension(2, payload), limits())
+  }
+
+  // An IP Version that is neither 4 nor 6 names no address length at all.
+  assert assign(<<0, 5, 192, 0, 2, 0, 24>>) == Error(masque.InvalidAddress)
+  // A prefix longer than the address it qualifies.
+  assert assign(<<0, 4, 192, 0, 2, 0, 33>>) == Error(masque.InvalidAddress)
+  assert assign(<<0, 6, 0:size(128), 129>>) == Error(masque.InvalidAddress)
+  // Bits set below the prefix length.
+  assert assign(<<0, 4, 192, 0, 2, 1, 24>>) == Error(masque.InvalidAddress)
+  // An entry that ends before its fields do.
+  assert assign(<<0, 4, 192, 0>>) == Error(masque.InvalidAddress)
+  let assert Ok(Some(_)) = assign(<<0, 4, 192, 0, 2, 0, 24>>)
+
+  // A Request ID answers a request, so zero is not one, and the same one
+  // cannot appear twice in a capsule.
+  assert request(<<0, 4, 0, 0, 0, 0, 32>>) == Error(masque.InvalidAddress)
+  assert request(<<1, 4, 0, 0, 0, 0, 32, 1, 4, 0, 0, 0, 0, 32>>)
+    == Error(masque.InvalidAddress)
+  // RFC 9484 section 4.7.2: a capsule with no Requested Address at all aborts
+  // the request stream rather than being read as a request for nothing.
+  assert request(<<>>) == Error(masque.InvalidCapsule)
+  let assert Ok(Some(_)) = request(<<1, 4, 0, 0, 0, 0, 32>>)
+
+  // The same bounds hold on the way out, so a malformed entry cannot be built
+  // and sent either.
+  assert masque.encode_capsule(
+      masque.AddressAssign([
+        masque.AssignedAddress(
+          0,
+          masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 1>>), 24),
+        ),
+      ]),
+      limits(),
+    )
+    == Error(masque.InvalidAddress)
+  assert masque.encode_capsule(
+      masque.AddressRequest([
+        masque.RequestedAddress(
+          0,
+          masque.IpPrefix(masque.Ipv4(<<0, 0, 0, 0>>), 32),
+        ),
+      ]),
+      limits(),
+    )
+    == Error(masque.InvalidAddress)
+}
+
 pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil {
   let reversed =
     masque.IpRoute(
