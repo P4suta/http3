@@ -665,12 +665,14 @@ resolve_families(Queries) ->
      || {Family, Query} <- Queries
     ]),
     Answers = collect_family_answers(Reference, Pending, #{}, infinity),
-    maps:foreach(fun(Worker, Monitor) ->
-        exit(Worker, kill),
-        receive {'DOWN', Monitor, process, Worker, _Reason} -> ok
-        after 0 -> ok
-        end
-    end, Pending),
+    %% RFC 8305 section 5: a query whose answer came too late to be used is left
+    %% to finish rather than killed, because the answer still populates the
+    %% platform's resolver cache and a later connection can use it. Only the
+    %% monitor is dropped, and a late answer is flushed from the mailbox.
+    maps:foreach(
+        fun(_Worker, Monitor) -> erlang:demonitor(Monitor, [flush]) end,
+        Pending
+    ),
     flush_family_answers(Reference),
     Answers.
 
