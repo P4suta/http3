@@ -20371,7 +20371,1379 @@
         "entries": []
       }
     },
-    {"id":"RFC9421","title":"HTTP Message Signatures","map_complete":false,"evidence":["src/http/signature.gleam","test/signature_test.gleam"]},
+    {
+      "id": "RFC9421",
+      "title": "HTTP Message Signatures",
+      "map_complete": true,
+      "evidence": [
+        "src/http/signature.gleam",
+        "test/signature_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9421.txt",
+        "document_sha256": "612655786bf4293bfc486e4177571467fbb3de6e6f0eea90cb74c346a34fdf3c",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9421",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 105,
+        "level_counts": {
+          "MUST": 68,
+          "MUST NOT": 15,
+          "RECOMMENDED": 6,
+          "SHOULD": 6,
+          "NOT RECOMMENDED": 4,
+          "REQUIRED": 2,
+          "SHOULD NOT": 4
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9421-1.4-MUST-PROFILE-SPECIFIES-REQUIREMENTS",
+          "section": "1.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A profile is an explicit value naming the components that must be covered, the maximum age a signature may have, the tolerated clock skew, whether a nonce is required, and the authority and tag it binds to; none of them has a default and an empty one is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "profile"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_profile"},
+            {"path": "src/http/signature.gleam", "symbol": "with_clock_skew"},
+            {"path": "src/http/signature.gleam", "symbol": "with_required_nonce"},
+            {"path": "src/http/signature.gleam", "symbol": "for_authority"},
+            {"path": "src/http/signature.gleam", "symbol": "for_tag"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"},
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2-MUST-SHARED-SIGNATURE-CONTEXT",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The context is one explicit message value holding the control data and fields a component can be derived from, and it is the same argument the signer and the verifier each pass in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Message"},
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "sign"},
+            {"path": "src/http/signature.gleam", "symbol": "verify"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2-MUST-ONE-CONTEXT-ACROSS-COMPONENTS",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every component line of one base is derived from that single message value, so no component can be resolved against a different context than its neighbours.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "component_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2-MUST-UNIQUE-COMPONENT-IDENTIFIERS",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A repeated component identifier is refused when the covered components are parsed and again when a base is built.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "components_unique"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_input"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_input_member"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2-MUST-PRESERVE-COMPONENT-PARAMETER-ORDER",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The order of a component identifier's parameters is preserved when it is parsed.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2-MUST-NOT-NEWLINE-IN-COMPONENT-VALUE",
+          "section": "2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "No component value can carry a newline: a derived value is held to printable ASCII and a field value to ASCII with tab, so neither can write a second line into the signature base.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_derived_value"},
+            {"path": "src/http/signature.gleam", "symbol": "printable_ascii"},
+            {"path": "src/http/signature.gleam", "symbol": "ascii_field_value"},
+            {"path": "src/http/signature.gleam", "symbol": "valid_headers"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-LOWERCASE-FIELD-NAMES",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field component whose name is not already lowercase is refused rather than lowercased, on the way in and on the way out.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_component"},
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-VALUE-FROM-NAMED-FIELD",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field component's value is taken from the header fields of the message under signature, and the parameters that would redirect it elsewhere are refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_value"},
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_component_item"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-ENCODE-NON-ASCII-FIELD-VALUES",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A field value that is not already ASCII is refused rather than added to the base in whichever encoding it arrived in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "ascii_field_value"},
+            {"path": "src/http/signature.gleam", "symbol": "valid_headers"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-COMBINE-FIELD-VALUES",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every instance of the named field is combined into one component value in the order the message carries them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "matching_header_values"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-COMMA-SPACE-SEPARATOR",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Those values are joined with exactly one comma and one space, after each has had its leading and trailing whitespace removed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "trim_ows"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-RECOMMENDED-SINGLE-FIELD-INSTANCE",
+          "section": "2.1",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "A signed message carries only one instance of each covered field.",
+          "disposition": "NotApplicable",
+          "reason": "How many instances of a field a message carries is settled before it reaches here: this module is handed a message and signs the one it is given. What it does control is the combination, which is the strict one the same section names for the case where a field does arrive more than once."
+        },
+        {
+          "id": "RFC9421-2.1-RECOMMENDED-STRICT-LIST-COMBINATION",
+          "section": "2.1",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "Where a field does arrive more than once, every instance is taken and combined by the strict algorithm rather than the first or last being used.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "matching_header_values"},
+            {"path": "src/http/signature.gleam", "symbol": "trim_ows"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1-MUST-CONSIDER-FIELD-VALUE-HANDLING",
+          "section": "2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The handling is fixed rather than left to a caller: one combination rule, applied identically by the signer and the verifier, with no field-specific special case anywhere.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "component_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.1.1-MUST-STRICT-SERIALIZE-SF",
+          "section": "2.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A component identifier carrying sf has its field value re-serialized by the Structured Fields rules.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.1-MUST-COMBINE-BEFORE-SF",
+          "section": "2.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Multiple values are combined into one List or Dictionary before that serialization.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.2-MUST-COMBINE-BEFORE-KEY",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Multiple values are combined into one Dictionary before a key is taken from it.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.2-MUST-NOT-REPEAT-PARAMETERIZED-KEY",
+          "section": "2.1.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The same parameterized key does not appear twice in one signature base.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.2-MUST-ERROR-ON-MISSING-KEY",
+          "section": "2.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A named Dictionary key that the field does not carry is an error in base generation.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.3-SHOULD-USE-BS-FOR-PROBLEM-FIELDS",
+          "section": "2.1.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A field known to serialize badly is wrapped as a binary structure with bs.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.3-MUST-COMPUTE-BS-VALUE",
+          "section": "2.1.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A component identifier carrying bs has its value computed by the byte-sequence algorithm.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.4-MUST-USE-TR-FOR-TRAILERS",
+          "section": "2.1.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A trailer field is covered only through the tr parameter.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.4-MUST-TAKE-TR-VALUE-FROM-TRAILERS",
+          "section": "2.1.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "That value is taken from the trailer fields rather than the header fields.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.4-MUST-SIGN-HEADER-AND-TRAILER-SEPARATELY",
+          "section": "2.1.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A name present as both a header and a trailer is signed as two separate components.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.1.4-MUST-NOT-COMBINE-HEADER-AND-TRAILER",
+          "section": "2.1.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Header and trailer values of the same name are not combined.",
+          "disposition": "NotApplicable",
+          "reason": "The message this module signs has header fields and nothing else: there is no trailer section in the context at all, so no trailer value exists to combine with a header value or to be taken instead of one."
+        },
+        {
+          "id": "RFC9421-2.1.4-NOT-RECOMMENDED-SIGN-TRAILERS",
+          "section": "2.1.4",
+          "level": "NOT RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "Trailers are not included in a signature unless the signer knows the verifier will see them as sent.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Message"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_component_item"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-DERIVED-NAMES-START-WITH-AT",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each of the six derived component names begins with the at character, and they are the only names that do.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_name"},
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-SEPARATE-DERIVED-FROM-FIELD-NAMES",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A derived component is a separate constructor from a field, and a field name cannot impersonate one: the at character is not a token character, so a field named after a derived component is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Component"},
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"},
+            {"path": "src/http/signature.gleam", "symbol": "valid_field_name"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-DEFINE-TARGET-MESSAGE-TYPES",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each derived component resolves only against the message type it belongs to: the five request ones against a request and the status against a response, with no fallback.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_value"},
+            {"path": "src/http/signature.gleam", "symbol": "Message"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-PRINTABLE-DERIVED-VALUES",
+          "section": "2.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A derived value is held to printable ASCII, so a control character cannot reach the line of the base it becomes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_derived_value"},
+            {"path": "src/http/signature.gleam", "symbol": "printable_ascii"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_message"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-NOT-NEWLINE-IN-DERIVED-VALUES",
+          "section": "2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A newline is one of the characters that check refuses, in the path and the query as much as in the scheme and the authority.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_derived_value"},
+            {"path": "src/http/signature.gleam", "symbol": "printable_ascii"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2-MUST-NOT-SURROUNDING-WHITESPACE",
+          "section": "2.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Whitespace is refused anywhere in a derived value, which covers the ends this clause names; none of the values derived here holds a space in a well-formed message.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_derived_value"},
+            {"path": "src/http/signature.gleam", "symbol": "printable_ascii"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2.3-MUST-NORMALIZE-AUTHORITY",
+          "section": "2.2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The authority is signed in normalized form: a host that is not already lowercase and a port that is the scheme's default are refused rather than quietly rewritten into a value the caller did not hand over.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "valid_authority"},
+            {"path": "src/http/signature.gleam", "symbol": "carries_default_port"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_message"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2.3-SHOULD-PREFER-AUTHORITY-OVER-HOST",
+          "section": "2.2.3",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The authority is offered as a derived component and is what the profile's authority binding checks; Host is only an ordinary field with no special standing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Authority"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_authority"},
+            {"path": "src/http/signature.gleam", "symbol": "for_authority"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2.4-MUST-LOWERCASE-SCHEME",
+          "section": "2.2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A scheme that is not already lowercase is refused, which is the same choice the authority gets: the value signed is the value handed over.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "validate_message"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2.5-NOT-RECOMMENDED-REQUEST-TARGET",
+          "section": "2.2.5",
+          "level": "NOT RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The request target component is avoided where a version other than HTTP/1.1 might be in use.",
+          "disposition": "NotApplicable",
+          "reason": "This derived component is not one this profile offers. The seven it does offer are a closed set, and a covered component naming anything else is refused rather than guessed at."
+        },
+        {
+          "id": "RFC9421-2.2.8-MUST-PARSE-QUERY-PARAMETERS",
+          "section": "2.2.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A query parameter component parses the query by the form-urlencoded rules.",
+          "disposition": "NotApplicable",
+          "reason": "This derived component is not one this profile offers. The seven it does offer are a closed set, and a covered component naming anything else is refused rather than guessed at."
+        },
+        {
+          "id": "RFC9421-2.2.8-REQUIRED-NAME-PARAMETER",
+          "section": "2.2.8",
+          "level": "REQUIRED",
+          "roles": ["client", "server"],
+          "summary": "Such a component identifier carries the encoded parameter name.",
+          "disposition": "NotApplicable",
+          "reason": "This derived component is not one this profile offers. The seven it does offer are a closed set, and a covered component naming anything else is refused rather than guessed at."
+        },
+        {
+          "id": "RFC9421-2.2.8-MUST-ERROR-ON-MISSING-QUERY-PARAMETER",
+          "section": "2.2.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A named query parameter the query does not carry is an error in base generation.",
+          "disposition": "NotApplicable",
+          "reason": "This derived component is not one this profile offers. The seven it does offer are a closed set, and a covered component naming anything else is refused rather than guessed at."
+        },
+        {
+          "id": "RFC9421-2.2.8-MUST-NOT-INCLUDE-REPEATED-QUERY-PARAMETER",
+          "section": "2.2.8",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A parameter name occurring more than once is not included.",
+          "disposition": "NotApplicable",
+          "reason": "This derived component is not one this profile offers. The seven it does offer are a closed set, and a covered component naming anything else is refused rather than guessed at."
+        },
+        {
+          "id": "RFC9421-2.2.8-RECOMMENDED-SIGN-WHOLE-QUERY",
+          "section": "2.2.8",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "Where several parameters matter, the whole query is signed instead of each one, which is the only thing this profile offers: the query is a single component covering the string as sent.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Query"},
+            {"path": "src/http/signature.gleam", "symbol": "component_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.2.9-MUST-NOT-STATUS-IN-REQUEST",
+          "section": "2.2.9",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The status component resolves against a response only; covering it in a request leaves the base unbuilt.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.3-REQUIRED-SIGNATURE-PARAMS-LAST",
+          "section": "2.3",
+          "level": "REQUIRED",
+          "roles": ["client", "server"],
+          "summary": "The signature parameters line is appended after every component line and is the last line of the base.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_parameters_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.3-MUST-NOT-ENUMERATE-SIGNATURE-PARAMS",
+          "section": "2.3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The signature parameters identifier is not a component that can be covered: it maps to no derived component and is not a token, so naming it is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"},
+            {"path": "src/http/signature.gleam", "symbol": "valid_field_name"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.3-RECOMMENDED-INCLUDE-KEYID",
+          "section": "2.3",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The key identifier is not optional here: a parameter set without one, or with an empty one, is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "validate_parameters"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_parameters"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.3-MUST-SAME-PARAMETER-ORDER",
+          "section": "2.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The parameters of the emitted field and of the base line come from one serializer, so the two orders cannot drift apart.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "parameters_list"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_parameters_value"},
+            {"path": "src/http/signature.gleam", "symbol": "input_member"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.4-MUST-RETAIN-REQUEST-COMPONENTS",
+          "section": "2.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A requester covering request components in a response signature keeps the original values.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.4-SHOULD-COVER-REQUEST-SIGNATURE-COMPONENTS",
+          "section": "2.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A response signature covers all the components the request signature covered.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.4-NOT-RECOMMENDED-COVER-REQUEST-SIGNATURE-FIELDS",
+          "section": "2.4",
+          "level": "NOT RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "A response signature avoids covering the request's own signature fields.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.4-MUST-NOT-REQ-IN-REQUEST-SIGNATURE",
+          "section": "2.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The req parameter is not used in a signature over a request.",
+          "disposition": "NotApplicable",
+          "reason": "A component identifier here carries no parameters at all: an item with any parameter is refused when the covered components are parsed, and none can be constructed. The parameter this clause governs therefore never reaches a signature base, which is the whole of what makes this profile's canonicalization decidable."
+        },
+        {
+          "id": "RFC9421-2.5-MUST-FAIL-WITHOUT-OUTPUT",
+          "section": "2.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every step of base generation returns a typed error that ends it: no partial base is returned and nothing is signed from one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "sign"},
+            {"path": "src/http/signature.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"},
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_component_values_are_printable_and_normalized_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-2.5-MUST-ERROR-ON-UNRESOLVABLE-COMPONENT",
+          "section": "2.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A covered component the message cannot resolve ends generation with a missing-component error rather than an empty line.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_value"},
+            {"path": "src/http/signature.gleam", "symbol": "header_value"},
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-MUST-APPLY-SIGNING-ALGORITHM",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Signing is the stated sequence and nothing else: build the base, check the algorithm against the key, compute the MAC, and emit both fields together.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "sign"},
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_input"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-MUST-CHOOSE-APPROPRIATE-KEY",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Key material is validated when it is constructed and is of one kind, so the key handed to the signer is always one the algorithm can use.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "hmac_key"},
+            {"path": "src/http/signature.gleam", "symbol": "HmacKey"},
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-MUST-NOT-CHANGE-COMPONENT-ORDER",
+          "section": "3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The covered component order is part of the signed value and of the emitted field, and verification rebuilds the base from the order it parsed, so a reordered list is a different signature rather than the same one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "signature_base"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_parameters_value"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_input_member"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-MUST-COVERED-COMPONENTS-ARE-FIELDS-OR-DERIVED",
+          "section": "3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A covered component is either a lowercase field name or one of the six derived names this document registers; anything else is refused when it is parsed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"},
+            {"path": "src/http/signature.gleam", "symbol": "valid_component"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-SHOULD-COVER-CONTROL-DATA",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A request signature covers some of the message control data, such as the method or the authority.",
+          "disposition": "DocumentedDeviation",
+          "reason": "Which components a signature must cover is the profile's to state, and the profile is the application's. This module refuses to sign or verify without an explicit non-empty component list and enforces that list on both sides, but it does not insist that the list name control data.",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "profile"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_input"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-SHOULD-INCLUDE-CREATED",
+          "section": "3.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The created parameter is mandatory here rather than recommended: a parameter set without one is refused, and verification reads it for both the age and the not-yet-valid bound.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "validate_parameters"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_parameters"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_time"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.1-MUST-NOT-SIGNATURE-PARAMS-IN-COVERED",
+          "section": "3.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The signature parameters identifier cannot appear among the covered components, on the signing side as much as the verifying one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "component_from_name"},
+            {"path": "src/http/signature.gleam", "symbol": "component_item"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2-MUST-APPLY-VERIFICATION-ALGORITHM",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Verification is the stated sequence: parse both fields, pair them by label, check the time bounds and the profile, rebuild the base, compare the MAC in constant time, and only then consume the nonce.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "verify"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_inputs"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_signatures"},
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_time"},
+            {"path": "src/http/signature.gleam", "symbol": "secure_equal"},
+            {"path": "src/http/signature.gleam", "symbol": "consume_nonce"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2-MUST-FAIL-ON-UNKNOWN-KEY",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The key is supplied by the caller that resolved the identifier, and a key that does not match the one the signature was made with fails the comparison rather than being accepted on the strength of the identifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "verify"},
+            {"path": "src/http/signature.gleam", "symbol": "secure_equal"},
+            {"path": "src/http/signature.gleam", "symbol": "Parameters"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2-MUST-RESOLVE-ONE-ALGORITHM",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "There is one algorithm to resolve: the key material has a single kind and the alg parameter, when present, must name that same one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"},
+            {"path": "src/http/signature.gleam", "symbol": "HmacKey"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2-MUST-FAIL-ON-ALGORITHM-MISMATCH",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An alg naming anything else ends verification with an unsupported-algorithm error before the comparison is reached.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"},
+            {"path": "src/http/signature.gleam", "symbol": "verify"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2.1-MUST-ENFORCE-APPLICATION-REQUIREMENTS",
+          "section": "3.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The profile's requirements are checked inside verification rather than left to the caller afterwards: required components, bound authority, bound tag, age, skew, expiry, and nonce.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "validate_input"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_authority"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_tag"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_time"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2.1-MUST-FAIL-ON-NONCONFORMANCE",
+          "section": "3.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each of those checks returns a typed error that ends verification, so a nonconforming signature never reaches a success.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "verify"},
+            {"path": "src/http/signature.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2.1-MUST-ENFORCE-DOCUMENT-REQUIREMENTS",
+          "section": "3.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This document's own requirements are enforced in the same place: the covered component rules, the parameter rules, and the single-label pairing all hold before the MAC is compared.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "verify"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_input"},
+            {"path": "src/http/signature.gleam", "symbol": "validate_parameters"},
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"},
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.2.1-MUST-NOT-ACCEPT-NONCONFORMING",
+          "section": "3.2.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "There is no path through verification that returns a store update without every check having passed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "verify"},
+            {"path": "src/http/signature.gleam", "symbol": "consume_nonce"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.3-MUST-APPROPRIATE-SIGNATURE-METHOD",
+          "section": "3.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The one method offered is HMAC-SHA256 over validated symmetric key material, which is a MAC appropriate to the shared secret it takes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "hmac_key"},
+            {"path": "src/http/signature.gleam", "symbol": "hmac_sha256"},
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.3-MUST-USE-REGISTERED-ALGORITHM-VALUES",
+          "section": "3.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The alg parameter is read against the registered names, and the only one that may be used is the registered hmac-sha256.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "Algorithm"},
+            {"path": "src/http/signature.gleam", "symbol": "require_hmac"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-3.3.7-MUST-NOT-JWS-NONE",
+          "section": "3.3.7",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A JWS algorithm of none is not used.",
+          "disposition": "NotApplicable",
+          "reason": "No JOSE algorithm is reachable here. The alg parameter is read against this document's registry and only the registered hmac-sha256 may be used; the JWS mapping this clause governs is not implemented."
+        },
+        {
+          "id": "RFC9421-3.3.7-MUST-NOT-JWS-PROHIBITED",
+          "section": "3.3.7",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Nor is a JWS algorithm whose JOSE implementation requirement is prohibited.",
+          "disposition": "NotApplicable",
+          "reason": "No JOSE algorithm is reachable here. The alg parameter is read against this document's registry and only the registered hmac-sha256 may be used; the JWS mapping this clause governs is not implemented."
+        },
+        {
+          "id": "RFC9421-4-MUST-UNIQUE-LABEL",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A message carries one labelled signature: two inputs, or two signatures, are refused rather than resolved by position.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_inputs"},
+            {"path": "src/http/signature.gleam", "symbol": "parse_signatures"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4-MUST-SAME-LABEL-IN-BOTH-FIELDS",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "That label has to be the same in both fields, and a pair whose labels differ is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4-MUST-USE-BOTH-FIELDS",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Both fields are produced together by the signer and both are required by the verifier.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "SignedFields"},
+            {"path": "src/http/signature.gleam", "symbol": "sign"},
+            {"path": "src/http/signature.gleam", "symbol": "verify"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"},
+            {"path": "test/signature_test.gleam", "symbol": "verification_enforces_time_authority_nonce_and_replay_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4-MUST-SAME-LABELS-IN-BOTH-FIELDS",
+          "section": "4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The label sets are compared rather than assumed, which is what pairing the single input with the single signature does.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4.1-MUST-SAME-SERIALIZED-PARAMS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The emitted Signature-Input value and the base's signature parameters line are built from the same member, so the value a verifier reads is the value that was signed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "input_member"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_input"},
+            {"path": "src/http/signature.gleam", "symbol": "serialize_parameters_value"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "rfc9421_hmac_sha256_vector_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4.1-RECOMMENDED-INPUT-AS-HEADER",
+          "section": "4.1",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The Signature-Input field is sent as a header rather than a trailer.",
+          "disposition": "NotApplicable",
+          "reason": "This module returns the two field values; where a message carries them is the caller's doing. It has no trailer section of its own to put them in, and the message it signs has none either."
+        },
+        {
+          "id": "RFC9421-4.1-MUST-UNIQUE-LABELS-ACROSS-INPUT-VALUES",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Labels are unique across the whole field because exactly one is admitted.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "parse_inputs"},
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4.2-RECOMMENDED-SIGNATURE-AS-HEADER",
+          "section": "4.2",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The Signature field is sent as a header rather than a trailer.",
+          "disposition": "NotApplicable",
+          "reason": "This module returns the two field values; where a message carries them is the caller's doing. It has no trailer section of its own to put them in, and the message it signs has none either."
+        },
+        {
+          "id": "RFC9421-4.2-MUST-UNIQUE-LABELS-ACROSS-SIGNATURE-VALUES",
+          "section": "4.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same holds for the Signature field: one label, or the value is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "parse_signatures"},
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4.3-MUST-DISTINCT-SIGNATURES-UNIQUE-LABELS",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Multiple signatures on one message are not accepted at all, so no two of them can share a label.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/signature.gleam", "symbol": "single_matching_signature"}
+          ],
+          "tests": [
+            {"path": "test/signature_test.gleam", "symbol": "signature_profile_and_canonicalization_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC9421-4.3-NOT-RECOMMENDED-PROXY-SIGNS-SIGNATURE",
+          "section": "4.3",
+          "level": "NOT RECOMMENDED",
+          "roles": ["proxy"],
+          "summary": "A proxy adding its own signature avoids covering the client's signature fields.",
+          "disposition": "NotApplicable",
+          "reason": "Nothing here re-signs a message on another party's behalf. There is one signature per message and its covered components are the profile's; no proxy path adds a second one over the first."
+        },
+        {
+          "id": "RFC9421-5-SHOULD-VARY-ON-ACCEPT-SIGNATURE",
+          "section": "5",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A response to a signature negotiation is uncacheable or varies on Accept-Signature.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-5-MUST-INCLUDE-REQUESTED-SIGNATURES",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A target message includes every labelled signature the field asked for.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-5-MUST-APPROPRIATE-IDENTIFIERS",
+          "section": "5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A sender asks only for identifiers appropriate to the target message type.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-5.2-MUST-SAME-LABEL-AS-REQUESTED",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The applied signature carries the requested label.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-5.2-MUST-SAME-COVERED-COMPONENTS",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "It covers the requested component set.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-5.2-MUST-PROCESS-REQUESTED-PARAMETERS",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "It processes every requested parameter.",
+          "disposition": "NotApplicable",
+          "reason": "Accept-Signature is not implemented. This package signs and verifies; it neither asks a peer for a signature nor answers such a request, so there is no negotiation here for the clause to bind."
+        },
+        {
+          "id": "RFC9421-6.2.1-MUST-ALGORITHM-NAME-IS-SF-STRING",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registered algorithm name is an ASCII sf-string.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.2.1-SHOULD-NOT-ALGORITHM-NAME-OVER-20",
+          "section": "6.2.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "It does not exceed twenty characters.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.2.1-MUST-ALGORITHM-IDENTIFIER-UNIQUE",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "It is unique within the registry.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.2.1-MUST-ALGORITHM-STATUS-PREFIX",
+          "section": "6.2.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Its description starts with one of the stated status words.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.3.1-MUST-PARAMETER-NAME-IS-KEY",
+          "section": "6.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registered signature parameter name is an ASCII Structured Fields key.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.3.1-SHOULD-NOT-PARAMETER-NAME-OVER-20",
+          "section": "6.3.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "It does not exceed twenty characters.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.3.1-MUST-PARAMETER-IDENTIFIER-UNIQUE",
+          "section": "6.3.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "It is unique within the registry.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.4.1-MUST-DERIVED-NAME-SHAPE",
+          "section": "6.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registered derived component name begins with the at character followed by lowercase letters, digits, and hyphens.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.4.1-SHOULD-NOT-DERIVED-NAME-OVER-20",
+          "section": "6.4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "It does not exceed twenty characters.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.4.1-MUST-DERIVED-NAME-UNIQUE",
+          "section": "6.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "It is unique within the registry.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.4.1-MUST-DERIVED-STATUS-PREFIX",
+          "section": "6.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Its description starts with Active or Deprecated.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.4.1-MUST-DERIVED-TARGET-VALUES",
+          "section": "6.4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Its target column is one of the three stated values.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.5-MUST-COMPONENT-PARAMETER-TARGETS",
+          "section": "6.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A component parameter definition states the targets it applies to.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.5.1-MUST-COMPONENT-PARAMETER-NAME-IS-KEY",
+          "section": "6.5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A registered component parameter name is an ASCII Structured Fields key.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.5.1-SHOULD-NOT-COMPONENT-PARAMETER-NAME-OVER-20",
+          "section": "6.5.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "It does not exceed twenty characters.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-6.5.1-MUST-COMPONENT-PARAMETER-NAME-UNIQUE",
+          "section": "6.5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "It is unique within the registry.",
+          "disposition": "NotApplicable",
+          "reason": "This governs an IANA registry template rather than endpoint behaviour. This package registers nothing: it reads the component names, parameters, and algorithm identifiers this document defines and refuses every other."
+        },
+        {
+          "id": "RFC9421-B-MUST-NOT-USE-TEST-KEYS",
+          "section": "Appendix B",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "This document's example keys are used for nothing but testing.",
+          "disposition": "NotApplicable",
+          "reason": "No key material of any kind is embedded in this package: a key is a value the caller constructs and validates. The one place this document's shared secret appears is the RFC vector test, which is the testing use the clause permits."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 2,
+        "entries": [
+          {
+            "id": 8102,
+            "section": "7.2.8",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "An example signature base wrote its last line as @signature-input, which is the field name rather than the component the base carries; the correction makes it @signature-params, as section 2.3 defines it. The base built here has always ended in the signature parameters component, so the corrected example is what this produces and the published one was never reachable."
+          },
+          {
+            "id": 8103,
+            "section": "7.5.3",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "A security consideration named the @signature-input value as the one parsed during verification, where section 3.2 parses the signature parameters. The correction renames it. Verification here parses the Signature-Input field into components and parameters and rebuilds the parameters line from what it parsed, which is the behaviour the corrected text describes."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC9438",
       "title": "CUBIC for Fast and Long-Distance Networks",
