@@ -3679,7 +3679,54 @@
         ]
       }
     },
-    {"id":"RFC7932","title":"Brotli Compressed Data Format","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
+    {
+      "id": "RFC7932",
+      "title": "Brotli Compressed Data Format",
+      "map_complete": true,
+      "evidence": [
+        "src/http/compression.gleam",
+        "src/http_compression_ffi.erl",
+        "test/compression_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc7932.txt",
+        "document_sha256": "394abd1879e016f4eac89512c2acaf92f7b2d67feb8ab58b6b118c213be07146",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=7932",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 0,
+        "level_counts": {}
+      },
+      "requirements": [
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 2,
+        "entries": [
+          {
+            "id": 5948,
+            "section": "3.5",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction repairs a typographical slip in the sentence describing repeat codes, where three of more should read three or more. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 6977,
+            "section": "9.3",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction adds a condition to the compressed-data grammar so that a distance block count is not consumed when the distance is implicitly zero, matching section 10 and the reference implementation. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          }
+        ]
+      }
+    },
     {"id":"RFC8305","title":"Happy Eyeballs Version 2: Better Connectivity Using Concurrency","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/runtime/client_transport.gleam","packages/quic_core/test/public_loopback_test.gleam","src/http_transport_ffi.erl","test/transport_test.gleam"]},
     {
       "id": "RFC8336",
@@ -4330,7 +4377,99 @@
       }
     },
     {"id":"RFC8446","title":"The Transport Layer Security (TLS) Protocol Version 1.3","map_complete":false,"evidence":["packages/quic_core/src/quic_core/internal/tls/engine.gleam","packages/quic_core/test/tls_engine_test.gleam"]},
-    {"id":"RFC8878","title":"Zstandard Compression and the 'application/zstd' Media Type","map_complete":false,"evidence":["src/http/compression.gleam","test/compression_test.gleam"]},
+    {
+      "id": "RFC8878",
+      "title": "Zstandard Compression and the 'application/zstd' Media Type",
+      "map_complete": true,
+      "evidence": [
+        "src/http/compression.gleam",
+        "src/http_compression_ffi.erl",
+        "test/compression_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc8878.txt",
+        "document_sha256": "8ee6be03534113f5689cda75b9539a02e0704a2506d420814223e506420aeea4",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=8878",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 0,
+        "level_counts": {}
+      },
+      "requirements": [
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 7,
+        "entries": [
+          {
+            "id": 6441,
+            "section": "Appendix A",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction removes a duplicate state-zero row reporting zero bits from each of the three appendix decoding tables. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 6442,
+            "section": "3.1.1.5",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction fixes one offset value in the worked example of how repeated offsets shift as sequences are applied. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 7297,
+            "section": "3.1.1.3.1.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The verified correction raises the lower bound of the four-stream literals size from zero to six, because the fourth stream's size calculation underflows below that. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 7567,
+            "section": "3.1.1.3.1",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction renames a section heading from Literals_Section_Header to Literals_Section, so that two sections do not carry the same name. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 8085,
+            "section": "3.1.1.5",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction fixes the last row of the repeated-offset example, which contradicts the rule stated earlier in the same section for an offset value of one with zero literals. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 8195,
+            "section": "4.2.2",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction clarifies which prefix code an encoding example refers to, which the published text leaves ambiguous between two tables. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          },
+          {
+            "id": 8668,
+            "section": "3.1.1.3.1.4",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The reported correction says a treeless literals block takes its Huffman table from the previous compressed literals block rather than from any previous literals block, matching the definition given earlier. This package implements none of the format this corrects: compressing and expanding is delegated to the platform codec through a narrow FFI, and what is owned here is the bounded framing around it -- the ceilings on output, ratio, work, and window, and the refusal of a stream that exceeds any of them."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC8999",
       "title": "Version-Independent Properties of QUIC",
