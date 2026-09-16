@@ -1713,7 +1713,2458 @@
       }
     },
     {"id":"RFC6265","title":"HTTP State Management Mechanism","map_complete":false,"evidence":["src/http/internal/cookie.gleam","test/client_policy_test.gleam"]},
-    {"id":"RFC6455","title":"The WebSocket Protocol","map_complete":false,"evidence":["src/http/websocket.gleam","test/websocket_test.gleam"]},
+    {
+      "id": "RFC6455",
+      "title": "The WebSocket Protocol",
+      "map_complete": true,
+      "evidence": [
+        "src/http/websocket.gleam",
+        "src/http_websocket_ffi.erl",
+        "packages/http3/src/http3/websocket.gleam",
+        "packages/http3/src/http3/internal/websocket_frame.gleam",
+        "src/http_transport_ffi.erl",
+        "test/websocket_test.gleam",
+        "packages/http3/test/websocket_frame_test.gleam",
+        "test/tls_transport_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc6455.txt",
+        "document_sha256": "765775326aee0ecca9b04bde3fd1f52932d498e33e34e428bd61b8a24da0fa3b",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=6455",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 166,
+        "level_counts": {
+          "MUST": 113,
+          "SHOULD": 24,
+          "MUST NOT": 25,
+          "SHOULD NOT": 4
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC6455-2-MUST-IMPERATIVE-ALGORITHM-STEPS-TAKE-THE-INTRODUCING-LEVEL",
+          "section": "2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An imperative step inside an algorithm carries the level of the keyword that introduced the algorithm.",
+          "disposition": "NotApplicable",
+          "reason": "This states how the document's own imperative prose is to be read rather than what an implementation does. It binds the reader of this specification, and the clauses it governs are inventoried where they appear."
+        },
+        {
+          "id": "RFC6455-2-SHOULD-IMPERATIVE-ALGORITHM-STEPS-TAKE-THE-INTRODUCING-LEVEL",
+          "section": "2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The same reading rule, for an algorithm a SHOULD introduced.",
+          "disposition": "NotApplicable",
+          "reason": "This states how the document's own imperative prose is to be read rather than what an implementation does. It binds the reader of this specification, and the clauses it governs are inventoried where they appear."
+        },
+        {
+          "id": "RFC6455-3-MUST-NOT-FRAGMENT-IN-A-WEBSOCKET-URI",
+          "section": "3",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A fragment is meaningless on a ws or wss URI and is not to be used.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-3-MUST-ESCAPE-A-LITERAL-NUMBER-SIGN",
+          "section": "3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A literal number sign in such a URI is percent-encoded.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-OPEN-SEND-AND-READ-THE-HANDSHAKE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Establishing a connection is opening one, sending an opening handshake, and reading the response before anything else: the client builds its request fields, and the response is validated against the handshake it was built from rather than against the wire alone.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "request_headers"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-URI-COMPONENTS-ARE-VALID",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The components come from a ws or wss URI this package does not parse.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-AN-INVALID-COMPONENT",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Failing on an invalid URI component is part of the same URI algorithm.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-WAIT-FOR-AN-EXISTING-CONNECT-TO-THE-SAME-HOST",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Waiting for an in-flight connection to the same host and port before starting another is the browser's throttle.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-AT-MOST-ONE-CONNECTING-STATE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Counting connections in a CONNECTING state is part of the same throttle.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-SERIALIZE-SIMULTANEOUS-CONNECTS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Serializing simultaneous attempts to one address is part of the same throttle.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-TREAT-EACH-NAME-AS-A-DISTINCT-HOST-WITHOUT-AN-ADDRESS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Treating each name as a distinct host when the address is unknown is part of the same throttle.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-SHOULD-LIMIT-PENDING-CONNECTS-PER-NAME",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Limiting pending connections per host name is part of the same throttle.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-SHOULD-CONNECT-THROUGH-A-CONFIGURED-PROXY",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A configured proxy is used and asked to open a tunnel to the origin: the client's proxy policy is typed and disabled by default, and an https origin reached through one goes over CONNECT rather than in the clear.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "with_proxy"},
+            {"path": "src/http/client.gleam", "symbol": "ProxyPolicy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_https_uses_connect_proxy_without_leaking_credentials_test"},
+            {"path": "test/client_test.gleam", "symbol": "proxy_is_disabled_by_default_and_configuration_is_typed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-SHOULD-CONNECT-DIRECTLY-WITHOUT-A-PROXY",
+          "section": "4.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "With no proxy configured the connection is opened straight to the host and port the caller named; proxying is opt-in, so the direct route is the default one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_with_deadlines"},
+            {"path": "src/http/client.gleam", "symbol": "without_proxy"},
+            {"path": "src/http/client.gleam", "symbol": "proxy_policy"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "proxy_is_disabled_by_default_and_configuration_is_typed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-BUILD-THE-AUTOCONFIG-URI-FROM-THE-COMPONENTS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Constructing a URI for a proxy autoconfiguration script is the browser's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-WHEN-THE-CONNECTION-CANNOT-BE-OPENED",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A connection that cannot be opened, directly or through a proxy, is a typed error the caller receives rather than a handshake that proceeds: nothing is written until the transport reports success.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_with_deadlines"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "connect_addresses"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "a_stalled_first_candidate_does_not_consume_the_connect_deadline_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-COMPLETE-TLS-BEFORE-THE-HANDSHAKE-WHEN-SECURE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "On a secure origin the TLS handshake completes before any handshake byte is written: the upgrade returns a ready stream, and only then does the caller send.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-WHEN-THE-TLS-HANDSHAKE-FAILS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A certificate that cannot be verified ends the attempt with a typed error and no application byte on the wire.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-RUN-EVERYTHING-ELSE-INSIDE-THE-TUNNEL",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Once upgraded, the stream handed back is the TLS one; there is no path that writes to the underlying socket afterwards, so every later byte runs through the tunnel.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_stream"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-SEND-SNI-IN-THE-TLS-HANDSHAKE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Server Name Indication carries the host the client dialled, and the same name is what the certificate is matched against.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-SEND-AN-OPENING-HANDSHAKE-ONCE-CONNECTED",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The opening handshake is what the client sends first on an established connection: the handshake value carries the exact fields to write and nothing is framed before a response has been validated.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "request_headers"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-HANDSHAKE-IS-A-VALID-HTTP-REQUEST",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The handshake is a set of ordinary field lines carried by this package's own HTTP request path, so it is encoded, bounded, and validated as any request is rather than written as free-form bytes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "request_headers"},
+            {"path": "src/http/internal/http1/encode.gleam", "symbol": "encode_head"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-METHOD-IS-GET",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The HTTP/1.1 handshake is a GET, and a server here refuses any other method for it; over HTTP/2 and HTTP/3 the same handshake is the extended CONNECT RFC 8441 defines instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_request_mapping"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-HTTP-VERSION-IS-AT-LEAST-ONE-ONE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "There is no HTTP/1.0 path here at all: the request parser accepts one version string and refuses anything else before a field is read, so a handshake can only arrive on 1.1 or on a later protocol.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/http1.gleam", "symbol": "parse_request_line"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "fragmented_request_head_preserves_wire_values_and_body_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-REQUEST-TARGET-MATCHES-THE-RESOURCE-NAME",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Matching the target against a ws URI's resource name is part of the URI algorithm.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-A-HOST-FIELD",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A handshake reaches the server only through the request path, which requires exactly one syntactically valid Host on HTTP/1.1 and an authority pseudo-header on the later protocols; the accept step refuses an empty authority.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/internal/http1.gleam", "symbol": "valid_host"}
+          ],
+          "tests": [
+            {"path": "test/http1_request_head_test.gleam", "symbol": "missing_or_duplicate_host_is_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-AN-UPGRADE-FIELD",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The HTTP/1.1 client writes Upgrade and the HTTP/1.1 server requires it; on HTTP/2 and HTTP/3 the field is refused instead, because those protocols carry the handshake as extended CONNECT.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_request_mapping"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"},
+            {"path": "test/websocket_test.gleam", "symbol": "rfc8441_h2_handshake_omits_h1_nonce_fields_and_supports_ws_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-UPGRADE-VALUE-INCLUDES-WEBSOCKET",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The value written is the websocket keyword, and the value accepted is compared without regard to case as a single token, so a field naming some other protocol does not pass.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_token_header"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-A-CONNECTION-FIELD",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Connection is written by the HTTP/1.1 client and required by the HTTP/1.1 server, and refused on the protocols that have no such field.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_request_mapping"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-CONNECTION-VALUE-INCLUDES-UPGRADE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The token is looked for among the comma-separated members of the field rather than as the whole value, so a Connection carrying other options beside Upgrade is accepted and one carrying none of them is not.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "headers_contain_token"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-A-SEC-WEBSOCKET-KEY-FIELD",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The HTTP/1.1 client writes Sec-WebSocket-Key in every handshake it builds; on HTTP/2 and HTTP/3 the field is omitted, and this package refuses one that appears there.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "connect"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc8441_h2_handshake_omits_h1_nonce_fields_and_supports_ws_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-KEY-IS-A-BASE64-SIXTEEN-BYTE-NONCE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The key is sixteen bytes of strong randomness in base64, and the validator requires both the decoded length and that the value re-encodes to itself, so a non-canonical encoding is refused as erratum 3150's example would be.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "client_key"},
+            {"path": "src/http_websocket_ffi.erl", "symbol": "accept"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "a_sec_websocket_key_must_be_canonical_base64_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-NONCE-IS-FRESH-PER-CONNECTION",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The nonce is drawn per handshake from the platform's strong random source; there is no cached or derived key, and the only way to supply a fixed one is the separate entry point the protocol vectors use.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "client_key"},
+            {"path": "src/http/websocket.gleam", "symbol": "client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "client_handshake_with_key"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-AN-ORIGIN-FIELD-FROM-A-BROWSER",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Attaching an Origin is the browser's, and this package has no user agent above it.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.1-MUST-CARRY-A-SEC-WEBSOCKET-VERSION-FIELD",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The version field is written on every protocol, HTTP/1.1 and extended CONNECT alike, and the server requires exactly one of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "connect"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc8441_h2_handshake_omits_h1_nonce_fields_and_supports_ws_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-THE-VERSION-VALUE-IS-THIRTEEN",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The value written is 13 and the value accepted has to be exactly 13; anything else is a typed unsupported-version failure rather than a generic handshake error.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "build_client_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "UnsupportedVersion"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-SUBPROTOCOL-ELEMENTS-ARE-NON-EMPTY-TOKENS",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every offered or supported subprotocol has to be a non-empty HTTP token over the visible ASCII range with no separator in it, checked before the handshake is built and again when one is offered to a server.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_subprotocols"},
+            {"path": "src/http/websocket.gleam", "symbol": "valid_token"},
+            {"path": "src/http/websocket.gleam", "symbol": "token_character"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-SUBPROTOCOL-ELEMENTS-ARE-UNIQUE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A repeated element makes the whole list invalid: uniqueness is checked against the list as given rather than by silently collapsing duplicates.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_subprotocols"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-WAIT-FOR-THE-RESPONSE-BEFORE-SENDING-MORE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A framing session does not exist until the response has been validated: the client value that holds the nonce has no encoder on it, and the session is constructed separately, so there is no way to frame data while the handshake is outstanding.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "session"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "connect"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "validate_client_handshake"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-VALIDATE-THE-SERVER-RESPONSE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Validation is a single function over the response, bound to the handshake that produced the request, and it returns the negotiated subprotocol rather than a bare success so the caller cannot skip reading the result.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-A-MISSING-OR-WRONG-UPGRADE-IN-THE-RESPONSE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "An HTTP/1.1 response without a single Upgrade field matching websocket without regard to case is refused; on the later protocols the presence of the field is what is refused instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response_mapping"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_token_header"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-A-MISSING-OR-WRONG-CONNECTION-IN-THE-RESPONSE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The Upgrade token has to be among the members of the response's Connection field, compared without regard to case.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response_mapping"},
+            {"path": "src/http/websocket.gleam", "symbol": "headers_contain_token"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-A-MISSING-OR-WRONG-SEC-WEBSOCKET-ACCEPT",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The accept value is recomputed from the nonce this client generated, against the fixed GUID, and compared exactly; a missing field, a repeated one, or a mismatch is a typed failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_header"},
+            {"path": "src/http/websocket.gleam", "symbol": "AcceptMismatch"},
+            {"path": "src/http_websocket_ffi.erl", "symbol": "accept"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"},
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-AN-UNREQUESTED-EXTENSION",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "No extension is ever requested, so every extension in a response is an unrequested one: the field's presence alone fails the handshake, on all three protocols.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "ExtensionsForbidden"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "validate_client_handshake"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-AN-UNREQUESTED-SUBPROTOCOL",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A selected subprotocol has to be a token and has to be one the client offered; a value outside the offer, or more than one field, is a typed mismatch.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_selected_protocol"},
+            {"path": "src/http/websocket.gleam", "symbol": "SubprotocolMismatch"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.1-MUST-FAIL-ON-ANY-OTHER-NON-CONFORMING-RESPONSE",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Validation is closed rather than open: the status has to be the one the protocol defines, every field checked has to be present exactly once, and anything that does not pass returns an error instead of a session.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "UnexpectedStatus"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.1-MUST-ABORT-A-HANDSHAKE-THAT-DOES-NOT-MATCH",
+          "section": "4.2.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The accept step is a single validation over method, scheme, authority, extended protocol, and fields, in any field order, and any violation returns a typed error instead of a response; the caller answers with an HTTP error rather than a handshake.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_request_mapping"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidHandshake"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.1-SHOULD-NOT-ASSUME-A-BROWSER-WITHOUT-AN-ORIGIN",
+          "section": "4.2.1",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "Nothing here interprets the absence of an Origin, because nothing here interprets its presence either.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the connection algorithm a web browser runs on behalf of a script: the throttling of simultaneous connects per remote host, the CONNECTING state it counts, the proxy autoconfiguration script it consults, and the Origin it attaches. This package is a library with no user agent above it; the caller opens the connection it wants and this package carries the handshake over it."
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-COMPLETE-THE-ACCEPT-STEPS",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Accepting is one function that either returns the exact status, fields, and selected subprotocol to send or returns a typed error; there is no partial acceptance, and the response value is opaque so it cannot be assembled piecemeal.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "response_status"},
+            {"path": "src/http/websocket.gleam", "symbol": "response_headers"},
+            {"path": "src/http/websocket.gleam", "symbol": "selected_protocol"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-RUN-EVERYTHING-INSIDE-THE-TUNNEL-WHEN-SECURE",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A secure listener hands the connection worker the TLS stream, and the handshake response is written to that stream like every later byte; HTTP/3 has no unsecured form at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_server_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_stream"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-RETURN-AN-HTTP-ERROR-WHEN-DECLINING",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Declining is the caller's to express, and what it has to work with is a typed error rather than a half-built handshake: the accept step returns no response value at all, so the only thing that can be written is an ordinary HTTP error response.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-ABORT-AND-ANSWER-ON-AN-UNKNOWN-VERSION",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A version other than 13 is reported as its own error rather than as a generic handshake failure, so the caller can answer 426 and name the version it supports instead of a blanket 400.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "UnsupportedVersion"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-ANSWER-WHEN-THE-SERVICE-IS-UNAVAILABLE",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Whether the requested resource exists is the handler's, and answering an absent one is an ordinary HTTP response on the path that carried the handshake.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-A-SELECTED-SUBPROTOCOL-COMES-FROM-THE-OFFER",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Selection walks the server's own preference order and returns the first entry the client actually offered, so the value sent back is always one of the offered ones and never the server's favourite alone.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "select_subprotocol"},
+            {"path": "src/http/websocket.gleam", "symbol": "requested_subprotocols"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-NOT-SEND-A-SUBPROTOCOL-FIELD-WHEN-NONE-IS-AGREED",
+          "section": "4.2.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "When nothing matches, no field is appended: the response carries the subprotocol field only in the branch where a value was selected.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "selected_protocol"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-A-SELECTED-EXTENSION-COMES-FROM-THE-OFFER",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "No extension is ever selected, because an offered extension field fails the handshake outright.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-NOT-LIST-AN-EXTENSION-THE-CLIENT-DID-NOT",
+          "section": "4.2.2",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "No extension is listed in any response this package builds.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-4.2.2-MUST-REPLY-WITH-A-VALID-HTTP-RESPONSE-WHEN-ACCEPTING",
+          "section": "4.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Acceptance yields the status and the exact field list to write, encoded by this package's own response path, so the reply is a well-formed 101 on HTTP/1.1 and a 200 on the extended CONNECT protocols.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "response_status"},
+            {"path": "src/http/websocket.gleam", "symbol": "response_headers"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"},
+            {"path": "test/websocket_test.gleam", "symbol": "rfc8441_h2_handshake_omits_h1_nonce_fields_and_supports_ws_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-4.3-MUST-AN-UNESCAPED-QUOTED-STRING-CONFORMS-TO-TOKEN",
+          "section": "4.3",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This binds the extension-parameter grammar, and no extension parameter is parsed or written here.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-4.4-MUST-NAME-THE-SUPPORTED-VERSIONS-WHEN-DECLINING-ONE",
+          "section": "4.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The one supported version is fixed at 13, and an unsupported one is reported as its own typed error so the caller can name 13 in the response it writes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "UnsupportedVersion"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.1-MUST-A-CLIENT-MASKS-EVERY-FRAME-IT-SENDS",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Masking follows from the role rather than from the caller: encoding for a client always draws a mask, and there is no client path that produces an unmasked frame. The same holds over HTTP/3, where the frame codec carries the role too.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "encode"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masked_client_text_frame_decodes_incrementally_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.1-MUST-A-SERVER-CLOSES-ON-AN-UNMASKED-FRAME",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A server session refuses an unmasked frame with a typed error before the payload is read, which ends the session rather than continuing past it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "MaskRequired"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masking_and_control_rules_are_enforced_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.1-MUST-NOT-A-SERVER-MASKS-A-FRAME-IT-SENDS",
+          "section": "5.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "Encoding for a server passes no mask at all, so the mask bit is never set on anything a server writes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "encode"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode_with_mask"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "server_frames_are_unmasked_and_support_extended_lengths_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.1-MUST-A-CLIENT-CLOSES-ON-A-MASKED-FRAME",
+          "section": "5.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A client session refuses a masked frame with its own typed error, the mirror of the server's, again before the payload is taken.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "MaskForbidden"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masking_and_control_rules_are_enforced_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-RESERVED-BITS-ARE-ZERO-WITHOUT-AN-EXTENSION",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No extension is negotiated, so the three reserved bits are written as zero and are required to be zero on receipt.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedBits"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-FAIL-ON-A-NONZERO-RESERVED-BIT",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A nonzero reserved bit is a typed failure taken from the first two bytes, before the opcode is even decoded.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedBits"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-FAIL-ON-AN-UNKNOWN-OPCODE",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The opcode table is closed: the six defined values decode and every other value is a typed reserved-opcode failure carrying the value seen.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "decode_opcode"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedOpcode"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-THE-SIXTY-FOUR-BIT-LENGTH-HAS-A-ZERO-HIGH-BIT",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The extended length is matched as a zero bit followed by sixty-three, so a length with the high bit set does not parse as a length at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_length"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidLength"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "sixty_four_bit_lengths_reject_the_reserved_high_bit_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-THE-LENGTH-USES-ITS-MINIMAL-ENCODING",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A sixteen-bit length below 126 and a sixty-four-bit length below 65536 are refused rather than accepted, and the encoder picks the shortest form for the length it is given, so the two directions agree.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_length"},
+            {"path": "src/http/websocket.gleam", "symbol": "encoded_length"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masked_sixty_four_bit_length_round_trips_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-AN-EXTENSION-DEFINES-ITS-DATA-LENGTH",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This binds an extension specification.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-5.2-MUST-AN-EXTENSION-DEFINES-ITS-NEGOTIATION",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This binds an extension specification too.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-5.2-MUST-RSV1-IS-ZERO-UNLESS-NEGOTIATED",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The ABNF restatement for the first reserved bit, enforced by the same check that rejects any nonzero reserved bit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedBits"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-RSV2-IS-ZERO-UNLESS-NEGOTIATED",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same for the second reserved bit.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedBits"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.2-MUST-RSV3-IS-ZERO-UNLESS-NEGOTIATED",
+          "section": "5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same for the third reserved bit; all three are read as one field and compared against zero together.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "ReservedBits"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.3-MUST-A-MASKED-FRAME-SETS-THE-MASK-BIT",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The mask bit and the mask key are written together by the encoder: the masked branch sets the bit, emits the four key bytes, and masks the payload, so the bit cannot disagree with what follows it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "encode_with_mask"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode_with_mask"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masked_sixty_four_bit_length_round_trips_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.3-MUST-PICK-A-FRESH-MASK-PER-FRAME",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Each encode call draws its own four bytes; no key is retained between frames, and the only way to supply a fixed one is the separate entry point the protocol vectors use.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "random_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.3-MUST-THE-MASK-COMES-FROM-STRONG-ENTROPY",
+          "section": "5.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The key is four bytes from the platform's strong random source, the same one the handshake nonce is drawn from, and a failure to obtain them is a typed error rather than a fallback to something weaker.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "random_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidMask"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.3-MUST-NOT-ONE-MASK-PREDICTS-THE-NEXT",
+          "section": "5.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "There is no state carried between masks to predict from: each is an independent draw, so nothing about one frame's key constrains the next.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "random_mask"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-FRAGMENT-A-CONTROL-FRAME",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A control frame without the final bit is refused in both directions: the same check runs on encode and on decode, so this package neither writes nor accepts one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_control"},
+            {"path": "src/http/websocket.gleam", "symbol": "FragmentedControl"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "fragmented_and_oversized_control_frames_are_rejected_on_decode_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-DELIVER-FRAGMENTS-IN-ORDER",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Fragments are appended to the retained payload in the order they are pulled off the buffer, and the buffer is consumed front to back, so the order sent is the order reassembled.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "continue_fragment"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-INTERLEAVE-TWO-MESSAGES-FRAGMENTS",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "One message is in flight at a time: a data frame that arrives while a fragment is open is a protocol violation, and a continuation with no fragment open is one too, so there is no state in which two messages could interleave.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "start_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "continue_fragment"},
+            {"path": "src/http/websocket.gleam", "symbol": "ProtocolViolation"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-HANDLE-A-CONTROL-FRAME-INSIDE-A-FRAGMENTED-MESSAGE",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Control frames are dispatched before the fragment state is consulted and do not touch it, so a Ping or a Close between two fragments is delivered as its own event and the partial message survives it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-SUPPORT-RECEIVING-FRAGMENTED-AND-WHOLE-MESSAGES",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Both shapes reach the caller as the same event: a final data frame completes a message immediately, and a non-final one opens a fragment the continuations extend.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "start_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "continue_fragment"},
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-AN-INTERMEDIARY-REFRAGMENTS-A-CONTROL-FRAME",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "This binds a relaying intermediary.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an intermediary that relays a WebSocket connection and might re-fragment what passes through it. This package is an endpoint: it frames what it sends and reassembles what it receives, and it relays no other endpoint's frames."
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-AN-INTERMEDIARY-REFRAGMENTS-WITH-UNKNOWN-RESERVED-BITS",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "This binds a relaying intermediary too.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an intermediary that relays a WebSocket connection and might re-fragment what passes through it. This package is an endpoint: it frames what it sends and reassembles what it receives, and it relays no other endpoint's frames."
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-AN-INTERMEDIARY-REFRAGMENTS-UNDER-UNKNOWN-EXTENSIONS",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "And the case where an extension is negotiated that the intermediary does not understand.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an intermediary that relays a WebSocket connection and might re-fragment what passes through it. This package is an endpoint: it frames what it sends and reassembles what it receives, and it relays no other endpoint's frames."
+        },
+        {
+          "id": "RFC6455-5.4-MUST-NOT-AN-UNAWARE-INTERMEDIARY-REFRAGMENTS-ANYTHING",
+          "section": "5.4",
+          "level": "MUST NOT",
+          "roles": ["proxy"],
+          "summary": "And the case where the intermediary never saw the handshake.",
+          "disposition": "NotApplicable",
+          "reason": "This binds an intermediary that relays a WebSocket connection and might re-fragment what passes through it. This package is an endpoint: it frames what it sends and reassembles what it receives, and it relays no other endpoint's frames."
+        },
+        {
+          "id": "RFC6455-5.4-MUST-A-FRAGMENTED-MESSAGE-HAS-A-DATA-TYPE",
+          "section": "5.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The opcode that opened the fragment is the one carried to completion, and only text and binary can open one: a continuation with no fragment open, or a control opcode reaching the completion step, is a protocol violation.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "start_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5-MUST-A-CONTROL-PAYLOAD-IS-AT-MOST-125-BYTES",
+          "section": "5.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A control frame carrying more than 125 bytes is refused on encode and on decode alike, with its own typed error rather than a generic length failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_control"},
+            {"path": "src/http/websocket.gleam", "symbol": "ControlPayloadTooLarge"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "fragmented_and_oversized_control_frames_are_rejected_on_decode_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masking_and_control_rules_are_enforced_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5-MUST-NOT-A-CONTROL-FRAME-IS-FRAGMENTED",
+          "section": "5.5",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The same check refuses a control frame whose final bit is clear, which is the other half of the sentence this clause splits.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_control"},
+            {"path": "src/http/websocket.gleam", "symbol": "FragmentedControl"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "fragmented_and_oversized_control_frames_are_rejected_on_decode_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-A-CLOSE-BODY-STARTS-WITH-A-TWO-BYTE-CODE",
+          "section": "5.5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A close payload is either empty or a sixteen-bit code in network order followed by the reason; a one-byte body is refused rather than read as a truncated code, and the encoder writes the same shape.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "parse_close_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidClose"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-NOT-SHOW-THE-CLOSE-REASON-TO-END-USERS",
+          "section": "5.5.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "There is no user here to show anything to; the reason is returned to the caller as a value.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-NOT-SEND-DATA-AFTER-SENDING-CLOSE",
+          "section": "5.5.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Sending a Close sets a flag on the session, and every data send and every Ping checks it first, so an attempt to write more after a Close is a typed already-closed error rather than a frame on the wire.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close"},
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "ping_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "AlreadyClosed"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-ANSWER-A-CLOSE-WITH-A-CLOSE",
+          "section": "5.5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A received Close that was not preceded by one of our own produces the reply frame in the same step that reports the event, so the caller has it in hand and cannot forget to build it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"},
+            {"path": "src/http/websocket.gleam", "symbol": "close_frame"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-SHOULD-ANSWER-A-CLOSE-AS-SOON-AS-PRACTICAL",
+          "section": "5.5.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "There is nothing to schedule: the reply is produced synchronously with the event that requires it, echoing the code and reason received, so it is ready before the caller has seen the Close.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-CLOSE-THE-TRANSPORT-AFTER-BOTH-CLOSES",
+          "section": "5.5.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The session records that both directions have closed and refuses to produce another event afterwards, but the transport itself belongs to the caller that opened it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "AlreadyClosed"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.1-MUST-A-SERVER-CLOSES-THE-TRANSPORT-IMMEDIATELY",
+          "section": "5.5.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Which side tears the connection down, and when, belongs to the transport owner.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-5.5.1-SHOULD-A-CLIENT-WAITS-FOR-THE-SERVER-TO-CLOSE",
+          "section": "5.5.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "The waiting side of the same teardown, likewise the transport owner's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-5.5.2-MUST-ANSWER-A-PING-WITH-A-PONG",
+          "section": "5.5.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A received Ping yields the Pong alongside the event, carrying the same payload and framed for the local role, unless a Close has already been received, in which case no further event is produced at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.5.2-SHOULD-ANSWER-A-PING-AS-SOON-AS-PRACTICAL",
+          "section": "5.5.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The Pong is built in the same call that surfaces the Ping, so there is no queue it could sit in.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_frame"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.6-MUST-A-TEXT-MESSAGE-IS-VALID-UTF-8-AS-A-WHOLE",
+          "section": "5.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Validation runs on the reassembled message rather than on each frame, so a code point split across a fragment boundary is accepted and a message that is not valid UTF-8 as a whole is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidUtf8"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-5.8-MUST-NEGOTIATE-EXTENSIONS-IN-THE-OPENING-HANDSHAKE",
+          "section": "5.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No extension is negotiated anywhere, at handshake time or after.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-6.1-MUST-FOLLOW-THE-SEND-STEPS",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Sending a message is one function that performs the whole sequence and returns the bytes to write together with the session that accounted for them; there is no way to perform half of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_text"},
+            {"path": "src/http/websocket.gleam", "symbol": "send_binary"},
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-THE-CONNECTION-IS-OPEN",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A send checks that no Close has been sent before it frames anything, which is the state this step requires.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "AlreadyClosed"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-ABORT-IF-THE-STATE-CHANGES",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The state is read from the session value the send was given, so a send cannot straddle a change: either the session it holds is open and the frame is produced, or it is not and a typed error is.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "Session"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-ENCAPSULATE-THE-DATA-IN-A-FRAME",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Application bytes reach the wire only through the frame encoder; nothing returns a raw payload for the caller to write.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode_with_mask"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-THE-FIRST-FRAME-CARRIES-THE-DATA-OPCODE",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A text send frames with the text opcode and a binary send with the binary one, decided by the entry point rather than by the caller; text is encoded from a Gleam string, so it is UTF-8 by construction.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_text"},
+            {"path": "src/http/websocket.gleam", "symbol": "send_binary"},
+            {"path": "src/http/websocket.gleam", "symbol": "opcode_value"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-THE-LAST-FRAME-SETS-THE-FINAL-BIT",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A message sent through this path is one frame with the final bit set; the encoder writes the bit from the frame value, and a caller framing its own fragments sets it on the last one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode_with_mask"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-A-CLIENT-MASKS-WHAT-IT-SENDS",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The send path encodes for the session's role, so a client session masks and a server session does not, without the caller choosing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "send_data"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.1-MUST-TRANSMIT-THE-FORMED-FRAMES",
+          "section": "6.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Transmission belongs to the transport the caller owns; what this package guarantees is that the bytes handed back are the complete frame.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-6.2-MUST-PARSE-INCOMING-DATA-AS-FRAMES",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Bytes enter the session only through the push step and leave it only as decoded events, so there is no path by which incoming data is interpreted as anything but frames.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "push"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.2-MUST-HANDLE-A-RECEIVED-CONTROL-FRAME",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Each control opcode has its own branch: Ping produces a Pong, Close produces the close event and its reply, and Pong is surfaced as an event with nothing to send.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.2-MUST-NOTE-THE-TYPE-OF-A-DATA-FRAME",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The opcode that opens a message is retained with the fragment and decides the event that completes it, so a text message arrives as text and a binary one as binary.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "start_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.2-MUST-A-LATER-DATA-FRAME-BEGINS-A-NEW-MESSAGE",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Completing a message clears the fragment state, so the next text or binary frame opens a fresh one; one arriving while a fragment is still open is a protocol violation instead.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "start_message"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-6.2-MUST-A-SERVER-UNMASKS-WHAT-IT-RECEIVES",
+          "section": "6.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The mask key is taken from the frame and applied to the payload before the payload becomes an event, and the byte count is checked against the declared length so a short frame is retained rather than unmasked wrongly.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "unmask"},
+            {"path": "src/http/websocket.gleam", "symbol": "decode_payload"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "masked_client_text_frame_decodes_incrementally_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.1-SHOULD-CLOSE-THE-TRANSPORT-CLEANLY",
+          "section": "7.1.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "How the underlying connection is torn down belongs to its owner.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-7.1.1-SHOULD-THE-SERVER-CLOSES-THE-TRANSPORT-FIRST",
+          "section": "7.1.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Which side holds TIME_WAIT is a property of the transport teardown.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-7.1.1-SHOULD-A-SERVER-STARTS-THE-TCP-CLOSE",
+          "section": "7.1.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The server half of that same teardown.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-7.1.1-SHOULD-A-CLIENT-WAITS-FOR-THE-TCP-CLOSE",
+          "section": "7.1.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "And the client half.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-7.1.2-MUST-START-THE-CLOSING-HANDSHAKE-WITH-A-CLOSE-FRAME",
+          "section": "7.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Starting the closing handshake is sending a Close control frame carrying the code and reason given, which is exactly what the close step produces, marking the session so nothing else may be sent.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close"},
+            {"path": "src/http/websocket.gleam", "symbol": "close_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "close_payload"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.2-SHOULD-CLOSE-THE-CONNECTION-ONCE-BOTH-CLOSES-HAVE-PASSED",
+          "section": "7.1.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Once both directions have closed the session produces no further event, which is the signal the caller acts on; the connection itself is the caller's to close.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "handle_close"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "AlreadyClosed"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-MUST-A-CLIENT-CLOSES-ON-FAILURE",
+          "section": "7.1.7",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Every framing violation is a typed error out of the session rather than a recoverable state, so there is nothing for a client to do with it but close; the session itself cannot be carried on with.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-MUST-A-SERVER-CLOSES-ON-FAILURE",
+          "section": "7.1.7",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server side is the same: the failure is typed, the session is not returned, and the caller's only continuation is to close the stream it owns.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "Error"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "cancel"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-SHOULD-A-SERVER-LOGS-THE-FAILURE",
+          "section": "7.1.7",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A library writes no log of its own; the typed error naming the reason is what it hands the caller that has one, and it carries no payload bytes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "Error"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-SHOULD-SEND-A-CLOSE-FRAME-BEFORE-CLOSING-AFTER-ESTABLISHMENT",
+          "section": "7.1.7",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "A Close with an appropriate code can be framed without a session, through the standalone encoder, so a caller whose session has just failed still has a way to send one before closing.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "valid_close_code"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-MUST-NOT-PROCESS-MORE-DATA-AFTER-FAILING",
+          "section": "7.1.7",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A failure returns no session, so there is no value left to push bytes into or pull events from; processing cannot continue because the state needed to continue it is gone.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "push"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.1.7-SHOULD-NOT-A-CLIENT-CLOSES-ARBITRARILY",
+          "section": "7.1.7",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "When a caller chooses to close is the caller's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.2.1-MUST-A-CLIENT-FAILS-ON-AN-ABNORMAL-CLOSURE",
+          "section": "7.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A transport that ends without a Close is reported to the caller as a read failure rather than as a clean end of message, and the session has no way to treat it as one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "next"},
+            {"path": "src/http/websocket.gleam", "symbol": "push"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "read"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.2.1-MUST-A-CLIENT-FAILS-WHEN-THE-TRANSPORT-IS-LOST",
+          "section": "7.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "A lost connection surfaces as a typed transport error on the read that discovers it, and no partial message is delivered from the bytes already buffered.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "read"},
+            {"path": "src/http/websocket.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/transport_test.gleam", "symbol": "read_timeout_closes_the_socket_to_avoid_late_mailbox_data_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.2.1-SHOULD-NOT-A-CLIENT-CLOSES-ARBITRARILY-ON-FAILURE",
+          "section": "7.2.1",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "The same deference to the caller as the identical sentence in section 7.1.7.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.2.2-MUST-A-SERVER-CLOSES-ON-AN-ABNORMAL-CLOSURE",
+          "section": "7.2.2",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "Closing the transport belongs to its owner.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the owner of the underlying connection. A session here is a pure codec over a byte stream: the caller holds the socket or the stream, and closing it is the caller's, done through the transport that opened it."
+        },
+        {
+          "id": "RFC6455-7.2.3-SHOULD-BACK-OFF-BEFORE-RECONNECTING",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Reconnecting is the application's decision.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.2.3-SHOULD-DELAY-THE-FIRST-RECONNECT-RANDOMLY",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "Part of the same reconnection policy.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.2.3-SHOULD-INCREASE-THE-DELAY-ON-REPEATED-FAILURES",
+          "section": "7.2.3",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "And the growth of that delay across repeated attempts.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.3-SHOULD-NOT-A-CLIENT-CLOSES-THE-CONNECTION-ARBITRARILY",
+          "section": "7.3",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "When to close is the caller's, and this package closes nothing on its own.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-7.4.1-MUST-NOT-SEND-1005",
+          "section": "7.4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "1005 is outside the accepted set, so it can be neither encoded into a Close nor read out of one; the check is a closed list plus the private range rather than a range with holes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "valid_close_code"},
+            {"path": "src/http/websocket.gleam", "symbol": "close_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "parse_close_payload"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.4.1-MUST-NOT-SEND-1006",
+          "section": "7.4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "1006 is outside the same set, in both directions.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "valid_close_code"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.4.1-SHOULD-EXTRA-DETAIL-GOES-IN-THE-REASON",
+          "section": "7.4.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The reason travels beside the code as a UTF-8 string, bounded to what a control frame can hold, so detail has somewhere to go that is not the code.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "parse_close_payload"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-7.4.1-MUST-NOT-SEND-1015",
+          "section": "7.4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "1015 is outside the same set as well.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "valid_close_code"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-8.1-MUST-FAIL-ON-INVALID-UTF-8",
+          "section": "8.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "A text message and a close reason are both decoded as UTF-8, and a byte sequence that is not valid UTF-8 is a typed failure rather than a lossy conversion.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"},
+            {"path": "src/http/websocket.gleam", "symbol": "parse_close_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidUtf8"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "fragmented_utf8_ping_and_close_are_one_bounded_session_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-9-MUST-NOT-A-SERVER-ANSWERS-WITH-AN-UNREQUESTED-EXTENSION",
+          "section": "9",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "This server answers with no extension at all, and refuses a request that offers one.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-9-MUST-EXTENSION-PARAMETERS-FOLLOW-THEIR-SPECIFICATION",
+          "section": "9",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No extension parameter is negotiated.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-9.1-MUST-FAIL-ON-A-MALFORMED-EXTENSION-VALUE",
+          "section": "9.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "An extension field of any shape fails the handshake, which is stricter than parsing it and failing on a malformed one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "ExtensionsForbidden"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "connect"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "validate_client_handshake"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-9.1-MUST-THE-EXTENSION-GRAMMAR-IS-THE-ONE-GIVEN",
+          "section": "9.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The grammar binds a field this package never parses.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-9.1-MUST-AN-EXTENSION-TOKEN-IS-REGISTERED",
+          "section": "9.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No extension token is used.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-9.1-MUST-PARAMETERS-ARE-DEFINED-FOR-THEIR-EXTENSION",
+          "section": "9.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No parameter is supplied for any extension.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a WebSocket extension. This package negotiates none at all: a Sec-WebSocket-Extensions field in either direction is refused outright, so no extension data, no reserved-bit meaning, and no extension parameter is ever in play."
+        },
+        {
+          "id": "RFC6455-9.1-MUST-NOT-USE-AN-EXTENSION-THE-SERVER-DID-NOT-ACCEPT",
+          "section": "9.1",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "Nothing is offered, so nothing can be used unaccepted; a server that answers with an extension anyway fails the handshake on the client side.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "ExtensionsForbidden"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.2-SHOULD-A-SERVER-VERIFIES-THE-ORIGIN",
+          "section": "10.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Which origins a deployment will answer for is the handler's policy, expressed over the request fields it already receives.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-10.2-SHOULD-ANSWER-403-ON-AN-UNACCEPTABLE-ORIGIN",
+          "section": "10.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Answering an unacceptable origin is likewise the handler's, on the ordinary response path.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the application above the session. This package returns decoded events and encoded frames to its caller and decides nothing about reconnection, display, or when a caller chooses to close."
+        },
+        {
+          "id": "RFC6455-10.3-MUST-A-NEW-UNPREDICTABLE-MASK-PER-FRAME",
+          "section": "10.3",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The mask is drawn per frame from the platform's strong random source, inside the encoder, so no value the application supplies influences it and no caller can pin it on the normal path.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_websocket_ffi.erl", "symbol": "random_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "encode"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "rfc6455_accept_and_mask_vectors_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.4-MUST-PROTECT-AGAINST-EXCEEDING-SIZE-LIMITS",
+          "section": "10.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Two finite bounds are required at session construction and enforced continuously: a declared frame length above the message ceiling fails before any payload is taken, a reassembled message that would cross it fails at the fragment that does so, and retained transport bytes are capped separately.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "session"},
+            {"path": "src/http/websocket.gleam", "symbol": "push"},
+            {"path": "src/http/websocket.gleam", "symbol": "decode_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "continue_fragment"},
+            {"path": "src/http/websocket.gleam", "symbol": "PayloadLimitExceeded"},
+            {"path": "src/http/websocket.gleam", "symbol": "BufferLimitExceeded"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "decoder_bounds_payload_and_retained_buffer_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.4-SHOULD-IMPOSE-A-LIMIT-ON-MESSAGE-AND-FRAME-SIZE",
+          "section": "10.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The limits are not optional here: a session cannot be constructed without them, and the buffer ceiling has to leave room for one whole message plus its framing, so neither a single huge frame nor a long stream of small fragments can grow memory without bound.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "session"},
+            {"path": "src/http/websocket.gleam", "symbol": "Limits"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidLimit"},
+            {"path": "packages/http3/src/http3/websocket.gleam", "symbol": "with_limits"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "decoder_rejects_invalid_limits_and_non_byte_aligned_chunks_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.6-MUST-SUPPORT-TLS",
+          "section": "10.6",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "TLS is supported on every protocol that carries a handshake here, with peer verification on and the version floor pinned; HTTP/3 has no unsecured form at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_server_tls"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.6-SHOULD-EMPLOY-TLS-WHEN-TALKING-TO-PEERS",
+          "section": "10.6",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Cleartext is opt-in rather than the default on the client, and an https origin is never downgraded to http by a redirect.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/client.gleam", "symbol": "allow_plain_http"},
+            {"path": "src/http/internal/redirect.gleam", "symbol": "follow"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "defaults_are_finite_and_plaintext_is_opt_in_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.7-MUST-VALIDATE-INCOMING-DATA",
+          "section": "10.7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Every field of every frame is checked before it becomes an event: reserved bits, opcode, mask against role, control size and fragmentation, minimal length encoding, the declared length against the bytes present, and UTF-8 on a completed text message.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "parse_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "decode_payload"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_control"},
+            {"path": "src/http/websocket.gleam", "symbol": "validate_mask"},
+            {"path": "src/http/websocket.gleam", "symbol": "complete_message"},
+            {"path": "packages/http3/src/http3/internal/websocket_frame.gleam", "symbol": "next"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "server_requires_masks_and_session_rejects_invalid_fragmentation_test"},
+            {"path": "packages/http3/test/websocket_frame_test.gleam", "symbol": "reserved_bits_opcode_and_nonminimal_lengths_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.7-SHOULD-SEND-A-CLOSE-BEFORE-CLOSING-ON-INVALID-DATA",
+          "section": "10.7",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The standalone Close encoder needs no session, so a caller holding a failed one can still frame a Close with an appropriate code before it closes the transport.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "close_frame"},
+            {"path": "src/http/websocket.gleam", "symbol": "valid_close_code"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "finite_buffers_message_limits_and_close_codes_fail_closed_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-10.7-SHOULD-ANSWER-INVALID-HANDSHAKE-DATA-WITH-A-STATUS",
+          "section": "10.7",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A handshake that does not validate returns a typed error with no response value, so what the caller writes is an ordinary HTTP status response rather than a partial upgrade.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "InvalidHandshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "UnsupportedVersion"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-11.1.1-MUST-WS-HOST-CHARACTERS-CONVERT-TO-ASCII",
+          "section": "11.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This is the ws scheme's registration template, binding whoever parses such a URI.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-11.1.1-MUST-WS-OTHER-CHARACTERS-PERCENT-ENCODE",
+          "section": "11.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The rest of the same template.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-11.1.2-MUST-WSS-HOST-CHARACTERS-CONVERT-TO-ASCII",
+          "section": "11.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The wss scheme's registration template.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-11.1.2-MUST-WSS-OTHER-CHARACTERS-PERCENT-ENCODE",
+          "section": "11.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "And the rest of that one.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever parses or constructs a ws or wss URI. This package parses none: a handshake is built from an http or https request the caller already has, with the authority and the target the caller chose, and the ws and wss schemes appear nowhere in the source."
+        },
+        {
+          "id": "RFC6455-11.3.1-MUST-NOT-REPEAT-SEC-WEBSOCKET-KEY",
+          "section": "11.3.1",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The key is read through the single-value accessor, which fails on a repeated field rather than taking the first or joining them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_header"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "a_sec_websocket_key_must_be_canonical_base64_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-11.3.2-MUST-NOT-REPEAT-SEC-WEBSOCKET-EXTENSIONS",
+          "section": "11.3.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "One occurrence already fails the handshake, so a repeated one cannot be accepted either; erratum 3433 relaxes this clause to allow repetition, and refusing the field outright satisfies the published text and the correction alike.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "has_header"},
+            {"path": "src/http/websocket.gleam", "symbol": "ExtensionsForbidden"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-11.3.3-MUST-NOT-REPEAT-SEC-WEBSOCKET-ACCEPT",
+          "section": "11.3.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "The accept value is read through the same single-value accessor, so two of them is a handshake failure.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_response"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_header"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-11.3.4-MUST-NOT-REPEAT-SEC-WEBSOCKET-PROTOCOL-IN-A-RESPONSE",
+          "section": "11.3.4",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "More than one subprotocol field in a response is a typed mismatch rather than a value chosen from among them.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "validate_selected_protocol"},
+            {"path": "src/http/websocket.gleam", "symbol": "SubprotocolMismatch"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "client_response_rejects_status_accept_extensions_and_protocol_drift_test"}
+          ]
+        },
+        {
+          "id": "RFC6455-11.3.5-MUST-NOT-REPEAT-SEC-WEBSOCKET-VERSION-IN-A-REQUEST",
+          "section": "11.3.5",
+          "level": "MUST NOT",
+          "roles": ["server"],
+          "summary": "The version is read through the single-value accessor too, so a repeated field fails before its value is compared.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/websocket.gleam", "symbol": "accept_handshake"},
+            {"path": "src/http/websocket.gleam", "symbol": "single_header"}
+          ],
+          "tests": [
+            {"path": "test/websocket_test.gleam", "symbol": "h1_and_extended_connect_handshakes_are_distinct_test"}
+          ]
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 18,
+        "entries": [
+          {
+            "id": 3150,
+            "section": "4.1",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": true,
+            "reason": "The document's Sec-WebSocket-Key example was produced by an encoder that left the unused bits of its final character set: AQIDBAUGBwgJCgsMDQ4PEC== where the canonical encoding is AQIDBAUGBwgJCgsMDQ4PEA==. This package generated canonical base64 already, but it validated an offered key by decoding it and checking the length, and a lenient decoder accepts both spellings, so the non-canonical form passed. The correction is what made that visible. The key is now required to re-encode to itself.",
+            "implementation": [
+              {"path": "src/http_websocket_ffi.erl", "symbol": "accept"}
+            ],
+            "tests": [
+              {"path": "test/websocket_test.gleam", "symbol": "a_sec_websocket_key_must_be_canonical_base64_test"}
+            ]
+          },
+          {
+            "id": 3433,
+            "section": "11.3.2",
+            "status": "Verified",
+            "type": "Technical",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction allows Sec-WebSocket-Extensions to appear more than once in a response, since section 4.2.2 already describes listing several extensions. This package refuses the field outright in either direction, which satisfies the published text and the correction alike: one occurrence fails the handshake, so a second cannot arise."
+          },
+          {
+            "id": 3473,
+            "section": "4.1",
+            "status": "Verified",
+            "type": "Editorial",
+            "disposition": "Accepted",
+            "behavior_impact": false,
+            "reason": "The correction clarifies that the client's connection throttle applies per address and port pair rather than per host. The throttle is a browser's connection algorithm, which this package does not run."
+          },
+          {
+            "id": 3432,
+            "section": "5.7",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction fixes an example's caption, which names a Ping response where the bytes shown are a Pong. The frame codec here writes the Pong opcode in reply to a Ping and the document's byte sequence is the one it produces, so only the caption was wrong."
+          },
+          {
+            "id": 3215,
+            "section": "5.3",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report questioned the rationale given for masking rather than the rule. The rule is implemented as written: a client masks every frame with a fresh key from a strong random source."
+          },
+          {
+            "id": 3227,
+            "section": "7.4.1",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction would widen close code 1011 from a server condition to either endpoint's. The close codes here are validated as a set rather than by role, so either endpoint may already send 1011 and the correction changes nothing."
+          },
+          {
+            "id": 3912,
+            "section": "5.2",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report concerned whether the extended payload length field is named as sixty-three or sixty-four bits. The decoder matches a zero bit followed by sixty-three, which is the reading both the name and the verifier's note describe."
+          },
+          {
+            "id": 4184,
+            "section": "5.4",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected report asked for the relationship between a frame's declared length and fragmentation to be spelled out. The decoder treats each frame's length as its own and accumulates the reassembled message separately, bounding both, which is the reading the published text carries."
+          },
+          {
+            "id": 4398,
+            "section": "4.1",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction would align the client's URI-component step with the Mixed Content specification. That step belongs to the browser algorithm this package does not run."
+          },
+          {
+            "id": 4672,
+            "section": "5.6",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report asks that the continuation opcode be listed among the data frames. The opcode table here decodes continuation as its own case and routes it to the fragment path, so both readings describe what it does."
+          },
+          {
+            "id": 4919,
+            "section": "7.4.1",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report questions whether close code 1001 should cover two distinct situations. What a caller means by a code is the caller's; this package validates the code and carries it."
+          },
+          {
+            "id": 5288,
+            "section": "5.2",
+            "status": "Reported",
+            "type": "Editorial",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report corrects how the masking key is written in the ABNF. The key is read and written as four bytes either way."
+          },
+          {
+            "id": 7608,
+            "section": "7.1.1",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report rewords the explanation of which side should hold TIME_WAIT. Closing the underlying connection belongs to the transport owner here, and the explanation binds nothing this package does."
+          },
+          {
+            "id": 5453,
+            "section": "4.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction would make the Upgrade token match case-sensitively. This package compares the token without regard to case, which is what the published text requires and what the rejection preserves."
+          },
+          {
+            "id": 5498,
+            "section": "11.2",
+            "status": "Held for Document Update",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The correction would register the upgrade token in lowercase to match the field the protocol actually requires. This package writes the lowercase keyword and accepts either spelling on receipt, so both the registration as published and as corrected are satisfied."
+          },
+          {
+            "id": 7262,
+            "section": "5.5.1",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report asks whether a close reason may carry bytes that are not UTF-8, and whether a client may display it. This package requires the reason to decode as UTF-8 and refuses it otherwise, which is the stricter of the readings offered, and it displays nothing."
+          },
+          {
+            "id": 6997,
+            "section": "4.3",
+            "status": "Reported",
+            "type": "Technical",
+            "disposition": "Reviewed",
+            "behavior_impact": false,
+            "reason": "The report asks that an extension parameter's quoted-string value not be constrained to the token grammar. No extension parameter is parsed or written here."
+          },
+          {
+            "id": 8491,
+            "section": "9.1",
+            "status": "Rejected",
+            "type": "Technical",
+            "disposition": "Rejected",
+            "behavior_impact": false,
+            "reason": "The rejected correction concerned a separator in an extension-list example. No extension list is parsed here."
+          }
+        ]
+      }
+    },
     {
       "id": "RFC6797",
       "title": "HTTP Strict Transport Security (HSTS)",
