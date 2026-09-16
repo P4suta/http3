@@ -4004,6 +4004,105 @@ pub fn rfc9298_datagram_capsule_admission_discards_before_payload_test() -> Nil 
     == masque.UdpReceiverSnapshot(True, 1, 1, 1, 1, 1)
 }
 
+pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
+  // RFC 9484 section 4.8: an Internet Protocol Number names both an upper layer
+  // and an IPv6 extension header, so an endpoint that scopes by that number
+  // walks the chain of extensions and matches the outermost non-extension
+  // number. Reading the Next Header field of the fixed header instead matches
+  // the first extension, which is the wrong end of the chain in both
+  // directions: traffic the rule allows is refused, and traffic it does not
+  // allow is forwarded under the extension's own number.
+  let source = <<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>
+  let destination = <<0x20, 0x01, 0x0d, 0xb8, 0:size(88), 1>>
+  let prefix = masque.IpPrefix(masque.Ipv6(source), 32)
+  // Hop-by-Hop Options carrying UDP: Next Header 17, Hdr Ext Len 0, then six
+  // octets of Pad6 to fill the fixed eight-octet minimum.
+  let hop_by_hop = <<17, 0, 1, 4, 0, 0, 0, 0>>
+  let udp = <<1000:size(16), 2000:size(16), 8:size(16), 0:size(16)>>
+  let extended = <<
+    6:4, 0:8, 0:20, 16:size(16), 0, 64, source:bits, destination:bits,
+    hop_by_hop:bits, udp:bits,
+  >>
+
+  let assert Ok(empty) = masque.deny_all(limits())
+  let assert Ok(upper) = masque.allow_ip_destination(empty, prefix, Some(17))
+  let assert Ok(forwarded) = masque.forward_ip_packet(upper, extended, limits())
+  let assert <<_before:bytes-size(7), hop_limit, _after:bits>> = forwarded
+  assert hop_limit == 63
+
+  // The extension's own number is not what the packet carries, so a rule
+  // written for Hop-by-Hop Options does not admit the UDP inside it.
+  let assert Ok(extension) = masque.allow_ip_destination(empty, prefix, Some(0))
+  assert masque.forward_ip_packet(extension, extended, limits())
+    == Error(masque.DestinationForbidden)
+
+  // The walk continues through more than one extension.
+  let destination_options = <<6, 0, 1, 4, 0, 0, 0, 0>>
+  let tcp = <<1000:size(16), 2000:size(16), 0:size(64), 0x50, 0x02, 0:size(32)>>
+  let chained = <<
+    6:4,
+    0:8,
+    0:20,
+    36:size(16),
+    0,
+    64,
+    source:bits,
+    destination:bits,
+    <<60, 0, 1, 4, 0, 0, 0, 0>>:bits,
+    destination_options:bits,
+    tcp:bits,
+  >>
+  let assert Ok(over_tcp) = masque.allow_ip_destination(empty, prefix, Some(6))
+  assert masque.forward_ip_packet(over_tcp, chained, limits())
+    != Error(masque.DestinationForbidden)
+
+  // A chain whose length field runs past the packet cannot be resolved, so the
+  // packet is refused rather than matched against whatever was reached.
+  let truncated = <<
+    6:4,
+    0:8,
+    0:20,
+    8:size(16),
+    0,
+    64,
+    source:bits,
+    destination:bits,
+    <<17, 3, 0, 0, 0, 0, 0, 0>>:bits,
+  >>
+  assert masque.forward_ip_packet(upper, truncated, limits())
+    == Error(masque.InvalidIpPacket)
+
+  // The walk is bounded rather than led by the packet. Eight extensions, the
+  // number of positions RFC 8200 section 4.1 lays out, still resolve; a ninth
+  // is refused instead of walked.
+  let padding = <<0, 0, 1, 4, 0, 0, 0, 0>>
+  let last = <<17, 0, 1, 4, 0, 0, 0, 0>>
+  let eight =
+    list.fold([1, 2, 3, 4, 5, 6, 7], last, fn(chain, _) {
+      <<padding:bits, chain:bits>>
+    })
+  let at_the_bound = <<
+    6:4, 0:8, 0:20, 72:size(16), 0, 64, source:bits, destination:bits,
+    eight:bits, udp:bits,
+  >>
+  let assert Ok(_) = masque.forward_ip_packet(upper, at_the_bound, limits())
+
+  let past_the_bound = <<
+    6:4, 0:8, 0:20, 80:size(16), 0, 64, source:bits, destination:bits,
+    padding:bits, eight:bits, udp:bits,
+  >>
+  assert masque.forward_ip_packet(upper, past_the_bound, limits())
+    == Error(masque.InvalidIpPacket)
+
+  // A packet with no extension headers at all still matches its own number.
+  let plain = <<
+    6:4, 0:8, 0:20, 8:size(16), 17, 64, source:bits, destination:bits, udp:bits,
+  >>
+  let assert Ok(_) = masque.forward_ip_packet(upper, plain, limits())
+  assert masque.forward_ip_packet(extension, plain, limits())
+    == Error(masque.DestinationForbidden)
+}
+
 pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
   // RFC 9484 section 4.6, as corrected by erratum 8444: a "target" or
   // "ipproto" left at the wildcard is percent-encoded, because RFC 6570 simple

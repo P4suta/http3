@@ -361,3 +361,8 @@
   erratum 8444: the path was expanded with a bare `*`, which RFC 6570 simple
   expansion does not produce, so a request scoped to everything named a
   different path than the one the proxy's template matches.
+- Walked the IPv6 extension header chain before matching a forwarded packet
+  against a CONNECT-IP destination rule, which RFC 9484 section 4.8 requires:
+  the fixed header's Next Header field was read as the packet's protocol, so a
+  rule naming an upper layer refused traffic carrying it behind an extension,
+  and a rule naming an extension admitted whatever that extension carried.

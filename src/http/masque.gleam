@@ -4389,7 +4389,7 @@ pub fn forward_ip_packet(
     return: Error(DatagramLimitExceeded(limits.maximum_datagram_bytes)),
   )
   use parsed <- result.try(parse_ip_packet(packet))
-  let #(destination, protocol, hop_limit) = packet_routing(parsed)
+  use #(destination, protocol, hop_limit) <- result.try(packet_routing(parsed))
   use <- bool.guard(
     when: !destination_allowed(policy.destinations, destination, protocol),
     return: Error(DestinationForbidden),
@@ -5097,18 +5097,80 @@ fn parse_ipv4(
   }
 }
 
-fn packet_routing(packet: ParsedPacket) -> #(IpAddress, Int, Int) {
+fn packet_routing(
+  packet: ParsedPacket,
+) -> Result(#(IpAddress, Int, Int), Error) {
   case packet {
-    ParsedIpv4(_, _, _, _, _, hop, protocol, _, destination, _, _) -> #(
-      Ipv4(destination),
-      protocol,
-      hop,
-    )
-    ParsedIpv6(_, _, _, next_header, hop, _, destination, _) -> #(
-      Ipv6(destination),
-      next_header,
-      hop,
-    )
+    ParsedIpv4(_, _, _, _, _, hop, protocol, _, destination, _, _) ->
+      Ok(#(Ipv4(destination), protocol, hop))
+    ParsedIpv6(_, _, _, next_header, hop, _, destination, payload) -> {
+      use protocol <- result.map(upper_layer_protocol(
+        next_header,
+        payload,
+        maximum_extension_headers,
+      ))
+      #(Ipv6(destination), protocol, hop)
+    }
+  }
+}
+
+/// The Internet Protocol Numbers that name an IPv6 extension header.
+///
+/// RFC 8200 section 4.1 lists them: Hop-by-Hop Options, Routing, Fragment,
+/// Authentication, Destination Options, and the three later headers that reuse
+/// the same shape. Encapsulating Security Payload is absent on purpose: what
+/// follows it is encrypted, so it is the outermost number a scoping rule can
+/// see rather than something to walk past.
+const extension_header_numbers = [0, 43, 44, 51, 60, 135, 139, 140]
+
+/// The most extension headers one packet may carry before it is refused.
+///
+/// RFC 8200 section 4.1 gives a recommended order with eight positions. The
+/// chain is walked once for every forwarded packet, so its length is fixed here
+/// rather than by the packet.
+const maximum_extension_headers = 8
+
+/// Walk the extension chain to the outermost non-extension protocol number.
+///
+/// RFC 9484 section 4.8 requires this of anything that scopes or routes by
+/// Internet Protocol Number: the fixed header's Next Header field names the
+/// first extension, not what the packet carries. A chain that cannot be walked
+/// to its end resolves to no number at all, because matching a rule against a
+/// number the walk merely reached would admit whatever the unread remainder
+/// turned out to be.
+fn upper_layer_protocol(
+  next_header: Int,
+  rest: BitArray,
+  remaining: Int,
+) -> Result(Int, Error) {
+  use <- bool.guard(
+    when: !list.contains(extension_header_numbers, next_header),
+    return: Ok(next_header),
+  )
+  use <- bool.guard(when: remaining <= 0, return: Error(InvalidIpPacket))
+  use #(following, length) <- result.try(extension_header(next_header, rest))
+  use tail <- result.try(
+    bit_array.slice(rest, length, bit_array.byte_size(rest) - length)
+    |> result.replace_error(InvalidIpPacket),
+  )
+  upper_layer_protocol(following, tail, remaining - 1)
+}
+
+/// Read one extension header's own Next Header field and its length in bytes.
+///
+/// The Fragment header is always eight bytes and its second octet is reserved.
+/// The Authentication header counts in four-byte units excluding the first two,
+/// and every other extension counts in eight-byte units excluding the first
+/// one; RFC 8200 section 4 and RFC 4302 section 2.2 give both forms.
+fn extension_header(header: Int, rest: BitArray) -> Result(#(Int, Int), Error) {
+  case rest {
+    <<following, length, _remainder:bits>> ->
+      case header {
+        44 -> Ok(#(following, 8))
+        51 -> Ok(#(following, { length + 2 } * 4))
+        _ -> Ok(#(following, { length + 1 } * 8))
+      }
+    _ -> Error(InvalidIpPacket)
   }
 }
 
