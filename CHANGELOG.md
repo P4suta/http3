@@ -363,3 +363,9 @@
   lifetime was kept for the session default instead. Dates are read with the
   section 5.1.1 algorithm, `Max-Age` still takes precedence, and the date is
   turned into a remaining duration at parse time so the store stays monotonic.
+- Reported a send held by an exhausted endpoint memory grant as a transient
+  endpoint overload even once the stream's own buffer ceiling had filled behind
+  it. The tie between the two exhausted bounds went to the ceiling, so the
+  cause a caller was told depended on which of them reached zero first -- an
+  ordering it neither chose nor could observe, and one that reported a bare
+  operation timeout on a slow host where the ceiling filled first.
