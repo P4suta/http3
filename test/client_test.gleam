@@ -832,6 +832,70 @@ pub fn enabled_cache_reuses_only_an_explicitly_fresh_get_response_test() -> Nil 
   Nil
 }
 
+pub fn an_unsafe_request_drops_the_cached_response_for_its_target_test() -> Nil {
+  // RFC 9111 section 4.4: a non-error answer to an unsafe request invalidates
+  // the target URI. Without that, the read after a write serves what the write
+  // replaced.
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let cacheable = fn(payload: String) {
+    <<
+      "HTTP/1.1 200 OK\r\n":utf8,
+      "Cache-Control: max-age=60\r\n":utf8,
+      "Content-Length: 5\r\nConnection: close\r\n\r\n":utf8,
+      payload:utf8,
+    >>
+  }
+  let server_task =
+    http_test_support.start_task(fn() {
+      // The first read, which is cached.
+      use first <- result.try(transport.accept(listener, 1000))
+      use _ <- result.try(transport.read(first, 4096, 1000))
+      use _ <- result.try(transport.send(first, cacheable("aaaaa")))
+      use _ <- result.try(transport.close(first))
+
+      // The write, whose answer invalidates that entry.
+      use second <- result.try(transport.accept(listener, 1000))
+      use _ <- result.try(transport.read(second, 4096, 1000))
+      use _ <- result.try(
+        transport.send(second, <<
+          "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n":utf8,
+        >>),
+      )
+      use _ <- result.try(transport.close(second))
+
+      // The read after it, which only happens if the entry went.
+      use third <- result.try(transport.accept(listener, 1000))
+      use _ <- result.try(transport.read(third, 4096, 1000))
+      use _ <- result.try(transport.send(third, cacheable("bbbbb")))
+      transport.close(third)
+    })
+  let assert Ok(config) =
+    client.defaults()
+    |> client.allow_plain_http
+    |> client.enable_cache(client.StoreLimits(
+      maximum_entries: 4,
+      maximum_bytes: 4096,
+    ))
+  let assert Ok(running) = client.start(config)
+  let read = request_for(port, "/thing", <<>>)
+
+  let assert Ok(first) = client.fetch(running, read)
+  let assert Ok(#(<<"aaaaa":utf8>>, [])) = body.read_all(first.body, 5)
+
+  let write = request.Request(..read, method: gleam_http.Post)
+  let assert Ok(written) = client.fetch(running, write)
+  assert written.status == 204
+
+  let assert Ok(third) = client.fetch(running, read)
+  let assert Ok(#(<<"bbbbb":utf8>>, [])) = body.read_all(third.body, 5)
+
+  let assert Ok(Nil) = http_test_support.await_task(server_task)
+  let assert Ok(Nil) = client.close(running)
+  let assert Ok(Nil) = transport.stop(listener)
+  Nil
+}
+
 pub fn hsts_is_enabled_with_a_finite_store_and_can_be_disabled_test() -> Nil {
   let config = client.defaults()
   assert client.hsts_policy(config)

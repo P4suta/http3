@@ -349,3 +349,10 @@
   `Age` it had arrived with was served unchanged. The field now counts the time
   held from the age the response already had, and replaces the stored one
   rather than joining it.
+- Invalidated a cached response when an unsafe request to the same target
+  succeeded, which RFC 9111 section 4.4 requires: a POST, PUT, or DELETE left
+  the stored copy in place, so the read after a write served what the write had
+  replaced until the entry expired on its own.
+- Honoured `Cache-Control: no-store` on a request, which RFC 9111 section
+  5.2.1.5 requires: the directive was unread, so a response to a request that
+  forbade storing anything about it was stored like any other.
