@@ -24,6 +24,8 @@ pub type Entry {
     headers: List(#(String, String)),
     bytes: BitArray,
     trailers: body.Headers,
+    stored_at: Int,
+    arrival_age_seconds: Int,
     expires_at: Int,
     retained_bytes: Int,
   )
@@ -81,6 +83,8 @@ pub fn entry(
         headers: incoming.headers,
         bytes:,
         trailers:,
+        stored_at: now_milliseconds,
+        arrival_age_seconds: option.unwrap(response_age(incoming.headers), 0),
         expires_at: now_milliseconds + seconds * 1000,
         retained_bytes:,
       ))
@@ -90,10 +94,22 @@ pub fn entry(
 }
 
 /// Recreate an independent standard response from one retained entry.
-pub fn response(entry: Entry) -> Response(body.Body) {
+///
+/// RFC 9111 section 4 requires a stored response served without validation to
+/// carry an Age header field. It counts from the age the response already had
+/// when it arrived, so a chain of caches accumulates rather than resets, and it
+/// replaces whatever Age was stored rather than joining it as a second value.
+pub fn response(entry: Entry, now_milliseconds: Int) -> Response(body.Body) {
+  let held = int.max(0, now_milliseconds - entry.stored_at) / 1000
+  let age = entry.arrival_age_seconds + held
   Response(
     status: entry.status,
-    headers: entry.headers,
+    headers: [
+      #("age", int.to_string(age)),
+      ..list.filter(entry.headers, fn(field) {
+        string.lowercase(field.0) != "age"
+      })
+    ],
     body: body.from_bytes_with_trailers(entry.bytes, entry.trailers),
   )
 }
@@ -132,6 +148,8 @@ pub fn from_persisted(
         headers:,
         bytes:,
         trailers:,
+        stored_at: now_milliseconds,
+        arrival_age_seconds: option.unwrap(response_age(headers), 0),
         expires_at: now_milliseconds + expires_in_milliseconds,
         retained_bytes:,
       ))

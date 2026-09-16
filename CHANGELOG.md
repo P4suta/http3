@@ -343,3 +343,9 @@
 - Refused a U-label host as an HSTS host for the same reason a U-label service
   identity is refused: nothing here implements IDNA, so a policy keyed on one
   would be stored under a name no later request could match.
+- Generated an `Age` header field on a response served from the cache, which
+  RFC 9111 section 4 requires and which was absent: a stored response went back
+  to the caller looking as fresh as the moment it was fetched, and a stale
+  `Age` it had arrived with was served unchanged. The field now counts the time
+  held from the age the response already had, and replaces the stored one
+  rather than joining it.

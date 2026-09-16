@@ -2479,7 +2479,8 @@ fn cached_response(
           key,
         )
       {
-        Ok(entry) -> Some(cache.response(entry))
+        Ok(entry) ->
+          Some(cache.response(entry, transport.monotonic_millisecond()))
         Error(_) -> None
       }
     _, _ -> None
