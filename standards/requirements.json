@@ -22950,7 +22950,1412 @@
         "entries": []
       }
     },
-    {"id":"RFC9325","title":"Recommendations for Secure Use of Transport Layer Security (TLS) and Datagram Transport Layer Security (DTLS)","map_complete":false,"evidence":["packages/quic_core/src/quic_core/config.gleam","packages/quic_core/test/public_api_test.gleam"]},
+    {
+      "id": "RFC9325",
+      "title": "Recommendations for Secure Use of Transport Layer Security (TLS) and Datagram Transport Layer Security (DTLS)",
+      "map_complete": false,
+      "evidence": [
+        "src/http_transport_ffi.erl",
+        "packages/quic_core/src/quic_core/internal/tls/engine.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/hello.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/authentication.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/resumption.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/pre_shared_key.gleam",
+        "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam",
+        "packages/quic_core/src/quic_core/internal/aead_usage.gleam",
+        "packages/quic_core/src/quic_core/internal/key_phase.gleam",
+        "packages/quic_core/src/quic_core/server.gleam",
+        "src/http/internal/hsts.gleam",
+        "src/http/internal/alt_svc.gleam",
+        "test/tls_transport_test.gleam",
+        "test/client_test.gleam",
+        "packages/quic_core/test/tls_engine_test.gleam",
+        "packages/quic_core/test/tls_authentication_test.gleam",
+        "packages/quic_core/test/tls_key_exchange_test.gleam",
+        "packages/quic_core/test/tls_session_ticket_test.gleam",
+        "packages/quic_core/test/tls_resumption_test.gleam",
+        "packages/quic_core/test/aead_usage_test.gleam",
+        "packages/quic_core/test/key_phase_test.gleam",
+        "packages/quic_core/test/tls_hello_test.gleam",
+        "packages/quic_core/test/tls_anti_replay_test.gleam"
+      ],
+      "source": {
+        "document_url": "https://www.rfc-editor.org/rfc/rfc9325.txt",
+        "document_sha256": "e3475381d056bde1eed65252954cce68250168454387f6799b38660806f215bc",
+        "errata_url": "https://errata.rfc-editor.org/search/?rfc_number=9325",
+        "reviewed_on": "2026-08-30"
+      },
+      "normative_inventory": {
+        "scope": "Atomic uppercase BCP 14 mandatory and advisory clauses; MAY and OPTIONAL are excluded.",
+        "expected_total": 105,
+        "level_counts": {
+          "MUST NOT": 13,
+          "MUST": 37,
+          "SHOULD": 29,
+          "SHOULD NOT": 18,
+          "SHALL": 1,
+          "RECOMMENDED": 6,
+          "REQUIRED": 1
+        }
+      },
+      "requirements": [
+        {
+          "id": "RFC9325-3.1.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-SSL-VERSION",
+          "section": "3.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "SSL 2 is not reachable: both option builders pin the negotiable set to TLS 1.3 and TLS 1.2, and the version actually reached is read back and refused if it is anything else.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_version"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-SSL-VERSION-2",
+          "section": "3.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "SSL 3 is outside the same pinned set, and the readback that follows a handshake accepts only 1.2 or 1.3.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_version"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-TLS-VERSION-RFC",
+          "section": "3.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.0 is below the pinned floor on both sides and cannot be selected; quic_core's own handshake refuses any legacy version field that is not the fixed TLS 1.2 placeholder and negotiates 1.3 through supported_versions.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "InvalidLegacyVersion"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_hello_test.gleam", "symbol": "rejects_malformed_tls_hello_bodies_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-TLS-VERSION-RFC-2",
+          "section": "3.1.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.1 is below the same floor, by the same mechanism.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "InvalidLegacyVersion"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_hello_test.gleam", "symbol": "rejects_malformed_tls_hello_bodies_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-IMPLEMENTATIONS-SUPPORT-TLS-RFC",
+          "section": "3.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.2 is in the negotiable set on the TCP paths, so a peer that offers nothing newer still completes a handshake.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_version"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-SHOULD-IMPLEMENTATIONS-SUPPORT-TLS-RFC-IMPLEMENTED-PREFER-NEGOTIATE",
+          "section": "3.1.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.3 is supported on every path: it is in the negotiable set on the TCP paths and it is the only version quic_core implements.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-IMPLEMENTATIONS-SUPPORT-TLS-RFC-IMPLEMENTED-PREFER-NEGOTIATE",
+          "section": "3.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.3 is preferred over TLS 1.2: it is first in the version list both sides offer, and the live loopback handshake settles on 1.3 with both endpoints reporting it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "tls_version"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-EXTENT-IMPLEMENTATION-SUPPORTS-TLS-EVEN-DEFAULTS-TLS-FOLLOW-",
+          "section": "3.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "TLS 1.2 is offered here, so this document's TLS 1.2 rules bind: the cipher list is pinned to the forward-secret AEAD suites rather than inherited, which is what section 4.1 asks of a 1.2 peer, and the version floor excludes every deprecated version.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-NEW-TRANSPORT-PROTOCOLS-INTEGRATE-TLS-DTLS-HANDSHAKE-PROTOCO",
+          "section": "3.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "quic_core is the transport that integrates the handshake here, and it integrates TLS 1.3 only: the engine has no 1.2 state machine, the key schedule is the 1.3 one, and the cipher suites are the three QUIC defines.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_server"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "CipherSuite"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.1.1-MUST-NEW-APPLICATION-PROTOCOLS-EMPLOY-TLS-DTLS-CHANNEL-SESSION-EN",
+          "section": "3.1.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "This binds the designer of a new application protocol.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever specifies a new application protocol that employs TLS. This package specifies none: it implements HTTP/1.1, HTTP/2, and HTTP/3, each of which already says how it uses TLS."
+        },
+        {
+          "id": "RFC9325-3.1.2-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-DTLS-VERSION-RFC",
+          "section": "3.1.2",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "There is no DTLS here to negotiate a version for.",
+          "disposition": "NotApplicable",
+          "reason": "Neither package implements DTLS. QUIC secures its datagrams with TLS 1.3 carried in CRYPTO frames rather than with a DTLS record layer, and the TCP paths run TLS over a stream. There is no DTLS version to negotiate here, and no DTLS record layer to configure."
+        },
+        {
+          "id": "RFC9325-3.1.2-MUST-IMPLEMENTATIONS-SUPPORT-DTLS-RFC",
+          "section": "3.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "DTLS 1.2 is not implemented.",
+          "disposition": "NotApplicable",
+          "reason": "Neither package implements DTLS. QUIC secures its datagrams with TLS 1.3 carried in CRYPTO frames rather than with a DTLS record layer, and the TCP paths run TLS over a stream. There is no DTLS version to negotiate here, and no DTLS record layer to configure."
+        },
+        {
+          "id": "RFC9325-3.1.2-SHOULD-IMPLEMENTATIONS-SUPPORT-DTLS-RFC-IMPLEMENTED-PREFER-NEGOTIAT",
+          "section": "3.1.2",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "DTLS 1.3 is not implemented.",
+          "disposition": "NotApplicable",
+          "reason": "Neither package implements DTLS. QUIC secures its datagrams with TLS 1.3 carried in CRYPTO frames rather than with a DTLS record layer, and the TCP paths run TLS over a stream. There is no DTLS version to negotiate here, and no DTLS record layer to configure."
+        },
+        {
+          "id": "RFC9325-3.1.2-MUST-IMPLEMENTATIONS-SUPPORT-DTLS-RFC-IMPLEMENTED-PREFER-NEGOTIAT",
+          "section": "3.1.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "There is no DTLS version preference to express.",
+          "disposition": "NotApplicable",
+          "reason": "Neither package implements DTLS. QUIC secures its datagrams with TLS 1.3 carried in CRYPTO frames rather than with a DTLS record layer, and the TCP paths run TLS over a stream. There is no DTLS version to negotiate here, and no DTLS record layer to configure."
+        },
+        {
+          "id": "RFC9325-3.1.3-MUST-NOT-TLS-DTLS-CLIENTS-FALL-BACK-EARLIER-TLS-VERSIONS-SINCE-THOSE-",
+          "section": "3.1.3",
+          "level": "MUST NOT",
+          "roles": ["client"],
+          "summary": "There is no version-fallback retry: a failed handshake is a typed error the caller sees, not a signal to dial again with a lower floor, and the floor itself is fixed in the option builder rather than computed per attempt.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.2-MUST-WHEN-PROTOCOL-DEFINES-BOTH-DYNAMIC-UPGRADE-METHOD-SEPARATE-T",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "HTTP's TLS-only method is the https scheme, and it is supported: an https request is dialled over TLS from the first byte, and a redirect that would move it to http is refused rather than followed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/redirect.gleam", "symbol": "follow"},
+            {"path": "src/http/internal/redirect.gleam", "symbol": "Destination"},
+            {"path": "src/http/client.gleam", "symbol": "fetch"}
+          ],
+          "tests": [
+            {"path": "test/redirect_test.gleam", "symbol": "downgrade_userinfo_and_non_http_locations_are_rejected_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.2-MUST-WHEN-PROTOCOL-DEFINES-BOTH-DYNAMIC-UPGRADE-METHOD-SEPARATE-T-2",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Which scheme a deployment asks for is the administrator's.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the administrator or the service operator who runs a deployment, not the code that is deployed. This package is a library: each connection is configured by its caller, and it operates no service, no domain, and no fleet of its own."
+        },
+        {
+          "id": "RFC9325-3.2-MUST-WHEN-PROTOCOL-SUPPORTS-ONLY-DYNAMIC-UPGRADE-METHOD-IMPLEMENT",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "HTTP is not a protocol whose only path to TLS is a dynamic upgrade.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a protocol that reaches TLS by upgrading a cleartext connection. HTTP defines a TLS-only method of its own, the https scheme, which is what this client dials and what this server serves; the clause's premise, that only a dynamic upgrade method exists, does not hold."
+        },
+        {
+          "id": "RFC9325-3.2-MUST-WHEN-PROTOCOL-SUPPORTS-ONLY-DYNAMIC-UPGRADE-METHOD-IMPLEMENT-2",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The same premise does not hold, and the obligation this half states falls on the administrator besides.",
+          "disposition": "NotApplicable",
+          "reason": "This binds a protocol that reaches TLS by upgrading a cleartext connection. HTTP defines a TLS-only method of its own, the https scheme, which is what this client dials and what this server serves; the clause's premise, that only a dynamic upgrade method exists, does not hold."
+        },
+        {
+          "id": "RFC9325-3.2-MUST-HTTP-CLIENT-SERVER-IMPLEMENTATIONS-INTENDED-WORLD-WIDE-WEB-S",
+          "section": "3.2",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Strict-Transport-Security is parsed, bounded, and acted on: a verified policy upgrades a later cleartext request for the same host before it is dialled, an IP literal is never recorded as an HSTS host, and only the first field line is read.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/hsts.gleam", "symbol": "parse"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "applies"},
+            {"path": "src/http/internal/hsts.gleam", "symbol": "from_persisted"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "verified_hsts_policy_upgrades_a_later_cleartext_uri_test"},
+            {"path": "test/client_test.gleam", "symbol": "hsts_is_enabled_with_a_finite_store_and_can_be_disabled_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.2-SHOULD-WEB-SERVERS-HSTS-INDICATE-THEY-WILLING-ACCEPT-TLS-ONLY-CLIEN",
+          "section": "3.2",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Whether a deployment advertises HSTS, and with what lifetime, is the operator's decision, expressed as a response field the handler sets.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the administrator or the service operator who runs a deployment, not the code that is deployed. This package is a library: each connection is configured by its caller, and it operates no service, no domain, and no fleet of its own."
+        },
+        {
+          "id": "RFC9325-3.3-SHOULD-NOT-ORDER-HELP-PREVENT-COMPRESSION-RELATED-ATTACKS-SUMMARIZED-SE",
+          "section": "3.3",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "TLS-level compression is not a feature either stack here has.",
+          "disposition": "NotApplicable",
+          "reason": "TLS-level compression is not implemented on either path. The platform's ssl application offers no compression method to negotiate, so the TCP paths cannot enable one, and TLS 1.3, which is what quic_core implements, removed record compression from the protocol. There is no setting here that could turn it on."
+        },
+        {
+          "id": "RFC9325-3.4-MUST-WHEN-RESUMPTION-INFORMATION-AUTHENTICATED-ENCRYPTED-PREVENT-",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A ticket leaves the server as AES-256-GCM ciphertext over a fresh nonce with a fixed associated-data label, so its claims are both hidden and authenticated; a tampered or cross-origin ticket does not open.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "issue"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "open"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_session_ticket_test.gleam", "symbol": "protects_and_restores_bound_resumption_ticket_test"},
+            {"path": "packages/quic_core/test/tls_session_ticket_test.gleam", "symbol": "rejects_tampered_expired_or_cross_origin_tickets_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-MUST-STRONG-CIPHER-WHEN-ENCRYPTING-TICKET-LEAST-STRONG-MAIN-TLS-C",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The ticket cipher is AES-256-GCM whatever the connection negotiated, so it is never weaker than the suite protecting the session it resumes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "issue"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_session_ticket_test.gleam", "symbol": "protects_and_restores_bound_resumption_ticket_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-MUST-TICKET-ENCRYPTION-KEYS-CHANGED-REGULARLY-E-G-ONCE-EVERY-WEEK",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "A ticket key is a rotatable ring rather than a constant: rotation installs a new current key atomically and is refused if the new key repeats the one it replaces. How often a deployment rotates is its own schedule; that it can, without dropping the connections mid-flight, is what the server provides.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "key_ring"},
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "rotate_key_ring"},
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "with_operational_keys"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "previous_ticket_key_resumes_during_bounded_rotation_window_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-MUST-OLD-TICKET-ENCRYPTION-KEYS-DESTROYED-END-VALIDITY-PERIOD",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The ring holds the current key and at most one predecessor, so the second rotation drops the oldest key entirely: there is no growing history a stolen key could be drawn from.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "rotate_key_ring"},
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "key_ring"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_resumption_test.gleam", "symbol": "previous_ticket_key_resumes_during_bounded_rotation_window_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-MUST-SIMILAR-REASONS-SESSION-TICKET-VALIDITY-LIMITED-REASONABLE-D",
+          "section": "3.4",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Ticket lifetime is bounded at issue and again at storage: a lifetime above the seven-day ceiling is refused rather than clamped, and a ticket past its lifetime does not open.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "issue"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "store"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "ticket_age_is_valid"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/session_ticket.gleam", "symbol": "is_usable"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_session_ticket_test.gleam", "symbol": "rejects_tampered_expired_or_cross_origin_tickets_test"},
+            {"path": "packages/quic_core/test/tls_session_ticket_test.gleam", "symbol": "enforces_quic_early_data_and_ticket_bounds_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-SHOULD-NOT-THUS-PREVENT-ATTACK-WHERE-SERVER-S-TICKET-ENCRYPTION-KEY-STO",
+          "section": "3.4",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "No TLS 1.2 server here resumes anything: the server option builder disables session reuse outright, so there is no old session for a stolen 1.2 ticket key to reopen.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-SHOULD-SECTION-RFC-RECOMMENDS-CLIENTS-SEND-KEY-SHARE-WHEN-INITIATIN",
+          "section": "3.4",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A resuming client sends a key share in the same ClientHello as its pre-shared key, so the exchange can be completed with fresh key material rather than from the ticket alone.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "start_client_resuming"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_offer"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "client_extensions"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_psk_resumption_and_accepts_replay_checked_early_data_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.4-SHOULD-ORDER-GAIN-FORWARD-SECRECY-DOCUMENT-RECOMMENDS-SERVER-IMPLEM",
+          "section": "3.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "psk_dhe_ke is the only pre-shared-key exchange mode offered or accepted, so every resumption completes an ephemeral exchange and carries its own forward secrecy; psk_ke is decodable for the wire but never selected.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/pre_shared_key.gleam", "symbol": "PskDheKe"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/pre_shared_key.gleam", "symbol": "encode_modes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "select"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "fresh_client_advertises_psk_dhe_for_future_tickets_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.5-MUST-TLS-CLIENTS-SERVERS-IMPLEMENT-RENEGOTIATION-INFO-EXTENSION-D",
+          "section": "3.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Which extensions a TLS 1.2 handshake carries is decided inside the handshake implementation.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-3.5-MUST-TLS-CLIENTS-SEND-RENEGOTIATION-INFO-CLIENT-HELLO",
+          "section": "3.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "The TLS 1.2 ClientHello is not built here.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-3.5-MUST-SERVER-DOES-ACKNOWLEDGE-EXTENSION-CLIENT-GENERATE-FATAL-HAND",
+          "section": "3.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "Sending a fatal alert on an unacknowledged extension is the 1.2 handshake's own decision.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-3.5-MUST-ADDRESS-ATTACK-TLS-IMPLEMENTATIONS-SUPPORT-EXTENDED-MASTER-S",
+          "section": "3.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "extended_master_secret is a TLS 1.2 handshake extension, negotiated by the 1.2 implementation.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-3.6-SHOULD-MULTIPLEXED-PROTOCOLS-FOLLOW-ADVICE-PROVIDED-HTTP-SECTION-RF",
+          "section": "3.6",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "RFC 9113 section 9.2.3 forbids asking a multiplexed connection for a certificate after the handshake, and nothing here does: post-handshake authentication is never requested on the TCP paths, and client authentication in quic_core happens inside the handshake through a CertificateRequest the server sends with its own flight or not at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "confirm_client_handshake"}
+          ],
+          "tests": [
+            {"path": "test/http2_exchange_test.gleam", "symbol": "authenticated_h2_round_trip_uses_incremental_wire_state_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.7-MUST-TLS-IMPLEMENTATIONS-SUPPORT-SERVER-NAME-INDICATION-SNI-EXTEN",
+          "section": "3.7",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "SNI is sent on every dialled connection and read on every accepted one: the TCP client names the host it asked for, and quic_core's server matches the presented name against its credentials, exact names before wildcards, with the pattern grammar enforced.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "valid_server_name_pattern"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_name_matches"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "server_name_patterns_are_strict_and_single_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.7-SHOULD-NOT-ORDER-PREVENT-ATTACKS-DESCRIBED-ALPACA-SERVER-DOES-RECOGNIZE",
+          "section": "3.7",
+          "level": "SHOULD NOT",
+          "roles": ["server"],
+          "summary": "A server that recognizes no credential for the presented name continues with its default credential instead of stopping.",
+          "disposition": "DocumentedDeviation",
+          "reason": "An unrecognized server name selects no alternative credential and the handshake proceeds with the server's default one, which the client then either accepts or refuses on identity grounds. A server holding one credential has no other behaviour available, and aborting would turn every name the operator has not enumerated into a handshake failure rather than a certificate mismatch the client reports precisely. The cross-protocol attack this clause is aimed at is closed on the other axis instead: ALPN is required on every connection here, a mismatch is a handshake failure, and the server's own protocol list is authoritative.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_name_matches"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"},
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.7-SHOULD-ORDER-PREVENT-ATTACKS-DESCRIBED-ALPACA-SERVER-DOES-RECOGNIZE",
+          "section": "3.7",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "No unrecognized_name alert is generated, because the handshake is not aborted on an unrecognized name.",
+          "disposition": "DocumentedDeviation",
+          "reason": "This is the positive half of the same sentence: the alert exists only for the abort this server does not perform. The reasoning and the compensating control are the ones recorded on the SHOULD NOT half of the clause, and the alert would be added with it rather than on its own.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_name_matches"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.7-SHOULD-SERVER-UNDERSTOOD-CLIENTHELLO-EXTENSION-BUT-DOES-RECOGNIZE-S",
+          "section": "3.7",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "RFC 6066's own text offers two actions, aborting or continuing, and this server takes the second: it understands the extension, matches it against its credentials, and continues with the default credential when no alternative matches.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_name_matches"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "valid_server_name_pattern"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "server_name_patterns_are_strict_and_single_label_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.7-SHOULD-CLIENTS-ABORT-HANDSHAKE-SERVER-ACKNOWLEDGES-SNI-EXTENSION-BU",
+          "section": "3.7",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A certificate that does not match the name the client dialled ends the connection with a typed error before any application byte is written; the TCP path uses the HTTPS match function over the name it sent, and quic_core verifies the service identity itself.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "hostname_mismatch_fails_closed_with_a_typed_error_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.8-MUST-TLS-IMPLEMENTATIONS-BOTH-CLIENT-SERVER-SIDE-SUPPORT-APPLICAT",
+          "section": "3.8",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "ALPN is carried on both sides of every path: the TCP client advertises its list and the TCP server its preference order, and quic_core negotiates it in the handshake and reports the selected protocol to the connection.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_application_protocol"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_application_protocol"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"},
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.8-SHALL-EVENT-SERVER-SUPPORTS-NO-PROTOCOLS-CLIENT-ADVERTISES-THEN-SE",
+          "section": "3.8",
+          "level": "SHALL",
+          "roles": ["server"],
+          "summary": "A client list that shares nothing with the server's ends the handshake with no_application_protocol: quic_core raises the typed error and closes with the transport code RFC 7301's alert maps to.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "NoApplicationProtocol"},
+            {"path": "packages/quic_core/src/quic_core/internal/connection_state.gleam", "symbol": "no_application_protocol_error_code"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.8-SHOULD-CLIENTS-ABORT-HANDSHAKE-SERVER-ACKNOWLEDGES-ALPN-EXTENSION-B",
+          "section": "3.8",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "A server that acknowledges ALPN and names a protocol outside the client's list fails the handshake rather than returning a connection; the separate case where a server acknowledges nothing is reported as an unnegotiated protocol, which is not the case this clause describes.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "upgrade_client_tls"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "client_application_protocol"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rejects_alpn_mismatch_and_tampered_finished_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.9-SHOULD-MITIGATE-THREAT-SERVICE-PROVIDERS-DEPLOY-ALPN-SEE-SECTION",
+          "section": "3.9",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Every connection this package makes or accepts carries ALPN; there is no path that omits it, so a deployment built on this package has it deployed.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "server_application_protocol"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "rfc7301_server_alpn_preference_is_authoritative_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-3.9-SHOULD-ADDITION-EXTENT-POSSIBLE-THEY-ENSURE-MULTIPLE-SERVICES-HANDL",
+          "section": "3.9",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Consistency across the several services that answer for one domain name is a property of a deployment, not of a library.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the administrator or the service operator who runs a deployment, not the code that is deployed. This package is a library: each connection is configured by its caller, and it operates no service, no domain, and no fleet of its own."
+        },
+        {
+          "id": "RFC9325-3.9-SHOULD-ADDITION-EXTENT-POSSIBLE-THEY-ENSURE-MULTIPLE-SERVICES-HANDL-2",
+          "section": "3.9",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Handling configuration and credential compromise across a fleet of TLS servers is likewise operational.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the administrator or the service operator who runs a deployment, not the code that is deployed. This package is a library: each connection is configured by its caller, and it operates no service, no domain, and no fleet of its own."
+        },
+        {
+          "id": "RFC9325-3.9-SHOULD-MITIGATE-THREAT-SERVICE-PROVIDERS-ENSURE-SERVERS-PROVIDING-S",
+          "section": "3.9",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "Whether every server behind one service is configured alike is the operator's to ensure.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the administrator or the service operator who runs a deployment, not the code that is deployed. This package is a library: each connection is configured by its caller, and it operates no service, no domain, and no fleet of its own."
+        },
+        {
+          "id": "RFC9325-3.10-MUST-PARAPHRASE-APPENDIX-E-APPLICATIONS-AVOID-FEATURE-UNLESS-EXPL",
+          "section": "3.10",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "0-RTT is off unless a server opts into it explicitly, and the only application protocol carried over it here is HTTP/3, whose own document says when early data may be sent and what a server does with it. When it is on, a single-use replay guard and a domain-separated fingerprint cache stand in front of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/server.gleam", "symbol": "allow_zero_rtt"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "fingerprint"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam", "symbol": "record_verified"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/resumption.gleam", "symbol": "reject_early_data"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_psk_resumption_and_accepts_replay_checked_early_data_test"},
+            {"path": "packages/quic_core/test/tls_anti_replay_test.gleam", "symbol": "rejects_replay_bounds_memory_and_prunes_expired_entries_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-NULL-ENCRYPTION",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "A NULL-encryption suite has no AEAD, so the pinned filter excludes it on both sides; quic_core offers only the three AEAD suites QUIC defines. The cipher list is pinned on both the client and the server option builder rather than inherited from the platform default, and the filter that builds it is stated as a predicate over key exchange and MAC, so it tracks whatever the platform considers current inside the bound rather than freezing a list of names.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "select_cipher_suite"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-RC-CIPHER-SUITES",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "RC4 is a stream cipher with a separate MAC, which the AEAD half of the pinned filter excludes; it is not in quic_core's suite list either.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "select_cipher_suite"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-MUST-NOT-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-OFFERING-LESS-THAN-B",
+          "section": "4.1",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Every suite that survives the pin is AES-128 or stronger, or ChaCha20-Poly1305; the export-grade and other sub-112-bit suites carry no AEAD and are gone with the rest.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-SHOULD-NOT-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-ALGORITHMS-OFFERING-",
+          "section": "4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The weakest suite left is AES-128, so 128 bits is the floor rather than a bound that some offered suite falls below.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/hello.gleam", "symbol": "Aes128GcmSha256"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-SHOULD-NOT-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-BASED-ON-RSA-KEY-TRA",
+          "section": "4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "Static RSA key transport is not an ephemeral key exchange, and the pinned filter admits only ephemeral ones, so no TLS_RSA_* suite is offered.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-SHOULD-NOT-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-BASED-ON-NON-EPHEMER",
+          "section": "4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "Static finite-field Diffie-Hellman is excluded by the same filter: the only key exchanges left are the TLS 1.3 schedule and ECDHE.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-SHOULD-NOT-SIMILARLY-IMPLEMENTATIONS-NEGOTIATE-NON-EPHEMERAL-ELLIPTIC-C",
+          "section": "4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "Static elliptic-curve Diffie-Hellman was the sharpest edge of the platform default, which carried two such suites ahead of the ephemeral finite-field ones; both are outside the pinned filter now.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-MUST-IMPLEMENTATIONS-SUPPORT-PREFER-NEGOTIATE-CIPHER-SUITES-OFFER",
+          "section": "4.1",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "Forward secrecy is not merely preferred but exhaustive: every suite offered on every path provides it, so there is no ordering under which a peer could reach one that does not. The server also honours its own order rather than the peer's.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.1-SHOULD-NOT-HOWEVER-TLS-IMPLEMENTATIONS-NEGOTIATE-CIPHER-SUITES-BASED-ON",
+          "section": "4.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The TLS_DHE_* suites the platform offers by default are excluded by the key-exchange half of the filter, on both sides.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2-RECOMMENDED-GIVEN-FOREGOING-CONSIDERATIONS-IMPLEMENTATION-DEPLOYMENT-FOL",
+          "section": "4.2",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The pinned TLS 1.2 list is exactly the ECDHE AEAD family this section recommends, in both its ECDSA and its RSA authentication forms and in both AES-GCM and ChaCha20-Poly1305.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2-SHOULD-NOT-CIPHER-SUITE-OPERATES-CBC-CIPHER-BLOCK-CHAINING-MODE-E-G-TLS",
+          "section": "4.2",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "There is no CBC suite left to need encrypt_then_mac: the filter keeps only AEAD, which settles the clause by removing its subject rather than by negotiating an extension alongside it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2-RECOMMENDED-WHEN-ECDSA-SIGNATURES-AUTHENTICATION-TLS-PEERS-RECOMMENDED-I",
+          "section": "4.2",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "P-256 is the ECDSA scheme quic_core offers first, and it is the curve the key exchange implements alongside X25519; the larger NIST curves are offered after it rather than instead of it.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "supported_signature_schemes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_p256"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "matches_sec1_p256_generator_and_double_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2-RECOMMENDED-ADDITION-AVOID-PREDICTABLE-REPEATED-NONCES-WHICH-COULD-REVEA",
+          "section": "4.2",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "ECDSA signatures are produced with the platform's randomized nonce rather than RFC 6979's deterministic one.",
+          "disposition": "DocumentedDeviation",
+          "reason": "RFC 6979 is not implemented here, and the platform's signing primitive is the randomized one. The exposure this recommendation addresses is narrowed from the other side instead: the signature scheme offered first, and the one the loopback credentials use, is Ed25519, whose nonce is derived from the message and the key by construction and cannot repeat, and the elliptic-curve schemes are offered only after it. A deployment that signs with ECDSA gets the platform's nonce generation, which is what this deviation names.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "supported_signature_schemes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "sign"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "signing_key_scheme"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-SHOULD-CLIENTS-INCLUDE-TLS-ECDHE-RSA-AES-GCM-SHA-FIRST-PROPOSAL-SER",
+          "section": "4.2.1",
+          "level": "SHOULD",
+          "roles": ["client"],
+          "summary": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 is offered but is not the first proposal.",
+          "disposition": "DocumentedDeviation",
+          "reason": "The pinned list keeps the platform's own strength ordering, which puts the AES-256 suites ahead of the AES-128 ones, so the first proposal is stronger than the suite this clause names rather than weaker. The clause's own section says in the next paragraph that a client is free to offer stronger suites and that a server should then prefer them, which is what this ordering asks for; reordering to put an AES-128 suite first would mean proposing the weaker of two acceptable suites ahead of the stronger one.",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-MUST-SERVERS-PREFER-CIPHER-SUITE-OVER-WEAKER-CIPHER-SUITES-WHENEV",
+          "section": "4.2.1",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The server chooses from its own ordered list rather than from the client's proposal order, and that list has no suite weaker than the one this clause names: everything in it is ECDHE and AEAD, at AES-128 or above.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-SHOULD-CLIENTS-COURSE-FREE-OFFER-STRONGER-CIPHER-SUITES-E-G-AES-WHE",
+          "section": "4.2.1",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "A client that offers AES-256 gets AES-256: the server's order is authoritative and puts the 256-bit suites first, so the stronger proposal wins whenever the client makes one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-SHOULD-NOT-OTHER-CIPHER-SUITES-DO-PROVIDE-FORWARD-SECRECY-IMPLEMENTATIO",
+          "section": "4.2.1",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "TLS_RSA_WITH_AES_128_CBC_SHA, and every other suite without forward secrecy, is not merely deprioritised but absent from the pinned list.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "forward_secret_cipher_suites"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "tls_negotiation_is_limited_to_forward_secret_aead_suites_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-SHOULD-BOTH-CLIENTS-SERVERS-INCLUDE-SUPPORTED-ELLIPTIC-CURVES-EXTEN",
+          "section": "4.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "quic_core names its groups in supported_groups on both sides of the handshake, and the TCP paths offer the platform's own group list, which every pinned suite needs in order to be usable at all.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension.gleam", "symbol": "SupportedGroups"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "Group"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_p256_key_exchange_in_first_client_hello_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-SHOULD-CLIENTS-SERVERS-SUPPORT-NIST-P-SECP-R-RFC-X-X-RFC-CURVES",
+          "section": "4.2.1",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "X25519 and P-256 are the two groups quic_core implements, each with its own generation, public-value, and shared-secret path, and each validated against its defining document's vectors.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_x25519"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_p256"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "shared_secret"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "matches_rfc7748_x25519_key_agreement_test"},
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "matches_sec1_p256_generator_and_double_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.2.1-MUST-THEREFORE-CLIENT-SENDS-EC-POINT-FORMATS-EXTENSION-ECPOINTFOR",
+          "section": "4.2.1",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "ec_point_formats is a TLS 1.2 extension built by the 1.2 handshake; TLS 1.3 removed it, so quic_core has none to send.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-4.4-SHOULD-WHEN-SENDER-APPROACHING-CL-IMPLEMENTATION-INITIATE-NEW-HANDS",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The packets protected under one key are counted, and crossing the confidentiality limit for the negotiated suite asks for a key update; the update is then driven through the key phase with the spacing the transport requires before another may follow.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_encrypted"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "needs_key_update"},
+            {"path": "packages/quic_core/src/quic_core/internal/key_phase.gleam", "symbol": "initiate"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"},
+            {"path": "packages/quic_core/test/key_phase_test.gleam", "symbol": "enforces_confirm_ack_and_three_pto_update_spacing_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.4-SHOULD-WHEN-RECEIVER-HAS-REACHED-IL-IMPLEMENTATION-CLOSE-CONNECTION",
+          "section": "4.4",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "Authentication failures are counted separately from encryptions and do not reset on a key update; reaching the integrity limit is a typed failure that ends the connection rather than something the receiver continues past.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "record_authentication_failure"},
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "IntegrityLimitReached"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.4-RECOMMENDED-ALTHOUGH-OBTAINED-FIGURES-SLIGHTLY-HIGHER-THAN-THOSE-TLS-REC",
+          "section": "4.4",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "The limit enforced is not 2^24.5 records for both versions but the lower per-suite figures RFC 9001 fixes for QUIC.",
+          "disposition": "DocumentedDeviation",
+          "reason": "RFC 9001 section 6.6 sets its own AEAD limits for QUIC, and those are what this package counts against: 2^23 protected packets for the AES-GCM suites, well under the figure this clause names, and the much larger ChaCha20-Poly1305 figure that document also fixes. Deviating downward for the AES suites is still a deviation from a clause asking for one shared number, and it is recorded as one. The TLS record paths keep the platform's own accounting, which this package does not override.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/aead_usage.gleam", "symbol": "limits"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/aead_usage_test.gleam", "symbol": "enforces_rfc9001_aead_usage_limits_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.5-REQUIRED-KEY-EXCHANGE-BASED-ON-MODULAR-EXPONENTIAL-MODP-DIFFIE-HELLMA",
+          "section": "4.5",
+          "level": "REQUIRED",
+          "roles": ["client", "server"],
+          "summary": "There is no finite-field Diffie-Hellman exchange here for a group size to bound.",
+          "disposition": "NotApplicable",
+          "reason": "No cipher suite offered on any path here uses finite-field Diffie-Hellman key exchange. The TLS 1.2 list is pinned to the ECDHE AEAD suites and TLS 1.3 removed the finite-field groups from the handshake, so no DH group is negotiated and no DH parameter is generated, accepted, or checked."
+        },
+        {
+          "id": "RFC9325-4.5-MUST-NOT-CURVES-LESS-THAN-BITS",
+          "section": "4.5",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The two curves implemented are X25519 and P-256, at 255 and 256 bits; there is no smaller group to select, and an invalid or small-order X25519 public value is refused rather than used.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "Group"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_x25519"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_p256"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "shared_secret"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "rejects_invalid_and_weak_x25519_keys_test"},
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "matches_sec1_p256_generator_and_double_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.5-MUST-WHEN-RSA-SERVERS-AUTHENTICATE-CERTIFICATES-LEAST-BIT-MODULUS",
+          "section": "4.5",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The modulus belongs to a certificate the caller supplies.",
+          "disposition": "NotApplicable",
+          "reason": "This binds whoever issues and installs the credential. A server here is handed a certificate chain and a private key that the caller loaded, and a client is handed trust anchors; neither generates a key pair for an identity or chooses a modulus size."
+        },
+        {
+          "id": "RFC9325-4.5-RECOMMENDED-ADDITION-SHA-HASH-ALGORITHM-RECOMMENDED-SHA-MD-RFC-MORE-DETA",
+          "section": "4.5",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "SHA-256 is the weakest digest in the signature schemes quic_core offers, and the RSA-PSS and ECDSA schemes at that strength are the ones it names first after Ed25519.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "supported_signature_schemes"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.5-MUST-NOT-ADDITION-SHA-HASH-ALGORITHM-RECOMMENDED-SHA-MD-RFC-MORE-DETA",
+          "section": "4.5",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "Neither SHA-1 nor MD5 appears in the signature schemes offered or accepted; the list is enumerated rather than open, so an unlisted scheme is refused rather than tried.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "supported_signature_schemes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "signing_key_scheme"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "verify"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "validates_chain_identity_and_certificate_verify_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_private_key_that_does_not_match_leaf_certificate_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.5-MUST-CLIENTS-INDICATE-SERVERS-THEY-REQUEST-SHA-SIGNATURE-ALGORITH",
+          "section": "4.5",
+          "level": "MUST",
+          "roles": ["client"],
+          "summary": "quic_core's ClientHello carries signature_algorithms with the SHA-256 schemes in it, and a server signature outside that list is refused.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/engine.gleam", "symbol": "supported_signature_schemes"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/extension.gleam", "symbol": "SignatureAlgorithms"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-4.6-MUST-NOT-IMPLEMENTATIONS-TRUNCATED-HMAC-EXTENSION-DEFINED-SECTION-RFC",
+          "section": "4.6",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The Truncated HMAC extension is not implemented on either path.",
+          "disposition": "NotApplicable",
+          "reason": "RFC 6066's truncated_hmac extension is not implemented here. quic_core's extension table enumerates the extensions it encodes and understands and does not include it, so it is neither sent nor honoured, and the platform's ssl application offers no option that would request it on the TCP paths. The extension also only has meaning for a suite with a separate MAC, and every suite offered here is AEAD."
+        },
+        {
+          "id": "RFC9325-7.1-SHOULD-NOT-HOST-NAME-DISCOVERED-INDIRECTLY-INSECURELY-E-G-CLEARTEXT-DNS",
+          "section": "7.1",
+          "level": "SHOULD NOT",
+          "roles": ["client"],
+          "summary": "The reference identity is always the authority in the URI the caller asked for, never a name learned from DNS. The one place a DNS answer reaches this client is the HTTPS record resolver, and what it may contribute is an alternative port on the same origin host; the target name in such a record becomes neither the dialled name nor the verified one.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "src/http/internal/alt_svc.gleam", "symbol": "from_https_record"},
+            {"path": "src/http/client.gleam", "symbol": "with_https_record_resolver"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"}
+          ],
+          "tests": [
+            {"path": "test/client_test.gleam", "symbol": "authenticated_https_record_can_select_http3_test"},
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-7.2.1-RECOMMENDED-THEREFORE-RECOMMENDED-TLS-IMPLEMENTATIONS-BIT-SEQUENCE-NUMBE",
+          "section": "7.2.1",
+          "level": "RECOMMENDED",
+          "roles": ["client", "server"],
+          "summary": "How a TLS 1.2 record layer forms its GCM nonce is decided inside that record layer.",
+          "disposition": "NotApplicable",
+          "reason": "This binds the code that builds a TLS 1.2 handshake. This package contains none: the TLS 1.2 path is the platform's ssl application, configured here with the version floor, the cipher list, peer verification, the server name, and the application protocols, and the handshake messages it exchanges inside those bounds are its own. The handshake this package does implement, in quic_core, is TLS 1.3, where this clause has no counterpart."
+        },
+        {
+          "id": "RFC9325-7.4-SHOULD-NOT-TLS-IMPLEMENTATIONS-STATIC-FINITE-FIELD-DH-KEYS-REUSE-EPHEME",
+          "section": "7.4",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "No static finite-field Diffie-Hellman key is used, because no finite-field suite is offered.",
+          "disposition": "NotApplicable",
+          "reason": "No cipher suite offered on any path here uses finite-field Diffie-Hellman key exchange. The TLS 1.2 list is pinned to the ECDHE AEAD suites and TLS 1.3 removed the finite-field groups from the handshake, so no DH group is negotiated and no DH parameter is generated, accepted, or checked."
+        },
+        {
+          "id": "RFC9325-7.4-SHOULD-NOT-TLS-IMPLEMENTATIONS-STATIC-FINITE-FIELD-DH-KEYS-REUSE-EPHEME-2",
+          "section": "7.4",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "There is no ephemeral finite-field key to reuse across connections either.",
+          "disposition": "NotApplicable",
+          "reason": "No cipher suite offered on any path here uses finite-field Diffie-Hellman key exchange. The TLS 1.2 list is pinned to the ECDHE AEAD suites and TLS 1.3 removed the finite-field groups from the handshake, so no DH group is negotiated and no DH parameter is generated, accepted, or checked."
+        },
+        {
+          "id": "RFC9325-7.4-SHOULD-SERVER-IMPLEMENTATIONS-WANT-REUSE-ELLIPTIC-CURVE-DH-KEYS-EIT",
+          "section": "7.4",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "No elliptic-curve key is reused: a key pair is generated inside the handshake it serves and is not carried to another. The two groups are X25519, which this clause names as a safe curve, and P-256, whose received point is validated before the shared secret is taken.",
+          "disposition": "Implemented",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_x25519"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "generate_p256"},
+            {"path": "packages/quic_core/src/quic_core/internal/tls/key_exchange.gleam", "symbol": "shared_secret"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_key_exchange_test.gleam", "symbol": "rejects_invalid_and_weak_x25519_keys_test"},
+            {"path": "packages/quic_core/test/tls_engine_test.gleam", "symbol": "completes_authenticated_client_server_handshake_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-7.5-MUST-TLS-IMPLEMENTATIONS-IMPLEMENT-STRATEGY-DISTRUST-REVOKED-CERT",
+          "section": "7.5",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "No revocation state is consulted on either path: a certificate that chains to a trust anchor and matches the identity is accepted whether or not it has been revoked.",
+          "disposition": "Open",
+          "reason": "Neither TLS path here consults revocation state. The TCP paths run the platform's path validation with revocation checking left at its default, which performs none, and quic_core's own path validation builds a chain to a trust anchor and verifies the service identity without reading a CRL, requesting an OCSP response, or asking for a stapled one: status_request is not among the extensions it sends or understands. The trust anchors are the platform store or the set the caller supplies, and narrowing those is the only lever a deployment has here, which is not a strategy for distrusting a certificate that was valid when it was issued and has since been revoked.",
+          "implementation": [
+            {"path": "packages/quic_core/src/quic_core/internal/tls/authentication.gleam", "symbol": "validate_server_certificate"},
+            {"path": "src/http_transport_ffi.erl", "symbol": "client_tls_options"}
+          ],
+          "tests": [
+            {"path": "packages/quic_core/test/tls_authentication_test.gleam", "symbol": "rejects_wrong_hostname_untrusted_chain_and_mismatched_scheme_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-7.5-SHOULD-COMMON-CASES-PUBLIC-KEY-CERTIFICATES-TLS-SERVERS-SUPPORT-FOL",
+          "section": "7.5",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The server supports none of the practices this clause lists as the current foundation, because it has no revocation path at all.",
+          "disposition": "Open",
+          "reason": "Neither TLS path here consults revocation state. The TCP paths run the platform's path validation with revocation checking left at its default, which performs none, and quic_core's own path validation builds a chain to a trust anchor and verifies the service identity without reading a CRL, requesting an OCSP response, or asking for a stapled one: status_request is not among the extensions it sends or understands. The trust anchors are the platform store or the set the caller supplies, and narrowing those is the only lever a deployment has here, which is not a strategy for distrusting a certificate that was valid when it was issued and has since been revoked.",
+          "implementation": [
+            {"path": "src/http_transport_ffi.erl", "symbol": "server_tls_options"}
+          ],
+          "tests": [
+            {"path": "test/tls_transport_test.gleam", "symbol": "authenticated_tls13_alpn_and_active_once_data_round_trip_test"}
+          ]
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-NOT-CHANGED-STATUS-TLS-FROM",
+          "section": "Appendix A",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The former SHOULD NOT status of TLS 1.0 and 1.1, quoted here to say it was raised.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The level named here is the one this document replaced, not one it imposes. The obligation is inventoried at section 3.1.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-NOT-CHANGED-STATUS-TLS-FROM",
+          "section": "Appendix A",
+          "level": "MUST NOT",
+          "roles": ["client", "server"],
+          "summary": "The raised status of TLS 1.0 and 1.1, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The version floor this package pins satisfies the clause in the body. The obligation is inventoried at section 3.1.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-ADDED-TLS-LEVEL",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The addition of TLS 1.3 at SHOULD level, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. TLS 1.3 support is claimed in the body. The obligation is inventoried at section 3.1.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-LEVEL-IMPLEMENTATION-REQUIREMENT-ALPN-MORE-SPECIFIC-LEVEL-GU",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The MUST-level ALPN requirement, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. ALPN support is claimed in the body. The obligation is inventoried at section 3.8, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-IMPLEMENTATION-REQUIREMENT-ALPN-MORE-SPECIFIC-LEVEL-GU",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The SHOULD-level ALPN and SNI guidance, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The SNI and ALPN guidance is dispositioned in the body, including the one deviation. The obligation is inventoried at section 3.7, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-CLARIFIED-DISCUSSION-STRICT-TLS-POLICIES-INCLUDING-LEVEL-REC",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The MUST-level strict-TLS recommendations, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The strict-TLS obligations are dispositioned in the body. The obligation is inventoried at section 3.2, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-LEVEL-REQUIREMENT-SERVER-SIDE-RSA-CERTIFICATES-HAVE-BIT-MODU",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["server"],
+          "summary": "The raised requirement on server-side RSA modulus size, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The modulus belongs to a certificate the caller supplies, which is what the body's clause records. The obligation is inventoried at section 4.5, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-REQUIREMENT-SERVER-SIDE-RSA-CERTIFICATES-HAVE-BIT-MODU",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["server"],
+          "summary": "The former SHOULD level of that same modulus requirement.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The level named here is the one this document replaced. The obligation is inventoried at section 4.5, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-GUIDANCE-ON-AES-GCM-NONCE-GENERATION",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The added guidance on AES-GCM nonce generation, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. Nonce construction belongs to the TLS 1.2 record layer, which is what the body's clause records. The obligation is inventoried at section 7.2.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-NOT-STATIC-EPHEMERAL-FINITE-FIELD-DH-KEY-AGREEMENT",
+          "section": "Appendix A",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The rule against finite-field Diffie-Hellman, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The pinned cipher list offers no finite-field suite, which is what the body's clauses record. The obligation is inventoried at section 4.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-NOT-REUSE-EPHEMERAL-FINITE-FIELD-DH-KEYS-ACROSS-MULTIPLE-CONNECT",
+          "section": "Appendix A",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The rule against reusing ephemeral finite-field keys, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. There is no finite-field key here to reuse, which is what the body's clause records. The obligation is inventoried at section 7.4, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-NOT-STATIC-ELLIPTIC-CURVE-DH-KEY-EXCHANGE",
+          "section": "Appendix A",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The rule against static elliptic-curve Diffie-Hellman, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The pinned cipher list excludes the static elliptic-curve suites, which is what the body's clause records. The obligation is inventoried at section 4.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-BIT-DH-NOW-ECDH-MINIMAL-CURVE-SIZE-VS-PREVIOUSLY",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The raised key and curve sizes, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The curve floor is claimed in the body and the finite-field bound has no subject here. The obligation is inventoried at section 4.5, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-SUPPORT-EXTENDED-MASTER-SECRET-NOW-PREVIOUSLY-WAS-SOFT-RECOM",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The raised requirement to support extended_master_secret, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The extension belongs to the TLS 1.2 handshake, which is what the body's clause records. The obligation is inventoried at section 3.5, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-LEVEL-RESTRICTION-ON-SESSION-TICKET-VALIDITY-REPLACING",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The raised restriction on session ticket validity, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The ticket lifetime ceiling is claimed in the body. The obligation is inventoried at section 3.4, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-RESTRICTION-ON-SESSION-TICKET-VALIDITY-REPLACING",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The former SHOULD level of that same ticket-validity restriction.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. The level named here is the one this document replaced. The obligation is inventoried at section 3.4, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-RESTRICTION-ON-TLS-SESSION-DURATION-DEPENDING-ON-ROTAT",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The restriction on TLS 1.2 session duration relative to ticket-key rotation, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. No TLS 1.2 session is resumed here at all, which is what the body's clause records. The obligation is inventoried at section 3.4, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-NOT-OLD-MTI-CIPHER-SUITE-TLS-RSA-AES-CBC-SHA",
+          "section": "Appendix A",
+          "level": "SHOULD NOT",
+          "roles": ["client", "server"],
+          "summary": "The rule against the old mandatory-to-implement cipher suite, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. That suite is absent from the pinned list, which is what the body's clause records. The obligation is inventoried at section 4.2.1, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-SHOULD-LEVEL-REQUIREMENT-FORWARD-SECRECY-TLS-SESSION-RESUMPTION",
+          "section": "Appendix A",
+          "level": "SHOULD",
+          "roles": ["client", "server"],
+          "summary": "The requirement for forward secrecy in TLS 1.3 resumption, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. psk_dhe_ke is the only mode offered or accepted, which is what the body's clause records. The obligation is inventoried at section 3.4, where the text that binds an implementation appears."
+        },
+        {
+          "id": "RFC9325-Appendix A-MUST-GENERIC-LEVEL-GUIDANCE-AVOID-RTT-UNLESS-DOCUMENTED-PARTICULA",
+          "section": "Appendix A",
+          "level": "MUST",
+          "roles": ["client", "server"],
+          "summary": "The generic rule against 0-RTT without a protocol-specific specification, restated as a change.",
+          "disposition": "NotApplicable",
+          "reason": "Appendix A is the change log against RFC 7525 and restates a clause the body already states. 0-RTT is off unless a server opts in, and the only protocol carried over it here documents its use, which is what the body's clause records. The obligation is inventoried at section 3.10, where the text that binds an implementation appears."
+        }
+      ],
+      "errata": {
+        "inventory_complete": true,
+        "checked_on": "2026-08-30",
+        "expected_total": 0,
+        "entries": []
+      }
+    },
     {
       "id": "RFC9368",
       "title": "Compatible Version Negotiation for QUIC",
