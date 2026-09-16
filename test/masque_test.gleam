@@ -4140,6 +4140,64 @@ pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
   assert masque.request_path(by_protocol) == "/.well-known/masque/ip/%2A/6/"
 }
 
+pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
+  // RFC 9484 section 4.6 gives the "target" variable a grammar -- an IPv6
+  // prefix, an IPv4 prefix, a reg-name, or the wildcard -- and three conditions
+  // the grammar cannot state: a prefix length is decimal, no larger than the
+  // address it qualifies, and every bit of the address below it is zero. A
+  // target that meets none of these still expands into a path, so the request
+  // would name a scope the proxy has to reject.
+  let scoped = fn(target) {
+    masque.connect_ip(
+      masque.Http2,
+      "proxy.example",
+      masque.IpScope(Some(target), None),
+      limits(),
+    )
+  }
+
+  let assert Ok(_) = scoped("198.51.100.0/24")
+  let assert Ok(_) = scoped("2001:db8::/32")
+  let assert Ok(_) = scoped("example.com")
+  let assert Ok(_) = scoped("192.0.2.1")
+  let assert Ok(_) = scoped("2001:db8::42")
+
+  // A colon in a literal is percent-encoded on expansion, and so is the slash
+  // that introduces a prefix length.
+  let assert Ok(literal) = scoped("2001:db8::/32")
+  assert masque.request_path(literal)
+    == "/.well-known/masque/ip/2001%3Adb8%3A%3A%2F32/%2A/"
+
+  // Bits below the prefix length are set, so the target names an address where
+  // it claims to name a network.
+  assert scoped("198.51.100.1/24") == Error(masque.InvalidScope)
+  assert scoped("2001:db8::1/32") == Error(masque.InvalidScope)
+
+  // A length longer than the address, and a length that is not a decimal
+  // integer at all.
+  assert scoped("198.51.100.0/33") == Error(masque.InvalidScope)
+  assert scoped("2001:db8::/129") == Error(masque.InvalidScope)
+  assert scoped("198.51.100.0/x") == Error(masque.InvalidScope)
+  assert scoped("198.51.100.0/") == Error(masque.InvalidScope)
+
+  // A name is not a prefix, so it carries no length.
+  assert scoped("example.com/24") == Error(masque.InvalidScope)
+  // Figure 6 ends in reg-name, so a dotted string that is not an address is
+  // still a name and is carried as one. A string with colons in it can only
+  // have been meant as an IPv6 literal, so a malformed one is refused.
+  let assert Ok(_) = scoped("198.51.100.256")
+  assert scoped("2001:db8:::1") == Error(masque.InvalidScope)
+
+  // The policy side reads the same grammar, so a scope that cannot be
+  // requested cannot be allowed either.
+  let assert Ok(policy) = masque.deny_all(limits())
+  assert masque.allow_ip_scope(
+      policy,
+      masque.IpScope(Some("198.51.100.1/24"), None),
+    )
+    == Error(masque.InvalidScope)
+}
+
 pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
   // RFC 9484 sections 4.2 through 4.5: the HTTP/1.1 mapping is an upgrade to
   // "connect-ip" answered with 101, and the HTTP/2 and HTTP/3 mapping is an

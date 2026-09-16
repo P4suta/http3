@@ -4870,19 +4870,148 @@ fn is_ascii_digit(value: Int) -> Bool {
 }
 
 fn validate_scope(scope: IpScope) -> Result(Nil, Error) {
-  let valid_target = case scope.target {
-    None -> True
-    Some(value) ->
-      value != "*"
-      && safe_ascii(value, 1024)
-      && !string.contains(value, "%")
-      && !string.contains(value, "?")
-      && !string.contains(value, "#")
-      && !string.contains(value, " ")
+  use _ <- result.try(validate_optional_protocol(scope.ip_protocol))
+  case scope.target {
+    None -> Ok(Nil)
+    Some(value) -> validate_scope_target(value)
   }
-  case valid_target && valid_optional_protocol(scope.ip_protocol) {
-    True -> Ok(Nil)
-    False -> Error(InvalidScope)
+}
+
+/// Validate a `target` variable against the RFC 9484 section 4.6 grammar.
+///
+/// Figure 6 admits an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard,
+/// which the scope spells as an absent target. The section then adds three
+/// conditions the grammar cannot state: the prefix length is a decimal integer,
+/// it is no larger than the address it qualifies, and every bit of the address
+/// below it is zero. The last two are the conditions `validate_prefix` already
+/// holds a capsule's prefix to, so a prefix written into a request and a prefix
+/// read out of a capsule answer to one rule rather than two.
+///
+/// The value arrives unencoded and is percent-encoded on expansion, so a
+/// percent sign in it would be expanded twice and the separators a URI reserves
+/// would survive into the path; all four are refused here rather than escaped.
+fn validate_scope_target(target: String) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: target == "*"
+      || !safe_ascii(target, 1024)
+      || string.contains(target, "%")
+      || string.contains(target, "?")
+      || string.contains(target, "#")
+      || string.contains(target, " "),
+    return: Error(InvalidScope),
+  )
+  case string.split(target, on: "/") {
+    [address] ->
+      case valid_target_host(address) {
+        True -> Ok(Nil)
+        False -> Error(InvalidScope)
+      }
+    [address, length] -> validate_target_prefix(address, length)
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn validate_target_prefix(
+  address: String,
+  length: String,
+) -> Result(Nil, Error) {
+  use parsed <- result.try(case string.contains(address, ":") {
+    True -> result.map(ipv6_address_bytes(address), Ipv6)
+    False -> result.map(ipv4_address_bytes(address), Ipv4)
+  })
+  use bits <- result.try(prefix_length_value(length))
+  // The prefix rule is shared with the capsule path, which reports a malformed
+  // address; a malformed variable is a malformed scope.
+  validate_prefix(IpPrefix(parsed, bits)) |> result.replace_error(InvalidScope)
+}
+
+/// Read the `1*3DIGIT` prefix length. Its range is checked against the address.
+fn prefix_length_value(length: String) -> Result(Int, Error) {
+  let digits = string.to_utf_codepoints(length)
+  use <- bool.guard(
+    when: digits == []
+      || list.length(digits) > 3
+      || !list.all(digits, fn(digit) {
+      digit |> string.utf_codepoint_to_int |> is_ascii_digit
+    }),
+    return: Error(InvalidScope),
+  )
+  int.parse(length) |> result.replace_error(InvalidScope)
+}
+
+fn ipv4_address_bytes(address: String) -> Result(BitArray, Error) {
+  case string.split(address, on: ".") {
+    [first, second, third, fourth] -> {
+      use octets <- result.map(list.try_map(
+        [first, second, third, fourth],
+        octet_value,
+      ))
+      list.fold(octets, <<>>, fn(bytes, octet) { <<bytes:bits, octet>> })
+    }
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn octet_value(octet: String) -> Result(Int, Error) {
+  use <- bool.guard(when: !valid_ipv4_octet(octet), return: Error(InvalidScope))
+  int.parse(octet) |> result.replace_error(InvalidScope)
+}
+
+/// Expand an IPv6 literal into its sixteen bytes.
+///
+/// The syntax is checked first, so the two halves of a `::` are known to hold
+/// fewer than eight groups between them and the run of zeros that separates
+/// them is whatever is left.
+fn ipv6_address_bytes(address: String) -> Result(BitArray, Error) {
+  use <- bool.guard(
+    when: !valid_ipv6_address(address),
+    return: Error(InvalidScope),
+  )
+  case string.split(address, on: "::") {
+    [only] -> ipv6_groups(only)
+    [left, right] -> {
+      use head <- result.try(ipv6_groups(left))
+      use tail <- result.try(ipv6_groups(right))
+      let zeros = 16 - bit_array.byte_size(head) - bit_array.byte_size(tail)
+      case zeros >= 0 {
+        True -> Ok(<<head:bits, 0:size(zeros)-unit(8), tail:bits>>)
+        False -> Error(InvalidScope)
+      }
+    }
+    _ -> Error(InvalidScope)
+  }
+}
+
+fn ipv6_groups(value: String) -> Result(BitArray, Error) {
+  case value {
+    "" -> Ok(<<>>)
+    _ -> ipv6_segments(string.split(value, on: ":"), <<>>)
+  }
+}
+
+fn ipv6_segments(
+  segments: List(String),
+  accumulator: BitArray,
+) -> Result(BitArray, Error) {
+  case segments {
+    [] -> Ok(accumulator)
+    [segment, ..rest] -> {
+      use bytes <- result.try(ipv6_segment_bytes(segment))
+      ipv6_segments(rest, <<accumulator:bits, bytes:bits>>)
+    }
+  }
+}
+
+/// One group, or the dotted-quad tail RFC 4291 allows in the last position.
+fn ipv6_segment_bytes(segment: String) -> Result(BitArray, Error) {
+  case string.contains(segment, ".") {
+    True -> ipv4_address_bytes(segment)
+    False -> {
+      use value <- result.map(
+        int.base_parse(segment, 16) |> result.replace_error(InvalidScope),
+      )
+      <<value:size(16)>>
+    }
   }
 }
 

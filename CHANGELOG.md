@@ -366,3 +366,8 @@
   the fixed header's Next Header field was read as the packet's protocol, so a
   rule naming an upper layer refused traffic carrying it behind an extension,
   and a rule naming an extension admitted whatever that extension carried.
+- Validated the CONNECT-IP `target` variable against the RFC 9484 section 4.6
+  grammar before expanding it into a request path. Only the reserved
+  characters were refused, so a prefix length longer than its address, a
+  length that was not a decimal integer, and an address with bits set below
+  its prefix all reached the wire as a scope no proxy can grant.
