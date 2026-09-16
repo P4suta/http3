@@ -1,6 +1,7 @@
 import gleam/http as gleam_http
 import gleam/http/request
 import gleam/http/response
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
 import http/internal/alt_svc
@@ -203,4 +204,51 @@ pub fn an_alt_svc_parameter_may_be_quoted_and_carry_delimiters_test() -> Nil {
     )
   assert second.alternative_port == 8443
   assert second.expires_at == 120_000
+}
+
+pub fn a_cached_response_carries_the_age_it_has_accumulated_test() -> Nil {
+  // RFC 9111 section 4: a stored response served without validation carries an
+  // Age header field giving how long it has been held, counted from the age it
+  // already had when it arrived.
+  let outgoing =
+    request.Request(
+      method: gleam_http.Get,
+      headers: [],
+      body: Nil,
+      scheme: gleam_http.Https,
+      host: "example.com",
+      port: None,
+      path: "/resource",
+      query: None,
+    )
+  let incoming =
+    response.Response(
+      status: 200,
+      headers: [#("cache-control", "max-age=600"), #("age", "30")],
+      body: Nil,
+    )
+  let assert Some(entry) =
+    cache.entry(outgoing, incoming, <<"body":utf8>>, [], 1000)
+
+  // Served the instant it was stored, the age is the one it arrived with.
+  let fresh = cache.response(entry, 1000)
+  assert list.key_find(fresh.headers, "age") == Ok("30")
+
+  // Ninety seconds later it is thirty plus ninety, and the field replaces the
+  // stored one rather than joining it.
+  let held = cache.response(entry, 91_000)
+  assert list.key_find(held.headers, "age") == Ok("120")
+  assert list.filter(held.headers, fn(pair) { pair.0 == "age" })
+    == [#("age", "120")]
+
+  // A response that arrived without an Age counts from zero.
+  let plain =
+    response.Response(
+      status: 200,
+      headers: [#("cache-control", "max-age=600")],
+      body: Nil,
+    )
+  let assert Some(entry) =
+    cache.entry(outgoing, plain, <<"body":utf8>>, [], 1000)
+  assert list.key_find(cache.response(entry, 46_000).headers, "age") == Ok("45")
 }
