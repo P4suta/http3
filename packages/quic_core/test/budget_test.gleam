@@ -558,9 +558,17 @@ pub fn a_parked_send_names_the_bound_that_stopped_it_test() -> Nil {
   assert bound_by_grant(grant, 0, 0) == False
   assert admits(grant, 0, 0) == 0
 
-  // Neither has room: the endpoint funding more would not move this write
-  // along, so the ceiling is what its caller is waiting on.
-  assert bound_by_grant(grant, 4 * quantum_bytes, 0) == False
+  // Neither has room. The endpoint has funded nothing, and that is what the
+  // caller is told: it is the wider condition, it is transient, and it is the
+  // same answer whichever bound reached zero first. A write pressed against a
+  // refused grant reports endpoint overload even once its own stream ceiling
+  // has filled behind it, which is the case a peer that never reads produces.
+  assert bound_by_grant(grant, 4 * quantum_bytes, 0) == True
+  assert admits(grant, 4 * quantum_bytes, 0) == 0
+
+  // The ceiling still binds where the grant has room to spare, which is the
+  // only way a send waits on its own peer rather than on the endpoint.
+  assert bound_by_grant(grant, 3 * quantum_bytes, 0) == False
 
   // A grant narrower than the ceiling names the grant even with room to spare,
   // so the reason a send parks is decided by the same arithmetic that decided
