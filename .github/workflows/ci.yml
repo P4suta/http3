@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -15,34 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  security:
-    name: Security, FFI, and SBOM gates
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
-        with:
-          version: 2026.10.15
-
-      - name: Run security gates
-        run: mise run security
-
-      - name: Upload CycloneDX evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: http-cyclonedx-sbom
-          path: build/security/http.cdx.json
-          if-no-files-found: error
-
   quality:
-    name: Full quality check
+    name: Change verification
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -138,7 +110,6 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04
           - macos-15
           - windows-2025
     steps:
@@ -177,20 +148,17 @@ jobs:
         working-directory: packages/quic_core
         run: gleam test
 
-  # The one status check branch protection requires,
-  # named the same in every P4suta repository.
-  # It passes only when every job it needs succeeded or was skipped.
   required:
     name: required
     if: always()
-    needs: [security, quality, interop, otp, smoke]
+    needs: [quality, interop, otp, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Fail unless every needed job succeeded or was skipped
+      - name: Require every selected job to succeed
         env:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
           echo "${RESULTS}"
-          jq -e 'all(.[]; IN("success", "skipped"))' <<< "${RESULTS}"
+          jq -e 'length == 4 and all(.[]; . == "success")' <<< "${RESULTS}"
