@@ -320,6 +320,13 @@ run = [
   "gleam run -m glinter -- --stats",
   "cd packages/http3 && gleam run -m glinter -- --stats",
   "cd packages/quic_core && gleam run -m glinter -- --stats",
+  "mise run lint-repository",
+]
+
+[tasks.lint-repository]
+description = "Lint prose, configuration, workflows, shell scripts, spelling, licences, and secrets"
+shell = "bash -c"
+run = [
   "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#deps/**\" \"#packages/http3/build/**\" \"#packages/http3/deps/**\" \"#packages/quic_core/build/**\" \"#packages/quic_core/deps/**\"",
   "taplo fmt --check",
   "taplo lint",
@@ -508,7 +515,8 @@ run = [
 description = "Run every automated local gate and assemble an unpublished source bundle"
 run = [
   "mise run check",
-  "mise run security",
+  "mise run stability",
+  "mise run sbom",
   "mise run coverage",
   "mise run coverage-full",
   "mise run property",
@@ -535,20 +543,20 @@ run = [
 ]
 
 [tasks.check]
-description = "Run every required local verification"
+description = "Run deterministic change verification without release campaigns"
 run = [
   "mise run status-audit",
   "mise run package-layout",
   "mise run http-check",
   "mise run http3-check",
   "mise run core-check",
-  "mise run stability",
   "mise run fresh-build-audit",
   "mise run coverage-coordinate-audit",
   "mise run core-package",
   "mise run mix-package",
   "mise run ffi-audit",
   "mise run api",
-  "mise run lint",
+  "mise run lint-repository",
   "mise run semgrep",
+  "mise run dependency-audit",
 ]
