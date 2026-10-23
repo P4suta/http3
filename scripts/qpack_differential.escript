@@ -7,7 +7,7 @@
 -define(ENCODER, 'http3@internal@qpack@encoder').
 -define(INSTRUCTION, 'http3@internal@qpack@instruction').
 -define(OUTPUT, "build/qpack-differential/report.json").
--define(VERSION, <<"0.3.24">>).
+-define(VERSION, <<"1.0.0">>).
 -define(CAPACITY, 512).
 -define(BLOCKED_STREAMS, 8).
 
@@ -444,7 +444,7 @@ validate_oracle_lock(Document) ->
                       "packages/http3/test/interop/requirements.txt",
                       oracle_lock_path_drift),
     Lock = read(Path),
-    ensure_validation(binary:match(Lock, <<"pylsqpack==0.3.24">>) =/=
+    ensure_validation(binary:match(Lock, <<"pylsqpack==1.0.0">>) =/=
                       nomatch, oracle_version_not_pinned),
     ensure_validation(digest_file(Path) =:= Expected, oracle_lock_digest_drift).
 

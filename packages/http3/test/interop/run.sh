@@ -394,7 +394,7 @@ run_aioquic() {
 		return 1
 	fi
 	env PYTHONDONTWRITEBYTECODE=1 "$python" -c \
-		'import importlib.metadata; assert importlib.metadata.version("aioquic") == "1.3.0"'
+		'import importlib.metadata; assert importlib.metadata.version("aioquic") == "1.7.0"'
 
 	run_aioquic_native_client "$python"
 	run_aioquic_native_server "$python"

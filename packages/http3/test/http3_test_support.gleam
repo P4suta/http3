@@ -80,8 +80,13 @@ pub fn concurrent_accepts(
 @external(erlang, "http3_test_ffi", "server_owner_cleanup")
 pub fn server_owner_cleanup(configuration: server.Configuration) -> Bool
 
-/// Run a callback against the repository-owned server over real UDP.
+/// Run a callback against an IPv4 loopback server.
 pub fn with_server(run: fn(Int, BitArray) -> result) -> result {
+  with_server_configuration(10_000, config.Ipv4, run)
+}
+
+/// Return the callback's result after closing the dual-stack listener.
+pub fn with_dual_stack_server(run: fn(Int, BitArray) -> result) -> result {
   with_server_configuration(10_000, config.DualStack, run)
 }
 
