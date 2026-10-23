@@ -686,12 +686,21 @@ pub fn server_enforces_request_body_limit_test() -> Nil {
   let configuration = server.with_timeout(configuration, 3000) |> should.be_ok
   let listener = server.start(configuration) |> should.be_ok
   let port = server.port(listener) |> should.be_ok
-  let client_task =
-    start_bounded_client_with_body(port, ca_certificate, <<"too large":utf8>>)
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let stream =
+    streaming_request(port, "/limit")
+    |> request.set_method(http.Post)
+    |> client.open_stream(connection, _)
+    |> should.be_ok
+  client.send_chunk(stream, <<"too large":utf8>>) |> should.be_ok
+  assert client.next_event(stream)
+    == Error(client.Failure(failure.Closed(failure.Peer, Some(0x10c))))
 
   let incoming = server.accept(listener) |> should.be_ok
   assert server.read_body(incoming) == Error(server.RequestBodyTooLarge(4))
-  let _client_result = http3_test_support.await_task(client_task)
+  assert client.close(connection) == Ok(client.Closed)
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
@@ -987,15 +996,6 @@ fn start_bounded_client(
   path: String,
 ) -> http3_test_support.Task(Result(response.Response(BitArray), client.Error)) {
   start_bounded_client_with_path_and_body(port, ca_certificate, path, <<>>)
-}
-
-// nolint: label_possible -- positional test-helper arguments remain concise.
-fn start_bounded_client_with_body(
-  port: Int,
-  ca_certificate: BitArray,
-  body: BitArray,
-) -> http3_test_support.Task(Result(response.Response(BitArray), client.Error)) {
-  start_bounded_client_with_path_and_body(port, ca_certificate, "/limit", body)
 }
 
 // nolint: label_possible -- positional test-helper arguments remain concise.
