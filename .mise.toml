@@ -550,6 +550,7 @@ run = [
   "mise run http-check",
   "mise run http3-check",
   "mise run core-check",
+  "mise run fresh-build",
   "mise run fresh-build-audit",
   "mise run coverage-coordinate-audit",
   "mise run core-package",
