@@ -408,7 +408,7 @@ pub fn client_keeps_hostname_verification_with_custom_ca_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn client_completes_headers_only_response_test() -> Nil {
-  http3_test_support.with_server(fn(port, ca_certificate) {
+  http3_test_support.with_dual_stack_server(fn(port, ca_certificate) {
     let configuration = client.with_timeout(client.new(), 3000) |> should.be_ok
     let configuration =
       client.with_ca_certificate(configuration, ca_certificate) |> should.be_ok
