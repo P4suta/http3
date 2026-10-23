@@ -63,9 +63,10 @@ then falls back to `python3`.
 
 ## Updating a peer
 
-The direct aioquic intent is pinned in `requirements.txt`; every transitive
-version and distribution hash is retained in `requirements.lock`. Regenerate
-the lock deliberately with:
+The direct Python dependencies are pinned in `requirements.in`.
+The generated `requirements.txt` holds every transitive version and distribution hash.
+Renovate maintains this lock through its pip-compile manager.
+Regenerate it with:
 
 ```sh
 mise run interop-lock

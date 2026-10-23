@@ -9,5 +9,5 @@
 test/fixtures/** -text
 packages/http3/test/fixtures/** -text
 packages/quic_core/test/fixtures/** -text
-packages/http3/test/interop/requirements.lock -text
+packages/http3/test/interop/requirements.txt -text
 packages/http3/test/interop/quicgo/go.sum -text
