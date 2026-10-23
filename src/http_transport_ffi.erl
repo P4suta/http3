@@ -2,6 +2,7 @@
 
 -export([
     accept/2,
+    client_tls_options/3,
     close/1,
     connect/4,
     connect_with_deadlines/6,
@@ -13,6 +14,11 @@
     peer_endpoint/1,
     read/3,
     send/2,
+    server_tls_options/2,
+    sort_destinations/2,
+    interleave_families/1,
+    resolve_families/1,
+    resolve_host/1,
     shutdown_write/1,
     socket_local_endpoint/1,
     stop/1,
@@ -24,6 +30,10 @@
 ]).
 
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
+%% Nothing is sent to it; the port only completes the connect.
+-define(SOURCE_PROBE_PORT, 9).
+%% RFC 8305 section 8: the recommended Resolution Delay.
+-define(RESOLUTION_DELAY, 50).
 %% RFC 8305 section 8: the recommended Connection Attempt Delay.
 -define(CONNECTION_ATTEMPT_DELAY, 250).
 %% A TLS alert description carries peer-supplied certificate names, so the text
@@ -607,12 +617,110 @@ resolve_with_deadline(Host, Deadline, TimeoutCode) ->
 -spec resolve_host(string()) ->
     {ok, [{family(), inet:ip_address()}]} | {error, term()}.
 resolve_host(Host) ->
-    V6 = resolved_family(Host, inet6),
-    V4 = resolved_family(Host, inet),
-    Addresses = lists:sublist(V6 ++ V4, ?MAXIMUM_RESOLVED_ADDRESSES),
+    %% RFC 8305 section 3: both queries are issued together rather than one
+    %% after the other, so neither family waits on the other's answer, and the
+    %% second answer is waited for only until the Resolution Delay expires. A
+    %% name that has no AAAA record therefore costs that delay rather than a
+    %% full lookup, and one whose AAAA answer is slow is not held behind it.
+    {V6, V4} = resolved_families(Host),
+    %% Each family is cut to the ceiling before sorting, so the number of source
+    %% probes is bounded by twice it however many addresses the name carries,
+    %% and the ordered list is cut again afterwards.
+    Candidates = lists:sublist(V6, ?MAXIMUM_RESOLVED_ADDRESSES)
+        ++ lists:sublist(V4, ?MAXIMUM_RESOLVED_ADDRESSES),
+    Sorted = sort_destinations(Candidates, fun connected_source/2),
+    Addresses = lists:sublist(
+        interleave_families(Sorted), ?MAXIMUM_RESOLVED_ADDRESSES
+    ),
     case Addresses of
         [] -> {error, nxdomain};
         _ -> {ok, Addresses}
+    end.
+
+%% Ask for both families at once and return what answered, waiting for the
+%% second answer only until the Resolution Delay runs out.
+-spec resolved_families(string()) ->
+    {[{family(), inet:ip_address()}], [{family(), inet:ip_address()}]}.
+resolved_families(Host) ->
+    Answers = resolve_families([
+        {inet6, fun() -> resolved_family(Host, inet6) end},
+        {inet, fun() -> resolved_family(Host, inet) end}
+    ]),
+    {maps:get(inet6, Answers, []), maps:get(inet, Answers, [])}.
+
+%% Run every query at once and return the answers that arrived, keyed by family.
+%%
+%% RFC 8305 section 3 asks for the queries to be issued as close together as
+%% possible and for resolution to be asynchronous, and it bounds the wait for a
+%% straggler by the Resolution Delay rather than by the whole lookup: the first
+%% answer starts that clock, and whatever has not arrived when it runs out is
+%% left out. A query that dies without answering counts as answering nothing, so
+%% one broken family never holds the other.
+-spec resolve_families([{family(), fun(() -> term())}]) -> map().
+resolve_families(Queries) ->
+    Parent = self(),
+    Reference = make_ref(),
+    Pending = maps:from_list([
+        spawn_monitor(fun() -> Parent ! {Reference, self(), Family, Query()} end)
+     || {Family, Query} <- Queries
+    ]),
+    Answers = collect_family_answers(Reference, Pending, #{}, infinity),
+    %% RFC 8305 section 5: a query whose answer came too late to be used is left
+    %% to finish rather than killed, because the answer still populates the
+    %% platform's resolver cache and a later connection can use it. Only the
+    %% monitor is dropped, and a late answer is flushed from the mailbox.
+    maps:foreach(
+        fun(_Worker, Monitor) -> erlang:demonitor(Monitor, [flush]) end,
+        Pending
+    ),
+    flush_family_answers(Reference),
+    Answers.
+
+-spec collect_family_answers(reference(), map(), map(), timeout()) -> map().
+collect_family_answers(Reference, Pending, Answers, Timeout) ->
+    case map_size(Pending) of
+        0 -> Answers;
+        _ ->
+            receive
+                {Reference, Worker, Family, Addresses}
+                    when is_map_key(Worker, Pending) ->
+                    Next = case map_size(Answers) of
+                        0 -> ?RESOLUTION_DELAY;
+                        _ -> Timeout
+                    end,
+                    collect_family_answers(
+                        Reference,
+                        maps:remove(Worker, Pending),
+                        Answers#{Family => Addresses},
+                        Next
+                    );
+                {'DOWN', Monitor, process, Worker, _Reason}
+                    when is_map_key(Worker, Pending) ->
+                    case maps:get(Worker, Pending) of
+                        Monitor ->
+                            collect_family_answers(
+                                Reference,
+                                maps:remove(Worker, Pending),
+                                Answers,
+                                Timeout
+                            );
+                        _Other ->
+                            collect_family_answers(
+                                Reference, Pending, Answers, Timeout
+                            )
+                    end
+            after Timeout ->
+                Answers
+            end
+    end.
+
+-spec flush_family_answers(reference()) -> ok.
+flush_family_answers(Reference) ->
+    receive
+        {Reference, _Worker, _Family, _Addresses} ->
+            flush_family_answers(Reference)
+    after 0 ->
+        ok
     end.
 
 -spec resolved_family(string(), family()) ->
@@ -621,6 +729,208 @@ resolved_family(Host, Family) ->
     case inet:getaddrs(Host, Family) of
         {ok, Addresses} -> [{Family, Address} || Address <- Addresses];
         {error, _Reason} -> []
+    end.
+
+%% RFC 8305 section 4 and RFC 6724 section 6: order the resolved addresses
+%% before any of them is attempted.
+%%
+%% The source address for each destination is the one the kernel would choose,
+%% asked for by connecting an unbound datagram socket and reading back the local
+%% end. Nothing is sent, so the probe costs a bind and a route lookup. Delegating
+%% that is deliberate: RFC 6724 section 5 source selection needs the interface
+%% addresses, their lifetimes, and which are deprecated or temporary, and the
+%% kernel has all of it. Rule 3, avoid deprecated source addresses, follows from
+%% delegating rather than from a rule here, because a kernel that offers a
+%% deprecated source is one that has no other.
+%%
+%% Rule 4, prefer home addresses, has no subject: Mobile IPv6 home and care-of
+%% addresses are not a distinction the platform exposes or this package makes.
+-spec sort_destinations(
+    [{family(), inet:ip_address()}],
+    fun((family(), inet:ip_address()) -> {ok, inet:ip_address()} | error)
+) -> [{family(), inet:ip_address()}].
+sort_destinations(Destinations, Source) ->
+    Ranked = [
+        {rank(Destination, Source), Index, Destination}
+     || {Index, Destination} <- lists:enumerate(Destinations)
+    ],
+    %% Rule 10 leaves the order unchanged, which the original index carries.
+    [Destination || {_Rank, _Index, Destination} <- lists:sort(Ranked)].
+
+%% Every rule but rule 9 compares one destination against the other through a
+%% value that depends on that destination alone, so the whole comparison is a
+%% sort key. Rule 9 is written for two destinations of one family, and under the
+%% default policy table two destinations of different families never reach it:
+%% rule 6 separates them first, because no IPv6 prefix in the table carries the
+%% precedence the IPv4-mapped prefix does.
+-spec rank({family(), inet:ip_address()}, fun()) -> tuple().
+rank({Family, Address}, Source) ->
+    Destination = mapped_bytes(Family, Address),
+    {DestinationPrecedence, DestinationLabel} = address_policy(Destination),
+    DestinationScope = address_scope(Destination),
+    case Source(Family, Address) of
+        error ->
+            %% Rule 1: a destination with no source address sorts last, and
+            %% nothing after rule 1 can bring it back.
+            {1, 0, 0, 0, 0, 0, 0};
+        {ok, Chosen} ->
+            Selected = mapped_bytes(Family, Chosen),
+            {_SourcePrecedence, SourceLabel} = address_policy(Selected),
+            {
+                0,
+                %% Rule 2: prefer a source whose scope matches.
+                case address_scope(Selected) =:= DestinationScope of
+                    true -> 0;
+                    false -> 1
+                end,
+                %% Rule 5: prefer a source whose label matches.
+                case SourceLabel =:= DestinationLabel of
+                    true -> 0;
+                    false -> 1
+                end,
+                %% Rule 6: prefer higher precedence.
+                -DestinationPrecedence,
+                %% Rule 7: prefer native transport over an encapsulating one.
+                case encapsulating_prefix(Selected) of
+                    true -> 1;
+                    false -> 0
+                end,
+                %% Rule 8: prefer smaller scope.
+                DestinationScope,
+                %% Rule 9: prefer the longer common prefix.
+                -common_prefix_length(Selected, Destination)
+            }
+    end.
+
+%% RFC 8305 section 4: whichever family leads the sorted list is followed by one
+%% address of the other, and so on, so a family whose connectivity is impaired
+%% costs one attempt rather than a run of them. The First Address Family Count
+%% is one here.
+-spec interleave_families([{family(), inet:ip_address()}]) ->
+    [{family(), inet:ip_address()}].
+interleave_families([]) ->
+    [];
+interleave_families([{Family, _} = First | Rest]) ->
+    {Same, Other} = lists:partition(
+        fun({Candidate, _}) -> Candidate =:= Family end, Rest
+    ),
+    [First | alternate(Other, Same)].
+
+-spec alternate([term()], [term()]) -> [term()].
+alternate([], Rest) -> Rest;
+alternate(Rest, []) -> Rest;
+alternate([Next | Rest], Other) -> [Next | alternate(Other, Rest)].
+
+%% RFC 6724 section 3.2: an IPv4 address is looked up as the IPv4-mapped IPv6
+%% address, so one comparison covers both families.
+-spec mapped_bytes(family(), inet:ip_address()) -> binary().
+mapped_bytes(inet, {A, B, C, D}) ->
+    <<0:80, 16#ffff:16, A, B, C, D>>;
+mapped_bytes(inet6, {A, B, C, D, E, F, G, H}) ->
+    <<A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>.
+
+%% RFC 6724 section 2.1, the default policy table, read longest prefix first.
+-spec address_policy(binary()) -> {integer(), integer()}.
+address_policy(Address) ->
+    Table = [
+        {128, <<0:127, 1:1>>, 50, 0},
+        {96, <<0:80, 16#ffff:16>>, 35, 4},
+        {96, <<0:96>>, 1, 3},
+        {32, <<16#2001:16, 0:16>>, 5, 5},
+        {16, <<16#2002:16>>, 30, 2},
+        {16, <<16#3ffe:16>>, 1, 12},
+        {10, <<16#fec0:16>>, 1, 11},
+        {7, <<16#fc00:16>>, 3, 13},
+        {0, <<>>, 40, 1}
+    ],
+    policy_row(Table, Address).
+
+-spec policy_row([{non_neg_integer(), binary(), integer(), integer()}], binary()) ->
+    {integer(), integer()}.
+policy_row([{Length, Prefix, Precedence, Label} | Rest], Address) ->
+    case prefix_matches(Length, Prefix, Address) of
+        true -> {Precedence, Label};
+        false -> policy_row(Rest, Address)
+    end;
+policy_row([], _Address) ->
+    {40, 1}.
+
+-spec prefix_matches(non_neg_integer(), binary(), binary()) -> boolean().
+prefix_matches(0, _Prefix, _Address) ->
+    true;
+prefix_matches(Length, Prefix, Address) ->
+    <<Wanted:Length/bits, _/bits>> = <<Prefix/binary, 0:128>>,
+    <<Actual:Length/bits, _/bits>> = Address,
+    Wanted =:= Actual.
+
+%% RFC 6724 section 3.1: a multicast address carries its scope, a unicast one is
+%% mapped onto the same ladder, and RFC 6724 section 3.2 gives the two IPv4
+%% prefixes that are link-local while every other IPv4 address is global.
+-spec address_scope(binary()) -> non_neg_integer().
+address_scope(<<16#ff, _:4, Scope:4, _/binary>>) ->
+    Scope;
+address_scope(<<0:127, 1:1>>) ->
+    2;
+address_scope(<<16#fe, Top:2, _:6, _/binary>>) when Top =:= 2#10 ->
+    2;
+address_scope(<<16#fe, Top:2, _:6, _/binary>>) when Top =:= 2#11 ->
+    5;
+address_scope(<<0:80, 16#ffff:16, 169, 254, _, _>>) ->
+    2;
+address_scope(<<0:80, 16#ffff:16, 127, _, _, _>>) ->
+    2;
+address_scope(_Address) ->
+    14.
+
+%% RFC 6724 section 6 rule 7: 6to4 and Teredo are the encapsulating transition
+%% mechanisms whose source address says so from its prefix alone. A configured
+%% tunnel cannot be told apart from a native interface here, which the rule's
+%% own discussion allows for.
+-spec encapsulating_prefix(binary()) -> boolean().
+encapsulating_prefix(Address) ->
+    prefix_matches(16, <<16#2002:16>>, Address) orelse
+        prefix_matches(32, <<16#2001:16, 0:16>>, Address).
+
+%% RFC 6724 section 2.2: the longest common leading prefix, capped at the length
+%% of the source's own prefix, which is why CommonPrefixLen(fe80::1, fe80::2) is
+%% 64 rather than 127.
+-spec common_prefix_length(binary(), binary()) -> non_neg_integer().
+common_prefix_length(Source, Destination) ->
+    common_bits(Source, Destination, 0).
+
+-spec common_bits(binary(), binary(), non_neg_integer()) -> non_neg_integer().
+common_bits(_Source, _Destination, 64) ->
+    64;
+common_bits(<<Bit:1, Source/bits>>, <<Bit:1, Destination/bits>>, Count) ->
+    common_bits(Source, Destination, Count + 1);
+common_bits(_Source, _Destination, Count) ->
+    Count.
+
+%% The source address the kernel would use for this destination. The socket is
+%% connected and never written to, so no packet leaves the host.
+-spec connected_source(family(), inet:ip_address()) ->
+    {ok, inet:ip_address()} | error.
+connected_source(Family, Address) ->
+    case gen_udp:open(0, [Family, binary, {active, false}]) of
+        {ok, Socket} ->
+            Source = probed_source(Socket, Address),
+            _ = gen_udp:close(Socket),
+            Source;
+        {error, _Reason} ->
+            error
+    end.
+
+-spec probed_source(gen_udp:socket(), inet:ip_address()) ->
+    {ok, inet:ip_address()} | error.
+probed_source(Socket, Address) ->
+    case gen_udp:connect(Socket, Address, ?SOURCE_PROBE_PORT) of
+        ok ->
+            case inet:sockname(Socket) of
+                {ok, {Source, _Port}} -> {ok, Source};
+                {error, _Reason} -> error
+            end;
+        {error, _Reason} ->
+            error
     end.
 
 %% Attempt every resolved address under one shared connect deadline.
@@ -887,6 +1197,7 @@ client_tls_options(ServerName, TrustedCertificates, AlpnProtocols) ->
             {match_fun, public_key:pkix_verify_hostname_match_fun(https)}
         ]},
         {versions, ['tlsv1.3', 'tlsv1.2']},
+        {ciphers, forward_secret_cipher_suites()},
         {alpn_advertised_protocols, AlpnProtocols},
         {depth, 10},
         {active, false},
@@ -899,12 +1210,48 @@ server_tls_options(CertsKeys, AlpnProtocols) ->
         {certs_keys, [CertsKeys]},
         {verify, verify_none},
         {versions, ['tlsv1.3', 'tlsv1.2']},
+        {ciphers, forward_secret_cipher_suites()},
         {alpn_preferred_protocols, AlpnProtocols},
         {honor_cipher_order, true},
         {reuse_sessions, false},
         {active, false},
         binary
     ].
+
+%% RFC 9325 sections 4.1 and 4.2: a cipher suite built on non-ephemeral
+%% Diffie-Hellman, finite-field or elliptic curve, is not to be negotiated, the
+%% ephemeral finite-field suites are not to be negotiated by a TLS 1.2 peer
+%% either, and forward secrecy is to be supported and preferred. The platform's
+%% default TLS 1.2 list carries static ECDH and TLS_DHE_* suites, so the list is
+%% pinned here rather than inherited. A CBC suite needs the encrypt_then_mac
+%% extension to be safe under section 4.2, which is simpler to satisfy by
+%% carrying no suite that needs it: only AEAD survives. TLS 1.3 spells its own
+%% always-ephemeral key schedule `any`.
+-spec forward_secret_cipher_suites() -> [ssl:erl_cipher_suite()].
+forward_secret_cipher_suites() ->
+    Filters = [
+        {key_exchange, fun(KeyExchange) ->
+            lists:member(KeyExchange, [any, ecdhe_ecdsa, ecdhe_rsa])
+        end},
+        {mac, fun(Mac) -> Mac =:= aead end}
+    ],
+    Offered =
+        ssl:cipher_suites(default, 'tlsv1.3') ++
+            ssl:cipher_suites(default, 'tlsv1.2'),
+    distinct_cipher_suites(ssl:filter_cipher_suites(Offered, Filters), []).
+
+%% The two version lists overlap, and preference is the list order, so the
+%% first occurrence of a suite is the one that is kept.
+-spec distinct_cipher_suites(
+    [ssl:erl_cipher_suite()], [ssl:erl_cipher_suite()]
+) -> [ssl:erl_cipher_suite()].
+distinct_cipher_suites([], Seen) ->
+    lists:reverse(Seen);
+distinct_cipher_suites([Suite | Rest], Seen) ->
+    case lists:member(Suite, Seen) of
+        true -> distinct_cipher_suites(Rest, Seen);
+        false -> distinct_cipher_suites(Rest, [Suite | Seen])
+    end.
 
 -spec valid_server_name(binary()) -> boolean().
 valid_server_name(ServerName) ->

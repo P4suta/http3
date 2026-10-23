@@ -389,3 +389,75 @@
   the new `SourceForbidden` error. RFC 9484 section 11 asks for BCP 38 ingress
   filtering wherever an endpoint knows that prefix, and the policy had no way
   to say it, so a spoofed source was forwarded like any other.
+- Replaced an obsolete line folding in a response with a space rather than
+  refusing the message, which RFC 9112 section 5.2 requires of a user agent.
+  A request carrying one is still rejected, which the same section requires of
+  a server; a fold with no field before it is refused in both directions.
+- Answered 414 rather than 400 when a request line passes the configured line
+  bound, which RFC 9112 section 3 requires of an over-long request target. The
+  parser names that case apart from an over-long field line, which keeps the
+  generic framing failure.
+- Accepted the absolute form of request target, which RFC 9112 section 3.2.2
+  requires of a server. The authority it carries is the one the request gets
+  and the Host field is not consulted at all, so the two cannot disagree; the
+  scheme has to be the one the listener serves.
+- Reported a send held by an exhausted endpoint memory grant as a transient
+  endpoint overload even once the stream's own buffer ceiling had filled behind
+  it. The tie between the two exhausted bounds went to the ceiling, so the
+  cause a caller was told depended on which of them reached zero first -- an
+  ordering it neither chose nor could observe, and one that reported a bare
+  operation timeout on a slow host where the ceiling filled first.
+- Sent a Date field in every 2xx, 3xx, and 4xx response, which RFC 9110
+  section 6.6.1 requires of an origin server with a clock and which none of
+  the three server protocols did. A handler that sets its own keeps it. The
+  field is rendered in the fixed-length format section 5.6.7 prefers, by one
+  shared module that is the only place the response path reads a wall clock.
+- Pinned the TLS cipher list on both the client and the server path to the
+  forward-secret AEAD suites. The platform default for TLS 1.2 carries static
+  ECDH and TLS_DHE_* suites, which RFC 9325 section 4.1 says not to negotiate
+  and the first of which offers no forward secrecy at all; inheriting that list
+  offered exactly what the section excludes. TLS 1.3 is unaffected: its own
+  suites are always ephemeral and always AEAD.
+- Refused a non-canonical `Sec-WebSocket-Key`, which a length check alone let
+  through. RFC 6455 section 4.1 asks for a base64-encoded sixteen-byte nonce,
+  and erratum 3150 records that the document's own example left the unused bits
+  of its final character set; the platform decoder accepts such a value, so the
+  offered key is now required to re-encode to itself, as RFC 4648 section 3.5
+  describes.
+- Sorted resolved addresses by RFC 6724 Destination Address Selection before
+  attempting any of them, which RFC 8305 section 4 requires and which was not
+  done: every IPv6 address was tried before every IPv4 one, whatever the host's
+  own connectivity said. The source address for each destination is the one the
+  kernel would choose, asked for by connecting an unbound datagram socket that
+  is never written to, so source selection and its deprecated-address rule stay
+  where the interface state is. The ordered list then interleaves the two
+  families, so an impaired family costs one attempt rather than a run of them.
+- Asked for both address families at once instead of one after the other, which
+  RFC 8305 section 3 requires of the resolution step: the A query used to be
+  issued only once the AAAA answer had come back, so a name whose IPv6 answer
+  was slow paid for it twice over. The first answer now starts the Resolution
+  Delay of section 8, and a straggler is waited for only until that runs out.
+- Ordered the Cookie request field the way RFC 6265 section 5.4 asks: longer
+  paths before shorter ones, and among equally specific cookies the one created
+  first. A cookie's creation time is now recorded, persisted as an age, and kept
+  when a later Set-Cookie replaces its value, which section 5.3 requires, so
+  refreshing a cookie no longer moves it to the end of the field.
+  `client_store.CookieRecord` gains an `age_milliseconds` field.
+- Evicted excess cookies in the order RFC 6265 section 5.3 requires: a cookie
+  sharing a domain with more than half the store's entry ceiling goes before any
+  other cookie, and within either tier the cookie accessed longest ago goes
+  first. The store had no per-cookie access time at all, so it dropped whichever
+  cookie had been written longest ago; sending a cookie now records that it was
+  used. Expired cookies were already evicted ahead of both tiers.
+- Counted a material burst compression only when more than one datagram left in
+  the same send. The relay sends one at a time, so the figure it was thresholding
+  reduced to the decrease in its own per-packet delay between two packets: one
+  waiting fifteen milliseconds for a scheduler slot followed by one waiting two
+  hundred microseconds registered as a fourteen millisecond compression with
+  nothing coalesced. The microsecond figure beside the counter still reports the
+  raw measurement.
+- Kept a cookie carrying neither Expires nor Max-Age out of any persistence
+  adapter. RFC 6265 section 5.3 clears such a cookie's persistent flag and
+  removes it when the session ends, which for this package is the life of one
+  client; it was being handed to the adapter with the one-day default lifetime
+  and so could outlive the session it belonged to.
