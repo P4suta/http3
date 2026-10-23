@@ -36,7 +36,7 @@ run() ->
 audit_pin(Peer) ->
     case maps:get(<<"id">>, Peer) of
         <<"aioquic-h3">> ->
-            ensure(file_digest("packages/http3/test/interop/requirements.lock")
+            ensure(file_digest("packages/http3/test/interop/requirements.txt")
                    =:= maps:get(<<"lock_sha256">>, Peer),
                    aioquic_lock_drift);
         <<"quic-go-h3">> ->

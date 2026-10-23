@@ -15,6 +15,7 @@ path = [
   "*.md",
   "coverage-*.json",
   "qualification.json",
+  "renovate.json",
   "*.toml",
   "mix.lock",
   "LICENSE",

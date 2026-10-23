@@ -426,7 +426,7 @@ summary_json(Direction, Summary) ->
 source_digest() ->
     Paths = ["scripts/qpack_differential.escript",
              "packages/http3/test/interop/qpack_oracle.py",
-             "packages/http3/test/interop/requirements.lock",
+             "packages/http3/test/interop/requirements.txt",
              "packages/http3/src/http3/internal/qpack/decoder.gleam",
              "packages/http3/src/http3/internal/qpack/encoder.gleam",
              "packages/http3/src/http3/internal/qpack/field_section.gleam",
@@ -441,7 +441,7 @@ validate_oracle_lock(Document) ->
     Path = binary_to_list(required(Oracle, <<"requirements_lock">>)),
     Expected = required(Oracle, <<"requirements_lock_sha256">>),
     ensure_validation(Path =:=
-                      "packages/http3/test/interop/requirements.lock",
+                      "packages/http3/test/interop/requirements.txt",
                       oracle_lock_path_drift),
     Lock = read(Path),
     ensure_validation(binary:match(Lock, <<"pylsqpack==0.3.24">>) =/=

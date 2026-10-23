@@ -156,7 +156,7 @@ def generate(path: Path) -> None:
 
     require(blocked_cases >= 2, "oracle corpus lost blocked-stream coverage")
     require(dynamic_steps >= 2, "oracle corpus lost dynamic-table coverage")
-    lock = repository_root() / "packages/http3/test/interop/requirements.lock"
+    lock = repository_root() / "packages/http3/test/interop/requirements.txt"
     write_json(
         path,
         {
@@ -165,7 +165,7 @@ def generate(path: Path) -> None:
             "oracle": {
                 "name": "pylsqpack",
                 "version": pylsqpack.__version__,
-                "requirements_lock": "packages/http3/test/interop/requirements.lock",
+                "requirements_lock": "packages/http3/test/interop/requirements.txt",
                 "requirements_lock_sha256": sha256(lock),
             },
             "configuration": {

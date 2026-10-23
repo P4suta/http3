@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Installed interoperability peer packages"
+paths = ['''^packages/http3/build/interop-venv/''']

@@ -4,8 +4,8 @@
   "peers": [
     {"id": "curl-h1-h2", "roles": ["client"], "pin": "curl 8.5.0", "evidence": "test/interop/curl/run.sh"},
     {"id": "nghttp2-h2", "roles": ["client", "server"], "pin": null, "evidence": null},
-    {"id": "aioquic-h3", "roles": ["client", "server"], "pin": "aioquic==1.3.0", "lock_sha256": "0cce722bbb9c75cf2ef792a210f72f9cd79b49db223744c15367274331280b5e", "evidence": "packages/http3/test/interop/run.sh"},
-    {"id": "quic-go-h3", "roles": ["client", "server"], "pin": "github.com/quic-go/quic-go@v0.61.0", "lock_sha256": "94fa31e7e591c94b99549f989e66936a2ec6105cb527553c93cb90215497c199", "evidence": "packages/http3/test/interop/run.sh"},
+    {"id": "aioquic-h3", "roles": ["client", "server"], "pin": "aioquic==1.3.0", "lock_sha256": "7bd14e5b50a01a019249666fa4d30ed5366f641c8543ec2c85285954055f022c", "evidence": "packages/http3/test/interop/run.sh"},
+    {"id": "quic-go-h3", "roles": ["client", "server"], "pin": "github.com/quic-go/quic-go@v0.61.0", "lock_sha256": "57980c9f9c8881d325a04bec874fb97b803ca350ff19ac001d9b06cbe44f764e", "evidence": "packages/http3/test/interop/run.sh"},
     {"id": "ngtcp2-nghttp3-h3", "roles": ["client", "server"], "pin": null, "evidence": null},
     {"id": "quiche-h3", "roles": ["client", "server"], "pin": null, "evidence": null},
     {"id": "chromium", "roles": ["client"], "pin": null, "evidence": null},
