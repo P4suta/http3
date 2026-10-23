@@ -39,7 +39,7 @@ run_client(Port, QuicVersion, QlogDirectory) ->
     {ok, nil} = http3@client:send_chunk(Stream, <<"native-request">>),
     {ok, nil} = http3@client:finish(Stream),
     {201, Headers, <<"quic-go-response">>} = collect(Stream),
-    {<<"x-interop-peer">>, <<"quic-go-v0.61.0">>} =
+    {<<"x-interop-peer">>, <<"quic-go-v0.64.1">>} =
         lists:keyfind(<<"x-interop-peer">>, 1, Headers),
     {ok, closed} = http3@client:close(Connection),
     io:format("native client to quic-go server (~p) interop ok~n", [

@@ -14,5 +14,19 @@
   "pip-compile": {
     "managerFilePatterns": ["/^packages/http3/test/interop/requirements\\.txt$/"]
   },
-  "pip_requirements": {"enabled": false}
+  "pip_requirements": {"enabled": false},
+  "packageRules": [
+    {
+      "description": "Keep generated-text artifact support until https://github.com/P4suta/http3/issues/45 is complete.",
+      "matchManagers": ["mise", "github-actions"],
+      "matchPackageNames": ["gleam-lang/gleam"],
+      "allowedVersions": "<1.19.0"
+    },
+    {
+      "description": "Keep Semgrep's Windows dependency support until https://github.com/P4suta/http3/issues/49 is complete.",
+      "matchManagers": ["mise"],
+      "matchPackageNames": ["python/cpython"],
+      "allowedVersions": "<3.15.0"
+    }
+  ]
 }

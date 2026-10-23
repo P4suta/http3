@@ -1,11 +1,11 @@
 [tools]
-gleam = "1.19.2"
+gleam = "1.18.1"
 erlang = "29.1.2"
 elixir = "1.20.4"
 rebar = "3.27.3"
 actionlint = "1.7.12"
 go = "1.27.3"
-python = "3.15.0"
+python = "3.14.9"
 uv = "0.13.3"
 taplo = "0.10.0"
 typos = "1.51.1"
@@ -267,7 +267,7 @@ description = "Run repository-owned FFI and public-boundary security rules"
 shell = "bash -c"
 run = [
   "mkdir -p build/semgrep",
-  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
+  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --jobs 2 --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
 ]
 
 [tasks.sbom]
@@ -384,12 +384,12 @@ run = [
 description = "Run the pinned bidirectional RFC 9204 QPACK differential oracle"
 run = [
   "bash scripts/fresh_build.sh http3",
-  "test -x packages/http3/build/interop-venv/bin/python",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py --self-test",
+  "uv run --no-project --python packages/http3/build/interop-venv python --version",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py --self-test",
   "escript scripts/qpack_differential.escript --self-test",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py generate build/qpack-differential/oracle.json",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py generate build/qpack-differential/oracle.json",
   "escript scripts/qpack_differential.escript exercise build/qpack-differential/oracle.json build/qpack-differential/implementation.json",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py verify build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py verify build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
   "escript scripts/qpack_differential.escript finalize build/qpack-differential/oracle.json build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
 ]
 

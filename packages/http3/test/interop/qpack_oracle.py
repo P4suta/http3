@@ -13,7 +13,7 @@ from typing import Any
 import pylsqpack
 
 
-EXPECTED_VERSION = "0.3.24"
+EXPECTED_VERSION = "1.0.0"
 SCHEMA = 1
 CAPACITY = 512
 BLOCKED_STREAMS = 8

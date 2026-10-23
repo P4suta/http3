@@ -9,8 +9,8 @@ production dependency. The hermetic unit and loopback suites remain in
 
 | Peer | Native client evidence | Native server evidence |
 | --- | --- | --- |
-| aioquic 1.3.0 | v1 initial attempt to a v2-only peer, RFC 9368 compatible negotiation, certificate and hostname verification, HTTP Datagram, active migration, session ticket, actual 0-RTT request, and qlog | Bounded POST request and response with certificate and hostname verification and qlog |
-| quic-go 0.61.0 | Streaming POST request and response over explicitly selected QUIC v1 and v2, with qlog | Bounded POST request and response from explicitly selected QUIC v1 and v2 clients, with qlog |
+| aioquic 1.7.0 | v1 initial attempt to a v2-only peer, RFC 9368 compatible negotiation, certificate and hostname verification, HTTP Datagram, active migration, session ticket, actual 0-RTT request, and qlog | Bounded POST request and response with certificate and hostname verification and qlog |
+| quic-go 0.64.1 | Streaming POST request and response over explicitly selected QUIC v1 and v2, with qlog | Bounded POST request and response from explicitly selected QUIC v1 and v2 clients, with qlog |
 
 The aioquic peer records explicit observations for QUIC v2, the HTTP Datagram,
 the post-migration request, and the request received before handshake

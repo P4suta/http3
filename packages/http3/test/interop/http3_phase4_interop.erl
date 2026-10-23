@@ -32,7 +32,7 @@ run(Port, ResumptionPort, QlogDirectory) ->
     {ok, nil} = http3@client:finish(Stream),
     {200, Headers, <<"aioquic-advanced">>} =
         collect(Stream, 200, Headers, <<>>),
-    {<<"x-interop-peer">>, <<"aioquic-1.3.0">>} =
+    {<<"x-interop-peer">>, <<"aioquic-1.7.0">>} =
         lists:keyfind(<<"x-interop-peer">>, 1, Headers),
 
     {ok, nil} = http3@transport:set_congestion_control(ConnectionTransport, cubic),
