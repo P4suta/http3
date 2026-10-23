@@ -30,7 +30,7 @@ defmodule Http3.MixProject do
   defp deps do
     [
       {:gleam_erlang, "== 1.3.0"},
-      {:gleam_http, "== 4.3.0"},
+      {:gleam_http, "== 4.5.0"},
       {:quic_core, path: "../quic_core"},
       {:gleam_stdlib, "== 1.0.5"}
     ]

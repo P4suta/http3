@@ -26,16 +26,16 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: 2026.8.10
+          version: 2026.10.15
 
       - name: Run security gates
         run: mise run security
 
       - name: Upload CycloneDX evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: http-cyclonedx-sbom
           path: build/security/http.cdx.json
@@ -52,9 +52,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: 2026.8.10
+          version: 2026.10.15
 
       - name: Install exact MixGleam archive
         run: |
@@ -75,9 +75,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          version: 2026.8.10
+          version: 2026.10.15
 
       - name: Install hash-locked aioquic peer
         run: mise run interop-setup
@@ -105,8 +105,8 @@ jobs:
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ matrix.otp }}
-          gleam-version: 1.18.1
-          rebar3-version: 3.27.0
+          gleam-version: v1.19.2
+          rebar3-version: 3.27.3
 
       - name: Build with warnings as errors
         run: gleam build --warnings-as-errors
@@ -150,9 +150,9 @@ jobs:
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: 29.0.5
-          gleam-version: 1.18.1
-          rebar3-version: 3.27.0
+          otp-version: 29.1.2
+          gleam-version: v1.19.2
+          rebar3-version: 3.27.3
           version-type: strict
 
       - name: Build with warnings as errors
