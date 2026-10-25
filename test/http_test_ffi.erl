@@ -25,6 +25,13 @@
     packet_too_big_snapshot_race/1,
     packet_too_big_wire_vectors/0,
     server_credentials/0,
+    sorted_destination_order/1,
+    family_resolution_trace/3,
+    resolved_host_order/3,
+    grouped_policy_store_trace/3,
+    with_loopback_hosts/2,
+    material_burst_compressions/1,
+    interleaved_destination_order/1,
     start_exclusive_udp_port_guard/0,
     start_task/1,
     start_udp_ecn_echo_server/0,
@@ -33,6 +40,7 @@
     stop_udp_echo_server/1,
     stop_exclusive_udp_port_guard/1,
     suspend_system_udp_owner/1,
+    tls_option_cipher_profile/0,
     udp_ecn_echo_snapshot/1,
     udp_loopback_packet/1,
     with_blackhole_first_host/1
@@ -718,6 +726,174 @@ server_credentials() ->
      || {'Certificate', Der, _Encryption} <- public_key:pem_decode(CaPem)
     ],
     {CertificatePem, PrivateKeyPem, CaDer}.
+
+-spec tls_option_cipher_profile() ->
+    {{non_neg_integer(), [binary()], [binary()]},
+     {non_neg_integer(), [binary()], [binary()]}}.
+tls_option_cipher_profile() ->
+    Client = http_transport_ffi:client_tls_options(
+        <<"example.test">>, [], [<<"h2">>]
+    ),
+    Server = http_transport_ffi:server_tls_options(#{}, [<<"h2">>]),
+    {cipher_profile(Client), cipher_profile(Server)}.
+
+-spec cipher_profile([term()]) ->
+    {non_neg_integer(), [binary()], [binary()]}.
+cipher_profile(Options) ->
+    Suites = proplists:get_value(ciphers, Options, []),
+    Names = fun(Key) ->
+        lists:usort([
+            atom_to_binary(maps:get(Key, Suite, undefined), utf8)
+         || Suite <- Suites
+        ])
+    end,
+    {length(Suites), Names(key_exchange), Names(mac)}.
+
+-spec sorted_destination_order([{binary(), binary()}]) -> [binary()].
+sorted_destination_order(Pairs) ->
+    %% Each pair is a destination address and the source address the kernel
+    %% would choose for it, with <<>> meaning that no source is available.
+    Destinations = [
+        {address_family(Destination), parsed_address(Destination)}
+     || {Destination, _Source} <- Pairs
+    ],
+    Source = fun(_Family, Address) ->
+        case [S || {D, S} <- Pairs, parsed_address(D) =:= Address] of
+            [<<>>] -> error;
+            [Chosen] -> {ok, parsed_address(Chosen)};
+            _ -> error
+        end
+    end,
+    formatted_addresses(
+        http_transport_ffi:sort_destinations(Destinations, Source)
+    ).
+
+-spec interleaved_destination_order([binary()]) -> [binary()].
+interleaved_destination_order(Addresses) ->
+    formatted_addresses(
+        http_transport_ffi:interleave_families([
+            {address_family(Address), parsed_address(Address)}
+         || Address <- Addresses
+        ])
+    ).
+
+-spec formatted_addresses([{atom(), inet:ip_address()}]) -> [binary()].
+formatted_addresses(Addresses) ->
+    [list_to_binary(inet:ntoa(Address)) || {_Family, Address} <- Addresses].
+
+-spec parsed_address(binary()) -> inet:ip_address().
+parsed_address(Address) ->
+    {ok, Parsed} = inet:parse_address(binary_to_list(Address)),
+    Parsed.
+
+-spec address_family(binary()) -> inet | inet6.
+address_family(Address) ->
+    case parsed_address(Address) of
+        {_, _, _, _} -> inet;
+        _ -> inet6
+    end.
+
+%% Run the concurrent family resolution with each family's answer delayed by the
+%% given number of milliseconds, where a negative delay means the query dies
+%% without answering. Returns how long the whole collection took and which
+%% families were represented in the result.
+-spec family_resolution_trace(integer(), integer(), integer()) ->
+    {non_neg_integer(), boolean(), boolean()}.
+family_resolution_trace(SixDelay, FourDelay, _Unused) ->
+    Query = fun(Delay, Answer) ->
+        fun() ->
+            case Delay < 0 of
+                true -> exit(resolution_failed);
+                false -> timer:sleep(Delay)
+            end,
+            Answer
+        end
+    end,
+    Started = erlang:monotonic_time(millisecond),
+    Answers = http_transport_ffi:resolve_families([
+        {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
+        {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
+    ]),
+    Elapsed = erlang:monotonic_time(millisecond) - Started,
+    {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}.
+
+%% Register one name with the given IPv4 and IPv6 addresses in the host file,
+%% resolve it through the production path, and return the resolved order.
+-spec resolved_host_order(binary(), [binary()], [binary()]) -> [binary()].
+resolved_host_order(Name, FourAddresses, SixAddresses) ->
+    Host = binary_to_list(Name),
+    PreviousLookup = inet_db:res_option(lookup),
+    ok = inet_db:set_lookup([file | lists:delete(file, PreviousLookup)]),
+    Registered = FourAddresses ++ SixAddresses,
+    lists:foreach(
+        fun(Address) -> ok = inet_db:add_host(parsed_address(Address), [Host]) end,
+        Registered
+    ),
+    try
+        case http_transport_ffi:resolve_host(Host) of
+            {ok, Addresses} -> formatted_addresses(Addresses);
+            {error, _Reason} -> []
+        end
+    after
+        lists:foreach(
+            fun(Address) -> inet_db:del_host(parsed_address(Address)) end,
+            Registered
+        ),
+        ok = inet_db:set_lookup(PreviousLookup)
+    end.
+
+%% Drive a grouped policy store through a script and return the keys it kept,
+%% most recently accessed first. A step is {put, Key, Group} or {touch, Keys}.
+-spec grouped_policy_store_trace(
+    pos_integer(), pos_integer(), [{put, binary(), binary()} | {touch, [binary()]}]
+) -> [binary()].
+grouped_policy_store_trace(MaximumEntries, MaximumPerGroup, Steps) ->
+    Store = http_client_ffi:new_grouped_policy_store(
+        MaximumEntries, 1048576, MaximumPerGroup
+    ),
+    Partition = <<"test">>,
+    Expiry = erlang:monotonic_time(millisecond) + 600000,
+    lists:foreach(
+        fun
+            ({put, Key, Group}) ->
+                true = http_client_ffi:policy_store_put_grouped(
+                    Store, Partition, Key, Key, Expiry, 1, Group
+                );
+            ({touch, Keys}) ->
+                nil = http_client_ffi:policy_store_touch(Store, Partition, Keys)
+        end,
+        Steps
+    ),
+    Kept = http_client_ffi:policy_store_list(Store, Partition),
+    nil = http_client_ffi:close_policy_store(Store),
+    Kept.
+
+%% Run `Run` with every given name resolving to loopback, restoring the
+%% resolver configuration on every exit path.
+-spec with_loopback_hosts([binary()], fun(() -> term())) -> term().
+with_loopback_hosts(Names, Run) when is_list(Names), is_function(Run, 0) ->
+    PreviousLookup = inet_db:res_option(lookup),
+    ok = inet_db:set_lookup([file | lists:delete(file, PreviousLookup)]),
+    Hosts = [binary_to_list(Name) || Name <- Names],
+    ok = inet_db:add_host(?LOOPBACK_ADDRESS, Hosts),
+    try
+        Run()
+    after
+        inet_db:del_host(?LOOPBACK_ADDRESS),
+        ok = inet_db:set_lookup(PreviousLookup)
+    end.
+
+%% Which of the given {Compression, BatchPackets} pairs the relay counts as a
+%% material burst compression.
+-spec material_burst_compressions([{non_neg_integer(), pos_integer()}]) ->
+    [boolean()].
+material_burst_compressions(Samples) ->
+    [
+        http_masque_udp_ffi:material_burst_compression(
+            Compression, BatchPackets
+        )
+     || {Compression, BatchPackets} <- Samples
+    ].
 
 -spec exit_now() -> no_return().
 exit_now() ->
