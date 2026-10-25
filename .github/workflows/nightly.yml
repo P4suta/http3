@@ -33,9 +33,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Run randomized state model
         run: mise run model -- --shard "${{ matrix.shard }}" --shards 8
@@ -79,9 +79,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Run generated campaign shard
         run: mise run "${{ matrix.mode }}" -- --shard "${{ matrix.shard }}" --shards 8
@@ -110,9 +110,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Run full coverage
         run: mise run coverage-full
@@ -152,9 +152,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Install hash-locked interoperability peers
         run: mise run interop-setup
@@ -211,9 +211,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Run live credential matrix row
         run: mise run credential-matrix-local
@@ -245,9 +245,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Download credential rows
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -279,9 +279,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Run deterministic fault gate
         run: mise run fault
@@ -316,9 +316,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Validate emitted qlog traces
         run: mise run qlog-validate
@@ -347,9 +347,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Audit requirement coverage
         run: mise run requirements-audit
@@ -386,9 +386,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Simulate the three-package release
         run: mise run release-sim

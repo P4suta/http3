@@ -24,9 +24,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Install exact MixGleam archive
         run: |
@@ -47,9 +47,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.10.15
+          version: 2026.10.17
 
       - name: Install hash-locked aioquic peer
         run: mise run interop-setup
@@ -78,7 +78,7 @@ jobs:
         with:
           otp-version: ${{ matrix.otp }}
           gleam-version: 1.18.1
-          rebar3-version: 3.27.3
+          rebar3-version: 3.28.0
 
       - name: Build with warnings as errors
         run: gleam build --warnings-as-errors
@@ -123,7 +123,7 @@ jobs:
         with:
           otp-version: 29.1.2
           gleam-version: 1.18.1
-          rebar3-version: 3.27.3
+          rebar3-version: 3.28.0
           version-type: strict
 
       - name: Build with warnings as errors
