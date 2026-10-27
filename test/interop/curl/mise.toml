@@ -1,0 +1,5 @@
+[tool_config]
+locked = true
+
+[tools]
+"conda:curl" = { version = "8.23.0", channel = "conda-forge", os = ["linux"] }

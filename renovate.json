@@ -15,7 +15,28 @@
     "managerFilePatterns": ["/^packages/http3/test/interop/requirements\\.txt$/"]
   },
   "pip_requirements": {"enabled": false},
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^standards/interop-profile\\.json$/"],
+      "matchStrings": [
+        "\"id\"\\s*:\\s*\"curl-h1-h2\"[^}]*\"pin\"\\s*:\\s*\"curl (?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "conda:curl",
+      "packageNameTemplate": "curl",
+      "datasourceTemplate": "conda",
+      "versioningTemplate": "semver"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Update the curl tool and interoperability profile together.",
+      "matchManagers": ["mise", "custom.regex"],
+      "matchDatasources": ["conda"],
+      "matchPackageNames": ["curl"],
+      "registryUrls": ["https://api.anaconda.org/package/conda-forge"],
+      "groupName": "curl interoperability peer"
+    },
     {
       "description": "Keep generated-text artifact support until https://github.com/P4suta/http3/issues/45 is complete.",
       "matchManagers": ["mise", "github-actions"],

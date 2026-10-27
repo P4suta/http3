@@ -209,7 +209,15 @@ run = [
 
 [tasks.interop-curl]
 description = "Run independent curl HTTP/1.1 and HTTP/2 client interoperability"
-run = "bash test/interop/curl/run.sh"
+shell = "bash -c"
+run = """
+if [ "$(uname -s)" != Linux ]; then
+  echo 'curl interoperability requires Linux.' >&2
+  exit 1
+fi
+mise -C test/interop/curl install conda:curl || exit "$?"
+exec mise -C test/interop/curl exec conda:curl -- bash run.sh
+"""
 
 [tasks.interop-http3]
 description = "Run both independent HTTP/3 peer phase gates"

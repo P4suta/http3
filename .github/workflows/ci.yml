@@ -15,7 +15,7 @@ concurrency:
 jobs:
   quality:
     name: Change verification
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -38,7 +38,7 @@ jobs:
 
   interop:
     name: Independent HTTP/3 interoperability
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -59,7 +59,7 @@ jobs:
 
   otp:
     name: Erlang/OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -152,7 +152,7 @@ jobs:
     name: required
     if: always()
     needs: [quality, interop, otp, smoke]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:

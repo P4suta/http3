@@ -12,7 +12,7 @@ concurrency:
 jobs:
   model:
     name: State model shard ${{ matrix.shard }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -55,7 +55,7 @@ jobs:
 
   generated-campaigns:
     name: ${{ matrix.mode }} million-case shard ${{ matrix.shard }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -101,7 +101,7 @@ jobs:
 
   coverage-full:
     name: Whole-repository coverage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
       - name: Check out repository
@@ -132,7 +132,7 @@ jobs:
 
   interop-matrix:
     name: Interop ${{ matrix.peer }} on OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -233,7 +233,7 @@ jobs:
 
   credential-aggregate:
     name: Aggregate credential attestations
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     needs:
       - credential-matrix
@@ -270,7 +270,7 @@ jobs:
 
   faults-netem:
     name: Network fault injection
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - name: Check out repository
@@ -307,7 +307,7 @@ jobs:
 
   qlog-cddl:
     name: qlog schema validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - name: Check out repository
@@ -338,7 +338,7 @@ jobs:
 
   errata-drift:
     name: Requirement and errata drift
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -369,7 +369,7 @@ jobs:
 
   release-sim:
     name: Three-package release simulation on OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
