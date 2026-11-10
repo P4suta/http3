@@ -19,6 +19,9 @@ pub type CookieRecord {
     host_only: Bool,
     secure: Bool,
     expires_in_milliseconds: Int,
+    /// How long before the load or the put this cookie was first stored, which
+    /// RFC 6265 section 5.4 orders equally specific cookies by.
+    age_milliseconds: Int,
   )
 }
 

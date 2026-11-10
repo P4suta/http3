@@ -17,6 +17,7 @@ import gleam/uri
 import http/body
 import http/context
 import http/error
+import http/internal/date
 import http3/address as h3_address
 import http3/server as h3_server
 import http3/transport as h3_transport
@@ -404,7 +405,11 @@ fn send_response(
   pull_bytes: Int,
 ) -> Result(Nil, error.Error) {
   use _ <- result.try(
-    h3_server.send_response(incoming, outgoing.status, outgoing.headers)
+    h3_server.send_response(
+      incoming,
+      outgoing.status,
+      date.with_date(status: outgoing.status, headers: outgoing.headers),
+    )
     |> result.map_error(map_h3_error),
   )
   case method {

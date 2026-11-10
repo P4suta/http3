@@ -2374,6 +2374,30 @@ pub fn rfc9298_system_udp_owner_relays_loopback_with_bounded_trace_test() -> Nil
   http_test_support.stop_udp_echo_server(echo_server)
 }
 
+pub fn a_burst_compression_is_material_only_when_packets_were_batched_test() -> Nil {
+  // The compression figure is the difference between how far apart two packets
+  // arrived and how far apart they left. For a relay that sends one datagram
+  // per send -- which this one does, and which is why the snapshot reports a
+  // maximum batch of one -- that difference reduces to the decrease in the
+  // relay's own per-packet delay: a packet that waited fifteen milliseconds for
+  // a scheduler slot followed by one that waited two hundred microseconds
+  // measures as a fourteen millisecond compression with nothing coalesced.
+  //
+  // An operator reading a counter named for burst compression would act on it
+  // as though packets had been put on the wire together. So the batch decides
+  // whether a measurement is material, and the microsecond figure beside it
+  // keeps reporting the raw measurement either way.
+  let counted = http_test_support.material_burst_compressions
+
+  // A large compression with no batching is not material, at any size.
+  assert counted([#(14_800, 1), #(1_000_000, 1), #(1001, 1)])
+    == [False, False, False]
+
+  // With a batch, the threshold is what decides.
+  assert counted([#(1001, 2), #(1000, 2), #(0, 2), #(14_800, 8)])
+    == [True, False, False, True]
+}
+
 pub fn rfc9298_system_udp_relay_has_one_to_one_bounded_timing_trace_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
