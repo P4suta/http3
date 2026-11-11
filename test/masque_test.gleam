@@ -3006,15 +3006,61 @@ pub fn rfc9298_system_udp_event_wait_is_finite_and_payload_free_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
 
-  let assert masque.SystemUdpEventTimedOut(session: timed_out) =
-    masque.wait_system_udp_event(session, 100)
-  let snapshot = masque.system_udp_socket_snapshot(timed_out)
-  assert snapshot.event_waiting == False
-  assert snapshot.event_timeouts == 1
-  assert snapshot.socket_failures == 0
+  let completed =
+    assert_system_udp_event_deadline(masque.wait_system_udp_event(session, 100))
 
-  assert masque.close_udp_proxy_session(timed_out) == Ok(Nil)
+  assert masque.close_udp_proxy_session(completed) == Ok(Nil)
   http_test_support.stop_udp_echo_server(echo_server)
+}
+
+pub fn rfc9298_system_udp_stalled_event_wait_is_terminal_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let tunnel = system_udp_tunnel(peer, 1000)
+  let socket = masque.udp_proxy_socket(tunnel)
+  let session =
+    masque.bind_udp_proxy_stream(
+      tunnel,
+      masque.udp_request_stream_resource(fn(_, _) { Ok(Nil) }),
+    )
+  http_test_support.suspend_system_udp_owner(socket)
+  let observed = masque.wait_system_udp_event(session, 100)
+  let assert masque.SystemUdpEventObserved(..) = observed
+  let completed = assert_system_udp_event_deadline(observed)
+  assert masque.close_udp_proxy_session(completed) == Ok(Nil)
+  http_test_support.stop_udp_echo_server(echo_server)
+}
+
+fn assert_system_udp_event_deadline(
+  observed: masque.SystemUdpEventWait,
+) -> masque.UdpProxySession(masque.SystemUdpSocket) {
+  case observed {
+    masque.SystemUdpEventTimedOut(session: timed_out) -> {
+      let snapshot = masque.system_udp_socket_snapshot(timed_out)
+      assert snapshot.event_waiting == False
+      assert snapshot.event_timeouts == 1
+      assert snapshot.socket_failures == 0
+      timed_out
+    }
+    _ -> {
+      let assert masque.SystemUdpEventObserved(
+        session: terminated,
+        failure: masque.SystemUdpSocketFailure,
+        cleanup: Ok(Nil),
+      ) = observed
+      let socket = masque.system_udp_socket_snapshot(terminated)
+      assert socket.state == masque.SystemUdpClosed
+      assert socket.event_waiting == False
+      assert socket.receive_waiting == False
+      assert socket.queued_commands == 0
+      assert socket.socket_failures == 1
+      let resources = masque.udp_proxy_session_snapshot(terminated)
+      assert resources.state == masque.UdpProxyClosed
+      assert resources.cleanup_attempts == 1
+      assert resources.request_stream.close_calls == 1
+      assert resources.socket.close_calls == 1
+      terminated
+    }
+  }
 }
 
 pub fn rfc9298_system_udp_event_wait_observes_actor_crash_and_cleans_once_test() -> Nil {
@@ -4066,8 +4112,6 @@ pub fn rfc9298_system_udp_error_cancels_live_http3_request_stream_test() -> Nil 
 
 pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
-  // This test drives each receive with its own 1 ms deadline below.
-  // Give the unrelated fresh-BEAM socket-owner startup a production-shaped budget so scheduler cold-start latency cannot masquerade as a command-credit bug.
   let tunnel = system_udp_tunnel(peer, 1000)
   let socket = masque.udp_proxy_socket(tunnel)
   let stream_closed = process.new_subject()
@@ -4084,7 +4128,7 @@ pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
     list.repeat(Nil, times: 8)
     |> list.map(fn(_) {
       http_test_support.start_task(fn() {
-        masque.receive_system_udp_datagram(session, 1)
+        masque.receive_system_udp_datagram(session, 1000)
       })
     })
   wait_for_system_udp_queue(session: session, expected: 8, attempts: 100)
@@ -4095,6 +4139,7 @@ pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
   let assert masque.SystemUdpReceiveBusy(session: busy_session) =
     masque.receive_system_udp_datagram(session, 1)
   assert masque.system_udp_socket_snapshot(busy_session).rejected_commands == 1
+  http_test_support.kill_system_udp_owner(socket)
   list.each(admitted, fn(task) {
     let assert masque.SystemUdpSocketTerminated(..) =
       http_test_support.await_task(task)

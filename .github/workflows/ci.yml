@@ -24,9 +24,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.17
+          version: 2026.11.6
 
       - name: Install exact MixGleam archive
         run: |
@@ -47,9 +47,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.17
+          version: 2026.11.6
 
       - name: Install hash-locked aioquic peer
         run: mise run interop-setup
@@ -72,6 +72,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Install pinned Python
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.11.6
+          install_args: python
+
+      - name: Select pinned supervisor runtime
+        shell: bash
+        run: |
+          supervisor_python="$(python -I -B -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          printf 'HTTP_PROCESS_SUPERVISOR_PYTHON=%s\n' "${supervisor_python}" >> "${GITHUB_ENV}"
 
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -117,6 +129,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Install pinned Python
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.11.6
+          install_args: python
+
+      - name: Select pinned supervisor runtime
+        shell: bash
+        run: |
+          supervisor_python="$(python -I -B -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          printf 'HTTP_PROCESS_SUPERVISOR_PYTHON=%s\n' "${supervisor_python}" >> "${GITHUB_ENV}"
 
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
