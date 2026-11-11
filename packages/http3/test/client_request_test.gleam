@@ -53,6 +53,22 @@ pub fn request_trailers_reject_message_control_fields_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn outbound_request_fields_are_ascii_lowercased_before_validation_test() -> Nil {
+  assert client_request.prepare_trailers([
+      #("X-Trace-ID", "safe"),
+      #("DiGeSt", "sha-256=:abc=:"),
+    ])
+    == Ok([
+      #("x-trace-id", "safe"),
+      #("digest", "sha-256=:abc=:"),
+    ])
+  assert client_request.prepare_trailers([#("Connection", "close")])
+    == Error(client_request.InvalidHeader("connection"))
+  assert client_request.prepare_trailers([#("\u{212A}", "value")])
+    == Error(client_request.InvalidHeader("\u{212A}"))
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn extended_connect_builds_protocol_pseudo_field_and_rejects_invalid_token_test() -> Nil {
   let request =
     request.new()

@@ -1,0 +1,107 @@
+%% SPDX-FileCopyrightText: 2026 the http contributors
+%% SPDX-License-Identifier: MIT OR Apache-2.0
+performance_adversarial_self_test() ->
+    performance_failure_self_test(),
+    Compiled = performance_compile_child(),
+    HostBytes = proplists:get_value(performance_host, Compiled),
+    {module, performance_host} = code:load_binary(performance_host, "performance_host.beam", HostBytes),
+    Start = runtime_matrix_json(performance_host:capture(<<"start">>)),
+    End = Start#{<<"label">> := <<"end">>},
+    true = performance_host_valid(Start, <<"start">>),
+    Probes = maps:get(<<"probes">>, Start),
+    BadHosts = [Start#{<<"secret">> => <<"private-marker">>}, maps:remove(<<"runtime">>, Start),
+        Start#{<<"probes">> => Probes#{<<"secret">> => <<"private-marker">>}},
+        Start#{<<"probes">> => maps:remove(<<"memory">>, Probes)},
+        Start#{<<"probes">> => Probes#{<<"memory">> => #{<<"status">> => <<"Unavailable">>, <<"reason">> => <<"private-marker">>}}}],
+    lists:foreach(fun(H) -> false = performance_host_valid(H, <<"start">>) end, BadHosts),
+    Hash = binary:copy(<<"A">>, 64), Nonce = binary:copy(<<"B">>, 32),
+    Identity = #{<<"source_sha256">> => Hash}, Runtime = execution_runtime(),
+    Build = #{<<"toolchain">> => #{<<"runtime">> => Runtime}},
+    Profile = evidence_json_decode(read(?PROFILE_PATH)),
+    lists:foreach(fun(Mode) ->
+        Workload = workload(Mode, Profile), Csv = performance_test_csv(Workload),
+        Rows = performance_csv_rows(Csv, Mode), true = performance_workload_valid(Rows, Workload),
+        Child = #{schema => 1, mode => Mode, nonce => Nonce, status => <<"Passed">>, failure => null,
+            host_start => Start, host_end => End},
+        Process = runtime_matrix_process_fixture(#{output_bytes => byte_size(Csv), output_hashed_bytes => byte_size(Csv), output_limit_bytes => 8388608,
+            output_digest_complete => true, output_limit_exceeded => false, vm_process_heap_words => 33554432,
+            vm_heap_includes_shared_binaries => true, crash_dumps_disabled => true, timed_out => false, child_exit_observed => true}),
+        Execution = runtime_matrix_json(#{schema => 1, status => <<"Ready">>, shareable => false,
+            mode => Mode, nonce => Nonce, deadline_ms => performance_deadline(Mode), elapsed_ms => 1,
+            build_identity => Build, runner_sha256 => Hash, configured_samples => performance_samples(Mode),
+            completed_samples => performance_samples(Mode), child => Child, exit_status => 0, process => Process,
+            csv_sha256 => binary:encode_hex(crypto:hash(sha256, Csv)),
+            replay_command => <<"escript scripts/performance_runner.escript ", Mode/binary>>,
+            evidence_identity => Identity, execution_environment => Runtime}),
+        true = performance_execution_valid(Execution, Mode, Identity, Build, Hash, Csv),
+        Bads = [Execution#{<<"exit_status">> => 1}, Execution#{<<"completed_samples">> => 0},
+            Execution#{<<"nonce">> => binary:copy(<<"C">>, 32)}, Execution#{<<"build_identity">> => #{}},
+            Execution#{<<"evidence_identity">> => #{}}, Execution#{<<"runner_sha256">> => <<>>},
+            Execution#{<<"process">> => (maps:get(<<"process">>, Execution))#{<<"child_exit_observed">> => false}},
+            Execution#{<<"child">> => (maps:get(<<"child">>, Execution))#{<<"private">> => <<"private-marker">>}},
+            Execution#{<<"private">> => <<"private-marker">>}],
+        lists:foreach(fun(B) -> false = performance_execution_valid(B, Mode, Identity, Build, Hash, Csv) end, Bads),
+        false = performance_execution_valid(Execution, Mode, Identity, Build, Hash, <<Csv/binary, "private-marker">>),
+        Stem = "build/performance/current/" ++ binary_to_list(Mode),
+        Rate = maps:get(<<"requests_per_second">>, hd(Rows)),
+        Report = runtime_matrix_json(#{schema => 4, status => <<"Ready">>, mode => Mode,
+            baseline_date => maps:get(<<"baseline_date">>, Profile), source_sha256 => Hash, profile_sha256 => Hash,
+            otp_release => list_to_binary(erlang:system_info(otp_release)),
+            system_architecture => list_to_binary(erlang:system_info(system_architecture)),
+            logical_processors => erlang:system_info(logical_processors), exit_status => 0,
+            log => bounded_log_evidence(Csv, Stem ++ ".log"),
+            host => #{shareable => false, start => performance_host_file_projection(Stem ++ "-host-start.json", Start),
+                'end' => performance_host_file_projection(Stem ++ "-host-end.json", End), deltas => host_deltas(Start, End)},
+            configuration => Workload, measured_median_requests_per_second => Rate, rows => Rows,
+            violations => [], execution => Execution, evidence_identity => Identity, execution_environment => Runtime}),
+        true = performance_report_bound(Report, Mode, Csv, Execution),
+        [First | Rest] = Rows,
+        BadReports = [Report#{<<"private">> => <<"private-marker">>}, Report#{<<"rows">> => Rest},
+            Report#{<<"rows">> => [First#{<<"reductions_per_request">> => 1} | Rest]},
+            Report#{<<"measured_median_requests_per_second">> => Rate + 1},
+            Report#{<<"exit_status">> => 1}, Report#{<<"execution">> => #{}},
+            Report#{<<"host">> => (maps:get(<<"host">>, Report))#{<<"deltas">> => #{}}},
+            Report#{<<"log">> => (maps:get(<<"log">>, Report))#{<<"tail_base64">> => base64:encode(<<"private-marker">>)}}],
+        lists:foreach(fun(B) -> false = performance_report_bound(B, Mode, Csv, Execution) end, BadReports),
+        false = performance_test_accepts(fun() -> performance_workload_valid(
+            [First#{<<"mailbox_messages_after">> => 1} | Rest], Workload) end),
+        false = performance_test_accepts(fun() -> performance_workload_valid(
+            [First#{<<"requests_per_second">> => Rate + 1} | Rest], Workload) end),
+        false = performance_test_accepts(fun() -> performance_workload_valid(Rows,
+            Workload#{<<"minimum_requests_per_second">> => Rate + 1}) end)
+    end, [<<"benchmark">>, <<"load">>, <<"soak">>]),
+    io:put_chars("performance evidence: exact samples, rows, child exit, source/build, host, secrets and thresholds checked\n").
+performance_test_accepts(Fun) -> try Fun() =:= true catch _:_ -> false end.
+performance_failure_self_test() ->
+    Private = <<"private-performance-failure-marker">>,
+    #{phase := 0, results := [], counters := []} = performance_failure({Private, self(), make_ref()}),
+    #{phase := 6, results := [99]} = performance_failure({benchmark_worker_stopped, {Private, self()}}),
+    #{phase := 3, counters := [1, 2, 3, 4, 5, 6, 7, 8]} =
+        performance_failure({http3_benchmark_failed, {<<"runtime resources did not converge">>, {1,2,3,4}, {5,6,7,8}}}),
+    #{phase := 3, counters := []} = performance_failure({benchmark_cleanup_resource_limit, #{private => Private}}),
+    Counts = maps:from_list(lists:zip([maximum_processes, observed_processes, maximum_ports, observed_ports,
+        maximum_network_ports, observed_network_ports, maximum_sockets, observed_sockets], lists:seq(1,8))),
+    #{counters := [1,2,3,4,5,6,7,8]} = performance_failure({benchmark_cleanup_resource_limit, Counts#{final_metrics => Private}}),
+    lists:foreach(fun(Value) ->
+        #{counters := []} = performance_failure({benchmark_cleanup_resource_limit, Counts#{observed_processes => Value}})
+    end, [-1, 1 bsl 63, Private, self(), make_ref(), {1, Private}]),
+    Results = [{ok, Private}, {error, timeout}, {error, closed}, {error, stream_finished},
+        {error, response_already_finished}, {error, {peer_closed, Private}}, {error, {peer_reset, Private}},
+        {error, {resource_limit_exceeded, Private}}, {error, invalid_input},
+        {error, client_completion_latch_failed}, {error, Private}],
+    [0,1,2,3,4,5,6,7,8,9,99] = [performance_result_code(R) || R <- Results],
+    Safe = [performance_failure({http3_benchmark_failed, {<<"workload cleanup">>, R, {error, Private}, {ok, Private}}})
+        || R <- Results],
+    true = binary:match(iolist_to_binary(json:encode(Safe)), Private) =:= nomatch,
+    [0,0] = performance_stack_lines([{http3_benchmark, private_function, 0, [{line, 999}]},
+        {http3_benchmark_ffi, private_function, [Private], [{line, 999}]}]),
+    ok.
+performance_test_csv(Workload) ->
+    Mode = maps:get(<<"mode">>, Workload), Concurrency = maps:get(<<"concurrency">>, Workload),
+    Requests = maps:get(<<"requests_per_connection">>, Workload), Payload = maps:get(<<"payload_bytes">>, Workload),
+    Sequence = [{1, <<"True">>}] ++ [{I, <<"False">>} || I <- lists:seq(1, maps:get(<<"measured_trials">>, Workload))],
+    iolist_to_binary([?PERFORMANCE_CSV_HEADER, $\n, [begin
+        Numbers = [Concurrency, Requests, Concurrency * Requests, Payload, 1000, Concurrency * Requests * 1000]
+            ++ lists:duplicate(41, 0),
+        [lists:join($,, [Mode, integer_to_binary(I), Warmup | [integer_to_binary(N) || N <- Numbers]]), $\n]
+    end || {I, Warmup} <- Sequence]]).

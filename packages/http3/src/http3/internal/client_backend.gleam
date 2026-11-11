@@ -7,7 +7,9 @@ import http3/config
 import http3/failure as runtime_failure
 import http3/internal/client_request.{type PreparedRequest, PreparedRequest}
 import http3/internal/native/client as native_client
+import http3/internal/qlog_admission
 import quic_core
+import quic_core/diagnostics
 
 /// A response returned by the backend boundary.
 pub type Response =
@@ -58,12 +60,19 @@ pub fn send(
   quic_v2 quic_v2: Bool,
   keepalive_milliseconds keepalive_milliseconds: Int,
   qlog_directory qlog_directory: String,
+  connect_trace connect_trace: Option(diagnostics.ConnectTrace),
+  qlog_reservation qlog_reservation: Option(qlog_admission.Reservation),
 ) -> Result(Response, Failure) {
   let PreparedRequest(host, port, headers, body) = request
   use client <- result.try(
     native_client.new(host, port)
     |> result.map_error(from_native_configuration_error),
   )
+  let client = native_client.with_qlog_reservation(client, qlog_reservation)
+  let client = case connect_trace {
+    None -> client
+    Some(trace) -> native_client.with_connect_trace(client, trace)
+  }
   let client =
     native_client.with_quic_version(client, case quic_v2 {
       False -> native_client.QuicV1

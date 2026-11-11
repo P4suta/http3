@@ -1,7 +1,9 @@
 //// Small typed active-once TCP boundary for HTTP runtimes.
 
 import gleam/bit_array
-import gleam/erlang/process.{type Pid}
+import gleam/erlang/process.{type Pid, type Selector, type Subject}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -19,6 +21,12 @@ pub type Socket
 pub type ReadOutcome {
   ReadData(BitArray, Socket)
   ReadEnd(Socket)
+}
+
+/// A socket event or one completion from the exchange's owned producer.
+pub type SelectedRead(message) {
+  ReadSocket(ReadOutcome)
+  ReadMessage(message, Socket)
 }
 
 /// Negotiated TLS version without an OTP-native term.
@@ -51,6 +59,115 @@ pub type Error {
   TlsAuthentication
   AlpnFailure
   SocketFailure
+}
+
+/// An optional fixed-size trace shared by one dial and its TLS handshakes.
+pub type Diagnostics
+
+/// Causal transport phases, independent of endpoint and service identity.
+pub type DiagnosticStep {
+  Unpublished
+  DnsStarted
+  DnsCompleted
+  DialStarted
+  DialCompleted
+  OwnershipStarted
+  ConnectionCompleted
+  AcceptStarted
+  AcceptCompleted
+  ClientTlsStarted
+  ClientTlsCompleted
+  ServerTlsStarted
+  ServerTlsCompleted
+}
+
+pub type DiagnosticFamily {
+  NoAddressFamily
+  Ipv4
+  Ipv6
+}
+
+pub type DiagnosticOutcome {
+  Pending
+  Successful
+  Failed(Error)
+  Abandoned
+}
+
+/// Sequence is the append position; time is relative to this trace's origin.
+pub type DiagnosticEvent {
+  DiagnosticEvent(
+    step: DiagnosticStep,
+    family: DiagnosticFamily,
+    attempt: Int,
+    elapsed_milliseconds: Int,
+    outcome: DiagnosticOutcome,
+  )
+}
+
+pub type DiagnosticSnapshot {
+  DiagnosticSnapshot(
+    consistent: Bool,
+    dropped_events: Int,
+    events: List(DiagnosticEvent),
+  )
+}
+
+@external(erlang, "http_transport_ffi", "diagnostics_new")
+pub fn diagnostics_new() -> Diagnostics
+
+@external(erlang, "http_transport_ffi", "diagnostics_snapshot")
+fn raw_diagnostics_snapshot(
+  diagnostics: Diagnostics,
+) -> #(Bool, Int, List(#(Int, Int, Int, Int, Int)))
+
+/// Retain the paired accept and server TLS phases without endpoint values.
+@external(erlang, "http_transport_ffi", "with_listener_diagnostics")
+pub fn with_listener_diagnostics(
+  listener: Listener,
+  diagnostics: Diagnostics,
+) -> Listener
+
+/// Read at most 64 records; an overlapping publication is explicitly marked.
+pub fn diagnostics_snapshot(diagnostics: Diagnostics) -> DiagnosticSnapshot {
+  let #(consistent, dropped_events, events) =
+    raw_diagnostics_snapshot(diagnostics)
+  DiagnosticSnapshot(
+    consistent:,
+    dropped_events:,
+    events: list.map(events, diagnostic_event),
+  )
+}
+
+fn diagnostic_event(raw: #(Int, Int, Int, Int, Int)) -> DiagnosticEvent {
+  let #(kind, family, attempt, elapsed_milliseconds, code) = raw
+  let step = case kind {
+    0 -> Unpublished
+    1 -> DnsStarted
+    2 -> DnsCompleted
+    3 -> DialStarted
+    4 -> DialCompleted
+    5 -> OwnershipStarted
+    6 -> ConnectionCompleted
+    7 -> AcceptStarted
+    8 -> AcceptCompleted
+    9 -> ClientTlsStarted
+    10 -> ClientTlsCompleted
+    11 -> ServerTlsStarted
+    _ -> ServerTlsCompleted
+  }
+  let family = case family {
+    4 -> Ipv4
+    6 -> Ipv6
+    _ -> NoAddressFamily
+  }
+  let outcome = case kind, kind % 2, code {
+    0, _, _ | _, 1, _ -> Pending
+    _, _, 0 -> Successful
+    _, _, 18 -> Abandoned
+    _, _, _ -> Failed(map_raw_error(code))
+  }
+  DiagnosticEvent(step:, family:, attempt:, elapsed_milliseconds:, outcome:)
 }
 
 @external(erlang, "http_transport_ffi", "listen")
@@ -103,6 +220,17 @@ fn raw_connect_with_deadlines(
   send_timeout_milliseconds: Int,
 ) -> Result(Socket, Int)
 
+@external(erlang, "http_transport_ffi", "connect_with_diagnostics")
+fn raw_connect_with_diagnostics(
+  host: String,
+  port: Int,
+  dns_timeout_milliseconds: Int,
+  connect_timeout_milliseconds: Int,
+  total_timeout_milliseconds: Int,
+  send_timeout_milliseconds: Int,
+  diagnostics: Diagnostics,
+) -> Result(Socket, Int)
+
 @external(erlang, "http_transport_ffi", "send")
 fn raw_send(socket: Socket, bytes: BitArray) -> Result(Nil, Int)
 
@@ -112,6 +240,27 @@ fn raw_read(
   maximum_bytes: Int,
   timeout_milliseconds: Int,
 ) -> Result(#(Socket, BitArray, Int), Int)
+
+@external(erlang, "http_transport_ffi", "read_or_message")
+fn raw_read_or_message(
+  socket: Socket,
+  maximum_bytes: Int,
+  timeout_milliseconds: Int,
+  subject: Subject(message),
+) -> Result(#(Socket, BitArray, Int, Option(message)), Int)
+
+@external(erlang, "http_transport_ffi", "read_or_select")
+fn raw_read_or_select(
+  socket: Socket,
+  maximum: Int,
+  timeout: Int,
+  selector: Selector(message),
+) -> Result(#(Socket, BitArray, Int, Option(message)), Int)
+
+/// TCP read EOF permits the existing half-close response contract.
+/// TLS close terminates the stream and must cancel an outstanding response producer.
+@external(erlang, "http_transport_ffi", "read_end_is_terminal")
+pub fn read_end_is_terminal(socket: Socket) -> Bool
 
 @external(erlang, "http_transport_ffi", "close")
 fn raw_close(socket: Socket) -> Result(Nil, Int)
@@ -302,6 +451,29 @@ pub fn connect_with_deadlines(
   }
 }
 
+/// Dial with the same validated budgets while retaining DNS, candidate,
+/// ownership, and subsequent client TLS observations in one bounded trace.
+pub fn connect_with_diagnostics(
+  host: String,
+  port: Int,
+  dns_timeout_milliseconds: Int,
+  connect_timeout_milliseconds: Int,
+  total_timeout_milliseconds: Int,
+  send_timeout_milliseconds: Int,
+  diagnostics: Diagnostics,
+) -> Result(Socket, Error) {
+  raw_connect_with_diagnostics(
+    host,
+    port,
+    dns_timeout_milliseconds,
+    connect_timeout_milliseconds,
+    total_timeout_milliseconds,
+    send_timeout_milliseconds,
+    diagnostics,
+  )
+  |> map_raw_result
+}
+
 /// Write one byte-aligned chunk. The socket's finite send timeout was fixed
 /// before it became visible to the caller.
 pub fn send(socket: Socket, bytes: BitArray) -> Result(Nil, Error) {
@@ -334,6 +506,74 @@ pub fn read(
       case ended {
         0 -> Ok(ReadData(bytes, socket))
         _ -> Ok(ReadEnd(socket))
+      }
+    }
+  }
+}
+
+/// Receive peer input while a supervised source is producing one chunk.
+/// An interrupted active-once read keeps its outstanding socket credit.
+pub fn read_or_message(
+  socket: Socket,
+  maximum_bytes: Int,
+  timeout_milliseconds: Int,
+  subject: Subject(message),
+) -> Result(SelectedRead(message), Error) {
+  case
+    maximum_bytes > 0
+    && maximum_bytes <= maximum_read_bytes
+    && valid_timeout(timeout_milliseconds)
+  {
+    False -> Error(InvalidInput)
+    True -> {
+      use #(socket, bytes, kind, message) <- result.try(
+        raw_read_or_message(
+          socket,
+          maximum_bytes,
+          timeout_milliseconds,
+          subject,
+        )
+        |> map_raw_result,
+      )
+      case kind, message {
+        0, None -> Ok(ReadSocket(ReadData(bytes, socket)))
+        1, None -> Ok(ReadSocket(ReadEnd(socket)))
+        2, Some(message) -> Ok(ReadMessage(message, socket))
+        _, _ -> Error(InvalidInput)
+      }
+    }
+  }
+}
+
+/// Receive owned socket input together with bounded lifecycle controls.
+/// Producer activity never replenishes the caller's absolute deadline.
+pub fn read_or_select(
+  socket: Socket,
+  maximum_bytes: Int,
+  timeout_milliseconds: Int,
+  selector: Selector(message),
+) -> Result(SelectedRead(message), Error) {
+  case
+    maximum_bytes > 0
+    && maximum_bytes <= maximum_read_bytes
+    && valid_timeout(timeout_milliseconds)
+  {
+    False -> Error(InvalidInput)
+    True -> {
+      use #(socket, bytes, kind, message) <- result.try(
+        raw_read_or_select(
+          socket,
+          maximum_bytes,
+          timeout_milliseconds,
+          selector,
+        )
+        |> map_raw_result,
+      )
+      case kind, message {
+        0, None -> Ok(ReadSocket(ReadData(bytes, socket)))
+        1, None -> Ok(ReadSocket(ReadEnd(socket)))
+        2, Some(message) -> Ok(ReadMessage(message, socket))
+        _, _ -> Error(InvalidInput)
       }
     }
   }

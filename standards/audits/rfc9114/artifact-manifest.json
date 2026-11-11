@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "manifest_kind": "rfc9114_strict_inventory_canonical_inputs",
+  "standard": "RFC9114",
+  "generation": 3,
+  "expected_requirements_before_sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+  "expected_requirements_after_sha256": "76bdca016340f90dc8a75157b5fc4b04951e151eae3ed1cd000000ba0cd7115a",
+  "release_policy": {
+    "pre_review_self_test_status": "StaticReady",
+    "release_eligible_statuses": [
+      "Ready"
+    ],
+    "independent_review_required": true
+  },
+  "python": {
+    "implementation": "cpython",
+    "mise_version": "3.12.13",
+    "local_frozen_identity": {
+      "implementation": "cpython",
+      "version": "3.12.14",
+      "sha256": "dd5f8d19f6755d6491ee7c4bef2fe35ddd521334cc3ca3ed8fc93ebcadf135d0"
+    }
+  },
+  "artifacts": [
+    {
+      "path": ".mise.toml",
+      "sha256": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35"
+    },
+    {
+      "path": "standards/audits/rfc9114/apply_review.py",
+      "sha256": "6ce19c30a5cb42bd786e06d9110532cadcf83976900dd4f37fc93b0826124c74"
+    },
+    {
+      "path": "standards/audits/rfc9114/candidate-inventory.json",
+      "sha256": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243"
+    },
+    {
+      "path": "standards/audits/rfc9114/evidence_gate.py",
+      "sha256": "9e41a4071b35f665198135f193b78b83b0f540688c79cf5fbc22c7fdf77c075d"
+    },
+    {
+      "path": "standards/audits/rfc9114/independent-review.json",
+      "sha256": "74cc3dc2db970c4eb3a36e9fd73f11886fbc80dfdc3ab3aa510a5b0b0170fbb9"
+    },
+    {
+      "path": "standards/audits/rfc9114/invalidation-chain.json",
+      "sha256": "52d00f658761d717ca02f27f46b83bdeffdeef41571da6ee6deae2f88716a342"
+    },
+    {
+      "path": "standards/audits/rfc9114/launcher.py",
+      "sha256": "49e90fcce126756bdee94f2b2180e326d26729440c19090743e99e46c9c01a97"
+    },
+    {
+      "path": "standards/audits/rfc9114/review-v1-invalidated.json",
+      "sha256": "97385909eb2f695b751889a0a3e5d212fb53b6193b183de8e3fdbafd22903009"
+    },
+    {
+      "path": "standards/audits/rfc9114/reviewed-source-manifest.json",
+      "sha256": "8d047bee7cd06e314449c525a6a32d6d090e53c886ddd42bb4472b99712f699a"
+    }
+  ]
+}

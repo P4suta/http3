@@ -1241,7 +1241,21 @@ fn receive_control(
             ]),
           )
       }
-    control.ResetFrame(error_code) -> {
+    control.ResetFrame(error_code) ->
+      receive_stream_reset(state, stream_id, error_code)
+  }
+}
+
+fn receive_stream_reset(
+  state: State,
+  stream_id: Int,
+  error_code: Int,
+) -> Result(Transition, Error) {
+  case stream_state(state, stream_id) {
+    // RFC 9113 section 5.1 allows late resets on closed streams to be ignored.
+    // No per-stream tombstone is retained, and a duplicate cannot reach the next pooled exchange's response reader.
+    stream_state.Closed -> Ok(Transition(state, []))
+    _ -> {
       use updated <- result.try(
         stream_registry.receive_reset(state.streams, stream_id)
         |> result.map_error(StreamFailure),
@@ -1251,25 +1265,20 @@ fn receive_control(
         body_length.reset(state.body_lengths, stream_id: stream_id)
       let outbound_body_lengths =
         body_length.reset(state.outbound_body_lengths, stream_id: stream_id)
-      let local_methods = dict.delete(state.local_methods, stream_id)
-      let remote_methods = dict.delete(state.remote_methods, stream_id)
-      let priorities = dict.delete(state.priorities, stream_id)
       let headers = release_closed_headers(state.headers, streams, stream_id)
       Ok(
         Transition(
           State(
             ..state,
-            streams: streams,
-            body_lengths: body_lengths,
-            outbound_body_lengths: outbound_body_lengths,
-            local_methods: local_methods,
-            remote_methods: remote_methods,
-            priorities: priorities,
-            headers: headers,
+            streams:,
+            body_lengths:,
+            outbound_body_lengths:,
+            local_methods: dict.delete(state.local_methods, stream_id),
+            remote_methods: dict.delete(state.remote_methods, stream_id),
+            priorities: dict.delete(state.priorities, stream_id),
+            headers:,
           ),
-          [
-            StreamReset(stream_id: stream_id, error_code: error_code),
-          ],
+          [StreamReset(stream_id:, error_code:)],
         ),
       )
     }

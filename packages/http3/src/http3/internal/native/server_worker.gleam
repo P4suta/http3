@@ -7,16 +7,24 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/failure as runtime_failure
+import http3/internal/application_headers
+import http3/internal/native/completion_deadline
 import http3/internal/native/connection_state as http3_state
 import http3/internal/native/datagram
+import http3/internal/native/error_code
 import http3/internal/native/header_semantics
 import http3/internal/native/message_stream
+import http3/internal/native/orderly_close
 import http3/internal/native/priority
 import http3/internal/native/protocol
 import http3/internal/native/server_connection
+import http3/internal/native/settings_memory
+import http3/internal/native/terminal_event_store
 import http3/internal/native/terminal_registry
 import http3/internal/process_label
 import http3/internal/qpack/header.{type Header, Header}
+import http3/internal/read_deadline
 import quic_core.{type AddressFamily}
 import quic_core/config as core_config
 import quic_core/diagnostics as qlog
@@ -36,6 +44,14 @@ const maximum_terminal_handles = 1024
 // wide bytes-in-flight is deliberately not used because PMTU probes and other
 // unrelated transport work may remain active throughout drain.
 const drain_transport_poll_milliseconds = 10
+
+// Keep the first GOAWAY observable before choosing the request-stream cutoff.
+// The immutable orderly-close state caps this interval inside the configured drain deadline.
+const goaway_refinement_delay_milliseconds = 100
+
+// Reserve a small bounded tail after the core listener has stopped.
+// Any protocol actor still parked in a core call is killed concurrently, and this tail is used only to observe its monitor completion.
+const connection_actor_kill_join_milliseconds = 50
 
 const request_cancelled_code = 0x10c
 
@@ -133,6 +149,7 @@ pub opaque type Listener {
     worker: Pid,
     timeout_milliseconds: Int,
     drain_timeout_milliseconds: Int,
+    stop_completion_allowance_milliseconds: Int,
   )
 }
 
@@ -147,7 +164,11 @@ pub opaque type Connection {
 
 /// One accepted request routed directly to its connection actor.
 pub opaque type Request {
-  Request(connection: Connection, identifier: Int)
+  Request(
+    connection: Connection,
+    identifier: Int,
+    response_stream: core_server.Stream,
+  )
 }
 
 /// One promised server push routed directly to its connection actor.
@@ -203,6 +224,7 @@ pub type Error {
   StreamReset(Int)
   StreamCancelled(Int)
   ProtocolError(Int, String)
+  RuntimeFailure(runtime_failure.Failure)
   RequestBodyTooLarge(Int)
   ResponseBodyTooLarge(Int)
   ConsumerTooSlow(Int)
@@ -246,8 +268,16 @@ type ListenerCommand {
     reply: Subject(Result(Nil, Error)),
   )
   Accept(reply: Subject(Result(Incoming, Error)), deadline: Int)
-  Stop(reply: Subject(Result(StopResult, Error)))
-  GracefulStop(reply: Subject(Result(DrainResult, Error)), deadline: Int)
+  Stop(
+    reply: Subject(Result(StopResult, Error)),
+    drain_deadline: Int,
+    completion_deadline: Int,
+  )
+  GracefulStop(
+    reply: Subject(Result(DrainResult, Error)),
+    drain_deadline: Int,
+    completion_deadline: Int,
+  )
 }
 
 type ConnectionCommand {
@@ -342,15 +372,30 @@ type ConnectionCommand {
   PathStats(reply: Subject(Result(qlog.PathStats, Error)))
   ConnectionStats(reply: Subject(Result(server_connection.Stats, Error)))
   TelemetryStats(reply: Subject(Result(#(Int, Int, Int), Error)))
+  RecordApplicationError(code: Int)
   RequestStateStats(
     reply: Subject(
       Result(#(Int, Int, Int, Int, Int, Int, Int, Int, Int), Error),
     ),
   )
+  RequestLifecycleStats(
+    request_id: Int,
+    reply: Subject(
+      Result(#(Bool, Bool, Bool, Option(Int), Int, Int, Bool), Error),
+    ),
+  )
+  RequestWaiterStats(
+    request_id: Int,
+    reply: Subject(Result(#(Bool, Bool), Error)),
+  )
+  SendResourceStats(reply: Subject(Result(#(Int, Int, Int), Error)))
+  TerminalDeliveryStats(
+    reply: Subject(Result(#(Int, Int, Int, Int, Int, Int), Error)),
+  )
   MaximumTransmissionUnit(reply: Subject(Result(Int, Error)))
   RejectRequest(request_id: Int, code: Int, error: Error)
-  BeginDrain
-  StopConnection(reply: Subject(Result(Nil, Error)))
+  BeginDrain(deadline: Int, settle_application: Bool)
+  StopConnection
 }
 
 type ListenerNetwork {
@@ -363,12 +408,13 @@ type ConnectionNotice {
   PeerStarted(identifier: Int, connection: Connection)
   RequestAvailable(Incoming)
   PeerDrained(identifier: Int)
-  PeerStopped(identifier: Int)
+  PeerStopped(identifier: Int, completed: Bool)
 }
 
 type ListenerMessage {
   ReceivedListenerCommand(ListenerCommand)
   ReceivedListenerNetwork(ListenerNetwork)
+  ShutdownConnectionExited(Pid)
   ListenerOwnerExited
 }
 
@@ -394,11 +440,19 @@ type Queue(value) {
   Queue(front: List(value), back: List(value), count: Int)
 }
 
+type ListenerDrainReply {
+  StopDrainReply(Subject(Result(StopResult, Error)))
+  GracefulDrainReply(Subject(Result(DrainResult, Error)))
+}
+
 type ListenerDrain {
   ListenerDrain(
-    reply: Subject(Result(DrainResult, Error)),
+    reply: ListenerDrainReply,
     deadline: Int,
+    completion_deadline: Int,
     outstanding: Dict(Int, Nil),
+    incomplete: Bool,
+    settle_application: Bool,
   )
 }
 
@@ -410,12 +464,14 @@ type ListenerWorker {
     selector: process.Selector(ListenerMessage),
     network: Subject(ListenerNetwork),
     connections: Dict(Int, Connection),
+    starting_connections: Dict(Int, Pid),
     next_connection_id: Int,
     pending: Queue(Incoming),
     accept_waiters: Queue(AcceptWaiter),
     drain: Option(ListenerDrain),
     timeout_milliseconds: Int,
     drain_timeout_milliseconds: Int,
+    stop_completion_allowance_milliseconds: Int,
     queue_limit: Int,
     accept_waiter_limit: Int,
     peer_config: PeerConfig,
@@ -443,6 +499,7 @@ type RequestState {
     request_finished: Bool,
     response_started: Bool,
     response_finished: Bool,
+    response_stopped: Option(Int),
     response_body_bytes: Int,
     declared_content_length: Option(Int),
     priority: #(Int, Bool),
@@ -453,6 +510,12 @@ type RequestState {
 type RequestTerminal {
   RequestCompleted
   RequestFailed(Error)
+}
+
+// Bounded wire events which had already been accepted before a peer stopped the response direction.
+// Their payload ownership is separate from the scalar terminal fact, so stream/request/grant state can retire immediately while a raw API consumer may still read the authorized Close + End sequence.
+type RetainedRequestEvents {
+  RetainedRequestEvents(events: Queue(Event), buffered_body_bytes: Int)
 }
 
 type PushState {
@@ -491,12 +554,15 @@ type ConnectionWorker {
     notices: Subject(ListenerNetwork),
     requests: Dict(Int, RequestState),
     request_terminals: terminal_registry.Registry(RequestTerminal),
+    request_terminal_events: terminal_event_store.Store(RetainedRequestEvents),
     pushes: Dict(Int, PushState),
     pending_priorities: Dict(Int, #(Int, Bool)),
     next_request_stream_id: Int,
     draining: Bool,
+    orderly_close: Option(orderly_close.State),
     drain_notified: Bool,
     closed: Bool,
+    interrupted: Bool,
     timeout_milliseconds: Int,
     request_body_limit: Int,
     response_body_limit: Int,
@@ -538,6 +604,7 @@ pub fn start(
   accept_waiter_limit: Int,
   default_credential: Credential,
   alternative_credentials: List(Credential),
+  authority_policies: header_semantics.AuthorityPolicies,
   http_datagrams: Bool,
   keepalive_milliseconds: Int,
   address_family: AddressFamily,
@@ -604,6 +671,7 @@ pub fn start(
         accept_waiter_limit,
         default_credential,
         alternative_credentials,
+        authority_policies,
         http_datagrams,
         keepalive_milliseconds,
         address_family,
@@ -683,6 +751,25 @@ pub fn peer_endpoint(request: Request) -> Result(#(BitArray, Int), Error) {
   connection_call(request.connection, PeerEndpoint)
 }
 
+/// Compare only the private connection actor identity of two requests.
+@internal
+pub fn same_connection(first: Request, second: Request) -> Bool {
+  let Request(Connection(_, first_worker, _), _, _) = first
+  let Request(Connection(_, second_worker, _), _, _) = second
+  first_worker == second_worker
+}
+
+@internal
+pub fn operation_timeout_milliseconds(request: Request) -> Int {
+  request.connection.timeout_milliseconds
+}
+
+/// Queue one payload-free diagnostic on the owning connection actor.
+@internal
+pub fn record_application_error(request: Request, code: Int) -> Nil {
+  process.send(request.connection.commands, RecordApplicationError(code))
+}
+
 pub fn next_event(request: Request) -> Result(Event, Error) {
   let deadline = now() + request.connection.timeout_milliseconds
   connection_call_with_timeout(
@@ -692,11 +779,77 @@ pub fn next_event(request: Request) -> Result(Event, Error) {
   )
 }
 
+/// Pull under a shared absolute deadline, with the original operation cap.
+@internal
+pub fn next_event_until(
+  request: Request,
+  deadline_milliseconds: Int,
+) -> Result(Event, Error) {
+  use #(deadline, remaining) <- result.try(
+    read_deadline.plan(
+      now: now(),
+      deadline: deadline_milliseconds,
+      operation: request.connection.timeout_milliseconds,
+    )
+    |> result.replace_error(Timeout),
+  )
+  let outcome =
+    connection_call_with_timeout(
+      request.connection,
+      remaining + worker_reply_grace_milliseconds,
+      fn(reply) { Next(request.identifier, reply, deadline) },
+    )
+  let observed = now()
+  case outcome {
+    Ok(_) if observed >= deadline -> Error(Timeout)
+    _ -> outcome
+  }
+}
+
+/// Await the independent response direction directly on the admitted core stream.
+/// The connection actor remains free to process DATA, ACKs and close.
+pub fn await_response_completion(request: Request) -> Result(Nil, Error) {
+  case
+    core_server.await_send_completion(
+      request.response_stream,
+      request.connection.timeout_milliseconds,
+    )
+  {
+    Ok(core_server.SendAcknowledged) -> Ok(Nil)
+    Ok(core_server.SendStopped(code)) -> Error(StreamReset(code))
+    Ok(core_server.SendReset(code)) -> Error(StreamCancelled(code))
+    Error(core_server.ConcurrentOperation) -> Error(ConcurrentReceive)
+    Error(core_server.Failure(core_failure.Closed(origin, code))) ->
+      Error(
+        RuntimeFailure(runtime_failure.Closed(completion_origin(origin), code)),
+      )
+    Error(core_server.Failure(core_failure.Quic(origin, code))) ->
+      Error(
+        RuntimeFailure(runtime_failure.Quic(completion_origin(origin), code)),
+      )
+    Error(error) -> Error(map_core_runtime_error(error))
+  }
+}
+
+fn completion_origin(origin: core_failure.Origin) -> runtime_failure.Origin {
+  case origin {
+    core_failure.Local -> runtime_failure.Local
+    core_failure.Peer -> runtime_failure.Peer
+  }
+}
+
 /// Cancel both directions of one accepted request stream idempotently.
 pub fn cancel(request: Request) -> Result(Cancellation, Error) {
-  connection_call(request.connection, fn(reply) {
-    CancelRequest(request.identifier, reply)
-  })
+  case
+    connection_call(request.connection, fn(reply) {
+      CancelRequest(request.identifier, reply)
+    })
+  {
+    // A retained request cannot keep its connection actor alive.
+    // Once its monitored owner has exited, both stream directions are already terminal.
+    Error(ConnectionClosed) -> Ok(AlreadyCompleted)
+    outcome -> outcome
+  }
 }
 
 pub fn send_response(
@@ -819,11 +972,38 @@ pub fn send_push_trailers(
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   case process.is_alive(listener.worker) {
     False -> Ok(AlreadyStopped)
-    True ->
-      case listener_call(listener, Stop) {
-        Error(ListenerClosed) -> Ok(AlreadyStopped)
-        outcome -> outcome
+    True -> {
+      let started = now()
+      case
+        completion_deadline.new(
+          started,
+          listener.drain_timeout_milliseconds,
+          listener.stop_completion_allowance_milliseconds,
+          worker_reply_grace_milliseconds,
+        )
+      {
+        Error(_) -> Error(Timeout)
+        Ok(stop_plan) ->
+          case
+            listener_call_until(
+              listener,
+              completion_deadline.caller_deadline_milliseconds(stop_plan),
+              fn(reply) {
+                Stop(
+                  reply,
+                  completion_deadline.protocol_deadline_milliseconds(stop_plan),
+                  completion_deadline.completion_deadline_milliseconds(
+                    stop_plan,
+                  ),
+                )
+              },
+            )
+          {
+            Error(ListenerClosed) -> Ok(AlreadyStopped)
+            outcome -> outcome
+          }
       }
+    }
   }
 }
 
@@ -831,16 +1011,35 @@ pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
   case process.is_alive(listener.worker) {
     False -> Ok(AlreadyDrained)
     True -> {
-      let deadline = now() + listener.drain_timeout_milliseconds
+      let started = now()
       case
-        listener_call_with_timeout(
-          listener,
-          listener.drain_timeout_milliseconds + worker_reply_grace_milliseconds,
-          fn(reply) { GracefulStop(reply, deadline) },
+        completion_deadline.new(
+          started,
+          listener.drain_timeout_milliseconds,
+          listener.stop_completion_allowance_milliseconds,
+          worker_reply_grace_milliseconds,
         )
       {
-        Error(ListenerClosed) -> Ok(AlreadyDrained)
-        outcome -> outcome
+        Error(_) -> Error(Timeout)
+        Ok(stop_plan) ->
+          case
+            listener_call_until(
+              listener,
+              completion_deadline.caller_deadline_milliseconds(stop_plan),
+              fn(reply) {
+                GracefulStop(
+                  reply,
+                  completion_deadline.protocol_deadline_milliseconds(stop_plan),
+                  completion_deadline.completion_deadline_milliseconds(
+                    stop_plan,
+                  ),
+                )
+              },
+            )
+          {
+            Error(ListenerClosed) -> Ok(AlreadyDrained)
+            outcome -> outcome
+          }
       }
     }
   }
@@ -872,6 +1071,42 @@ pub fn request_state_stats(
   request: Request,
 ) -> Result(#(Int, Int, Int, Int, Int, Int, Int, Int, Int), Error) {
   connection_call(request.connection, RequestStateStats)
+}
+
+/// Test-only direction and retained-event snapshot for one request.
+@internal
+pub fn request_lifecycle_stats(
+  request: Request,
+) -> Result(#(Bool, Bool, Bool, Option(Int), Int, Int, Bool), Error) {
+  connection_call(request.connection, fn(reply) {
+    RequestLifecycleStats(request.identifier, reply)
+  })
+}
+
+/// Test-only payload-free snapshot of the blocking request waiters.
+///
+/// The command/reply round trip is also a worker-mailbox barrier: all waiter registrations processed before the snapshot are reflected in the result.
+@internal
+pub fn request_waiter_stats(request: Request) -> Result(#(Bool, Bool), Error) {
+  connection_call(request.connection, fn(reply) {
+    RequestWaiterStats(request.identifier, reply)
+  })
+}
+
+/// Test-only scalar send-buffer, pending-send, and completion-waiter counts.
+@internal
+pub fn send_resource_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int), Error) {
+  connection_call(request.connection, SendResourceStats)
+}
+
+/// Test-only connection-wide terminal-delivery ownership and ceilings.
+@internal
+pub fn terminal_delivery_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int, Int, Int, Int), Error) {
+  connection_call(request.connection, TerminalDeliveryStats)
 }
 
 pub fn maximum_transmission_unit(request: Request) -> Result(Int, Error) {
@@ -963,6 +1198,7 @@ fn initialise_listener(
   accept_waiter_limit: Int,
   default_credential: Credential,
   alternative_credentials: List(Credential),
+  authority_policies: header_semantics.AuthorityPolicies,
   http_datagrams: Bool,
   keepalive_milliseconds: Int,
   address_family: AddressFamily,
@@ -996,6 +1232,9 @@ fn initialise_listener(
       address_family,
       qlog_directory,
       allow_zero_rtt,
+      qpack_table_limit,
+      qpack_blocked_stream_limit,
+      http_datagrams,
       replay_guard,
       ticket_keys,
       address_token_keys,
@@ -1012,6 +1251,11 @@ fn initialise_listener(
   case startup {
     Error(error) -> process.send(bootstrap, Error(error))
     Ok(#(core, bound_port)) -> {
+      // Preserve the core listener's complete published allowance, then add a final HTTP/3 actor DOWN tail once.
+      // `shutdown_listener` hands the core the earlier boundary, so this tail cannot be consumed by core cleanup.
+      let stop_completion_allowance_milliseconds =
+        core_server.stop_completion_allowance_milliseconds(core)
+        + connection_actor_kill_join_milliseconds
       let commands = process.new_subject()
       let network = process.new_subject()
       let owner_monitor = process.monitor(owner)
@@ -1028,6 +1272,7 @@ fn initialise_listener(
           process.self(),
           timeout_milliseconds,
           drain_timeout_milliseconds,
+          stop_completion_allowance_milliseconds,
         )
       let peer_config =
         PeerConfig(
@@ -1046,6 +1291,7 @@ fn initialise_listener(
             datagram_limit,
             qpack_table_limit,
             qpack_blocked_stream_limit,
+            authority_policies,
           ),
         )
       process.send(bootstrap, Ok(listener))
@@ -1060,12 +1306,14 @@ fn initialise_listener(
         selector,
         network,
         dict.new(),
+        dict.new(),
         0,
         queue_new(),
         queue_new(),
         None,
         timeout_milliseconds,
         drain_timeout_milliseconds,
+        stop_completion_allowance_milliseconds,
         queue_limit,
         accept_waiter_limit,
         peer_config,
@@ -1097,6 +1345,9 @@ fn configure_core_server(
   address_family: AddressFamily,
   qlog_directory: String,
   allow_zero_rtt: Bool,
+  qpack_table_limit: Int,
+  qpack_blocked_stream_limit: Int,
+  http_datagrams: Bool,
   replay_guard: Option(ReplayGuard),
   ticket_keys: List(BitArray),
   address_token_keys: List(BitArray),
@@ -1161,6 +1412,27 @@ fn configure_core_server(
     True, None -> core_server.with_single_node_zero_rtt(configured)
     False, _ -> configured
   }
+  use remembered <- result.try(
+    settings_memory.advertised(
+      qpack_table_limit,
+      65_536,
+      qpack_blocked_stream_limit,
+      True,
+      http_datagrams,
+    )
+    |> result.replace_error(InvalidInput),
+  )
+  use application_context <- result.try(
+    settings_memory.encode(remembered)
+    |> result.replace_error(InvalidInput),
+  )
+  use configured <- result.try(
+    core_server.with_zero_rtt_application_context(
+      configured,
+      application_context,
+    )
+    |> result.replace_error(InvalidInput),
+  )
   case ticket_keys, address_token_keys, stateless_reset_keys {
     [], [], [] -> Ok(configured)
     _, _, _ -> {
@@ -1244,7 +1516,8 @@ fn core_limits(
   use limits <- result.try(set_core_limit(
     limits,
     core_failure.Queue,
-    queue_limit,
+    // HTTP/3 needs three peer critical streams (control plus two QPACK streams) in addition to one request even when the public application event queue is deliberately configured to its minimum of one.
+    int.max(queue_limit, 4),
   ))
   use limits <- result.try(set_core_limit(
     limits,
@@ -1348,7 +1621,12 @@ fn listener_loop(worker: ListenerWorker) -> Nil {
       }
       case received {
         Error(Nil) -> listener_loop(worker)
-        Ok(ListenerOwnerExited) -> shutdown_listener(worker)
+        Ok(ListenerOwnerExited) -> {
+          let _ =
+            shutdown_listener(worker, autonomous_completion_deadline(worker))
+          Nil
+        }
+        Ok(ShutdownConnectionExited(_)) -> listener_loop(worker)
         Ok(ReceivedListenerCommand(command)) ->
           case handle_listener_command(worker, command) {
             Error(Nil) -> Nil
@@ -1401,13 +1679,22 @@ fn handle_listener_command(
       Ok(worker)
     }
     Accept(reply, deadline) -> handle_listener_accept(worker, reply, deadline)
-    Stop(reply) -> {
-      shutdown_listener(worker)
-      process.send(reply, Ok(Stopped))
-      Error(Nil)
-    }
-    GracefulStop(reply, deadline) ->
-      handle_listener_graceful_stop(worker, reply, deadline)
+    Stop(reply, deadline, completion_deadline) ->
+      handle_listener_drain(
+        worker,
+        StopDrainReply(reply),
+        deadline,
+        completion_deadline,
+        True,
+      )
+    GracefulStop(reply, deadline, completion_deadline) ->
+      handle_listener_drain(
+        worker,
+        GracefulDrainReply(reply),
+        deadline,
+        completion_deadline,
+        False,
+      )
   }
 }
 
@@ -1450,31 +1737,44 @@ fn handle_listener_accept(
   }
 }
 
-fn handle_listener_graceful_stop(
+fn handle_listener_drain(
   worker: ListenerWorker,
-  reply: Subject(Result(DrainResult, Error)),
+  reply: ListenerDrainReply,
   deadline: Int,
+  completion_deadline: Int,
+  settle_application: Bool,
 ) -> Result(ListenerWorker, Nil) {
   case worker.drain {
     Some(_) -> {
-      process.send(reply, Error(ConcurrentDrain))
+      send_listener_drain_error(reply, ConcurrentDrain)
       Ok(worker)
     }
     None -> {
       close_accept_waiters(worker.accept_waiters, ListenerClosed)
       reject_pending(worker.pending)
-      let outstanding = connection_identifier_set(worker.connections)
-      begin_peer_drains(dict.values(worker.connections))
+      let outstanding =
+        connection_identifier_set(worker.connections)
+        |> insert_connection_identifiers(dict.keys(worker.starting_connections))
+      begin_peer_drains(
+        dict.values(worker.connections),
+        deadline,
+        settle_application,
+      )
       case dict.size(outstanding) {
         0 -> {
-          shutdown_listener(
-            ListenerWorker(
-              ..worker,
-              pending: queue_new(),
-              accept_waiters: queue_new(),
-            ),
-          )
-          process.send(reply, Ok(Drained))
+          let outcome =
+            shutdown_listener(
+              ListenerWorker(
+                ..worker,
+                pending: queue_new(),
+                accept_waiters: queue_new(),
+              ),
+              completion_deadline,
+            )
+          case outcome {
+            Ok(Nil) -> send_listener_drain_result(reply, Drained)
+            Error(error) -> send_listener_drain_error(reply, error)
+          }
           Error(Nil)
         }
         _ ->
@@ -1483,11 +1783,47 @@ fn handle_listener_graceful_stop(
               ..worker,
               pending: queue_new(),
               accept_waiters: queue_new(),
-              drain: Some(ListenerDrain(reply, deadline, outstanding)),
+              drain: Some(ListenerDrain(
+                reply,
+                deadline,
+                completion_deadline,
+                outstanding,
+                False,
+                settle_application,
+              )),
             ),
           )
       }
     }
+  }
+}
+
+fn send_listener_drain_error(reply: ListenerDrainReply, error: Error) -> Nil {
+  case reply {
+    StopDrainReply(channel) -> process.send(channel, Error(error))
+    GracefulDrainReply(channel) -> process.send(channel, Error(error))
+  }
+}
+
+fn send_listener_drain_result(
+  reply: ListenerDrainReply,
+  result: DrainResult,
+) -> Nil {
+  case reply {
+    StopDrainReply(channel) -> process.send(channel, Ok(Stopped))
+    GracefulDrainReply(channel) -> process.send(channel, Ok(result))
+  }
+}
+
+fn send_listener_peer_result(
+  reply: ListenerDrainReply,
+  incomplete: Bool,
+) -> Nil {
+  case reply, incomplete {
+    StopDrainReply(channel), _ -> process.send(channel, Ok(Stopped))
+    GracefulDrainReply(channel), True ->
+      process.send(channel, Error(ConnectionClosed))
+    GracefulDrainReply(channel), False -> process.send(channel, Ok(Drained))
   }
 }
 
@@ -1504,21 +1840,33 @@ fn handle_listener_network(
         }
         None -> {
           let identifier = worker.next_connection_id
-          spawn_connection_actor(
-            process.self(),
-            identifier,
-            core,
-            worker.network,
-            worker.peer_config,
+          let connection_actor =
+            spawn_connection_actor(
+              process.self(),
+              identifier,
+              core,
+              worker.network,
+              worker.peer_config,
+            )
+          Ok(
+            ListenerWorker(
+              ..worker,
+              starting_connections: dict.insert(
+                worker.starting_connections,
+                identifier,
+                connection_actor,
+              ),
+              next_connection_id: identifier + 1,
+            ),
           )
-          Ok(ListenerWorker(..worker, next_connection_id: identifier + 1))
         }
       }
     CoreListenerClosed ->
       case worker.drain {
         Some(_) -> Ok(worker)
         None -> {
-          shutdown_listener(worker)
+          let _ =
+            shutdown_listener(worker, autonomous_completion_deadline(worker))
           Error(Nil)
         }
       }
@@ -1528,6 +1876,10 @@ fn handle_listener_network(
           Ok(
             ListenerWorker(
               ..worker,
+              starting_connections: dict.delete(
+                worker.starting_connections,
+                identifier,
+              ),
               connections: dict.insert(
                 worker.connections,
                 identifier,
@@ -1535,17 +1887,48 @@ fn handle_listener_network(
               ),
             ),
           )
-        Some(_) -> {
-          let _ = connection_call(connection, StopConnection)
-          Ok(worker)
+        Some(ListenerDrain(
+          reply,
+          deadline,
+          completion_deadline,
+          outstanding,
+          incomplete,
+          settle_application,
+        )) -> {
+          process.send(
+            connection.commands,
+            BeginDrain(deadline, settle_application),
+          )
+          Ok(
+            ListenerWorker(
+              ..worker,
+              starting_connections: dict.delete(
+                worker.starting_connections,
+                identifier,
+              ),
+              connections: dict.insert(
+                worker.connections,
+                identifier,
+                connection,
+              ),
+              drain: Some(ListenerDrain(
+                reply,
+                deadline,
+                completion_deadline,
+                dict.insert(outstanding, identifier, Nil),
+                incomplete,
+                settle_application,
+              )),
+            ),
+          )
         }
       }
     PeerNotice(RequestAvailable(incoming)) ->
       handle_available_request(worker, incoming)
     PeerNotice(PeerDrained(identifier)) ->
-      handle_peer_finished(worker, identifier)
-    PeerNotice(PeerStopped(identifier)) ->
-      handle_peer_finished(worker, identifier)
+      handle_peer_finished(worker, identifier, True)
+    PeerNotice(PeerStopped(identifier, completed)) ->
+      handle_peer_finished(worker, identifier, completed)
   }
 }
 
@@ -1589,18 +1972,47 @@ fn handle_available_request(
 fn handle_peer_finished(
   worker: ListenerWorker,
   identifier: Int,
+  completed: Bool,
 ) -> Result(ListenerWorker, Nil) {
   let connections = dict.delete(worker.connections, identifier)
+  let starting_connections =
+    dict.delete(worker.starting_connections, identifier)
   case worker.drain {
-    None -> Ok(ListenerWorker(..worker, connections: connections))
-    Some(ListenerDrain(reply, deadline, outstanding)) -> {
+    None ->
+      Ok(
+        ListenerWorker(
+          ..worker,
+          connections: connections,
+          starting_connections: starting_connections,
+        ),
+      )
+    Some(ListenerDrain(
+      reply,
+      deadline,
+      completion_deadline,
+      outstanding,
+      incomplete,
+      settle_application,
+    )) -> {
+      let incomplete =
+        incomplete || !completed && dict.has_key(outstanding, identifier)
       let outstanding = dict.delete(outstanding, identifier)
       case dict.size(outstanding) {
         0 -> {
-          shutdown_listener(
-            ListenerWorker(..worker, connections: connections, drain: None),
-          )
-          process.send(reply, Ok(Drained))
+          let outcome =
+            shutdown_listener(
+              ListenerWorker(
+                ..worker,
+                connections: connections,
+                starting_connections: starting_connections,
+                drain: None,
+              ),
+              completion_deadline,
+            )
+          case outcome {
+            Ok(Nil) -> send_listener_peer_result(reply, incomplete)
+            Error(error) -> send_listener_drain_error(reply, error)
+          }
           Error(Nil)
         }
         _ ->
@@ -1608,7 +2020,15 @@ fn handle_peer_finished(
             ListenerWorker(
               ..worker,
               connections: connections,
-              drain: Some(ListenerDrain(reply, deadline, outstanding)),
+              starting_connections: starting_connections,
+              drain: Some(ListenerDrain(
+                reply,
+                deadline,
+                completion_deadline,
+                outstanding,
+                incomplete,
+                settle_application,
+              )),
             ),
           )
       }
@@ -1621,9 +2041,18 @@ fn advance_listener_drain(
   current: Int,
 ) -> Result(ListenerWorker, Nil) {
   case worker.drain {
-    Some(ListenerDrain(reply, deadline, _)) if current >= deadline -> {
-      shutdown_listener(ListenerWorker(..worker, drain: None))
-      process.send(reply, Ok(Forced))
+    Some(ListenerDrain(reply, deadline, completion_deadline, _, _, _))
+      if current >= deadline
+    -> {
+      let outcome =
+        shutdown_listener(
+          ListenerWorker(..worker, drain: None),
+          completion_deadline,
+        )
+      case outcome {
+        Ok(Nil) -> send_listener_drain_result(reply, Forced)
+        Error(error) -> send_listener_drain_error(reply, error)
+      }
       Error(Nil)
     }
     _ -> Ok(worker)
@@ -1634,7 +2063,7 @@ fn listener_next_deadline(worker: ListenerWorker) -> Option(Int) {
   let accept_deadline = queue_accept_deadline(worker.accept_waiters, None)
   case worker.drain {
     None -> accept_deadline
-    Some(ListenerDrain(_, deadline, _)) ->
+    Some(ListenerDrain(_, deadline, _, _, _, _)) ->
       earlier_deadline(accept_deadline, Some(deadline))
   }
 }
@@ -1676,11 +2105,62 @@ fn expire_accept_entries(
   }
 }
 
-fn shutdown_listener(worker: ListenerWorker) -> Nil {
+/// Stop every protocol actor and the core listener under one finite cleanup window.
+/// Established actors receive their abort command in one fanout and handshaking actors are killed together.
+/// Per-actor monitors are installed before either action, so completion cannot be lost and connection count cannot multiply an operation timeout.
+fn shutdown_listener(
+  worker: ListenerWorker,
+  cleanup_deadline: Int,
+) -> Result(Nil, Error) {
   close_accept_waiters(worker.accept_waiters, ListenerClosed)
+  let actor_join_deadline =
+    cleanup_deadline - connection_actor_kill_join_milliseconds
+  let actor_pids =
+    connection_actor_pids(
+      dict.values(worker.connections),
+      dict.values(worker.starting_connections),
+    )
+  let #(shutdown_selector, actor_monitors) =
+    monitor_connection_actors(worker.selector, actor_pids, dict.new())
   stop_peer_connections(dict.values(worker.connections))
-  let _ = core_server.stop(worker.core)
-  Nil
+  stop_starting_connections(dict.values(worker.starting_connections))
+  let core_outcome =
+    core_server.stop_until(worker.core, actor_join_deadline)
+    |> result.map(fn(_) { Nil })
+    |> result.map_error(map_core_runtime_error)
+  let actor_monitors =
+    await_connection_actors(
+      shutdown_selector,
+      actor_monitors,
+      actor_join_deadline,
+    )
+  stop_starting_connections(dict.keys(actor_monitors))
+  let actor_monitors =
+    await_connection_actors(shutdown_selector, actor_monitors, cleanup_deadline)
+  let actors_stopped = dict.size(actor_monitors) == 0
+  list.each(dict.values(actor_monitors), fn(monitor) {
+    process.demonitor_process(monitor)
+  })
+  case core_outcome, actors_stopped {
+    Error(error), _ -> Error(error)
+    Ok(Nil), True -> Ok(Nil)
+    Ok(Nil), False -> Error(Timeout)
+  }
+}
+
+fn autonomous_completion_deadline(worker: ListenerWorker) -> Int {
+  let current = now()
+  case
+    completion_deadline.new(
+      current,
+      worker.stop_completion_allowance_milliseconds,
+      0,
+      worker_reply_grace_milliseconds,
+    )
+  {
+    Ok(plan) -> completion_deadline.completion_deadline_milliseconds(plan)
+    Error(_) -> current
+  }
 }
 
 fn close_accept_waiters(waiters: Queue(AcceptWaiter), error: Error) -> Nil {
@@ -1694,21 +2174,107 @@ fn close_accept_waiters(waiters: Queue(AcceptWaiter), error: Error) -> Nil {
 }
 
 fn stop_peer_connections(connections: List(Connection)) -> Nil {
-  case connections {
-    [] -> Nil
-    [connection, ..rest] -> {
-      let _ = connection_call(connection, StopConnection)
-      stop_peer_connections(rest)
+  list.each(connections, fn(connection) {
+    process.send(connection.commands, StopConnection)
+  })
+}
+
+fn stop_starting_connections(connections: List(Pid)) -> Nil {
+  list.each(connections, fn(connection) { process.kill(connection) })
+}
+
+fn connection_actor_pids(
+  connections: List(Connection),
+  starting_connections: List(Pid),
+) -> List(Pid) {
+  list.append(
+    list.map(connections, fn(connection) { connection.worker }),
+    starting_connections,
+  )
+}
+
+fn monitor_connection_actors(
+  selector: process.Selector(ListenerMessage),
+  actors: List(Pid),
+  monitors: Dict(Pid, process.Monitor),
+) -> #(process.Selector(ListenerMessage), Dict(Pid, process.Monitor)) {
+  case actors {
+    [] -> #(selector, monitors)
+    [actor, ..rest] -> {
+      let monitor = process.monitor(actor)
+      monitor_connection_actors(
+        process.select_specific_monitor(selector, monitor, fn(_) {
+          ShutdownConnectionExited(actor)
+        }),
+        rest,
+        dict.insert(monitors, actor, monitor),
+      )
     }
   }
 }
 
-fn begin_peer_drains(connections: List(Connection)) -> Nil {
+fn await_connection_actors(
+  selector: process.Selector(ListenerMessage),
+  monitors: Dict(Pid, process.Monitor),
+  deadline_milliseconds: Int,
+) -> Dict(Pid, process.Monitor) {
+  case dict.size(monitors) {
+    0 -> monitors
+    _ ->
+      case
+        process.selector_receive(
+          selector,
+          within: int.max(0, deadline_milliseconds - now()),
+        )
+      {
+        Ok(ShutdownConnectionExited(actor)) -> {
+          case dict.get(monitors, actor) {
+            Ok(monitor) -> process.demonitor_process(monitor)
+            Error(_) -> Nil
+          }
+          await_connection_actors(
+            selector,
+            dict.delete(monitors, actor),
+            deadline_milliseconds,
+          )
+        }
+        Ok(ReceivedListenerCommand(command)) -> {
+          reject_listener_shutdown_command(command)
+          await_connection_actors(selector, monitors, deadline_milliseconds)
+        }
+        Ok(ReceivedListenerNetwork(_)) | Ok(ListenerOwnerExited) ->
+          await_connection_actors(selector, monitors, deadline_milliseconds)
+        Error(Nil) -> monitors
+      }
+  }
+}
+
+fn reject_listener_shutdown_command(command: ListenerCommand) -> Nil {
+  case command {
+    Port(reply) -> process.send(reply, Error(ListenerClosed))
+    ReloadCertificates(_, _, reply) ->
+      process.send(reply, Error(ListenerClosed))
+    ReloadOperationalKeys(_, _, _, reply) ->
+      process.send(reply, Error(ListenerClosed))
+    Accept(reply, _) -> process.send(reply, Error(ListenerClosed))
+    Stop(reply, _, _) -> process.send(reply, Error(ListenerClosed))
+    GracefulStop(reply, _, _) -> process.send(reply, Error(ListenerClosed))
+  }
+}
+
+fn begin_peer_drains(
+  connections: List(Connection),
+  deadline: Int,
+  settle_application: Bool,
+) -> Nil {
   case connections {
     [] -> Nil
     [connection, ..rest] -> {
-      process.send(connection.commands, BeginDrain)
-      begin_peer_drains(rest)
+      process.send(
+        connection.commands,
+        BeginDrain(deadline, settle_application),
+      )
+      begin_peer_drains(rest, deadline, settle_application)
     }
   }
 }
@@ -1724,7 +2290,7 @@ fn reject_pending(pending: Queue(Incoming)) -> Nil {
 }
 
 fn reject_incoming(incoming: Incoming, code: Int, error: Error) -> Nil {
-  let Incoming(Request(connection, identifier), _, _, _, _, _, _) = incoming
+  let Incoming(Request(connection, identifier, _), _, _, _, _, _, _) = incoming
   process.send(connection.commands, RejectRequest(identifier, code, error))
 }
 
@@ -1745,6 +2311,17 @@ fn connection_identifier_entries(
   }
 }
 
+fn insert_connection_identifiers(
+  set: Dict(Int, Nil),
+  identifiers: List(Int),
+) -> Dict(Int, Nil) {
+  case identifiers {
+    [] -> set
+    [identifier, ..rest] ->
+      insert_connection_identifiers(dict.insert(set, identifier, Nil), rest)
+  }
+}
+
 fn close_core_connection(connection: core_server.Connection) -> Nil {
   let _ = core_server.close(connection)
   Nil
@@ -1756,11 +2333,10 @@ fn spawn_connection_actor(
   core: core_server.Connection,
   notices: Subject(ListenerNetwork),
   config: PeerConfig,
-) -> Nil {
+) -> Pid {
   process.spawn_unlinked(fn() {
     initialise_connection(owner, identifier, core, notices, config)
   })
-  Nil
 }
 
 fn initialise_connection(
@@ -1775,7 +2351,7 @@ fn initialise_connection(
   case server_connection.start(identifier, core, network, config.protocol) {
     Error(_) -> {
       close_core_connection(core)
-      process.send(notices, PeerNotice(PeerStopped(identifier)))
+      process.send(notices, PeerNotice(PeerStopped(identifier, True)))
     }
     Ok(connection) -> {
       let commands = process.new_subject()
@@ -1800,9 +2376,16 @@ fn initialise_connection(
           notices,
           dict.new(),
           terminal_registry.new(maximum_terminal_handles),
+          terminal_event_store.new(
+            maximum_terminal_handles,
+            config.queue_limit + 2,
+            config.stream_buffer_limit,
+          ),
           dict.new(),
           dict.new(),
           0,
+          False,
+          None,
           False,
           False,
           False,
@@ -1858,10 +2441,12 @@ fn connection_loop(worker: ConnectionWorker) -> Nil {
               )
             Error(error) -> {
               close_peer_protocol_failure(worker.connection, error)
-              connection_loop(fail_all_requests(
-                worker,
-                map_connection_error(error),
-              ))
+              connection_loop(
+                ConnectionWorker(
+                  ..fail_all_requests(worker, map_connection_error(error)),
+                  closed: True,
+                ),
+              )
             }
           }
       }
@@ -1877,33 +2462,147 @@ fn continue_connection(
       shutdown_connection(worker, False)
       Error(Nil)
     }
-    False ->
-      case
-        worker.draining
-        && all_connection_work_complete(worker)
-        && transport_work_complete(worker)
-      {
-        False -> Ok(worker)
-        True -> {
-          let worker = case server_connection.close_drained(worker.connection) {
-            Ok(connection) -> ConnectionWorker(..worker, connection: connection)
-            Error(_) -> worker
+    False -> continue_orderly_connection(worker)
+  }
+}
+
+fn continue_orderly_connection(
+  worker: ConnectionWorker,
+) -> Result(ConnectionWorker, Nil) {
+  case worker.orderly_close {
+    None -> Ok(worker)
+    Some(close_state) -> {
+      let current = now()
+      case refine_server_goaway(worker, close_state, current) {
+        Error(Nil) -> Error(Nil)
+        Ok(worker) ->
+          case worker.orderly_close {
+            None -> abort_orderly_connection(worker)
+            Some(close_state) ->
+              observe_server_orderly_close(worker, close_state, current)
           }
-          shutdown_connection(worker, True)
+      }
+    }
+  }
+}
+
+fn observe_server_orderly_close(
+  worker: ConnectionWorker,
+  close_state: orderly_close.State,
+  current: Int,
+) -> Result(ConnectionWorker, Nil) {
+  case orderly_close.final_goaway_queued(close_state) {
+    False -> Ok(worker)
+    True -> {
+      let application_settled = all_connection_work_complete(worker)
+      let transport_flushed =
+        application_settled && transport_work_complete(worker)
+      case
+        orderly_close.observe(
+          close_state,
+          current,
+          application_settled,
+          transport_flushed,
+        )
+      {
+        Error(_) | Ok(orderly_close.Abort(_, _)) ->
+          abort_orderly_connection(worker)
+        Ok(orderly_close.Continue(close_state, _)) ->
+          Ok(ConnectionWorker(..worker, orderly_close: Some(close_state)))
+        Ok(orderly_close.Close(close_state, step)) ->
+          case step {
+            orderly_close.CloseWithNoError(code) ->
+              finish_server_orderly_close(worker, close_state, code)
+            _ -> abort_orderly_connection(worker)
+          }
+      }
+    }
+  }
+}
+
+fn finish_server_orderly_close(
+  worker: ConnectionWorker,
+  close_state: orderly_close.State,
+  code: Int,
+) -> Result(ConnectionWorker, Nil) {
+  case server_connection.close_drained(worker.connection) {
+    Error(_) -> abort_orderly_connection(worker)
+    Ok(connection) -> {
+      shutdown_connection(
+        ConnectionWorker(
+          ..worker,
+          connection: connection,
+          orderly_close: Some(close_state),
+        ),
+        True,
+      )
+      let _closed = orderly_close.confirm_closed(close_state, code)
+      Error(Nil)
+    }
+  }
+}
+
+fn abort_orderly_connection(
+  worker: ConnectionWorker,
+) -> Result(ConnectionWorker, Nil) {
+  shutdown_connection(worker, False)
+  Error(Nil)
+}
+
+fn refine_server_goaway(
+  worker: ConnectionWorker,
+  close_state: orderly_close.State,
+  current: Int,
+) -> Result(ConnectionWorker, Nil) {
+  case
+    orderly_close.final_goaway_queued(close_state),
+    current < orderly_close.refine_not_before_milliseconds(close_state)
+  {
+    True, _ | False, True -> Ok(worker)
+    False, False -> {
+      // Network events are dispatched before this step, so a request which arrived during the first-GOAWAY interval advances this sampled cutoff.
+      let final_identifier = worker.next_request_stream_id
+      case
+        orderly_close.final_queued(close_state, final_identifier, current),
+        server_connection.refine_drain(worker.connection, final_identifier)
+      {
+        Ok(#(close_state, _)), Ok(#(connection, rejected)) ->
+          Ok(reject_request_streams(
+            ConnectionWorker(
+              ..worker,
+              connection: connection,
+              orderly_close: Some(close_state),
+            ),
+            rejected,
+          ))
+        _, _ -> {
+          shutdown_connection(worker, False)
           Error(Nil)
         }
       }
+    }
   }
 }
 
 fn shutdown_connection(worker: ConnectionWorker, drained: Bool) -> Nil {
   close_request_waiters(dict.values(worker.requests), ConnectionClosed)
-  server_connection.close(worker.connection, 0x100)
+  let close_code = case drained {
+    True -> orderly_close.h3_no_error
+    False ->
+      error_code.runtime_greased_no_error(
+        qlog.monotonic_milliseconds() + worker.identifier,
+      )
+  }
+  server_connection.close(worker.connection, close_code)
   process.send(
     worker.notices,
     PeerNotice(case drained {
       True -> PeerDrained(worker.identifier)
-      False -> PeerStopped(worker.identifier)
+      False ->
+        PeerStopped(
+          worker.identifier,
+          !worker.interrupted && all_connection_work_complete(worker),
+        )
     }),
   )
   Nil
@@ -1950,10 +2649,24 @@ fn dispatch_connection_event(
         Error(error) -> fail_request(worker, stream_id, error)
       }
     server_connection.Http3Event(http3_state.StreamFinished(stream_id)) ->
-      mark_request_finished(worker, stream_id)
-      |> enqueue_request_event(stream_id, End)
+      // Deliver or queue End before terminal retirement can remove the request.
+      // The response FIN may already have been acknowledged.
+      enqueue_request_event(worker, stream_id, End)
+      |> mark_request_finished(stream_id)
     server_connection.StreamWasReset(stream_id, code) ->
       fail_request(worker, stream_id, StreamReset(code))
+    server_connection.StreamSendCompleted(
+      _stream_id,
+      core_server.SendAcknowledged,
+    )
+    | server_connection.StreamSendCompleted(
+        _stream_id,
+        core_server.SendReset(_),
+      ) -> worker
+    server_connection.StreamSendCompleted(
+      stream_id,
+      core_server.SendStopped(code),
+    ) -> peer_stopped_response(worker, stream_id, code)
     server_connection.Http3Event(http3_state.HttpDatagram(stream_id, payload)) ->
       enqueue_datagram(worker, stream_id, payload)
     server_connection.ConnectionTerminated ->
@@ -1990,11 +2703,21 @@ fn accept_request_head(
   stream_id: Int,
   validated: header_semantics.Validated,
 ) -> ConnectionWorker {
-  case worker.draining, decode_request(validated) {
-    True, _ -> abort_request_stream(worker, stream_id, request_rejected_code)
-    _, Error(_) ->
+  let reject_new_request = case worker.orderly_close {
+    Some(close_state) -> orderly_close.final_goaway_queued(close_state)
+    None -> worker.draining
+  }
+  case
+    reject_new_request,
+    decode_request(validated),
+    server_connection.response_stream(worker.connection, stream_id)
+  {
+    True, _, _ -> abort_request_stream(worker, stream_id, request_rejected_code)
+    _, Error(_), _ | _, _, Error(_) ->
       abort_request_stream(worker, stream_id, request_cancelled_code)
-    False, Ok(#(method, path, application_protocol, scheme, authority, headers))
+    False,
+      Ok(#(method, path, application_protocol, scheme, authority, headers)),
+      Ok(response_stream)
     -> {
       let effective_priority =
         dict.get(worker.pending_priorities, stream_id)
@@ -2021,6 +2744,7 @@ fn accept_request_head(
           False,
           False,
           False,
+          None,
           0,
           None,
           effective_priority,
@@ -2039,7 +2763,7 @@ fn accept_request_head(
         worker.notices,
         PeerNotice(
           RequestAvailable(Incoming(
-            Request(worker.handle, stream_id),
+            Request(worker.handle, stream_id, response_stream),
             method,
             path,
             application_protocol,
@@ -2088,7 +2812,13 @@ fn enqueue_request_event(
 ) -> ConnectionWorker {
   case dict.get(worker.requests, stream_id) {
     Error(_) -> worker
-    Ok(request) ->
+    Ok(request) -> {
+      // A network event may arrive before the next waiter-expiry pass.
+      let request =
+        RequestState(
+          ..request,
+          event_waiter: unexpired_event_waiter(request.event_waiter, now()),
+        )
       case
         request.failure,
         request.event_waiter,
@@ -2106,7 +2836,11 @@ fn enqueue_request_event(
             _ -> request.buffered_body_bytes
           }
           case
-            queue_count(request.events) >= worker.queue_limit,
+            request_event_queue_exhausted(
+              request.events,
+              event,
+              worker.queue_limit,
+            ),
             buffered > worker.stream_buffer_limit
           {
             True, _ ->
@@ -2133,6 +2867,20 @@ fn enqueue_request_event(
           }
         }
       }
+    }
+  }
+}
+
+fn unexpired_event_waiter(
+  waiter: Option(EventWaiter),
+  current: Int,
+) -> Option(EventWaiter) {
+  case waiter {
+    Some(EventWaiter(reply, deadline)) if current >= deadline -> {
+      process.send(reply, Error(Timeout))
+      None
+    }
+    _ -> waiter
   }
 }
 
@@ -2190,8 +2938,13 @@ fn mark_request_finished(
 ) -> ConnectionWorker {
   case dict.get(worker.requests, stream_id) {
     Error(_) -> worker
-    Ok(request) ->
-      put_request(worker, RequestState(..request, request_finished: True))
+    Ok(request) -> {
+      let request = RequestState(..request, request_finished: True)
+      case request.response_stopped {
+        None -> put_request(worker, request)
+        Some(code) -> retire_peer_stopped_request(worker, request, code)
+      }
+    }
   }
 }
 
@@ -2237,7 +2990,10 @@ fn handle_connection_command(
       Ok(worker)
     }
     Next(identifier, reply, deadline) ->
-      handle_next_event(worker, identifier, reply, deadline)
+      case deadline <= now() {
+        True -> reply_error(worker, reply, Timeout)
+        False -> handle_next_event(worker, identifier, reply, deadline)
+      }
     CancelRequest(identifier, reply) ->
       handle_cancel_request(worker, identifier, reply)
     SendResponse(identifier, status, headers, declared, reply) ->
@@ -2368,6 +3124,10 @@ fn handle_connection_command(
       )
       Ok(worker)
     }
+    RecordApplicationError(code) -> {
+      server_connection.record_application_error(worker.connection, code)
+      Ok(worker)
+    }
     RequestStateStats(reply) -> {
       let outcome =
         server_connection.resource_stats(worker.connection)
@@ -2397,6 +3157,67 @@ fn handle_connection_command(
       process.send(reply, outcome)
       Ok(worker)
     }
+    RequestLifecycleStats(identifier, reply) -> {
+      let outcome = case dict.get(worker.requests, identifier) {
+        Ok(request) ->
+          Ok(#(
+            True,
+            request.request_finished,
+            request.response_finished,
+            request.response_stopped,
+            queue_count(request.events),
+            0,
+            option.is_some(request.event_waiter),
+          ))
+        Error(_) ->
+          case terminal_registry.get(worker.request_terminals, identifier) {
+            Error(_) -> Error(StreamFinished)
+            Ok(_) -> {
+              let retained =
+                terminal_event_store.get(
+                  worker.request_terminal_events,
+                  identifier,
+                )
+                |> result.map(fn(entry) { queue_count(entry.value.events) })
+                |> result.unwrap(0)
+              Ok(#(False, True, True, None, 0, retained, False))
+            }
+          }
+      }
+      process.send(reply, outcome)
+      Ok(worker)
+    }
+    RequestWaiterStats(identifier, reply) -> {
+      let outcome = case dict.get(worker.requests, identifier) {
+        Ok(request) ->
+          Ok(#(
+            option.is_some(request.event_waiter),
+            option.is_some(request.datagram_waiter),
+          ))
+        Error(_) ->
+          case terminal_registry.get(worker.request_terminals, identifier) {
+            Ok(_) -> Ok(#(False, False))
+            Error(_) -> Error(StreamFinished)
+          }
+      }
+      process.send(reply, outcome)
+      Ok(worker)
+    }
+    SendResourceStats(reply) -> {
+      process.send(
+        reply,
+        server_connection.send_resource_stats(worker.connection)
+          |> result.map_error(map_connection_error),
+      )
+      Ok(worker)
+    }
+    TerminalDeliveryStats(reply) -> {
+      process.send(
+        reply,
+        Ok(terminal_event_store.stats(worker.request_terminal_events)),
+      )
+      Ok(worker)
+    }
     MaximumTransmissionUnit(reply) -> {
       process.send(
         reply,
@@ -2410,11 +3231,10 @@ fn handle_connection_command(
         abort_request_stream(worker, identifier, code)
         |> fail_request(identifier, error),
       )
-    BeginDrain -> Ok(begin_connection_drain(worker))
-    StopConnection(reply) -> {
-      let _ = server_connection.close(worker.connection, 0x100)
-      process.send(reply, Ok(Nil))
-      process.send(worker.notices, PeerNotice(PeerStopped(worker.identifier)))
+    BeginDrain(deadline, settle_application) ->
+      Ok(begin_connection_drain(worker, deadline, settle_application))
+    StopConnection -> {
+      shutdown_connection(worker, False)
       Error(Nil)
     }
   }
@@ -2475,12 +3295,7 @@ fn handle_next_event(
   deadline: Int,
 ) -> Result(ConnectionWorker, Nil) {
   case dict.get(worker.requests, identifier) {
-    Error(_) ->
-      reply_error(
-        worker,
-        reply,
-        request_error(worker, identifier, StreamFinished),
-      )
+    Error(_) -> handle_terminal_next_event(worker, identifier, reply)
     Ok(request) ->
       case queue_pop(request.events), request.failure, request.event_waiter {
         Ok(#(event, events)), _, _ -> {
@@ -2510,6 +3325,64 @@ fn handle_next_event(
               event_waiter: Some(EventWaiter(reply, deadline)),
             ),
           ))
+      }
+  }
+}
+
+fn handle_terminal_next_event(
+  worker: ConnectionWorker,
+  identifier: Int,
+  reply: Subject(Result(Event, Error)),
+) -> Result(ConnectionWorker, Nil) {
+  case terminal_event_store.get(worker.request_terminal_events, identifier) {
+    Error(_) ->
+      reply_error(
+        worker,
+        reply,
+        request_error(worker, identifier, StreamFinished),
+      )
+    Ok(terminal_event_store.Entry(
+      RetainedRequestEvents(events, buffered_body_bytes),
+      _,
+      _,
+    )) ->
+      case queue_pop(events) {
+        Error(Nil) ->
+          reply_error(
+            ConnectionWorker(
+              ..worker,
+              request_terminal_events: terminal_event_store.delete(
+                worker.request_terminal_events,
+                identifier,
+              ),
+            ),
+            reply,
+            request_error(worker, identifier, StreamFinished),
+          )
+        Ok(#(event, rest)) -> {
+          process.send(reply, Ok(event))
+          let buffered_body_bytes = case event {
+            Data(bytes) ->
+              int.max(0, buffered_body_bytes - bit_array.byte_size(bytes))
+            _ -> buffered_body_bytes
+          }
+          let retained = case queue_is_empty(rest) {
+            True ->
+              terminal_event_store.delete(
+                worker.request_terminal_events,
+                identifier,
+              )
+            False ->
+              terminal_event_store.insert(
+                worker.request_terminal_events,
+                identifier,
+                RetainedRequestEvents(rest, buffered_body_bytes),
+                queue_count(rest),
+                buffered_body_bytes,
+              )
+          }
+          Ok(ConnectionWorker(..worker, request_terminal_events: retained))
+        }
       }
   }
 }
@@ -3244,32 +4117,124 @@ fn handle_set_priority(
   }
 }
 
-fn begin_connection_drain(worker: ConnectionWorker) -> ConnectionWorker {
+fn begin_connection_drain(
+  worker: ConnectionWorker,
+  deadline: Int,
+  settle_application: Bool,
+) -> ConnectionWorker {
   case worker.draining {
     True -> worker
-    False ->
-      case server_connection.start_drain(worker.connection, now()) {
+    False -> {
+      let current = now()
+      case
+        orderly_close.refinement_not_before(
+          current,
+          deadline,
+          goaway_refinement_delay_milliseconds,
+        )
+      {
         Error(_) -> ConnectionWorker(..worker, draining: True, closed: True)
-        Ok(connection) ->
+        Ok(refine_not_before) ->
           case
-            server_connection.refine_drain(
-              connection,
-              worker.next_request_stream_id,
+            orderly_close.new(
+              orderly_close.Server,
+              current,
+              deadline - current,
+              refine_not_before,
             )
           {
-            Error(_) ->
-              ConnectionWorker(..worker, connection: connection, draining: True)
-            Ok(#(connection, rejected)) ->
-              reject_request_streams(
-                ConnectionWorker(
-                  ..worker,
-                  connection: connection,
-                  draining: True,
-                ),
-                rejected,
+            Error(_) -> ConnectionWorker(..worker, draining: True, closed: True)
+            Ok(close_state) ->
+              begin_connection_goaway(
+                worker,
+                close_state,
+                current,
+                settle_application,
               )
           }
       }
+    }
+  }
+}
+
+fn begin_connection_goaway(
+  worker: ConnectionWorker,
+  close_state: orderly_close.State,
+  current: Int,
+  settle_application: Bool,
+) -> ConnectionWorker {
+  let initial_identifier =
+    orderly_close.initial_goaway_identifier(orderly_close.Server)
+  case
+    orderly_close.initial_queued(close_state, initial_identifier),
+    server_connection.start_drain(worker.connection, current)
+  {
+    Ok(#(close_state, _)), Ok(connection) -> {
+      let worker =
+        ConnectionWorker(
+          ..worker,
+          connection: connection,
+          draining: True,
+          orderly_close: Some(close_state),
+        )
+      case settle_application {
+        True -> settle_connection_application(worker)
+        False -> worker
+      }
+    }
+    _, Ok(connection) ->
+      ConnectionWorker(
+        ..worker,
+        connection: connection,
+        draining: True,
+        closed: True,
+      )
+    _, Error(_) -> ConnectionWorker(..worker, draining: True, closed: True)
+  }
+}
+
+fn settle_connection_application(worker: ConnectionWorker) -> ConnectionWorker {
+  let worker =
+    abort_request_entries(
+      worker,
+      dict.keys(worker.requests),
+      request_cancelled_code,
+    )
+  let worker =
+    abort_push_entries(worker, dict.keys(worker.pushes), request_cancelled_code)
+  fail_all_requests(worker, ListenerClosed)
+}
+
+fn abort_request_entries(
+  worker: ConnectionWorker,
+  identifiers: List(Int),
+  code: Int,
+) -> ConnectionWorker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] ->
+      abort_request_entries(
+        abort_request_stream(worker, identifier, code),
+        rest,
+        code,
+      )
+  }
+}
+
+fn abort_push_entries(
+  worker: ConnectionWorker,
+  identifiers: List(Int),
+  code: Int,
+) -> ConnectionWorker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] -> {
+      let worker = case dict.get(worker.pushes, identifier) {
+        Error(_) -> worker
+        Ok(push) -> abort_request_stream(worker, push.stream_id, code)
+      }
+      abort_push_entries(worker, rest, code)
+    }
   }
 }
 
@@ -3322,11 +4287,38 @@ fn transport_work_complete(worker: ConnectionWorker) -> Bool {
         == Ok(True)
     }
   })
+  && server_connection.application_send_settled(worker.connection) == Ok(True)
 }
 
 fn connection_next_deadline(worker: ConnectionWorker) -> Option(Int) {
   let deadline = request_waiter_deadlines(dict.values(worker.requests), None)
-  let deadline = case worker.draining && all_connection_work_complete(worker) {
+  let deadline = case worker.orderly_close {
+    None -> deadline
+    Some(close_state) -> {
+      let deadline =
+        earlier_deadline(
+          deadline,
+          Some(orderly_close.deadline_milliseconds(close_state)),
+        )
+      case orderly_close.final_goaway_queued(close_state) {
+        False ->
+          earlier_deadline(
+            deadline,
+            Some(orderly_close.refine_not_before_milliseconds(close_state)),
+          )
+        True -> deadline
+      }
+    }
+  }
+  let final_goaway_queued = case worker.orderly_close {
+    Some(close_state) -> orderly_close.final_goaway_queued(close_state)
+    None -> False
+  }
+  let deadline = case
+    worker.draining
+    && final_goaway_queued
+    && all_connection_work_complete(worker)
+  {
     True ->
       earlier_deadline(
         deadline,
@@ -3485,6 +4477,7 @@ fn fail_request(
   }
 }
 
+// Local cancellation owns both stream directions, so no queued application payload remains deliverable after the caller receives `Cancelled`.
 fn discard_request_payloads(
   worker: ConnectionWorker,
   identifier: Int,
@@ -3505,6 +4498,60 @@ fn discard_request_payloads(
   }
 }
 
+fn peer_stopped_response(
+  worker: ConnectionWorker,
+  identifier: Int,
+  code: Int,
+) -> ConnectionWorker {
+  case dict.get(worker.requests, identifier) {
+    Error(_) -> worker
+    Ok(request) -> {
+      let connection = case
+        server_connection.observe_send_stopped(
+          worker.connection,
+          request.stream_id,
+        )
+      {
+        Ok(connection) -> connection
+        Error(_) -> worker.connection
+      }
+      let worker = ConnectionWorker(..worker, connection: connection)
+      let request =
+        RequestState(
+          ..request,
+          response_finished: True,
+          response_stopped: Some(code),
+        )
+      case request.request_finished {
+        True -> retire_peer_stopped_request(worker, request, code)
+        False -> put_request(worker, request)
+      }
+    }
+  }
+}
+
+fn retire_peer_stopped_request(
+  worker: ConnectionWorker,
+  request: RequestState,
+  code: Int,
+) -> ConnectionWorker {
+  let terminal = case request.failure {
+    Some(error) -> RequestFailed(error)
+    None -> RequestFailed(StreamReset(code))
+  }
+  retire_request_state(
+    ConnectionWorker(
+      ..worker,
+      connection: server_connection.retire_stream(
+        worker.connection,
+        request.stream_id,
+      ),
+    ),
+    request,
+    terminal,
+  )
+}
+
 fn fail_push(
   worker: ConnectionWorker,
   identifier: Int,
@@ -3520,6 +4567,13 @@ fn fail_all_requests(
   worker: ConnectionWorker,
   error: Error,
 ) -> ConnectionWorker {
+  // Capture accepted work before failure marks every request terminal.
+  // A connection-wide interruption must never become successful drain evidence.
+  let worker =
+    ConnectionWorker(
+      ..worker,
+      interrupted: worker.interrupted || !all_connection_work_complete(worker),
+    )
   let worker = fail_request_entries(worker, dict.keys(worker.requests), error)
   fail_push_entries(worker, dict.keys(worker.pushes), error)
 }
@@ -3627,26 +4681,92 @@ fn put_request(
         Some(DatagramWaiter(reply, _)) -> process.send(reply, Error(error))
         None -> Nil
       }
-      let connection = case terminal {
-        RequestCompleted ->
-          server_connection.retire_stream(worker.connection, request.stream_id)
-        RequestFailed(_) -> worker.connection
-      }
-      ConnectionWorker(
-        ..worker,
-        connection: connection,
-        requests: dict.delete(worker.requests, request.stream_id),
-        request_terminals: terminal_registry.insert(
-          worker.request_terminals,
-          request.stream_id,
-          terminal,
-        ),
-        pending_priorities: dict.delete(
-          worker.pending_priorities,
-          request.stream_id,
-        ),
-      )
+      retire_request_state(worker, request, terminal)
     }
+  }
+}
+
+fn retire_request_state(
+  worker: ConnectionWorker,
+  request: RequestState,
+  terminal: RequestTerminal,
+) -> ConnectionWorker {
+  let connection = case terminal {
+    RequestCompleted ->
+      server_connection.retire_stream(worker.connection, request.stream_id)
+    RequestFailed(_) -> worker.connection
+  }
+  let #(request_terminals, evicted) =
+    terminal_registry.insert_with_evictions(
+      worker.request_terminals,
+      request.stream_id,
+      terminal,
+    )
+  let request_terminal_events =
+    list.fold(evicted, worker.request_terminal_events, fn(events, entry) {
+      terminal_event_store.delete(events, entry.0)
+    })
+  let #(request_terminal_events, payload_evictions) = case
+    queue_is_empty(request.events)
+  {
+    True -> #(
+      terminal_event_store.delete(request_terminal_events, request.stream_id),
+      [],
+    )
+    False ->
+      terminal_event_store.insert_with_evictions(
+        request_terminal_events,
+        request.stream_id,
+        RetainedRequestEvents(request.events, request.buffered_body_bytes),
+        queue_count(request.events),
+        request.buffered_body_bytes,
+      )
+  }
+  // A stale handle whose retained delivery lost the connection-wide budget receives an explicit overload failure.
+  // It never silently reports the peer terminal while pretending the promised payload was still available.
+  let request_terminals =
+    list.fold(payload_evictions, request_terminals, fn(terminals, entry) {
+      let terminal_event_store.Eviction(identifier, _, limit) = entry
+      let failure =
+        terminal_event_limit_failure(
+          limit,
+          worker.queue_limit,
+          worker.stream_buffer_limit,
+        )
+      terminal_registry.insert(terminals, identifier, RequestFailed(failure))
+    })
+  let request_terminal_events = case
+    terminal_event_store.get(request_terminal_events, request.stream_id)
+  {
+    Ok(_) -> request_terminal_events
+    Error(Nil) ->
+      terminal_event_store.delete(request_terminal_events, request.stream_id)
+  }
+  ConnectionWorker(
+    ..worker,
+    connection: connection,
+    requests: dict.delete(worker.requests, request.stream_id),
+    request_terminals: request_terminals,
+    request_terminal_events: request_terminal_events,
+    pending_priorities: dict.delete(
+      worker.pending_priorities,
+      request.stream_id,
+    ),
+  )
+}
+
+/// Map a retained terminal-delivery budget eviction to its stable public failure class.
+/// Kept as one function so classification can be mutation tested independently from socket timing.
+@internal
+pub fn terminal_event_limit_failure(
+  limit: terminal_event_store.Limit,
+  queue_limit: Int,
+  stream_buffer_limit: Int,
+) -> Error {
+  case limit {
+    terminal_event_store.Bytes -> ConsumerTooSlow(stream_buffer_limit)
+    terminal_event_store.Events | terminal_event_store.Entries ->
+      RequestEventQueueExceeded(queue_limit)
   }
 }
 
@@ -3711,9 +4831,12 @@ fn request_error(
     Ok(RequestState(failure: Some(error), ..)) -> error
     Ok(_) -> fallback
     Error(_) ->
-      terminal_registry.get(worker.request_terminals, identifier)
-      |> result.map(request_terminal_error)
-      |> result.unwrap(fallback)
+      case terminal_registry.get(worker.request_terminals, identifier) {
+        // ACK-driven retirement removes payload state, not the operation's already-started/already-finished contract.
+        // Preserve causal failures while keeping completed requests consistent with their live state.
+        Ok(RequestFailed(error)) -> error
+        Ok(RequestCompleted) | Error(_) -> fallback
+      }
   }
 }
 
@@ -3805,6 +4928,13 @@ fn decode_trailers(
 fn decode_headers(
   fields: List(Header),
 ) -> Result(List(#(String, String)), Error) {
+  decode_headers_raw(fields)
+  |> result.map(application_headers.combine_cookie_fields)
+}
+
+fn decode_headers_raw(
+  fields: List(Header),
+) -> Result(List(#(String, String)), Error) {
   case fields {
     [] -> Ok([])
     [Header(name, value, _), ..rest] -> {
@@ -3815,7 +4945,7 @@ fn decode_headers(
         bit_array.to_string(value)
         |> result.replace_error(InvalidHeaderEncoding),
       )
-      use rest <- result.try(decode_headers(rest))
+      use rest <- result.try(decode_headers_raw(rest))
       Ok([#(name, value), ..rest])
     }
   }
@@ -3895,7 +5025,7 @@ fn validate_start(
     && queue_limit > 0
     && telemetry_limit > 0
     && bidirectional_stream_limit > 0
-    && unidirectional_stream_limit > 0
+    && unidirectional_stream_limit >= 3
     && frame_limit > 0
     && datagram_limit > 0
     && qpack_table_limit > 0
@@ -3968,6 +5098,33 @@ fn queue_pop(queue: Queue(value)) -> Result(#(value, Queue(value)), Nil) {
       Ok(#(value, Queue(..queue, front: rest, count: queue.count - 1)))
     [], [] -> Error(Nil)
     [], back -> queue_pop(Queue(..queue, front: list.reverse(back), back: []))
+  }
+}
+
+// DATA uses the configured application queue.
+// A valid HTTP message can then contribute at most one Trailers and one End event; reserve those two finite protocol slots so terminal evidence cannot be relabelled as a slow consumer merely because the final DATA (for example a WebSocket Close) filled the last payload slot.
+fn request_event_queue_exhausted(
+  events: Queue(Event),
+  next: Event,
+  maximum_data_events: Int,
+) -> Bool {
+  let #(data_events, terminal_events) = request_event_counts(events)
+  case next {
+    Data(_) -> data_events >= maximum_data_events
+    Trailers(_) | End -> terminal_events >= 2
+  }
+}
+
+fn request_event_counts(events: Queue(Event)) -> #(Int, Int) {
+  case queue_pop(events) {
+    Error(Nil) -> #(0, 0)
+    Ok(#(event, rest)) -> {
+      let #(data_events, terminal_events) = request_event_counts(rest)
+      case event {
+        Data(_) -> #(data_events + 1, terminal_events)
+        Trailers(_) | End -> #(data_events, terminal_events + 1)
+      }
+    }
   }
 }
 
@@ -4059,6 +5216,109 @@ fn listener_call_with_timeout(
   }
 }
 
+/// Await both the typed listener result and the listener actor's DOWN under the immutable outer deadline.
+/// A successful reply cannot hide a listener which remains alive, while a diagnostic failure already observed before a deadline is preserved instead of being relabelled as a generic timeout.
+fn listener_call_until(
+  listener: Listener,
+  deadline_milliseconds: Int,
+  make_command: fn(Subject(Result(value, Error))) -> ListenerCommand,
+) -> Result(value, Error) {
+  use _ <- result.try(remaining_listener_call_milliseconds(
+    deadline_milliseconds,
+  ))
+  case process.is_alive(listener.worker) {
+    False -> Error(ListenerClosed)
+    True -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(listener.worker)
+      process.send(listener.commands, make_command(reply))
+      let selector =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { CallReply(value) })
+        |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
+      let outcome =
+        await_listener_call_until(selector, deadline_milliseconds, None, False)
+      process.demonitor_process(monitor)
+      outcome
+    }
+  }
+}
+
+fn await_listener_call_until(
+  selector: process.Selector(CallOutcome(value)),
+  deadline_milliseconds: Int,
+  reply: Option(Result(value, Error)),
+  worker_down: Bool,
+) -> Result(value, Error) {
+  case reply, worker_down {
+    Some(outcome), True ->
+      case remaining_listener_call_milliseconds(deadline_milliseconds) {
+        Ok(_) -> outcome
+        Error(error) -> listener_call_timeout_result(Some(outcome), error)
+      }
+    _, _ ->
+      case remaining_listener_call_milliseconds(deadline_milliseconds) {
+        Error(error) -> listener_call_timeout_result(reply, error)
+        Ok(remaining) ->
+          case process.selector_receive(selector, within: remaining) {
+            Ok(CallReply(outcome)) ->
+              continue_listener_call_until(
+                selector,
+                deadline_milliseconds,
+                Some(outcome),
+                worker_down,
+              )
+            Ok(WorkerExited) ->
+              continue_listener_call_until(
+                selector,
+                deadline_milliseconds,
+                reply,
+                True,
+              )
+            Error(Nil) -> listener_call_timeout_result(reply, Timeout)
+          }
+      }
+  }
+}
+
+fn continue_listener_call_until(
+  selector: process.Selector(CallOutcome(value)),
+  deadline_milliseconds: Int,
+  reply: Option(Result(value, Error)),
+  worker_down: Bool,
+) -> Result(value, Error) {
+  case remaining_listener_call_milliseconds(deadline_milliseconds) {
+    Ok(_) ->
+      await_listener_call_until(
+        selector,
+        deadline_milliseconds,
+        reply,
+        worker_down,
+      )
+    Error(error) -> listener_call_timeout_result(reply, error)
+  }
+}
+
+fn listener_call_timeout_result(
+  observed: Option(Result(value, Error)),
+  timeout: Error,
+) -> Result(value, Error) {
+  case observed {
+    Some(Error(error)) -> Error(error)
+    Some(Ok(_)) | None -> Error(timeout)
+  }
+}
+
+fn remaining_listener_call_milliseconds(
+  deadline_milliseconds: Int,
+) -> Result(Int, Error) {
+  let remaining = deadline_milliseconds - now()
+  case deadline_milliseconds >= 0 && remaining > 0 {
+    True -> Ok(remaining)
+    False -> Error(Timeout)
+  }
+}
+
 fn connection_call(
   connection: Connection,
   make_command: fn(Subject(Result(value, Error))) -> ConnectionCommand,
@@ -4106,6 +5366,8 @@ fn map_core_start_error(error: core_server.Error) -> Error {
 
 fn map_core_runtime_error(error: core_server.Error) -> Error {
   case error {
+    core_server.Failure(core_failure.Socket(core_failure.WriteFile)) ->
+      QlogUnavailable
     core_server.Failure(core_failure.Timeout(_)) -> Timeout
     core_server.Failure(core_failure.Closed(core_failure.Local, _)) ->
       ListenerClosed
@@ -4116,6 +5378,7 @@ fn map_core_runtime_error(error: core_server.Error) -> Error {
     core_server.Failure(core_failure.Overload(_)) -> CongestionLimited
     core_server.StreamFinished -> StreamFinished
     core_server.ConcurrentOperation -> ConcurrentSend
+    core_server.CompletionHistoryExceeded(_) -> ConnectionClosed
     core_server.InvalidOperation | core_server.InvalidDirection ->
       InvalidConnectionState
     core_server.Failure(_) -> ConnectionClosed
@@ -4148,6 +5411,8 @@ fn map_unclassified_connection_error(error: server_connection.Error) -> Error {
     server_connection.OperationTimeout -> Timeout
     server_connection.PeerClosed -> ConnectionClosed
     server_connection.CoreFailure(error) -> map_core_runtime_error(error)
+    server_connection.ProtocolFailure(protocol.FrameParserFailure(error)) ->
+      RuntimeFailure(protocol.frame_parser_runtime_failure(error))
     server_connection.ProtocolFailure(protocol.ResourceFailure(protocol.ResourceSendLimited(
       _,
     ))) -> CongestionLimited

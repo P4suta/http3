@@ -9,6 +9,9 @@ Decode and validate the full certificate set before calling
 `server.reload_certificates`. The listener swaps one immutable set for new
 handshakes; established connections keep their authenticated TLS state. Keep
 private-key bytes out of logs, qlog, crash reports, and package archives.
+RSA server leaf certificates require a public modulus of at least 2048 bits;
+credential construction fails with `server.InsufficientKeyStrength` before any
+socket or listener resource is allocated.
 
 ## Client authentication
 
@@ -95,3 +98,12 @@ controlled location and monitor `TelemetryStats` for drops and write errors.
 The fixed qlog revisions are diagnostic drafts, not stable protocol claims.
 Do not treat the library's finite defaults as a replacement for host memory,
 file-system, firewall, and volumetric-DoS controls.
+
+## Bounded listener shutdown
+
+`server.stop` calculates one absolute cleanup plan from the listener's operation timeout.
+Every live connection termination starts before the listener waits and receives the same join deadline.
+A fixed tail within that same plan kills and joins any remaining helper processes, so a large connection set cannot turn the bound into `connections * operation timeout`.
+The listener continues consuming release notices and qlog budget receipts during the join,
+then closes the UDP relay and reports success only after diagnostic reservations are reconciled.
+A missing or failed qlog close receipt is returned as the typed write-file failure instead of ordinary stop success.

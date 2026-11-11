@@ -2,8 +2,8 @@
   "schema": 1,
   "source": {
     "url": "https://www.rfc-editor.org/rfc-index.xml",
-    "sha256": "965aaf35605104e629950b87c190cbdaa107b3e4141f1f7c106864ae489315a0",
-    "retrieved_on": "2026-08-31",
+    "sha256": "ebe55a46329a30d2b529933040c6a0e683af6f3a492c4d22e018980e95c3a0c3",
+    "retrieved_on": "2026-09-11",
     "baseline_date": "2026-08-30"
   },
   "entries": [
@@ -60,6 +60,7 @@
     {"id":"RFC9525","title":"Service Identity in TLS"},
     {"id":"RFC9530","title":"Digest Fields"},
     {"id":"RFC9651","title":"Structured Field Values for HTTP"},
+    {"id":"RFC9841","title":"Shared Brotli Compressed Data Format"},
     {"id":"RFC9842","title":"Compression Dictionary Transport"},
     {"id":"RFC9931","title":"Security Considerations for Optimistic Protocol Transitions in HTTP/1.1"}
   ]

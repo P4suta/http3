@@ -83,6 +83,19 @@ pub fn set_capacity(state: State, capacity: Int) -> Result(State, Error) {
   }
 }
 
+/// Raise the peer-advertised ceiling without disturbing insert counts,
+/// resident entries, or outstanding reference ownership.
+/// A decrease is rejected because accepted HTTP/3 0-RTT cannot reduce this limit.
+pub fn increase_maximum_allowed_capacity(
+  state: State,
+  maximum: Int,
+) -> Result(State, Error) {
+  case maximum < state.maximum_allowed_capacity || maximum > varint.maximum {
+    True -> Error(InvalidCapacity)
+    False -> Ok(State(..state, maximum_allowed_capacity: maximum))
+  }
+}
+
 /// Insert a literal field and return its absolute index.
 pub fn insert(state: State, field: Field) -> Result(#(State, Int), Error) {
   use entry_size <- result.try(field_size(field))

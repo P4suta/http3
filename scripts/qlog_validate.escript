@@ -3,6 +3,9 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("evidence_identity.hrl").
+-include("fresh_build_identity.hrl").
+
 -define(PROFILE, "standards/qlog-profile.json").
 -define(OUTPUT, "build/qlog").
 
@@ -15,21 +18,22 @@ main([]) ->
                 true -> ok;
                 false ->
                     _ = write_report(#{status => <<"Blocked">>,
-                                       reason => printable(Reason)})
+                                       reason => failure_tag(Reason)})
             end,
-            io:format(standard_error,
-                      "qlog validation failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "qlog validation failed: ~s~n",
+                      [json:encode(diagnostic_failure_details(
+                          Class, Reason, Stacktrace))]),
             halt(1)
     end;
+main(["--begin-capture"]) -> begin_capture();
+main(["--finish-capture"]) -> finish_capture();
 main(["--self-test"]) ->
     try self_test() of
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "qlog validator self-test failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "qlog validator self-test failed: ~p~n",
+                      [diagnostic_failure_details(Class, Reason, Stacktrace)]),
             halt(1)
     end;
 main(_) ->
@@ -38,9 +42,17 @@ main(_) ->
     halt(2).
 
 run() ->
+    Identity = evidence_begin(filename:join(?OUTPUT, "report.json")),
+    fresh_with_verified_build("http3", fun(Snapshot) ->
+        run_verified(Identity, Snapshot)
+    end).
+
+run_verified(Identity, Snapshot) ->
+    Build = maps:get(report, Snapshot),
     Profile = decode_file(?PROFILE),
     validate_profile(Profile),
     TracePaths = trace_paths(),
+    require_capture(TracePaths, Identity, Snapshot),
     Traces = [read_trace(Path, Profile) || Path <- TracePaths],
     VantagePoints = lists:usort(
         [maps:get(vantage_point, Trace) || Trace <- Traces]
@@ -78,8 +90,13 @@ run() ->
                traces => TraceSummaries,
                event_names => Names,
                missing_live_families => MissingFamilies,
-               missing_per_trace_families => MissingTraceFamilies},
-    ok = write_report(Report),
+               missing_per_trace_families => MissingTraceFamilies,
+               build_identity => Build,
+               build_manifest_sha256 => maps:get(sha256, Snapshot)},
+    FinalSnapshot = fresh_verify_locked("http3"),
+    Build = maps:get(report, FinalSnapshot),
+    true = maps:get(sha256, Snapshot) =:= maps:get(sha256, FinalSnapshot),
+    ok = write_report(evidence_complete(Report, Identity)),
     case {MissingFamilies, MissingTraceFamilies} of
         {[], []} ->
             io:format("qlog JSON-SEQ, pinned profile, and live event breadth ok "
@@ -91,6 +108,66 @@ run() ->
                           MissingFamilies,
                           MissingTraceFamilies})
     end.
+
+begin_capture() ->
+    Identity = evidence_begin(filename:join(?OUTPUT, "report.json")),
+    _ = evidence_begin(filename:join(?OUTPUT, "capture.json")),
+    fresh_with_verified_build("http3", fun(Snapshot) ->
+        write_json(filename:join(?OUTPUT, "capture.json"),
+            #{status => <<"Running">>, evidence_identity => Identity,
+              build_identity => maps:get(report, Snapshot),
+              build_manifest_sha256 => maps:get(sha256, Snapshot)})
+    end).
+
+finish_capture() ->
+    Identity = evidence_identity(),
+    fresh_with_verified_build("http3", fun(Snapshot) ->
+        finish_capture_verified(Identity, Snapshot)
+    end).
+
+finish_capture_verified(Identity, Snapshot) ->
+    Capture = decode_file(filename:join(?OUTPUT, "capture.json")),
+    evidence_require_identity(Capture, Identity),
+    ensure(maps:get(<<"status">>, Capture) =:= <<"Running">>, invalid_capture_state),
+    capture_build_matches(Capture, Snapshot),
+    Traces = capture_traces(trace_paths()),
+    FinalSnapshot = fresh_verify_locked("http3"),
+    true = maps:get(sha256, Snapshot) =:= maps:get(sha256, FinalSnapshot),
+    write_json(filename:join(?OUTPUT, "capture.json"),
+        evidence_complete(#{status => <<"Ready">>, traces => Traces,
+            build_identity => maps:get(report, Snapshot),
+            build_manifest_sha256 => maps:get(sha256, Snapshot)}, Identity)).
+
+require_capture(Paths, Identity, Snapshot) ->
+    Capture = decode_file(filename:join(?OUTPUT, "capture.json")),
+    Expected = json:decode(iolist_to_binary(json:encode(capture_traces(Paths)))),
+    audit_capture(Capture, Identity, Expected),
+    capture_build_matches(Capture, Snapshot).
+
+capture_build_matches(Capture, Snapshot) ->
+    ensure(maps:get(<<"build_identity">>, Capture, undefined) =:=
+               maps:get(report, Snapshot), capture_build_changed),
+    ensure(maps:get(<<"build_manifest_sha256">>, Capture, undefined) =:=
+               maps:get(sha256, Snapshot), capture_build_manifest_changed).
+
+audit_capture(Capture, Identity, Expected) ->
+    evidence_require_identity(Capture, Identity),
+    ensure(maps:get(<<"status">>, Capture) =:= <<"Ready">>, unfinished_capture),
+    ensure(maps:get(<<"traces">>, Capture) =:= Expected, modified_capture).
+
+capture_traces(Paths) ->
+    [begin
+        {ok, Info} = file:read_file_info(Path),
+        ensure(element(2, Info) > 0 andalso element(2, Info) =< 16777216,
+               invalid_capture_size),
+        #{file => unicode:characters_to_binary(filename:basename(Path)),
+          sha256 => hex(crypto:hash(sha256, read(Path)))}
+     end || Path <- Paths].
+
+failure_tag(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
+failure_tag(Reason) when is_tuple(Reason), tuple_size(Reason) > 0,
+                         is_atom(element(1, Reason)) -> atom_to_binary(element(1, Reason));
+failure_tag(_) -> <<"invalid_input">>.
 
 validate_profile(Profile) ->
     ensure(maps:get(<<"schema">>, Profile) =:= 1, invalid_profile_schema),
@@ -410,6 +487,30 @@ missing_trace_families(Profile, Traces) ->
     end, Traces).
 
 self_test() ->
+    Identity = #{<<"source_sha256">> => <<"fixture">>},
+    Snapshot = #{report => #{<<"package">> => <<"http3">>},
+                 sha256 => <<"fixture-build-manifest">>},
+    Capture = #{<<"status">> => <<"Ready">>, <<"evidence_identity">> => Identity,
+                <<"traces">> => [<<"client-digest">>, <<"server-digest">>],
+                <<"build_identity">> => maps:get(report, Snapshot),
+                <<"build_manifest_sha256">> => maps:get(sha256, Snapshot)},
+    ok = audit_capture(Capture, Identity, maps:get(<<"traces">>, Capture)),
+    ok = capture_build_matches(Capture, Snapshot),
+    expect_decode_error(stale_or_missing_evidence_identity, fun() ->
+        audit_capture(Capture, #{}, maps:get(<<"traces">>, Capture)) end),
+    expect_decode_error(unfinished_capture, fun() ->
+        audit_capture(Capture#{<<"status">> => <<"Running">>}, Identity,
+                      maps:get(<<"traces">>, Capture)) end),
+    expect_decode_error(modified_capture, fun() ->
+        audit_capture(Capture, Identity, [<<"replaced-trace">>]) end),
+    expect_decode_error(capture_build_changed, fun() ->
+        capture_build_matches(Capture,
+            Snapshot#{report := #{<<"package">> => <<"replacement">>}}) end),
+    expect_decode_error(capture_build_manifest_changed, fun() ->
+        capture_build_matches(Capture,
+            Snapshot#{sha256 := <<"replacement-manifest">>}) end),
+    ensure(failure_tag({invalid_qlog_event_name, <<"secret payload">>}) =:=
+           <<"invalid_qlog_event_name">>, leaked_failure_payload),
     true = valid_live_trace_count(2),
     false = valid_live_trace_count(1),
     false = valid_live_trace_count(3),
@@ -486,9 +587,6 @@ read(Path) ->
 hex(Binary) ->
     iolist_to_binary([io_lib:format("~2.16.0b", [Byte])
                       || <<Byte>> <= Binary]).
-
-printable(Value) ->
-    iolist_to_binary(io_lib:format("~0tp", [Value])).
 
 ensure(true, _Reason) -> ok;
 ensure(false, Reason) -> erlang:error(Reason).

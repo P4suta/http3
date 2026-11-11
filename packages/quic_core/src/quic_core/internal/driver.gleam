@@ -144,6 +144,13 @@ pub fn start_client_with_token(
     connection_state.new(config, now_ms) |> map_connection_result,
   )
   use connection <- result.try(
+    connection_state.initialize_local_connection_id(
+      connection,
+      local_connection_id,
+    )
+    |> map_connection_result,
+  )
+  use connection <- result.try(
     connection_state.install_initial_keys(
       connection,
       original_destination_connection_id,
@@ -206,6 +213,13 @@ pub fn start_server(
   use _ <- result.try(validate_initial_peer_connection_id(peer_connection_id))
   use connection <- result.try(
     connection_state.new(config, now_ms) |> map_connection_result,
+  )
+  use connection <- result.try(
+    connection_state.initialize_local_connection_id(
+      connection,
+      local_connection_id,
+    )
+    |> map_connection_result,
   )
   use connection <- result.try(
     connection_state.install_initial_keys(
@@ -1101,6 +1115,16 @@ fn receive_short_packet_after_handshake(
     // authenticated Initial/Handshake packets already processed.
     Error(connection_state.MissingReadKeys(_))
     | Error(connection_state.MissingWriteKeys(_)) -> Ok(state)
+    Error(
+      connection_state.ProtocolViolation(connection_state.ReservedBitsViolation) as error,
+    )
+    | Error(
+        connection_state.ProtocolViolation(
+          connection_state.KeyPhaseCandidateRejected,
+        ) as error,
+      )
+    | Error(connection_state.KeyUpdateFailure(_) as error) ->
+      reject_authenticated_short_header(state, datagram, error, now_ms)
     Error(error) -> Error(ConnectionFailure(error))
     Ok(receipt) -> {
       let connection_state.ShortPacketReceipt(connection, destination, _, _) =
@@ -1109,6 +1133,34 @@ fn receive_short_packet_after_handshake(
       Ok(State(..state, connection: connection))
     }
   }
+}
+
+fn reject_authenticated_short_header(
+  state: State,
+  datagram: BitArray,
+  error: connection_state.Error,
+  now_ms: Int,
+) -> Result(State, Error) {
+  // Reserved bits and key-phase errors arise only after AEAD authentication.
+  // Validate the routing identifier before publishing their close transition.
+  use destination <- result.try(
+    bit_array.slice(datagram, 1, bit_array.byte_size(state.local_connection_id))
+    |> result.map_error(fn(reason) {
+      let Nil = reason
+      ConnectionFailure(error)
+    }),
+  )
+  use Nil <- result.try(require_destination(state, destination))
+  use connection <- result.try(
+    connection_state.reject_authenticated_packet(
+      state.connection,
+      engine.OneRtt,
+      error,
+      now_ms,
+    )
+    |> result.map_error(ConnectionFailure),
+  )
+  Ok(State(..state, connection: connection))
 }
 
 fn require_destination(
@@ -1123,7 +1175,10 @@ fn require_destination(
     state.role == Server
     && connection_state.phase(state.connection) == connection_state.Handshaking
     && destination == state.original_destination_connection_id
-  case destination == state.local_connection_id || original_server_initial {
+  case
+    connection_state.accepts_local_connection_id(state.connection, destination)
+    || original_server_initial
+  {
     True -> Ok(Nil)
     False -> Error(DestinationConnectionIdMismatch)
   }

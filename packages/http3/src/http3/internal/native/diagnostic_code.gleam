@@ -6,7 +6,73 @@
 
 import http3/internal/native/client_connection
 import http3/internal/native/connection_state as http3_state
+import http3/internal/native/frame
+import http3/internal/native/frame_parser
 import http3/internal/native/protocol
+
+/// Payload-free WebSocket failure categories recorded by the HTTP/3 adapter.
+pub type WebsocketFailure {
+  WebsocketFrameSyntax
+  WebsocketInvalidUtf8
+  WebsocketMessageLimit
+  WebsocketProtocolState
+  WebsocketInvalidClose
+  WebsocketInvalidHandshake
+  WebsocketUnsupportedVersion
+}
+
+/// Stable qlog code for one WebSocket failure category.
+///
+/// Codes 2401 through 2499 are reserved for this adapter and are never reused with another meaning.
+pub fn websocket_failure(error: WebsocketFailure) -> Int {
+  case error {
+    WebsocketFrameSyntax -> 2401
+    WebsocketInvalidUtf8 -> 2402
+    WebsocketMessageLimit -> 2403
+    WebsocketProtocolState -> 2404
+    WebsocketInvalidClose -> 2405
+    WebsocketInvalidHandshake -> 2410
+    WebsocketUnsupportedVersion -> 2411
+  }
+}
+
+/// Stable primary category followed by at most one bounded parser cause.
+pub fn connection_errors(error: client_connection.Error) -> List(Int) {
+  case error {
+    client_connection.Http3OperationFailed(_, failure) ->
+      protocol_errors(failure)
+    _ -> [connection_error(error)]
+  }
+}
+
+/// The same bounded taxonomy is used by client and server connection owners.
+pub fn protocol_errors(error: protocol.Error) -> List(Int) {
+  case error {
+    protocol.FrameParserFailure(cause) -> [2005, frame_parser_failure(cause)]
+    _ -> [protocol_failure(error)]
+  }
+}
+
+fn frame_parser_failure(error: frame_parser.Error) -> Int {
+  case error {
+    frame_parser.InvalidConfiguration -> 2301
+    frame_parser.NonByteAligned -> 2302
+    frame_parser.BufferLimitExceeded(_) -> 2303
+    frame_parser.TruncatedFrame -> 2304
+    frame_parser.FrameFailure(frame.NonByteAligned) -> 2310
+    frame_parser.FrameFailure(frame.InvalidLimits) -> 2311
+    frame_parser.FrameFailure(frame.Truncated) -> 2312
+    frame_parser.FrameFailure(frame.InvalidFrame) -> 2313
+    frame_parser.FrameFailure(frame.ProhibitedHttp2FrameType(_)) -> 2314
+    frame_parser.FrameFailure(frame.DuplicateSetting(_)) -> 2315
+    frame_parser.FrameFailure(frame.ProhibitedSetting(_)) -> 2316
+    frame_parser.FrameFailure(frame.PayloadLimitExceeded(_)) -> 2317
+    frame_parser.FrameFailure(frame.FieldSectionLimitExceeded(_)) -> 2318
+    frame_parser.FrameFailure(frame.SettingsLimitExceeded(_)) -> 2319
+    frame_parser.FrameFailure(frame.OriginFailure(_)) -> 2320
+    frame_parser.FrameFailure(frame.IntegerFailure(_)) -> 2321
+  }
+}
 
 /// Classify one internal client failure into a finite non-secret code.
 pub fn connection_error(error: client_connection.Error) -> Int {
@@ -80,5 +146,7 @@ fn http3_failure(error: http3_state.Error) -> Int {
     http3_state.QpackDecompressionFailure(_) -> 2132
     http3_state.QpackEncoderStreamFailure(_) -> 2133
     http3_state.QpackDecoderStreamFailure(_) -> 2134
+    http3_state.SettingsMemoryFailure(_) -> 2135
+    http3_state.ZeroRttSettingsIncompatible -> 2136
   }
 }

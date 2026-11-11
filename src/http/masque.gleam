@@ -1,10 +1,9 @@
 //// Bounded RFC 9298 CONNECT-UDP and RFC 9484 CONNECT-IP building blocks.
 ////
-//// Client payload is held until a successful response confirms the Capsule
-//// Protocol. Proxy authorization starts deny-all and uses exact UDP targets,
-//// exact CONNECT-IP scopes, and explicit destination prefixes. Only permanent
-//// Capsule registrations used by UDP/IP, plus the current permanent external
-//// registration, are surfaced; provisional types are treated as unknown.
+//// Client payload is held until a successful response confirms the Capsule Protocol.
+//// Proxy authorization starts deny-all and uses exact UDP targets,
+//// exact CONNECT-IP scopes, and explicit destination prefixes.
+//// Only permanent Capsule registrations used by UDP/IP, plus the current permanent external registration, are surfaced; provisional types are treated as unknown.
 
 import gleam/bit_array
 import gleam/bool
@@ -37,6 +36,8 @@ const minimum_udp_idle_timeout_milliseconds = 120_000
 
 const maximum_datagram_capacity_attempts = 64
 
+const percent_encoded_wildcard = "%2A"
+
 /// HTTP mapping selected for a MASQUE request.
 pub type Protocol {
   Http1
@@ -57,8 +58,8 @@ pub type Limits {
 
 /// Validated target-socket idle policy for one CONNECT-UDP session.
 ///
-/// Disabled is the default. A configured timeout can never be below the
-/// RFC 9298 recommendation of two minutes or above the BEAM timer ceiling.
+/// Disabled is the default.
+/// A configured timeout can never be below the RFC 9298 recommendation of two minutes or above the BEAM timer ceiling.
 pub opaque type UdpProxyIdlePolicy {
   UdpProxyIdlePolicy(timeout_milliseconds: Option(Int))
 }
@@ -69,14 +70,18 @@ pub type UdpProxyIdleState {
   UdpIdleWatching
   UdpIdleStopped
   UdpIdleExpired
+  UdpIdleUnavailable
 }
 
 /// Bounded diagnostics for the optional CONNECT-UDP idle owner.
 ///
-/// Activity counters contain no endpoint, packet size, payload, stream ID, or
-/// runtime handle. Directional counters distinguish successful target sends
-/// from validated target receives and always sum to `activity_events`.
-/// `maximum_pending_commands` is always one when enabled.
+/// Activity counters contain no endpoint, packet size, payload, stream ID, or runtime handle.
+/// Directional counters distinguish successful target sends from validated target receives and always sum to `activity_events`.
+/// At the shared counter ceiling, inbound counts are clipped to the remaining total credit.
+/// Concurrent reads are observations, not multi-field transactions;
+/// counters are exact after all activity calls finish, until saturation.
+/// `maximum_pending_commands` is two when enabled: one activity wake and one independent, one-shot terminal notification.
+/// `pending_command` observes activity wake credit; the terminal notification has separate one-shot admission in the runtime.
 pub type UdpProxyIdleSnapshot {
   UdpProxyIdleSnapshot(
     state: UdpProxyIdleState,
@@ -105,7 +110,8 @@ pub type UdpEndpoint {
   UdpEndpoint(address: IpAddress, port: Int)
 }
 
-/// Optional RFC 9484 request scope. `None` serializes as the wildcard `*`.
+/// Optional RFC 9484 request scope.
+/// `None` selects `*`, transmitted as `%2A`.
 pub type IpScope {
   IpScope(target: Option(String), ip_protocol: Option(Int))
 }
@@ -204,9 +210,9 @@ pub type ProxySetupFailure {
 
 /// One payload-free, target-free setup trace event.
 ///
-/// Generic setup emits at most six events. The production socket adapter adds
-/// two adoption events. Failure adds exactly one final event, so tracing cannot
-/// grow with peer input or retain resolver details.
+/// Generic setup emits at most six events.
+/// The production socket adapter adds two adoption events.
+/// Failure adds exactly one final event, so tracing cannot grow with peer input or retain resolver details.
 pub type ProxySetupEvent {
   ProxyTargetAuthorized
   ProxyDnsStarted
@@ -232,15 +238,13 @@ pub type AdapterExecutionTimingSnapshot {
 
 /// Fixed-size phase timings plus scheduler/callback attribution.
 ///
-/// Durations expose neither the target nor adapter error text. A phase that was
-/// skipped is zero. The timeout flags distinguish an exhausted DNS, socket
-/// open, socket adoption, or cleanup budget even when each maps to the same
-/// redacted HTTP failure.
+/// Durations expose neither the target nor adapter error text.
+/// A phase that was skipped is zero.
+/// The timeout flags distinguish an exhausted DNS, socket open, socket adoption, or cleanup budget even when each maps to the same redacted HTTP failure.
 ///
-/// `queue_milliseconds` includes the bounded worker's scheduling delay. If the
-/// callback never starts, `callback_milliseconds` remains zero and the queue
-/// duration records the full observed wait. `supervisor_timed_out` is false for
-/// a timeout classification returned by the adapter itself.
+/// `queue_milliseconds` includes the bounded worker's scheduling delay.
+/// If the callback never starts, `callback_milliseconds` remains zero and the queue duration records the full observed wait.
+/// `supervisor_timed_out` is false for a timeout classification returned by the adapter itself.
 pub type ProxySetupTimingSnapshot {
   ProxySetupTimingSnapshot(
     dns_milliseconds: Int,
@@ -291,13 +295,15 @@ pub type UdpProxyResourceSnapshot {
 
 /// The first event that ended one bound UDP-socket/request-stream lifetime.
 ///
-/// The first reason wins under concurrent notifications. It contains no peer,
+/// The first reason wins under concurrent notifications.
+/// It contains no peer,
 /// target, payload, stream identifier, socket term, or callback failure text.
 pub type UdpProxyTerminationReason {
   RequestStreamEnded
   SocketUnusable
   ApplicationClosed
   IdleTimeout
+  IdleControlUnavailable
 }
 
 /// Saturating request-stream cleanup counters for convergence diagnostics.
@@ -335,6 +341,10 @@ pub type UdpRequestStreamCleanupFailure {
 /// Coordinated socket/request-stream teardown remains incomplete.
 pub type UdpProxySessionFailure {
   UdpProxyTerminationInProgress
+  /// Resource cleanup was attempted, but the idle owner did not exit within its bounded join.
+  /// Inspect the session snapshot for resource outcomes.
+  /// A later close can retry the join without repeating completed cleanup.
+  UdpProxyIdleOwnerJoinTimeout
   UdpProxyCleanupIncomplete(
     socket: Option(ProxySetupFailure),
     request_stream: Option(UdpRequestStreamCleanupFailure),
@@ -343,9 +353,7 @@ pub type UdpProxySessionFailure {
 
 /// One production OTP UDP socket hidden behind a dedicated bounded owner.
 ///
-/// The owner admits at most eight queued commands and arms its operating-
-/// system socket with `active, once`, so neither callers nor target traffic
-/// can create an unbounded actor mailbox.
+/// The owner admits at most eight queued commands and arms its operating- system socket with `active, once`, so neither callers nor target traffic can create an unbounded actor mailbox.
 pub type SystemUdpSocket
 
 /// Redacted lifecycle of one production target-facing UDP socket.
@@ -374,8 +382,8 @@ pub type PacketTooBigAddressFamily {
 
 /// Terminal outcome of one bounded Packet Too Big delivery decision.
 ///
-/// Permission and platform failures are cached per target socket. ICMP error
-/// generation is token-bucket limited before any raw socket is opened.
+/// Permission and platform failures are cached per target socket.
+/// ICMP error generation is token-bucket limited before any raw socket is opened.
 pub type PacketTooBigDelivery {
   PacketTooBigDelivered
   PacketTooBigRateLimited
@@ -399,10 +407,8 @@ pub type PacketTooBigReport {
 
 /// Atomic, bounded diagnostics for target-side MTU feedback.
 ///
-/// `retained_payload_bytes` is contractually zero: an oversized packet is
-/// replaced by a payload-free event inside the dedicated socket owner before
-/// it can enter the caller mailbox. Terminal outcome counters always sum to
-/// `oversized_target_packets` when `consistent` is true.
+/// `retained_payload_bytes` is contractually zero: an oversized packet is replaced by a payload-free event inside the dedicated socket owner before it can enter the caller mailbox.
+/// Terminal outcome counters always sum to `oversized_target_packets` when `consistent` is true.
 pub type PacketTooBigSnapshot {
   PacketTooBigSnapshot(
     consistent: Bool,
@@ -439,10 +445,10 @@ pub type UdpProxyListenerState {
 /// Bounded diagnostics for one default-location UDP proxy listener.
 ///
 /// The snapshot never contains an authority, path, target, peer address,
-/// header, payload, request handle, or transport error. All counters saturate
-/// and are read atomically with the lifecycle state. `consistent` is false
-/// when the finite snapshot retry budget expires. The payload-free fields are
-/// then a best-effort observation and must not be treated as one atomic state.
+/// header, payload, request handle, or transport error.
+/// All counters saturate and are read atomically with the lifecycle state.
+/// `consistent` is false when the finite snapshot retry budget expires.
+/// The payload-free fields are then a best-effort observation and must not be treated as one atomic state.
 pub type UdpProxyListenerSnapshot {
   UdpProxyListenerSnapshot(
     consistent: Bool,
@@ -482,8 +488,8 @@ pub type UdpProxyListenerFailure {
   UdpProxyListenerLifecycleFailed
 }
 
-/// One exact-route admission decision. Rejected requests have already
-/// received a bounded empty 400 response before this value is returned.
+/// One exact-route admission decision.
+/// Rejected requests have already received a bounded empty 400 response before this value is returned.
 pub type UdpProxyRequestAccept {
   UdpProxyRequestAccepted(UdpProxyRequest)
   UdpProxyRequestRejected(ProxyRequestViolation)
@@ -502,10 +508,18 @@ pub type UdpProxyListenerDrain {
   UdpProxyListenerAlreadyDrained
 }
 
+/// How the owner established its Not-ECT socket policy.
+/// A socket-option observation is distinct from an independent observation of a wire packet.
+pub type SystemUdpNotEctConfiguration {
+  SystemUdpNotEctNotConfigured
+  SystemUdpNotEctDefaultUnobserved
+  SystemUdpNotEctConfiguredUnobserved
+  SystemUdpNotEctSocketOptionObserved
+}
+
 /// Finite diagnostics for one production UDP owner.
 ///
-/// No endpoint, payload, process identifier, socket term, operating-system
-/// reason, or late reply is retained or returned.
+/// No endpoint, payload, process identifier, socket term, operating-system reason, or late reply is retained or returned.
 pub type SystemUdpSocketSnapshot {
   SystemUdpSocketSnapshot(
     state: SystemUdpSocketState,
@@ -537,17 +551,16 @@ pub type SystemUdpSocketSnapshot {
     maximum_burst_compression_microseconds: Int,
     message_too_large_sends: Int,
     fragmentation_retries: Int,
+    not_ect_configuration: SystemUdpNotEctConfiguration,
   )
 }
 
 /// One immediate target-facing UDP I/O transition.
 ///
-/// HTTP datagrams are never queued for batching. Fatal results observed by a
-/// typed operation run coordinated socket/request-stream cleanup under the
-/// session's existing finite limits. An asynchronous socket failure wakes a
-/// pending datagram receive and the independent terminal-event waiter. If no
-/// waiter exists, the owner retains only the typed terminal state until the
-/// next typed operation observes it.
+/// HTTP datagrams are never queued for batching.
+/// Fatal results observed by a typed operation run coordinated socket/request-stream cleanup under the session's existing finite limits.
+/// An asynchronous socket failure wakes a pending datagram receive and the independent terminal-event waiter.
+/// If no waiter exists, the owner retains only the typed terminal state until the next typed operation observes it.
 pub type SystemUdpIo {
   SystemUdpSessionInactive(session: UdpProxySession(SystemUdpSocket))
   SystemUdpSent(session: UdpProxySession(SystemUdpSocket))
@@ -593,7 +606,8 @@ pub type SystemUdpIo {
 /// One bounded wait for a target-facing socket lifecycle event.
 ///
 /// The event carries no endpoint, payload, runtime identifier, native socket,
-/// or operating-system reason. At most one event waiter exists per socket.
+/// or operating-system reason.
+/// At most one event waiter exists per socket.
 pub type SystemUdpEventWait {
   SystemUdpEventObserved(
     session: UdpProxySession(SystemUdpSocket),
@@ -668,8 +682,8 @@ pub opaque type PreparedRequest {
 
 /// An authenticated HTTP/3 request admitted at the default CONNECT-UDP path.
 ///
-/// The raw request remains opaque in the `http3` package. The separate
-/// `PreparedRequest` contains only the already validated routing metadata.
+/// The raw request remains opaque in the `http3` package.
+/// The separate `PreparedRequest` contains only the already validated routing metadata.
 pub opaque type UdpProxyRequest {
   UdpProxyRequest(
     request: http3_server.Request,
@@ -681,9 +695,8 @@ pub opaque type UdpProxyRequest {
 
 /// A supervised HTTP/3 listener with HTTP Datagrams unconditionally enabled.
 ///
-/// QUIC sockets, TLS, Retry, token validation, and connection actors remain
-/// owned by the public `http3` listener. This wrapper adds only the fixed RFC
-/// 9298 default-route admission and payload-free diagnostics.
+/// QUIC sockets, TLS, Retry, token validation, and connection actors remain owned by the public `http3` listener.
+/// This wrapper adds only the fixed RFC 9298 default-route admission and payload-free diagnostics.
 pub opaque type UdpProxyListener {
   UdpProxyListener(
     listener: http3_server.Listener,
@@ -694,8 +707,7 @@ pub opaque type UdpProxyListener {
 
 /// One successfully established default-location CONNECT-UDP request.
 ///
-/// Neither the HTTP/3 transport stream nor the bound UDP session is
-/// obtainable until target authorization, DNS, destination authorization,
+/// Neither the HTTP/3 transport stream nor the bound UDP session is obtainable until target authorization, DNS, destination authorization,
 /// socket open, and the successful response head have all completed.
 pub opaque type SystemUdpProxy {
   SystemUdpProxy(
@@ -706,10 +718,8 @@ pub opaque type SystemUdpProxy {
 
 /// Terminal result of the safe default-listener setup sequence.
 ///
-/// Rejection variants are returned only after their finite response has been
-/// sent. A response failure is returned separately as
-/// `UdpProxyListenerSetupResponseFailed`, so callers never mistake an
-/// unconfirmed stream for an established relay.
+/// Rejection variants are returned only after their finite response has been sent.
+/// A response failure is returned separately as `UdpProxyListenerSetupResponseFailed`, so callers never mistake an unconfirmed stream for an established relay.
 pub type SystemUdpProxyEstablishment {
   SystemUdpProxyEstablished(proxy: SystemUdpProxy, snapshot: ProxySetupSnapshot)
   SystemUdpProxyPolicyRejected(response_status: Int)
@@ -729,8 +739,7 @@ pub opaque type AuthorizedUdpRequest {
   )
 }
 
-/// Finite resolver, socket setup, and socket-operation limits plus a validated
-/// Proxy-Status member.
+/// Finite resolver, socket setup, and socket-operation limits plus a validated Proxy-Status member.
 pub opaque type ProxySetupConfig {
   ProxySetupConfig(
     proxy: status.Identifier,
@@ -772,8 +781,7 @@ pub opaque type UdpProxyTunnel(socket) {
 /// One coordinated target-socket/request-stream lifetime.
 ///
 /// Once a tunnel is bound, adapters use this owner for every terminal event.
-/// Its guards are shared across copied values, so duplicate and concurrent
-/// notifications converge without an unbounded actor mailbox.
+/// Its guards are shared across copied values, so duplicate and concurrent notifications converge without an unbounded actor mailbox.
 pub opaque type UdpProxySession(socket) {
   UdpProxySession(
     tunnel: UdpProxyTunnel(socket),
@@ -784,8 +792,8 @@ pub opaque type UdpProxySession(socket) {
   )
 }
 
-/// A supervised setup outcome. Successful response fields only exist in the
-/// `UdpProxyReady` branch after DNS, destination authorization, and socket open.
+/// A supervised setup outcome.
+/// Successful response fields only exist in the `UdpProxyReady` branch after DNS, destination authorization, and socket open.
 pub type UdpProxySetup(socket) {
   UdpProxyReady(
     tunnel: UdpProxyTunnel(socket),
@@ -836,8 +844,11 @@ type UdpProxyListenerDiagnostics
 
 type UdpProxyIdleRuntime
 
+type UdpProxyIdleStopAlias
+
 type UdpProxyIdleCommand {
   UdpIdleWake
+  UdpIdleStop
 }
 
 type UdpProxyActivityDirection {
@@ -849,6 +860,8 @@ type UdpProxyIdleGuard {
   UdpProxyIdleGuard(
     commands: Subject(UdpProxyIdleCommand),
     runtime: UdpProxyIdleRuntime,
+    stop: UdpProxyIdleStopAlias,
+    owner: Pid,
   )
 }
 
@@ -885,30 +898,30 @@ pub type ProxyRequestViolation {
 
 /// One server-side validation decision for a CONNECT-UDP request.
 ///
-/// Malformed peer input always carries the recommended status 400. Invalid
-/// library limits are separated so an adapter cannot misreport them as a peer
-/// protocol error.
+/// Malformed peer input always carries the recommended status 400.
+/// Invalid library limits are separated so an adapter cannot misreport them as a peer protocol error.
 pub type ProxyRequestValidation {
   AcceptProxyRequest(PreparedRequest)
   RejectProxyRequest(status: Int, violation: ProxyRequestViolation)
   ProxyRequestConfigurationFailure(Error)
 }
 
-/// Client-side confirmation state. Payload methods fail before confirmation.
+/// Client-side confirmation state.
+/// Payload methods fail before confirmation.
 pub opaque type ClientTunnel {
   ClientTunnel(request: PreparedRequest, established: Bool)
 }
 
-/// Payload-free reason that a proxy receiver deliberately discarded one
-/// datagram. The datagram bytes are never retained in this diagnostic value.
+/// Payload-free reason that a proxy receiver deliberately discarded one datagram.
+/// The datagram bytes are never retained in this diagnostic value.
 pub type DatagramDropReason {
   RequestNotReady
   ContextNotRegistered(Int)
   CapsuleValueTooLarge(Int)
 }
 
-/// One finite proxy receive transition. An HTTP adapter must enact
-/// `AbortRequestStream` before reading another datagram for that request.
+/// One finite proxy receive transition.
+/// An HTTP adapter must enact `AbortRequestStream` before reading another datagram for that request.
 pub type DatagramReceive {
   ForwardPayload(receiver: UdpReceiver, payload: BitArray)
   DropDatagram(receiver: UdpReceiver, reason: DatagramDropReason)
@@ -917,9 +930,8 @@ pub type DatagramReceive {
 
 /// One payload-free DATAGRAM Capsule admission decision.
 ///
-/// An adapter first reads only the Capsule framing length. When active, it
-/// then decodes at most the eight-byte Context ID prefix and calls
-/// `classify_proxy_datagram_capsule_context` before reading any payload bytes.
+/// An adapter first reads only the Capsule framing length.
+/// When active, it then decodes at most the eight-byte Context ID prefix and calls `classify_proxy_datagram_capsule_context` before reading any payload bytes.
 pub type DatagramCapsuleAdmission {
   InspectDatagramCapsuleContext(
     receiver: UdpReceiver,
@@ -1070,6 +1082,15 @@ fn new_udp_proxy_idle_runtime(
   now_milliseconds: Int,
 ) -> UdpProxyIdleRuntime
 
+@external(erlang, "http_masque_udp_ffi", "idle_stop_alias")
+fn new_udp_proxy_idle_stop_alias() -> UdpProxyIdleStopAlias
+
+@external(erlang, "http_masque_udp_ffi", "idle_signal_stop")
+fn signal_udp_proxy_idle_stop(alias: UdpProxyIdleStopAlias) -> Nil
+
+@external(erlang, "http_masque_udp_ffi", "idle_join")
+fn join_udp_proxy_idle_owner(owner: Pid, timeout_milliseconds: Int) -> Bool
+
 @external(erlang, "http_masque_udp_ffi", "idle_activity")
 fn record_udp_proxy_idle_activity(
   runtime: UdpProxyIdleRuntime,
@@ -1198,6 +1219,7 @@ fn raw_system_udp_socket_snapshot(
   Int,
   Int,
   Int,
+  Int,
 )
 
 @external(erlang, "http_masque_udp_ffi", "packet_too_big_snapshot")
@@ -1274,9 +1296,8 @@ pub fn udp_proxy_idle_timeout_disabled() -> UdpProxyIdlePolicy {
 
 /// Configure an event-driven CONNECT-UDP idle deadline.
 ///
-/// RFC 9298 recommends against values below two minutes. This constructor
-/// makes that lower bound, and the BEAM timer upper bound, impossible to
-/// bypass through the stable API.
+/// RFC 9298 recommends against values below two minutes.
+/// This constructor makes that lower bound, and the BEAM timer upper bound, impossible to bypass through the stable API.
 pub fn udp_proxy_idle_timeout(
   milliseconds: Int,
 ) -> Result(UdpProxyIdlePolicy, Error) {
@@ -1291,8 +1312,8 @@ pub fn udp_proxy_idle_timeout(
 
 /// Construct a short timer only for deterministic package qualification.
 ///
-/// This symbol is excluded from the published package interface. Stable
-/// callers can only use `udp_proxy_idle_timeout`, which enforces two minutes.
+/// This symbol is excluded from the published package interface.
+/// Stable callers can only use `udp_proxy_idle_timeout`, which enforces two minutes.
 @internal
 pub fn udp_proxy_idle_timeout_for_testing(
   milliseconds: Int,
@@ -1310,9 +1331,8 @@ pub fn udp_proxy_idle_timeout_milliseconds(
 // nolint: error_context_lost -- HTTP/3 peer data is redacted; the operation class remains.
 /// Start the authenticated HTTP/3 endpoint for the RFC 9298 default URI.
 ///
-/// HTTP Datagrams are enabled unconditionally. The supplied HTTP/3
-/// configuration retains its finite transport, request, memory, and drain
-/// limits; invalid MASQUE limits fail before any listener is opened.
+/// HTTP Datagrams are enabled unconditionally.
+/// The supplied HTTP/3 configuration retains its finite transport, request, memory, and drain limits; invalid MASQUE limits fail before any listener is opened.
 pub fn start_udp_proxy_listener(
   configuration: http3_server.Configuration,
   limits: Limits,
@@ -1345,9 +1365,8 @@ pub fn udp_proxy_listener_port(
 
 /// Accept one HTTP/3 request and admit only the RFC 9298 default URI.
 ///
-/// A malformed request receives an empty 400 response before its redacted
-/// violation is returned. No target or peer-controlled metadata is copied
-/// into listener diagnostics.
+/// A malformed request receives an empty 400 response before its redacted violation is returned.
+/// No target or peer-controlled metadata is copied into listener diagnostics.
 pub fn accept_udp_proxy_request(
   listener: UdpProxyListener,
 ) -> Result(UdpProxyRequestAccept, UdpProxyListenerFailure) {
@@ -1559,14 +1578,6 @@ pub fn connect_udp(
   prepare_request(Udp(target), protocol, proxy_authority, path, limits)
 }
 
-/// The wildcard an omitted `target` or `ipproto` expands to.
-///
-/// RFC 9484 section 4.6 writes the wildcard as `*`, and erratum 8444 records
-/// that it still goes through RFC 6570 simple expansion, which escapes every
-/// character outside the unreserved set. The literal is spelled percent-encoded
-/// here because there is no expansion step left to do it.
-const wildcard_variable = "%2A"
-
 /// Prepare the RFC 9484 default-template CONNECT-IP request.
 pub fn connect_ip(
   protocol: Protocol,
@@ -1579,11 +1590,11 @@ pub fn connect_ip(
   use _ <- result.try(validate_scope(scope))
   let IpScope(target, protocol_number) = scope
   let encoded_target = case target {
-    None -> wildcard_variable
+    None -> percent_encoded_wildcard
     Some(value) -> uri.percent_encode(value)
   }
   let encoded_protocol = case protocol_number {
-    None -> wildcard_variable
+    None -> percent_encoded_wildcard
     Some(value) -> int.to_string(value)
   }
   let path =
@@ -1661,9 +1672,8 @@ pub fn request_udp_target(request: PreparedRequest) -> Option(UdpTarget) {
 
 /// Validate an inbound HTTP/1.1 request for the default CONNECT-UDP route.
 ///
-/// This function accepts the standard `gleam_http` request type used by the
-/// unified server. It applies finite metadata limits before parsing and emits
-/// only payload-free rejection diagnostics.
+/// This function accepts the standard `gleam_http` request type used by the unified server.
+/// It applies finite metadata limits before parsing and emits only payload-free rejection diagnostics.
 pub fn validate_http1_udp_proxy_request(
   incoming: Request(body),
   limits: Limits,
@@ -1692,8 +1702,7 @@ pub fn validate_http1_udp_proxy_request(
 ///
 /// The HTTP/3 package has already authenticated and decoded the request head.
 /// This additional admission step enforces the RFC 9298 method, protocol,
-/// scheme, authority, Capsule Protocol, message-content, and fixed-route
-/// requirements before an application may authorize a target.
+/// scheme, authority, Capsule Protocol, message-content, and fixed-route requirements before an application may authorize a target.
 pub fn validate_http3_udp_proxy_request(
   incoming: http3_server.Request,
   limits: Limits,
@@ -1718,12 +1727,11 @@ pub fn validate_http3_udp_proxy_request(
   }
 }
 
-// Freeze the HTTP/3 connection-lifetime guarantee at request admission. It is
-// the complete HTTP Datagram payload after the quarter-stream ID, while
-// CONNECT-UDP reserves one further byte for Context ID zero. The underlying
-// QUIC guarantee budgets the 1200-byte path floor and worst ACK reservation,
-// so neither path fallback nor later ACK fragmentation invalidates this target
-// ceiling. A fresh request may still choose a different connection guarantee.
+// Freeze the HTTP/3 connection-lifetime guarantee at request admission.
+// It is the complete HTTP Datagram payload after the quarter-stream ID, while CONNECT-UDP reserves one further byte for Context ID zero.
+// The underlying QUIC guarantee budgets the 1200-byte path floor and worst ACK reservation,
+// so neither path fallback nor later ACK fragmentation invalidates this target ceiling.
+// A fresh request may still choose a different connection guarantee.
 fn cap_http3_udp_proxy_limits(
   request: PreparedRequest,
   maximum_http_datagram_bytes: Int,
@@ -1745,14 +1753,10 @@ fn cap_http3_udp_proxy_limits(
   }
 }
 
-/// Build the successful status and response fields after proxy setup has
-/// opened its socket.
+/// Build the successful status and response fields after proxy setup has opened its socket.
 ///
-/// This helper is deliberately private: public successful response fields are
-/// obtainable only from `establish_udp_proxy`'s `UdpProxyReady` branch. The
-/// status is derived here beside the fields it belongs to rather than checked
-/// against a value the caller derived separately, so the two cannot disagree
-/// and the successful response has no failure case at all.
+/// This helper is deliberately private: public successful response fields are obtainable only from `establish_udp_proxy`'s `UdpProxyReady` branch.
+/// The status is derived here beside the fields it belongs to rather than checked against a value the caller derived separately, so the two cannot disagree and the successful response has no failure case at all.
 fn successful_response(
   request: PreparedRequest,
 ) -> #(Int, List(#(String, String))) {
@@ -1768,11 +1772,9 @@ fn successful_response(
 
 /// Construct finite, supervised proxy limits with one shared socket deadline.
 ///
-/// The Proxy-Status identifier is validated up front. Adapter processes have
-/// both a hard deadline and a BEAM heap ceiling, and heap-limit termination is
-/// classified as an adapter failure without exposing the exit reason. Use
-/// `proxy_setup_config_with_socket_timeouts` when startup and established I/O
-/// need different finite deadlines.
+/// The Proxy-Status identifier is validated up front.
+/// Adapter processes have both a hard deadline and a BEAM heap ceiling, and heap-limit termination is classified as an adapter failure without exposing the exit reason.
+/// Use `proxy_setup_config_with_socket_timeouts` when startup and established I/O need different finite deadlines.
 pub fn proxy_setup_config(
   proxy: status.Identifier,
   dns_timeout_milliseconds dns_timeout_milliseconds: Int,
@@ -1790,11 +1792,9 @@ pub fn proxy_setup_config(
 
 /// Construct finite setup limits with independent socket startup and I/O.
 ///
-/// The setup deadline bounds socket-owner creation and adoption. The operation
-/// deadline is retained by the established tunnel for send, cleanup, and
-/// request-stream callbacks. Separating them lets latency-sensitive relay I/O
-/// remain strict without making one-time VM or networking initialization an
-/// accidental admission failure.
+/// The setup deadline bounds socket-owner creation and adoption.
+/// The operation deadline is retained by the established tunnel for send, cleanup, and request-stream callbacks.
+/// Separating them lets latency-sensitive relay I/O remain strict without making one-time VM or networking initialization an accidental admission failure.
 pub fn proxy_setup_config_with_socket_timeouts(
   proxy: status.Identifier,
   dns_timeout_milliseconds dns_timeout_milliseconds: Int,
@@ -1822,8 +1822,7 @@ pub fn proxy_setup_config_with_socket_timeouts(
 
 /// Prove that a CONNECT-UDP request matches the exact configured target.
 ///
-/// Resolved IP authorization remains a separate mandatory setup step, so a
-/// permitted DNS name cannot bypass destination-prefix policy through rebinding.
+/// Resolved IP authorization remains a separate mandatory setup step, so a permitted DNS name cannot bypass destination-prefix policy through rebinding.
 pub fn authorize_udp_proxy(
   policy: ProxyPolicy,
   request: PreparedRequest,
@@ -1837,9 +1836,8 @@ pub fn authorize_udp_proxy(
 
 /// Resolve, re-authorize, and open one UDP target under bounded adapters.
 ///
-/// A DNS-name request cannot yield `UdpProxyReady` until resolution has
-/// completed. Every resolved address is validated and filtered through the
-/// explicit destination-prefix allowlist before the socket callback runs.
+/// A DNS-name request cannot yield `UdpProxyReady` until resolution has completed.
+/// Every resolved address is validated and filtered through the explicit destination-prefix allowlist before the socket callback runs.
 pub fn establish_udp_proxy(
   authorized: AuthorizedUdpRequest,
   config: ProxySetupConfig,
@@ -1886,10 +1884,12 @@ pub fn establish_udp_proxy(
 
 /// Establish a target-facing UDP socket using the production OTP adapter.
 ///
-/// The stable caller process is captured before generic setup starts. The
-/// socket itself is opened by a dedicated owner and must be adopted here
-/// before the setup lease expires; a killed, timed-out, or malformed setup
-/// worker therefore cannot orphan an operating-system socket.
+/// The stable caller process is captured before generic setup starts.
+/// The socket itself is opened by a dedicated, caller-observed owner and must be adopted here before the setup lease fixed at open entry expires.
+/// Socket setup never restarts that deadline.
+/// The configured timeout is the total lease; a bounded termination tail is reserved inside it.
+/// Close completion is reported only after the owner process has terminated, so a reply queued just before owner exit cannot make cleanup appear complete early.
+/// Setup expiry is retained as `Timeout` even when owner termination reaches the caller before the final adoption message.
 pub fn establish_system_udp_proxy(
   authorized: AuthorizedUdpRequest,
   config: ProxySetupConfig,
@@ -2015,11 +2015,9 @@ pub fn establish_system_udp_proxy(
 
 /// Authorize and establish one accepted default-location request safely.
 ///
-/// The sequence is fixed: exact-target policy, DNS and resolved-address
-/// policy, production UDP socket open/adoption, successful HTTP/3 response,
-/// then coordinated request-stream binding. The accepted request deliberately
-/// has no raw HTTP/3 accessor, so a caller cannot emit an optimistic 2xx or
-/// obtain Datagram I/O before this function returns `SystemUdpProxyEstablished`.
+/// The sequence is fixed: exact-target policy, DNS and resolved-address policy, production UDP socket open/adoption, successful HTTP/3 response,
+/// then coordinated request-stream binding.
+/// The accepted request deliberately has no raw HTTP/3 accessor, so a caller cannot emit an optimistic 2xx or obtain Datagram I/O before this function returns `SystemUdpProxyEstablished`.
 /// Call this from the long-lived per-request worker that will relay datagrams;
 /// the production socket owner monitors that process and closes on its exit.
 pub fn establish_system_udp_proxy_request(
@@ -2206,11 +2204,9 @@ pub fn udp_proxy_receiver(tunnel: UdpProxyTunnel(socket)) -> UdpReceiver {
 
 /// Classify one packet read from the target UDP socket.
 ///
-/// Every adapter, including one backed by a connected socket, routes packets
-/// through this transition. The exact resolved address and port are checked
-/// before payload alignment or length, so spoofed packets are discarded
-/// without parsing or retaining their payload. Continue with the tunnel
-/// returned by the decision to preserve its saturating diagnostic counters.
+/// Every adapter, including one backed by a connected socket, routes packets through this transition.
+/// The exact resolved address and port are checked before payload alignment or length, so spoofed packets are discarded without parsing or retaining their payload.
+/// Continue with the tunnel returned by the decision to preserve its saturating diagnostic counters.
 pub fn receive_udp_socket_packet(
   tunnel: UdpProxyTunnel(socket),
   source: UdpEndpoint,
@@ -2227,8 +2223,8 @@ pub fn receive_udp_socket_packet(
 /// Classify one target packet through a bound lifetime.
 ///
 /// A terminal notification is checked before source-address, port, alignment,
-/// or length inspection. Continue with the returned session to preserve the
-/// finite receiver counters; its termination and cleanup guards are shared.
+/// or length inspection.
+/// Continue with the returned session to preserve the finite receiver counters; its termination and cleanup guards are shared.
 pub fn receive_udp_proxy_session_packet(
   session: UdpProxySession(socket),
   source: UdpEndpoint,
@@ -2257,9 +2253,10 @@ pub fn receive_udp_proxy_session_packet(
 /// Immediately forward one HTTP UDP Proxying Datagram to the selected target.
 ///
 /// An already-terminal session is rejected before Context, alignment, payload,
-/// timeout, or socket inspection. Otherwise those ceilings are applied before
-/// a command is admitted. No retry or batching queue exists. A fatal socket
-/// result invokes the session's first-reason lifetime transition.
+/// timeout, or socket inspection.
+/// Otherwise those ceilings are applied before a command is admitted.
+/// No retry or batching queue exists.
+/// A fatal socket result invokes the session's first-reason lifetime transition.
 pub fn forward_system_udp_datagram(
   session: UdpProxySession(SystemUdpSocket),
   datagram: BitArray,
@@ -2310,10 +2307,9 @@ fn forward_open_system_udp_datagram(
 
 /// Wait for at most one target-facing UDP packet under a finite deadline.
 ///
-/// An already-terminal session returns without validating the deadline or
-/// contacting the socket owner. Otherwise only one receive waiter is admitted.
-/// The owner has at most one active UDP event or retained datagram, and it does
-/// not return receive credit until the packet is consumed by this call.
+/// An already-terminal session returns without validating the deadline or contacting the socket owner.
+/// Otherwise only one receive waiter is admitted.
+/// The owner has at most one active UDP event or retained datagram, and it does not return receive credit until the packet is consumed by this call.
 pub fn receive_system_udp_datagram(
   session: UdpProxySession(SystemUdpSocket),
   timeout_milliseconds: Int,
@@ -2390,11 +2386,10 @@ fn system_udp_session_is_open(
 
 /// Wait for the socket owner to report a terminal event under one deadline.
 ///
-/// A protocol actor can keep this wait outstanding alongside its request-
-/// stream loop. It consumes no UDP receive credit and has no polling timer
-/// beyond the caller-provided deadline. A reported failure immediately enters
-/// the shared first-reason cleanup transition. Normal application cleanup
-/// wakes the waiter as `SystemUdpEventStopped` without reclassifying the cause.
+/// A protocol actor can keep this wait outstanding alongside its request- stream loop.
+/// It consumes no UDP receive credit and has no polling timer beyond the caller-provided deadline.
+/// A reported failure immediately enters the shared first-reason cleanup transition.
+/// Normal application cleanup wakes the waiter as `SystemUdpEventStopped` without reclassifying the cause.
 pub fn wait_system_udp_event(
   session: UdpProxySession(SystemUdpSocket),
   timeout_milliseconds: Int,
@@ -2471,6 +2466,7 @@ pub fn system_udp_socket_snapshot(
     maximum_burst_compression_microseconds,
     message_too_large_sends,
     fragmentation_retries,
+    not_ect_configuration,
   ) = raw_system_udp_socket_snapshot(session.tunnel.resource.socket)
   SystemUdpSocketSnapshot(
     state: system_udp_socket_state(state),
@@ -2502,14 +2498,25 @@ pub fn system_udp_socket_snapshot(
     maximum_burst_compression_microseconds: maximum_burst_compression_microseconds,
     message_too_large_sends: message_too_large_sends,
     fragmentation_retries: fragmentation_retries,
+    not_ect_configuration: system_udp_not_ect_configuration(
+      not_ect_configuration,
+    ),
   )
+}
+
+fn system_udp_not_ect_configuration(code: Int) -> SystemUdpNotEctConfiguration {
+  case code {
+    1 -> SystemUdpNotEctDefaultUnobserved
+    2 -> SystemUdpNotEctConfiguredUnobserved
+    3 -> SystemUdpNotEctSocketOptionObserved
+    _ -> SystemUdpNotEctNotConfigured
+  }
 }
 
 /// Inspect target-side MTU feedback without exposing an endpoint or payload.
 ///
 /// The underlying seqlock retries concurrent writes a bounded number of times.
-/// A `consistent: False` result is still finite and explicitly prevents a
-/// caller from treating cross-counter invariants as an atomic observation.
+/// A `consistent: False` result is still finite and explicitly prevents a caller from treating cross-counter invariants as an atomic observation.
 pub fn system_udp_packet_too_big_snapshot(
   session: UdpProxySession(SystemUdpSocket),
 ) -> PacketTooBigSnapshot {
@@ -2657,8 +2664,7 @@ pub fn udp_proxy_session_receiver_snapshot(
   udp_socket_receiver_snapshot(session.tunnel)
 }
 
-/// Inspect target-socket forwarding and drop counters without retaining an
-/// endpoint, payload, socket, or callback term.
+/// Inspect target-socket forwarding and drop counters without retaining an endpoint, payload, socket, or callback term.
 pub fn udp_socket_receiver_snapshot(
   tunnel: UdpProxyTunnel(socket),
 ) -> UdpSocketReceiverSnapshot {
@@ -2749,8 +2755,7 @@ fn discard_udp_socket_packet(
   DiscardUdpPacket(UdpProxyTunnel(..tunnel, socket_receiver: receiver), reason)
 }
 
-/// Inspect socket ownership and saturating cleanup counters without exposing
-/// the socket, selected peer, target, or callback failure term.
+/// Inspect socket ownership and saturating cleanup counters without exposing the socket, selected peer, target, or callback failure term.
 pub fn udp_proxy_resource_snapshot(
   tunnel: UdpProxyTunnel(socket),
 ) -> UdpProxyResourceSnapshot {
@@ -2766,8 +2771,7 @@ pub fn udp_proxy_resource_snapshot(
 
 /// Wrap one adapter socket with its finite-deadline cleanup operation.
 ///
-/// The close callback receives the setup socket timeout and is supervised by
-/// the same heap and deadline limits when `close_udp_proxy` is called.
+/// The close callback receives the setup socket timeout and is supervised by the same heap and deadline limits when `close_udp_proxy` is called.
 pub fn udp_socket_resource(
   socket: socket,
   close: fn(Int) -> Result(Nil, Nil),
@@ -2777,9 +2781,8 @@ pub fn udp_socket_resource(
 
 /// Wrap the corresponding HTTP request stream with bounded close behavior.
 ///
-/// The callback receives the first terminal reason and the socket deadline
-/// from `ProxySetupConfig`. It is always run in a monitored worker with that
-/// deadline and the configured heap ceiling.
+/// The callback receives the first terminal reason and the socket deadline from `ProxySetupConfig`.
+/// It is always run in a monitored worker with that deadline and the configured heap ceiling.
 pub fn udp_request_stream_resource(
   close: fn(UdpProxyTerminationReason, Int) -> Result(Nil, Nil),
 ) -> UdpRequestStreamResource {
@@ -2789,8 +2792,7 @@ pub fn udp_request_stream_resource(
 /// Bind a protocol-neutral server context to coordinated UDP-proxy cleanup.
 ///
 /// The first socket failure signals the context's shared cancellation state.
-/// The unified HTTP/1.1, HTTP/2, or HTTP/3 adapter then performs its native
-/// request-stream shutdown while its supervised handler is being cancelled.
+/// The unified HTTP/1.1, HTTP/2, or HTTP/3 adapter then performs its native request-stream shutdown while its supervised handler is being cancelled.
 /// Repeated notifications remain harmless through the resource close guard.
 pub fn context_udp_request_stream_resource(
   request_context: context.Context,
@@ -2803,11 +2805,10 @@ pub fn context_udp_request_stream_resource(
 
 /// Bind a public HTTP/3 server request to coordinated UDP-proxy cleanup.
 ///
-/// A target UDP failure or application close cancels both QUIC stream
-/// directions with `H3_REQUEST_CANCELLED` (0x10c). The HTTP/3 actor performs
-/// the cancellation idempotently; this resource's existing monitored worker,
-/// heap ceiling, and finite socket deadline supervise the call. No transport
-/// handle, stream identifier, peer metadata, or backend failure escapes.
+/// A target UDP failure or application close cancels both QUIC stream directions with `H3_REQUEST_CANCELLED` (0x10c).
+/// The HTTP/3 actor performs the cancellation idempotently; this resource's existing monitored worker,
+/// heap ceiling, and finite socket deadline supervise the call.
+/// No transport handle, stream identifier, peer metadata, or backend failure escapes.
 pub fn http3_udp_request_stream_resource(
   request: http3_server.Request,
 ) -> UdpRequestStreamResource {
@@ -2823,9 +2824,9 @@ pub fn http3_udp_request_stream_resource(
 
 /// Bind one established UDP socket to its corresponding HTTP request stream.
 ///
-/// Binding performs no cleanup and shortens neither lifetime. After binding,
-/// the adapter reports terminal events through the session notification
-/// functions so socket and stream cleanup converge as one finite operation.
+/// Binding performs no cleanup and shortens neither lifetime.
+/// After binding,
+/// the adapter reports terminal events through the session notification functions so socket and stream cleanup converge as one finite operation.
 pub fn bind_udp_proxy_stream(
   tunnel: UdpProxyTunnel(socket),
   request_stream: UdpRequestStreamResource,
@@ -2841,17 +2842,13 @@ pub fn bind_udp_proxy_stream(
 
 /// Bind a production UDP socket and start its terminal-lifetime owner.
 ///
-/// The owner immediately installs the socket's single event waiter without a
-/// polling deadline. It remains blocked while an otherwise idle request
-/// stream is open. An operating-system socket failure therefore enters the
-/// shared socket/request-stream cleanup transition without waiting for another
-/// application send or receive. Normal request-stream or application cleanup
-/// closes the socket, wakes this owner, and preserves the already-recorded
-/// first termination reason.
+/// The owner immediately installs the socket's single event waiter without a polling deadline.
+/// It remains blocked while an otherwise idle request stream is open.
+/// An operating-system socket failure therefore enters the shared socket/request-stream cleanup transition without waiting for another application send or receive.
+/// Normal request-stream or application cleanup closes the socket, wakes this owner, and preserves the already-recorded first termination reason.
 ///
-/// A failure racing watcher installation is retained by the UDP socket owner
-/// and observed by this process. The process owns no packet queue and every
-/// diagnostic remains available through the existing payload-free snapshots.
+/// A failure racing watcher installation is retained by the UDP socket owner and observed by this process.
+/// The process owns no packet queue and every diagnostic remains available through the existing payload-free snapshots.
 pub fn bind_supervised_system_udp_proxy_stream(
   tunnel: UdpProxyTunnel(SystemUdpSocket),
   request_stream: UdpRequestStreamResource,
@@ -2865,11 +2862,10 @@ pub fn bind_supervised_system_udp_proxy_stream(
 
 /// Bind a production UDP lifetime with an optional validated idle deadline.
 ///
-/// The idle owner uses one monotonic deadline and an activity wake credit of
-/// one. It has no periodic wakeup. Valid HTTP-to-target sends and validated
-/// target-to-HTTP forwards move the deadline; malformed or rejected packets do
-/// not. Deadline expiry atomically records `IdleTimeout` before coordinated
-/// cleanup of the request stream and socket.
+/// The idle owner uses one monotonic deadline and an activity wake credit of one, plus one independent terminal signal.
+/// It has no periodic wakeup.
+/// Valid HTTP-to-target sends and validated target-to-HTTP forwards move the deadline; malformed or rejected packets do not.
+/// Deadline expiry atomically records `IdleTimeout` before coordinated cleanup of the request stream and socket.
 pub fn bind_supervised_system_udp_proxy_stream_with_idle(
   tunnel: UdpProxyTunnel(SystemUdpSocket),
   request_stream: UdpRequestStreamResource,
@@ -2889,11 +2885,9 @@ pub fn bind_supervised_system_udp_proxy_stream_with_idle(
 /// Bind a unified HTTP request context to a supervised production UDP socket.
 ///
 /// This is the common HTTP/1.1, HTTP/2, and HTTP/3 server-adapter entry point.
-/// It subscribes once to the context's event-driven cancellation broker. A
-/// request-stream end closes the target socket with `RequestStreamEnded`; a
-/// socket failure cancels the context through the request-stream resource.
-/// Either direction wakes and reclaims both waiters, so no periodic deadline
-/// poll or protocol-specific lifetime loop is required.
+/// It subscribes once to the context's event-driven cancellation broker.
+/// A request-stream end closes the target socket with `RequestStreamEnded`; a socket failure cancels the context through the request-stream resource.
+/// Either direction wakes and reclaims both waiters, so no periodic deadline poll or protocol-specific lifetime loop is required.
 pub fn bind_supervised_system_udp_proxy_context(
   tunnel: UdpProxyTunnel(SystemUdpSocket),
   request_context: context.Context,
@@ -2921,8 +2915,7 @@ pub fn bind_supervised_system_udp_proxy_context_with_idle(
   let _request_stream_owner =
     process.spawn_unlinked(fn() {
       // A Subject is bound to the mailbox of the process that creates it.
-      // Construct both the cancellation subject and subscription here, then
-      // acknowledge installation to the binding process.
+      // Construct both the cancellation subject and subscription here, then acknowledge installation to the binding process.
       let cancelled = process.new_subject()
       let subscription =
         context.subscribe_cancellation(request_context, cancelled)
@@ -2960,7 +2953,13 @@ fn start_udp_proxy_idle_owner(
           timeout_milliseconds,
           monotonic_millisecond(),
         )
-      let guard = UdpProxyIdleGuard(commands, runtime)
+      let guard =
+        UdpProxyIdleGuard(
+          commands,
+          runtime,
+          new_udp_proxy_idle_stop_alias(),
+          process.self(),
+        )
       process.send(ready, guard)
       udp_proxy_idle_owner_loop(session, guard)
     })
@@ -2984,7 +2983,7 @@ fn udp_proxy_idle_owner_loop(
   session: UdpProxySession(SystemUdpSocket),
   guard: UdpProxyIdleGuard,
 ) -> Nil {
-  let UdpProxyIdleGuard(commands, runtime) = guard
+  let UdpProxyIdleGuard(commands, runtime, stop, _) = guard
   let #(state, _, deadline, _, _, _, _, _, _, _, _, _) =
     raw_udp_proxy_idle_snapshot(runtime)
   case state {
@@ -2994,11 +2993,23 @@ fn udp_proxy_idle_owner_loop(
         value if value > 0 -> value
         _ -> 0
       }
-      case process.receive(commands, within: remaining) {
+      let selector =
+        process.new_selector()
+        |> process.select(commands)
+        |> process.select_record(tag: stop, fields: 0, mapping: fn(_) {
+          UdpIdleStop
+        })
+      case process.selector_receive(selector, within: remaining) {
+        Ok(UdpIdleStop) -> Nil
         Ok(UdpIdleWake) -> {
           let state = acknowledge_udp_proxy_idle_wake(runtime)
           case state {
             0 -> udp_proxy_idle_owner_loop(session, guard)
+            3 -> {
+              let _cleanup =
+                terminate_udp_proxy_session(session, IdleControlUnavailable)
+              Nil
+            }
             _ -> Nil
           }
         }
@@ -3009,9 +3020,19 @@ fn udp_proxy_idle_owner_loop(
               let _cleanup = terminate_udp_proxy_session(session, IdleTimeout)
               Nil
             }
+            #(3, _) -> {
+              let _cleanup =
+                terminate_udp_proxy_session(session, IdleControlUnavailable)
+              Nil
+            }
             _ -> Nil
           }
       }
+    }
+    3 -> {
+      let _cleanup =
+        terminate_udp_proxy_session(session, IdleControlUnavailable)
+      Nil
     }
     _ -> Nil
   }
@@ -3030,9 +3051,8 @@ fn supervise_system_udp_proxy_session(
           Nil
         }
         Error(3) -> {
-          // A finite diagnostic waiter may already own the independent event
-          // credit. It cannot hide a terminal event: it performs the same
-          // cleanup, and this owner retries only while the session stays open.
+          // A finite diagnostic waiter may already own the independent event credit.
+          // It cannot hide a terminal event: it performs the same cleanup, and this owner retries only while the session stays open.
           process.sleep(1)
           supervise_system_udp_proxy_session(session)
         }
@@ -3056,9 +3076,8 @@ fn supervise_system_udp_proxy_session(
 
 /// Report that the operating system says the target UDP socket is unusable.
 ///
-/// The first reason is recorded before either adapter is invoked, making the
-/// session inactive at this transition. Request-stream and socket cleanup are
-/// both attempted even if either one fails, exits, or times out.
+/// The first reason is recorded before either adapter is invoked, making the session inactive at this transition.
+/// Request-stream and socket cleanup are both attempted even if either one fails, exits, or times out.
 pub fn notify_udp_socket_unusable(
   session: UdpProxySession(socket),
 ) -> Result(Nil, UdpProxySessionFailure) {
@@ -3067,9 +3086,8 @@ pub fn notify_udp_socket_unusable(
 
 /// Report that the corresponding HTTP request stream has ended.
 ///
-/// The stream is already terminal, so its close adapter is not invoked. The
-/// same coordinated transition closes the target UDP socket and marks both
-/// resource guards complete before returning.
+/// The stream is already terminal, so its close adapter is not invoked.
+/// The same coordinated transition closes the target UDP socket and marks both resource guards complete before returning.
 pub fn notify_udp_request_stream_ended(
   session: UdpProxySession(socket),
 ) -> Result(Nil, UdpProxySessionFailure) {
@@ -3078,9 +3096,8 @@ pub fn notify_udp_request_stream_ended(
 
 /// Close a bound session at application request.
 ///
-/// Both resource adapters run under the same finite limits as an unusable
-/// socket transition. Repeated calls retry only components whose cleanup did
-/// not already converge.
+/// Both resource adapters run under the same finite limits as an unusable socket transition.
+/// Repeated calls retry only components whose cleanup did not already converge.
 pub fn close_udp_proxy_session(
   session: UdpProxySession(socket),
 ) -> Result(Nil, UdpProxySessionFailure) {
@@ -3133,7 +3150,7 @@ pub fn udp_proxy_idle_snapshot(
         expirations: 0,
         stop_signals: 0,
       )
-    Some(UdpProxyIdleGuard(_, runtime)) -> {
+    Some(UdpProxyIdleGuard(_, runtime, _, _)) -> {
       let #(
         state,
         timeout,
@@ -3157,13 +3174,14 @@ pub fn udp_proxy_idle_snapshot(
           #(UdpIdleWatching, Some(remaining))
         }
         2 -> #(UdpIdleExpired, None)
+        3 -> #(UdpIdleUnavailable, None)
         _ -> #(UdpIdleStopped, None)
       }
       UdpProxyIdleSnapshot(
         state:,
         timeout_milliseconds: Some(timeout),
         remaining_milliseconds:,
-        maximum_pending_commands: 1,
+        maximum_pending_commands: 2,
         pending_command: pending,
         activity_events:,
         outbound_activity_events:,
@@ -3184,7 +3202,7 @@ fn observe_udp_proxy_activity(
 ) -> UdpProxySession(SystemUdpSocket) {
   case session.idle_guard {
     None -> session
-    Some(UdpProxyIdleGuard(commands, runtime)) -> {
+    Some(UdpProxyIdleGuard(commands, runtime, _, _)) -> {
       let direction = case direction {
         UdpActivityToTarget -> 1
         UdpActivityToHttp -> 2
@@ -3197,6 +3215,13 @@ fn observe_udp_proxy_activity(
         )
       {
         1 -> process.send(commands, UdpIdleWake)
+        2 -> {
+          // The datagram already crossed its boundary.
+          // Close once, retaining the control failure; never resend or consume a second packet.
+          let _cleanup =
+            terminate_udp_proxy_session(session, IdleControlUnavailable)
+          Nil
+        }
         _ -> Nil
       }
       session
@@ -3204,14 +3229,20 @@ fn observe_udp_proxy_activity(
   }
 }
 
-fn stop_udp_proxy_idle_owner(session: UdpProxySession(socket)) -> Nil {
+fn stop_udp_proxy_idle_owner(session: UdpProxySession(socket)) -> Bool {
   case session.idle_guard {
-    None -> Nil
-    Some(UdpProxyIdleGuard(commands, runtime)) -> {
-      case stop_udp_proxy_idle_runtime(runtime) {
-        1 -> process.send(commands, UdpIdleWake)
-        _ -> Nil
+    None -> True
+    Some(UdpProxyIdleGuard(_, runtime, stop, owner)) -> {
+      let _wake = stop_udp_proxy_idle_runtime(runtime)
+      // Delivery itself consumes the one-shot alias; no sender-owned credit can be abandoned between reservation and notification.
+      signal_udp_proxy_idle_stop(stop)
+      let timeout = case
+        session.tunnel.config.socket_timeout_milliseconds * 2 + 2000
+      {
+        value if value > 2_147_483_647 -> 2_147_483_647
+        value -> value
       }
+      join_udp_proxy_idle_owner(owner, timeout)
     }
   }
 }
@@ -3226,8 +3257,8 @@ fn terminate_udp_proxy_session(
       termination_reason_code(reason),
     )
     |> termination_reason_from_code
-  stop_udp_proxy_idle_owner(session)
-  case claim_close_guard(session.cleanup_guard) {
+  let joined = stop_udp_proxy_idle_owner(session)
+  let cleanup = case claim_close_guard(session.cleanup_guard) {
     CloseCompleted -> Ok(Nil)
     CloseInProgress -> Error(UdpProxyTerminationInProgress)
     CloseAcquired -> {
@@ -3241,6 +3272,10 @@ fn terminate_udp_proxy_session(
       outcome
     }
   }
+  case joined {
+    True -> cleanup
+    False -> Error(UdpProxyIdleOwnerJoinTimeout)
+  }
 }
 
 fn close_udp_request_stream(
@@ -3249,7 +3284,7 @@ fn close_udp_request_stream(
 ) -> Result(Nil, UdpRequestStreamCleanupFailure) {
   case reason {
     RequestStreamEnded -> mark_udp_request_stream_ended(session.request_stream)
-    SocketUnusable | ApplicationClosed | IdleTimeout ->
+    SocketUnusable | ApplicationClosed | IdleTimeout | IdleControlUnavailable ->
       run_udp_request_stream_close(session, reason)
   }
 }
@@ -3365,6 +3400,7 @@ fn termination_reason_code(reason: UdpProxyTerminationReason) -> Int {
     SocketUnusable -> 2
     ApplicationClosed -> 3
     IdleTimeout -> 4
+    IdleControlUnavailable -> 5
   }
 }
 
@@ -3380,7 +3416,8 @@ fn termination_reason_from_code(code: Int) -> UdpProxyTerminationReason {
     1 -> RequestStreamEnded
     2 -> SocketUnusable
     3 -> ApplicationClosed
-    _ -> IdleTimeout
+    4 -> IdleTimeout
+    _ -> IdleControlUnavailable
   }
 }
 
@@ -3583,10 +3620,8 @@ fn authorize_proxy_addresses(
   }
 }
 
-/// Refuse before the socket is attempted when the receive model cannot be
-/// built. It depends only on the prepared request's finite limits, so deciding
-/// it first means no socket can be opened and then abandoned, and the caller
-/// still sees a typed refusal rather than a crash.
+/// Refuse before the socket is attempted when the receive model cannot be built.
+/// It depends only on the prepared request's finite limits, so deciding it first means no socket can be opened and then abandoned, and the caller still sees a typed refusal rather than a crash.
 fn open_proxy_socket(
   request: PreparedRequest,
   endpoint: UdpEndpoint,
@@ -3747,9 +3782,8 @@ fn reject_proxy_setup(
   snapshot: ProxySetupSnapshot,
 ) -> UdpProxySetup(socket) {
   let #(response_status, error_type) = proxy_setup_failure_response(failure)
-  // Proxy-Status is advisory. A field which cannot be serialised is dropped so
-  // that the refusal still reaches the caller with its typed failure and
-  // status, rather than the rejection path itself becoming a crash.
+  // Proxy-Status is advisory.
+  // A field which cannot be serialised is dropped so that the refusal still reaches the caller with its typed failure and status, rather than the rejection path itself becoming a crash.
   let response_headers = case proxy_status_header(proxy, error_type) {
     Ok(header) -> [header]
     // nolint: thrown_away_error -- the advisory field is dropped, not reported.
@@ -4025,16 +4059,16 @@ pub fn udp_receiver(limits: Limits) -> Result(UdpReceiver, Error) {
   Ok(UdpReceiver(limits, False, 0, 0, 0, 0, 0))
 }
 
-/// Mark the corresponding request ready. Context ID zero is then registered.
+/// Mark the corresponding request ready.
+/// Context ID zero is then registered.
 pub fn activate_udp_receiver(receiver: UdpReceiver) -> UdpReceiver {
   UdpReceiver(..receiver, active: True)
 }
 
 /// Decide whether a DATAGRAM Capsule's Context ID prefix may be inspected.
 ///
-/// A pre-request receiver discards from framing metadata alone, so no Context
-/// ID or payload bytes need to be read or retained. Active receivers admit at
-/// most the Context ID prefix; payload admission is a separate decision.
+/// A pre-request receiver discards from framing metadata alone, so no Context ID or payload bytes need to be read or retained.
+/// Active receivers admit at most the Context ID prefix; payload admission is a separate decision.
 pub fn admit_proxy_datagram_capsule(
   receiver: UdpReceiver,
   declared_value_bytes: Int,
@@ -4056,9 +4090,9 @@ pub fn admit_proxy_datagram_capsule(
 /// Classify a DATAGRAM Capsule after decoding only its Context ID prefix.
 ///
 /// Unknown contexts are discarded regardless of declared payload size.
-/// Context ID zero above the absolute UDP limit requires stream abort. A value
-/// above a configured transport or Capsule ceiling is discarded before its
-/// payload is read. No branch stores payload, target, or request metadata.
+/// Context ID zero above the absolute UDP limit requires stream abort.
+/// A value above a configured transport or Capsule ceiling is discarded before its payload is read.
+/// No branch stores payload, target, or request metadata.
 pub fn classify_proxy_datagram_capsule_context(
   receiver: UdpReceiver,
   declared_value_bytes declared_value_bytes: Int,
@@ -4114,8 +4148,8 @@ pub fn classify_proxy_datagram_capsule_context(
 
 /// Apply the no-buffer RFC 9298 receive policy to one HTTP Datagram.
 ///
-/// Pre-request and unknown-context datagrams are dropped. A malformed or
-/// oversized Context ID zero datagram produces an explicit stream-abort action.
+/// Pre-request and unknown-context datagrams are dropped.
+/// A malformed or oversized Context ID zero datagram produces an explicit stream-abort action.
 pub fn receive_proxy_datagram(
   receiver: UdpReceiver,
   datagram: BitArray,
@@ -4305,9 +4339,7 @@ pub fn allow_udp(
 
 /// Add one IP prefix that DNS or literal CONNECT-UDP targets may resolve to.
 ///
-/// Exact target authorization and resolved-address authorization are both
-/// mandatory, preventing an allowlisted DNS name from rebinding into an
-/// unapproved local, link-local, multicast, or private destination.
+/// Exact target authorization and resolved-address authorization are both mandatory, preventing an allowlisted DNS name from rebinding into an unapproved local, link-local, multicast, or private destination.
 pub fn allow_udp_destination(
   policy: ProxyPolicy,
   prefix: IpPrefix,
@@ -4362,10 +4394,8 @@ pub fn allow_ip_destination(
 
 /// Add one source prefix a peer is allowed to send from.
 ///
-/// RFC 9484 section 11 asks for BCP 38 ingress filtering wherever an endpoint
-/// knows the prefix its peer may send from, which it does when it assigned one
-/// in an ADDRESS_ASSIGN capsule or was configured out of band. A policy with no
-/// source prefix is an endpoint that does not know, and it constrains nothing;
+/// RFC 9484 section 11 asks for BCP 38 ingress filtering wherever an endpoint knows the prefix its peer may send from, which it does when it assigned one in an ADDRESS_ASSIGN capsule or was configured out of band.
+/// A policy with no source prefix is an endpoint that does not know, and it constrains nothing;
 /// the first prefix added makes every source outside it a spoofed one.
 pub fn allow_ip_source(
   policy: ProxyPolicy,
@@ -4381,7 +4411,8 @@ pub fn allow_ip_source(
   }
 }
 
-/// Authorize a prepared request. Empty policies always deny.
+/// Authorize a prepared request.
+/// Empty policies always deny.
 pub fn authorize(
   policy: ProxyPolicy,
   request: PreparedRequest,
@@ -4398,8 +4429,8 @@ pub fn authorize(
 
 /// Validate, authorize, decrement TTL/Hop Limit, and return an IP packet.
 ///
-/// IPv4 header checksums are verified and recomputed. An exhausted hop limit
-/// is never forwarded.
+/// IPv4 header checksums are verified and recomputed.
+/// An exhausted hop limit is never forwarded.
 pub fn forward_ip_packet(
   policy: ProxyPolicy,
   packet: BitArray,
@@ -4459,8 +4490,8 @@ pub fn encode_capsule(
   }
 }
 
-/// Decode supported permanent Capsules. Unknown and provisional types are
-/// returned as `None`, matching RFC 9297's silent-drop rule.
+/// Decode supported permanent Capsules.
+/// Unknown and provisional types are returned as `None`, matching RFC 9297's silent-drop rule.
 pub fn decode_capsule(
   capsule: http3_capsule.Capsule,
   limits: Limits,
@@ -4525,8 +4556,8 @@ pub fn request_addresses(
   ))
 }
 
-/// Apply a complete configuration Capsule. Assignments and routes replace the
-/// previous full list; unknown types leave state unchanged.
+/// Apply a complete configuration Capsule.
+/// Assignments and routes replace the previous full list; unknown types leave state unchanged.
 pub fn apply_ip_capsule(
   state: IpState,
   capsule: http3_capsule.Capsule,
@@ -4907,16 +4938,12 @@ fn validate_scope(scope: IpScope) -> Result(Nil, Error) {
 /// Validate a `target` variable against the RFC 9484 section 4.6 grammar.
 ///
 /// Figure 6 admits an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard,
-/// which the scope spells as an absent target. The section then adds three
-/// conditions the grammar cannot state: the prefix length is a decimal integer,
-/// it is no larger than the address it qualifies, and every bit of the address
-/// below it is zero. The last two are the conditions `validate_prefix` already
-/// holds a capsule's prefix to, so a prefix written into a request and a prefix
-/// read out of a capsule answer to one rule rather than two.
+/// which the scope spells as an absent target.
+/// The section then adds three conditions the grammar cannot state: the prefix length is a decimal integer,
+/// it is no larger than the address it qualifies, and every bit of the address below it is zero.
+/// The last two are the conditions `validate_prefix` already holds a capsule's prefix to, so a prefix written into a request and a prefix read out of a capsule answer to one rule rather than two.
 ///
-/// The value arrives unencoded and is percent-encoded on expansion, so a
-/// percent sign in it would be expanded twice and the separators a URI reserves
-/// would survive into the path; all four are refused here rather than escaped.
+/// The value arrives unencoded and is percent-encoded on expansion, so a percent sign in it would be expanded twice and the separators a URI reserves would survive into the path; all four are refused here rather than escaped.
 fn validate_scope_target(target: String) -> Result(Nil, Error) {
   use <- bool.guard(
     when: target == "*"
@@ -4947,12 +4974,12 @@ fn validate_target_prefix(
     False -> result.map(ipv4_address_bytes(address), Ipv4)
   })
   use bits <- result.try(prefix_length_value(length))
-  // The prefix rule is shared with the capsule path, which reports a malformed
-  // address; a malformed variable is a malformed scope.
+  // The prefix rule is shared with the capsule path, which reports a malformed address; a malformed variable is a malformed scope.
   validate_prefix(IpPrefix(parsed, bits)) |> result.replace_error(InvalidScope)
 }
 
-/// Read the `1*3DIGIT` prefix length. Its range is checked against the address.
+/// Read the `1*3DIGIT` prefix length.
+/// Its range is checked against the address.
 fn prefix_length_value(length: String) -> Result(Int, Error) {
   let digits = string.to_utf_codepoints(length)
   use <- bool.guard(
@@ -4986,9 +5013,7 @@ fn octet_value(octet: String) -> Result(Int, Error) {
 
 /// Expand an IPv6 literal into its sixteen bytes.
 ///
-/// The syntax is checked first, so the two halves of a `::` are known to hold
-/// fewer than eight groups between them and the run of zeros that separates
-/// them is whatever is left.
+/// The syntax is checked first, so the two halves of a `::` are known to hold fewer than eight groups between them and the run of zeros that separates them is whatever is left.
 fn ipv6_address_bytes(address: String) -> Result(BitArray, Error) {
   use <- bool.guard(
     when: !valid_ipv6_address(address),
@@ -5108,9 +5133,7 @@ fn packet_source(packet: ParsedPacket) -> IpAddress {
 
 /// Whether a packet's source is one the peer is allowed to send from.
 ///
-/// An empty list is the endpoint that does not know its peer's prefix, so it
-/// admits every source rather than none: unlike the destination rules, these
-/// narrow a policy that is already default-deny on where a packet may go.
+/// An empty list is the endpoint that does not know its peer's prefix, so it admits every source rather than none: unlike the destination rules, these narrow a policy that is already default-deny on where a packet may go.
 fn source_allowed(prefixes: List(IpPrefix), source: IpAddress) -> Bool {
   prefixes == []
   || list.any(prefixes, fn(prefix) { prefix_contains(prefix, source) })
@@ -5290,27 +5313,20 @@ fn packet_routing(
 /// The Internet Protocol Numbers that name an IPv6 extension header.
 ///
 /// RFC 8200 section 4.1 lists them: Hop-by-Hop Options, Routing, Fragment,
-/// Authentication, Destination Options, and the three later headers that reuse
-/// the same shape. Encapsulating Security Payload is absent on purpose: what
-/// follows it is encrypted, so it is the outermost number a scoping rule can
-/// see rather than something to walk past.
+/// Authentication, Destination Options, and the three later headers that reuse the same shape.
+/// Encapsulating Security Payload is absent on purpose: what follows it is encrypted, so it is the outermost number a scoping rule can see rather than something to walk past.
 const extension_header_numbers = [0, 43, 44, 51, 60, 135, 139, 140]
 
 /// The most extension headers one packet may carry before it is refused.
 ///
-/// RFC 8200 section 4.1 gives a recommended order with eight positions. The
-/// chain is walked once for every forwarded packet, so its length is fixed here
-/// rather than by the packet.
+/// RFC 8200 section 4.1 gives a recommended order with eight positions.
+/// The chain is walked once for every forwarded packet, so its length is fixed here rather than by the packet.
 const maximum_extension_headers = 8
 
 /// Walk the extension chain to the outermost non-extension protocol number.
 ///
-/// RFC 9484 section 4.8 requires this of anything that scopes or routes by
-/// Internet Protocol Number: the fixed header's Next Header field names the
-/// first extension, not what the packet carries. A chain that cannot be walked
-/// to its end resolves to no number at all, because matching a rule against a
-/// number the walk merely reached would admit whatever the unread remainder
-/// turned out to be.
+/// RFC 9484 section 4.8 requires this of anything that scopes or routes by Internet Protocol Number: the fixed header's Next Header field names the first extension, not what the packet carries.
+/// A chain that cannot be walked to its end resolves to no number at all, because matching a rule against a number the walk merely reached would admit whatever the unread remainder turned out to be.
 fn upper_layer_protocol(
   next_header: Int,
   rest: BitArray,
@@ -5333,8 +5349,7 @@ fn upper_layer_protocol(
 ///
 /// The Fragment header is always eight bytes and its second octet is reserved.
 /// The Authentication header counts in four-byte units excluding the first two,
-/// and every other extension counts in eight-byte units excluding the first
-/// one; RFC 8200 section 4 and RFC 4302 section 2.2 give both forms.
+/// and every other extension counts in eight-byte units excluding the first one; RFC 8200 section 4 and RFC 4302 section 2.2 give both forms.
 fn extension_header(header: Int, rest: BitArray) -> Result(#(Int, Int), Error) {
   case rest {
     <<following, length, _remainder:bits>> ->
@@ -5522,21 +5537,15 @@ fn validate_routes(
 
 /// One route whose bounds are already decoded into a single address family.
 ///
-/// Parsing each route exactly once is what makes the ordering and overlap
-/// checks total: they read integers which are already known to exist instead of
-/// re-deciding a `Result` they would have to crash on. It is also what keeps
-/// the quadratic overlap scan from decoding the same four addresses on every
-/// comparison it makes.
+/// Parsing each route exactly once is what makes the ordering and overlap checks total: they read integers which are already known to exist instead of re-deciding a `Result` they would have to crash on.
+/// It is also what keeps the quadratic overlap scan from decoding the same four addresses on every comparison it makes.
 type ParsedRoute {
   ParsedRoute(version: Int, start: Int, end: Int, ip_protocol: Int)
 }
 
 /// Decode both bounds of one range together.
 ///
-/// Matching the pair in a single pattern is what makes the two bounds share an
-/// address family: a mixed range has no matching clause at all, so there is no
-/// separate family comparison which could be dropped and leave the numeric
-/// comparisons below reading two different address spaces.
+/// Matching the pair in a single pattern is what makes the two bounds share an address family: a mixed range has no matching clause at all, so there is no separate family comparison which could be dropped and leave the numeric comparisons below reading two different address spaces.
 fn address_range(
   start: IpAddress,
   end: IpAddress,

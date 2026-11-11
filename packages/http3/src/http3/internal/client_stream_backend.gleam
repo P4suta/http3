@@ -1,7 +1,8 @@
 //// Typed boundary around the repository-owned reusable HTTP/3 client.
 
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/address
 import http3/config
 import http3/failure as runtime_failure
 import http3/internal/client_backend
@@ -9,7 +10,9 @@ import http3/internal/client_request.{
   type PreparedStreamingRequest, PreparedStreamingRequest,
 }
 import http3/internal/native/client as native_client
+import http3/internal/qlog_admission
 import quic_core
+import quic_core/diagnostics
 
 /// Opaque native connection identity.
 pub type ConnectionHandle =
@@ -35,6 +38,8 @@ pub type RawEvent =
 pub fn connect(
   host host: String,
   port port: Int,
+  connect_address connect_address: Option(address.Address),
+  connect_port connect_port: Int,
   ca_certificates ca_certificates: List(BitArray),
   address_family address_family: config.AddressFamily,
   dns_timeout_milliseconds dns_timeout_milliseconds: Int,
@@ -43,6 +48,7 @@ pub fn connect(
   timeout_milliseconds timeout_milliseconds: Int,
   operation_timeout_milliseconds operation_timeout_milliseconds: Int,
   idle_timeout_milliseconds idle_timeout_milliseconds: Int,
+  drain_timeout_milliseconds drain_timeout_milliseconds: Int,
   stream_buffer_limit stream_buffer_limit: Int,
   endpoint_memory_limit endpoint_memory_limit: Int,
   queue_limit queue_limit: Int,
@@ -59,6 +65,8 @@ pub fn connect(
   quic_v2 quic_v2: Bool,
   qlog_directory qlog_directory: String,
   resumption_tickets resumption_tickets: List(ResumptionTicketHandle),
+  connect_trace connect_trace: Option(diagnostics.ConnectTrace),
+  qlog_reservation qlog_reservation: Option(qlog_admission.Reservation),
 ) -> Result(ConnectionHandle, client_backend.Failure) {
   case resumption_tickets {
     [_, _, ..] ->
@@ -72,6 +80,24 @@ pub fn connect(
       use configured <- result.try(
         native_client.new(host, port) |> map_configuration_result,
       )
+      let configured =
+        native_client.with_qlog_reservation(configured, qlog_reservation)
+      let configured = case connect_trace {
+        None -> configured
+        Some(trace) -> native_client.with_connect_trace(configured, trace)
+      }
+      use configured <- result.try(
+        native_client.with_connect_port(configured, connect_port)
+        |> map_configuration_result,
+      )
+      let configured = case connect_address {
+        None -> configured
+        Some(address) ->
+          native_client.with_connect_address(
+            configured,
+            address.to_bytes(address),
+          )
+      }
       let configured =
         native_client.with_quic_version(configured, case quic_v2 {
           False -> native_client.QuicV1
@@ -114,6 +140,10 @@ pub fn connect(
       )
       use configured <- result.try(
         native_client.with_idle_timeout(configured, idle_timeout_milliseconds)
+        |> map_configuration_result,
+      )
+      use configured <- result.try(
+        native_client.with_drain_timeout(configured, drain_timeout_milliseconds)
         |> map_configuration_result,
       )
       use configured <- result.try(
@@ -228,6 +258,13 @@ pub fn resource_state_stats(
   native_client.resource_state_stats(connection) |> map_native_result
 }
 
+/// Return whether this connection can still accept a future request stream.
+pub fn connection_reusable(
+  connection: ConnectionHandle,
+) -> Result(Bool, client_backend.Failure) {
+  native_client.connection_reusable(connection) |> map_native_result
+}
+
 /// Open a request stream without ending its request body.
 pub fn open_stream(
   connection connection: ConnectionHandle,
@@ -267,11 +304,49 @@ pub fn finish(stream: StreamHandle) -> Result(Nil, client_backend.Failure) {
   native_client.finish(stream) |> map_native_result
 }
 
+/// Wait for transport acknowledgement of the request FIN.
+@internal
+pub fn await_request_completion(
+  stream: StreamHandle,
+) -> Result(Nil, client_backend.Failure) {
+  native_client.await_request_completion(stream) |> map_native_result
+}
+
+/// Queue one bounded payload-free application diagnostic when qlog is on.
+@internal
+pub fn record_application_error(
+  stream stream: StreamHandle,
+  code code: Int,
+) -> Nil {
+  native_client.record_application_error(stream, code)
+}
+
+/// Configured per-operation duration; this does not start a read.
+@internal
+pub fn operation_timeout_milliseconds(stream: StreamHandle) -> Int {
+  native_client.operation_timeout_milliseconds(stream)
+}
+
 /// Pull the next response event.
 pub fn next_event(
   stream: StreamHandle,
 ) -> Result(RawEvent, client_backend.Failure) {
-  case native_client.next_event(stream) {
+  map_next_event(native_client.next_event(stream))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  stream stream: StreamHandle,
+  deadline_milliseconds deadline: Int,
+) -> Result(RawEvent, client_backend.Failure) {
+  map_next_event(native_client.next_event_until(stream, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(native_client.ResponseEvent, native_client.Error),
+) -> Result(RawEvent, client_backend.Failure) {
+  case outcome {
     Ok(native_client.InformationalResponse(status, headers)) ->
       Ok(#(1, status, headers, <<>>))
     Ok(native_client.ResponseHeaders(status, headers)) ->
@@ -324,6 +399,17 @@ pub fn close(
   connection: ConnectionHandle,
 ) -> Result(Int, client_backend.Failure) {
   case native_client.close(connection) {
+    Ok(native_client.Closed) -> Ok(1)
+    Ok(native_client.AlreadyClosed) -> Ok(2)
+    Error(error) -> Error(map_native_error(error))
+  }
+}
+
+pub fn close_within(
+  connection connection: ConnectionHandle,
+  within_milliseconds within_milliseconds: Int,
+) -> Result(Int, client_backend.Failure) {
+  case native_client.close_within(connection, within_milliseconds) {
     Ok(native_client.Closed) -> Ok(1)
     Ok(native_client.AlreadyClosed) -> Ok(2)
     Error(error) -> Error(map_native_error(error))

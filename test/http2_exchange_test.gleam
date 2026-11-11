@@ -1,16 +1,22 @@
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/http as gleam_http
 import gleam/http/request
 import gleam/http/response
+import gleam/int as gleam_int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
 import http/body
+import http/context
+import http/diagnostics
 import http/error
+import http/internal/client_trace
 import http/internal/http2/connection
 import http/internal/http2/exchange
+import http/internal/http2/frame
 import http/internal/http2/header_codec
 import http/internal/http2/message
 import http/internal/http2/preface
@@ -118,6 +124,170 @@ pub fn authenticated_h2_round_trip_uses_incremental_wire_state_test() -> Nil {
   Nil
 }
 
+pub fn authenticated_reset_before_response_keeps_http2_diagnostic_protocol_test() -> Nil {
+  let #(certificate, private_key, ca) = http_test_support.server_credentials()
+  let finished = process.new_subject()
+  let released = process.new_subject()
+  let assert Ok(reporter) =
+    diagnostics.start(32, 1000, fn(record) {
+      case record.event {
+        diagnostics.ClientObserved(
+          _,
+          _,
+          diagnostics.AttemptFinished(_, protocol, outcome),
+        ) -> process.send(finished, #(protocol, result.is_error(outcome)))
+        diagnostics.ClientObserved(
+          _,
+          _,
+          diagnostics.AttemptReleased(_, protocol, _),
+        ) -> process.send(released, protocol)
+        _ -> Nil
+      }
+      Ok(Nil)
+    })
+  let trace = client_trace.start(Some(reporter)) |> client_trace.attempt
+  let assert Ok(listener) =
+    transport.listen(<<127, 0, 0, 1>>, 0, 8, 2000) |> result.replace_error(Nil)
+  let assert Ok(endpoint) =
+    transport.local_endpoint(listener) |> result.replace_error(Nil)
+  let #(_, port) = endpoint
+  let peer =
+    http_test_support.start_task(fn() {
+      let assert Ok(socket) =
+        transport.accept(listener, 2000) |> result.replace_error(Nil)
+      let assert Ok(ready) =
+        transport.upgrade_server_tls(
+          socket,
+          certificate,
+          private_key,
+          [<<"h2">>],
+          2000,
+        )
+        |> result.replace_error(Nil)
+      let transport.TlsReady(socket, selected, _) = ready
+      let assert Ok(state) =
+        wire.new(connection.Server, connection_limits(), wire_limits())
+        |> result.replace_error(Nil)
+      let assert Ok(started) =
+        wire.initial_bytes(state, []) |> result.replace_error(Nil)
+      let wire.Started(state, initial) = started
+      assert result.is_ok(transport.send(socket, initial))
+      let #(socket, state, _) = await_request(socket, state)
+      let assert Ok(written) =
+        wire.send_response_headers(state, 1, response.new(200), False)
+        |> result.replace_error(Nil)
+      let wire.HeadersWritten(state, _, headers) = written
+      let assert Ok(reset) =
+        wire.reset_stream(state, 1, 2) |> result.replace_error(Nil)
+      let wire.ControlWritten(_, frames) = reset
+      // One TLS write keeps the final header and failure in one input batch.
+      let sent =
+        transport.send(socket, bit_array.concat(list.append(headers, frames)))
+      let peer_closed = case await_socket_end(socket) {
+        Ok(_) | Error(transport.Closed) -> True
+        _ -> False
+      }
+      let _closed = transport.close(socket)
+      selected == <<"h2">> && result.is_ok(sent) && peer_closed
+    })
+  let config =
+    exchange.defaults()
+    |> exchange.with_ca_certificates([ca])
+    |> exchange.with_trace(trace)
+  let outcome = exchange.run(get_request(port), config)
+  let peer_closed = http_test_support.await_task(peer)
+  let _stopped = transport.stop(listener)
+  let finished_event = process.receive(finished, within: 1000)
+  let released_event = process.receive(released, within: 1000)
+  let reporter_stopped = diagnostics.stop(reporter)
+  assert result.is_error(outcome)
+  assert peer_closed
+  assert finished_event == Ok(#(Some(context.Http2), True))
+  assert released_event == Ok(Some(context.Http2))
+  assert process.receive(finished, within: 0) == Error(Nil)
+  assert process.receive(released, within: 0) == Error(Nil)
+  assert reporter_stopped == Ok(Nil)
+}
+
+pub fn complete_early_response_and_no_error_reset_preserve_body_and_cleanup_test() -> Nil {
+  let #(certificate, private_key, ca) = http_test_support.server_credentials()
+  let disposed = process.new_subject()
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 2000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let peer =
+    http_test_support.start_task(fn() {
+      let assert Ok(socket) = transport.accept(listener, 2000)
+      let assert Ok(transport.TlsReady(socket, <<"h2">>, _)) =
+        transport.upgrade_server_tls(
+          socket,
+          certificate,
+          private_key,
+          [<<"h2">>],
+          2000,
+        )
+      let assert Ok(state) =
+        wire.new(connection.Server, connection_limits(), wire_limits())
+      let assert Ok(wire.Started(state, initial)) =
+        wire.initial_bytes(state, [])
+      let assert Ok(Nil) = transport.send(socket, initial)
+      let #(socket, state, _) = await_request(socket, state)
+      let assert Ok(wire.HeadersWritten(state, 1, headers)) =
+        wire.send_response_headers(
+          state,
+          1,
+          response.new(201),
+          end_stream: False,
+        )
+      let assert Ok(wire.DataWritten(state, data, <<>>, True)) =
+        wire.send_data(
+          state,
+          stream_id: 1,
+          bytes: <<"complete">>,
+          end_stream: True,
+        )
+      let assert Ok(wire.ControlWritten(_, reset)) =
+        wire.reset_stream(state, stream_id: 1, error_code: 0)
+      let assert Ok(duplicate) =
+        frame.encode(frame.RstStream, 0, 1, <<5:size(32)>>, 16_384)
+      let bytes =
+        list.append(headers, list.append(data, list.append(reset, [duplicate])))
+        |> bit_array.concat
+      let assert Ok(Nil) = transport.send(socket, bytes)
+      let closed = case await_socket_end(socket) {
+        Ok(_) | Error(transport.Closed) -> True
+        _ -> False
+      }
+      let _closed = transport.close(socket)
+      closed
+    })
+  let assert Ok(source) =
+    body.from_pull(
+      body.pull(fn(_) {
+        let _never = process.receive(process.new_subject(), within: 5000)
+        Ok(body.PullEnd([]))
+      }),
+      Some(0),
+      None,
+      fn() { process.send(disposed, Nil) },
+    )
+  let outgoing = get_request(port) |> request.set_body(source)
+  let config = exchange.defaults() |> exchange.with_ca_certificates([ca])
+  let outcome = case exchange.run(outgoing, config) {
+    Ok(exchange.Http2Response(incoming)) -> {
+      let collected = body.read_all(incoming.body, 8)
+      incoming.status == 201 && collected == Ok(#(<<"complete">>, []))
+    }
+    _ -> False
+  }
+  let peer_closed = http_test_support.await_task(peer)
+  let _stopped = transport.stop(listener)
+  body.cancel(source)
+  assert outcome
+  assert peer_closed
+  assert process.receive(disposed, within: 1000) == Ok(Nil)
+  assert process.receive(disposed, within: 0) == Error(Nil)
+}
+
 pub fn cancelling_streaming_response_after_headers_closes_h2_socket_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
@@ -199,7 +369,110 @@ pub fn negotiated_http1_returns_before_sending_any_application_bytes_test() -> N
   Nil
 }
 
+pub fn pooled_http1_contender_is_authenticated_before_single_use_selection_test() -> Nil {
+  let #(certificate, key, ca) = http_test_support.server_credentials()
+  let events = process.new_subject()
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 10_000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let peer =
+    http_test_support.start_task(fn() {
+      let assert Ok(socket) = transport.accept(listener, 10_000)
+      let assert Ok(ready) =
+        transport.upgrade_server_tls(
+          socket,
+          certificate,
+          key,
+          [<<"http/1.1">>],
+          10_000,
+        )
+      let transport.TlsReady(socket, _, _) = ready
+      let no_application_bytes = case transport.read(socket, 1, 10_000) {
+        Ok(transport.ReadEnd(_)) | Error(transport.Closed) -> True
+        _ -> False
+      }
+      let _closed = transport.close(socket)
+      no_application_bytes
+    })
+  let assert Ok(socket) = transport.connect("127.0.0.1", port, 10_000, 10_000)
+  let assert Ok(secured) =
+    transport.upgrade_client_tls(
+      socket,
+      "localhost",
+      [ca],
+      [<<"http/1.1">>],
+      10_000,
+    )
+  let transport.TlsReady(socket, selected, _) = secured
+  let authenticated_http1 = selected == <<"http/1.1">>
+  assert authenticated_http1
+  let assert Ok(source) =
+    body.from_pull(
+      body.pull(fn(_) {
+        process.send(events, 7)
+        Ok(body.PullEnd([]))
+      }),
+      Some(0),
+      None,
+      fn() { process.send(events, 8) },
+    )
+  let outgoing = get_request(port) |> request.set_body(source)
+  let config =
+    exchange.defaults()
+    |> exchange.with_pool(
+      fn(_) {
+        process.send(events, 1)
+        Ok(None)
+      },
+      fn(_, _, _, _) { False },
+    )
+    |> exchange.with_http1_pool(fn(origin) {
+      let correct_origin =
+        origin == "https://localhost:" <> gleam_int.to_string(port)
+      assert correct_origin
+      process.send(events, 2)
+      Ok(Some(socket))
+    })
+    |> exchange.with_http1_fallback(fn(_, _, _, _) {
+      process.send(events, 5)
+      Error(error.new(error.Service))
+    })
+    |> exchange.with_lifecycle(
+      fn(_, _) {
+        process.send(events, 3)
+        Ok(fn() { process.send(events, 4) })
+      },
+      fn() { False },
+    )
+    |> exchange.with_admission(
+      fn(_) {
+        process.send(events, 6)
+        Error(error.new(error.Resource(error.Connections)))
+      },
+      fn(_, _) { Ok(Nil) },
+    )
+  let assert Ok(ready) = exchange.prepare_connection(outgoing, config)
+  assert process.receive(events, within: 0) == Ok(1)
+  assert process.receive(events, within: 0) == Ok(2)
+  assert process.receive(events, within: 0) == Ok(3)
+  assert process.receive(events, within: 0) == Error(Nil)
+  exchange.discard_ready(ready)
+  exchange.discard_ready(ready)
+  let rejected = case exchange.run_ready(ready) {
+    Error(failure) -> error.kind(failure) == error.Cancelled
+    Ok(_) -> False
+  }
+  let peer_closed_without_request = http_test_support.await_task(peer)
+  let _stopped = transport.stop(listener)
+  assert rejected
+  assert peer_closed_without_request
+  assert process.receive(events, within: 0) == Ok(4)
+  assert process.receive(events, within: 0) == Error(Nil)
+  body.cancel(source)
+  assert process.receive(events, within: 0) == Ok(8)
+}
+
 pub fn request_body_and_trailers_resume_after_peer_flow_control_credit_test() -> Nil {
+  let pull_budgets = process.new_subject()
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
   let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
@@ -252,16 +525,17 @@ pub fn request_body_and_trailers_resume_after_peer_flow_control_credit_test() ->
     request.Request(
       method: gleam_http.Post,
       headers: [],
-      body: body.from_bytes_with_trailers(payload, [#("checksum", "yes")]),
+      body: streamed_upload(70_000, pull_budgets),
       scheme: gleam_http.Https,
       host: "localhost",
       port: Some(port),
       path: "/upload",
       query: None,
     )
-  let config =
+  let assert Ok(config) =
     exchange.defaults()
     |> exchange.with_ca_certificates([ca_certificate])
+    |> exchange.with_body_limits(100_000, 8192)
 
   let outcome = exchange.run(outgoing, config)
   let server_outcome = http_test_support.await_task(server_task)
@@ -271,8 +545,44 @@ pub fn request_body_and_trailers_resume_after_peer_flow_control_credit_test() ->
   assert received.method == gleam_http.Post
   assert request_body == payload
   assert trailers == [#("checksum", "yes")]
+  assert collect_pull_budgets(pull_budgets, []) == list.repeat(8192, 10)
   let assert Ok(Nil) = transport.stop(listener)
   Nil
+}
+
+fn streamed_upload(remaining: Int, budgets: process.Subject(Int)) -> body.Body {
+  let assert Ok(source) =
+    body.from_pull(upload_pull(remaining, budgets), None, None, fn() { Nil })
+  source
+}
+
+fn upload_pull(remaining: Int, budgets: process.Subject(Int)) -> body.Pull {
+  body.pull(fn(maximum) {
+    process.send(budgets, maximum)
+    case remaining {
+      0 -> Ok(body.PullEnd([#("checksum", "yes")]))
+      _ -> {
+        let count = case remaining < maximum {
+          True -> remaining
+          False -> maximum
+        }
+        Ok(body.PullData(
+          string.repeat("x", count) |> bit_array.from_string,
+          upload_pull(remaining - count, budgets),
+        ))
+      }
+    }
+  })
+}
+
+fn collect_pull_budgets(
+  budgets: process.Subject(Int),
+  reversed: List(Int),
+) -> List(Int) {
+  case process.receive(budgets, within: 0) {
+    Ok(budget) -> collect_pull_budgets(budgets, [budget, ..reversed])
+    Error(Nil) -> list.reverse(reversed)
+  }
 }
 
 pub fn operation_deadline_bounds_a_stalled_h2_response_test() -> Nil {

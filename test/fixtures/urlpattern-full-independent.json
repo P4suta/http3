@@ -1,0 +1,4353 @@
+{
+  "cases": [
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 0,
+      "pattern": "https://ex\tample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 1,
+      "pattern": "https://ex\tample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 2,
+      "pattern": "https://ex\tample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 3,
+      "pattern": "https://ex\tample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 4,
+      "pattern": "https://ex\tample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 5,
+      "pattern": "https://ex\nample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 6,
+      "pattern": "https://ex\nample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 7,
+      "pattern": "https://ex\nample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 8,
+      "pattern": "https://ex\nample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 9,
+      "pattern": "https://ex\nample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 10,
+      "pattern": "https://ex\rample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 11,
+      "pattern": "https://ex\rample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 12,
+      "pattern": "https://ex\rample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 13,
+      "pattern": "https://ex\rample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 14,
+      "pattern": "https://ex\rample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 15,
+      "pattern": "https://{exam/ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 16,
+      "pattern": "https://{exam/ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 17,
+      "pattern": "https://{exam/ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 18,
+      "pattern": "https://{exam/ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 19,
+      "pattern": "https://{exam/ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 20,
+      "pattern": "https://{exam?ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 21,
+      "pattern": "https://{exam?ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 22,
+      "pattern": "https://{exam?ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 23,
+      "pattern": "https://{exam?ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 24,
+      "pattern": "https://{exam?ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 25,
+      "pattern": "https://{exam#ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 26,
+      "pattern": "https://{exam#ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 27,
+      "pattern": "https://{exam#ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 28,
+      "pattern": "https://{exam#ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 29,
+      "pattern": "https://{exam#ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 30,
+      "pattern": "https://{exam\\\\ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 31,
+      "pattern": "https://{exam\\\\ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 32,
+      "pattern": "https://{exam\\\\ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 33,
+      "pattern": "https://{exam\\\\ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 34,
+      "pattern": "https://{exam\\\\ignored}ple.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 35,
+      "pattern": "https://{sub.}?example{.com/}foo/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 36,
+      "pattern": "https://{sub.}?example{.com/}foo/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 37,
+      "pattern": "https://{sub.}?example{.com/}foo/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 38,
+      "pattern": "https://{sub.}?example{.com/}foo/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 39,
+      "pattern": "https://{sub.}?example{.com/}foo/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 40,
+      "pattern": "https://127.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 41,
+      "pattern": "https://127.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 42,
+      "pattern": "https://127.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 43,
+      "pattern": "https://127.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 44,
+      "pattern": "https://127.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 45,
+      "pattern": "https://[\\:\\:1]/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 46,
+      "pattern": "https://[\\:\\:1]/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 47,
+      "pattern": "https://[\\:\\:1]/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 48,
+      "pattern": "https://[\\:\\:1]/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 49,
+      "pattern": "https://[\\:\\:1]/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 50,
+      "pattern": "https://:sub.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 51,
+      "pattern": "https://:sub.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 52,
+      "pattern": "https://:sub.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 53,
+      "pattern": "https://:sub.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 54,
+      "pattern": "https://:sub.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 55,
+      "pattern": "https://*.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 56,
+      "pattern": "https://*.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 57,
+      "pattern": "https://*.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 58,
+      "pattern": "https://*.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 59,
+      "pattern": "https://*.example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "host",
+      "id": 60,
+      "pattern": "https://{example.com}?/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 61,
+      "pattern": "https://{example.com}?/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 62,
+      "pattern": "https://{example.com}?/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 63,
+      "pattern": "https://{example.com}?/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 64,
+      "pattern": "https://{example.com}?/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 65,
+      "pattern": "https://0x100000000/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 66,
+      "pattern": "https://0x100000000/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 67,
+      "pattern": "https://0x100000000/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 68,
+      "pattern": "https://0x100000000/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "invalid_pattern",
+      "group": "host",
+      "id": 69,
+      "pattern": "https://0x100000000/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 70,
+      "pattern": "https://xn--a.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://sub.example.com/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 71,
+      "pattern": "https://xn--a.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 72,
+      "pattern": "https://xn--a.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://[::1]/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 73,
+      "pattern": "https://xn--a.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.comfoo/a",
+      "expected": "not_matched",
+      "group": "host",
+      "id": 74,
+      "pattern": "https://xn--a.example/*"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 75,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 76,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 77,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 78,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 79,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 80,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 81,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 82,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 83,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 84,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 85,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 86,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 87,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 88,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 89,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 90,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 91,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 92,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 93,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 94,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 95,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 96,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 97,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 98,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 99,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 100,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 101,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 102,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 103,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 104,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 105,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 106,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 107,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 108,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 109,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 110,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 111,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 112,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 113,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 114,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 115,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 116,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 117,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/dir/base?q=old#before",
+      "candidate": "https://example.com/dir/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 118,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 119,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 120,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 121,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 122,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 123,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 124,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 125,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 126,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 127,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 128,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 129,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 130,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 131,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 132,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 133,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 134,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 135,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 136,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 137,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 138,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 139,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 140,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 141,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 142,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 143,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 144,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 145,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 146,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 147,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 148,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 149,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 150,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 151,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 152,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 153,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 154,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 155,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 156,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 157,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 158,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 159,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 160,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 161,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 162,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 163,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 164,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 165,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 166,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 167,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 168,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 169,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 170,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 171,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 172,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 173,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 174,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 175,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 176,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 177,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 178,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 179,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 180,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 181,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 182,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 183,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 184,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 185,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 186,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 187,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 188,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 189,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 190,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 191,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 192,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 193,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 194,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 195,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 196,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 197,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 198,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 199,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 200,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 201,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 202,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 203,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 204,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 205,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a:b/{x}/base?q=old#before",
+      "candidate": "https://example.com/a:b/{x}/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 206,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 207,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 208,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 209,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 210,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 211,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 212,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 213,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 214,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 215,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 216,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 217,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 218,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 219,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 220,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 221,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 222,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 223,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 224,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 225,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 226,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 227,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 228,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 229,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 230,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 231,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 232,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 233,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 234,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 235,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 236,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 237,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 238,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 239,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 240,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 241,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 242,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 243,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 244,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 245,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 246,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 247,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 248,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 249,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a+b/base?q=old#before",
+      "candidate": "https://example.com/a+b/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 250,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 251,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 252,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 253,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 254,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 255,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 256,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 257,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 258,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 259,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 260,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 261,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 262,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 263,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 264,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 265,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 266,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 267,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 268,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 269,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 270,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 271,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 272,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 273,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 274,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 275,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 276,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 277,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 278,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 279,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 280,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 281,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 282,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 283,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 284,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 285,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 286,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 287,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 288,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 289,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 290,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 291,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 292,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 293,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%3Fb/base?q=old#before",
+      "candidate": "https://example.com/a%3Fb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 294,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 295,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 296,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 297,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 298,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 299,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 300,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 301,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 302,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 303,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 304,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 305,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 306,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 307,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 308,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 309,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 310,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 311,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 312,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 313,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 314,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 315,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 316,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 317,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 318,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 319,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 320,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 321,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 322,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 323,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 324,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 325,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 326,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 327,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 328,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 329,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 330,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 331,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 332,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 333,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "matched",
+      "group": "base",
+      "id": 334,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 335,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 336,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 337,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a%5Cb/base?q=old#before",
+      "candidate": "https://example.com/a%5Cb/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 338,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 339,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 340,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 341,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 342,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 343,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 344,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 345,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 346,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 347,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 348,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 349,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 350,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 351,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 352,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 353,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 354,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 355,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 356,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 357,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 358,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 359,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 360,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 361,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 362,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 363,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 364,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 365,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 366,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 367,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 368,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 369,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 370,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 371,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 372,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 373,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 374,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 375,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 376,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 377,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 378,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 379,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 380,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 381,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a?/base?q=old#before",
+      "candidate": "https://example.com/a?/base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 382,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 383,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 384,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 385,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 386,
+      "pattern": "file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 387,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 388,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 389,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 390,
+      "pattern": "../file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 391,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 392,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 393,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 394,
+      "pattern": "./file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 395,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 396,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 397,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 398,
+      "pattern": "/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 399,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 400,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 401,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 402,
+      "pattern": "\\/file"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "group": "base",
+      "id": 403,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 404,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 405,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 406,
+      "pattern": "{/file}"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 407,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 408,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 409,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 410,
+      "pattern": "?q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 411,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 412,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 413,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 414,
+      "pattern": "#new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 415,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 416,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 417,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 418,
+      "pattern": "##new"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 419,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 420,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 421,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 422,
+      "pattern": "??q=1"
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 423,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/dir/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 424,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 425,
+      "pattern": ""
+    },
+    {
+      "base": "https://example.com/a#base?q=old#before",
+      "candidate": "https://example.com/a#base?q=1#new",
+      "expected": "not_matched",
+      "group": "base",
+      "id": 426,
+      "pattern": ""
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 427,
+      "pattern": "http{s}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 428,
+      "pattern": "http{s}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 429,
+      "pattern": "http{s}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 430,
+      "pattern": "http{s}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "not_matched",
+      "group": "scheme",
+      "id": 431,
+      "pattern": "{http}s://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 432,
+      "pattern": "{http}s://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 433,
+      "pattern": "{http}s://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 434,
+      "pattern": "{http}s://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "not_matched",
+      "group": "scheme",
+      "id": 435,
+      "pattern": "{https}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 436,
+      "pattern": "{https}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 437,
+      "pattern": "{https}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 438,
+      "pattern": "{https}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 439,
+      "pattern": "*://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 440,
+      "pattern": "*://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 441,
+      "pattern": "*://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 442,
+      "pattern": "*://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 443,
+      "pattern": "h:proto://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 444,
+      "pattern": "h:proto://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 445,
+      "pattern": "h:proto://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 446,
+      "pattern": "h:proto://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "not_matched",
+      "group": "scheme",
+      "id": 447,
+      "pattern": "{http:rest}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 448,
+      "pattern": "{http:rest}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 449,
+      "pattern": "{http:rest}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 450,
+      "pattern": "{http:rest}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "not_matched",
+      "group": "scheme",
+      "id": 451,
+      "pattern": "h*tps://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 452,
+      "pattern": "h*tps://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 453,
+      "pattern": "h*tps://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 454,
+      "pattern": "h*tps://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "http://example.com/a",
+      "expected": "not_matched",
+      "group": "scheme",
+      "id": 455,
+      "pattern": "https{foo}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 456,
+      "pattern": "https{foo}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com:443/a",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 457,
+      "pattern": "https{foo}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dict",
+      "candidate": "https://example.com/a/../b",
+      "expected": "matched",
+      "group": "scheme",
+      "id": 458,
+      "pattern": "https{foo}?://example.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 459,
+      "pattern": "https://{a}́.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 460,
+      "pattern": "https://{a}́.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 461,
+      "pattern": "https://{a}́.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 462,
+      "pattern": "https://{a}́.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 463,
+      "pattern": "https://{a}́.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 464,
+      "pattern": "https://{ex}ample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 465,
+      "pattern": "https://{ex}ample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 466,
+      "pattern": "https://{ex}ample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 467,
+      "pattern": "https://{ex}ample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 468,
+      "pattern": "https://{ex}ample.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 469,
+      "pattern": "https://{127}.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 470,
+      "pattern": "https://{127}.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 471,
+      "pattern": "https://{127}.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 472,
+      "pattern": "https://{127}.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 473,
+      "pattern": "https://{127}.0.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 474,
+      "pattern": "https://127{.0}.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 475,
+      "pattern": "https://127{.0}.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 476,
+      "pattern": "https://127{.0}.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 477,
+      "pattern": "https://127{.0}.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 478,
+      "pattern": "https://127{.0}.0.1/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 479,
+      "pattern": "https://{0}x7f000001/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 480,
+      "pattern": "https://{0}x7f000001/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 481,
+      "pattern": "https://{0}x7f000001/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 482,
+      "pattern": "https://{0}x7f000001/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 483,
+      "pattern": "https://{0}x7f000001/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 484,
+      "pattern": "https://{xn--}bcher-kva.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 485,
+      "pattern": "https://{xn--}bcher-kva.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 486,
+      "pattern": "https://{xn--}bcher-kva.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 487,
+      "pattern": "https://{xn--}bcher-kva.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 488,
+      "pattern": "https://{xn--}bcher-kva.example/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 489,
+      "pattern": "https://{example}/ignored/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 490,
+      "pattern": "https://{example}/ignored/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 491,
+      "pattern": "https://{example}/ignored/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 492,
+      "pattern": "https://{example}/ignored/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 493,
+      "pattern": "https://{example}/ignored/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--1ca.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 494,
+      "pattern": "https://{exa/mple}.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 495,
+      "pattern": "https://{exa/mple}.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 496,
+      "pattern": "https://{exa/mple}.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://xn--bcher-kva.example/a",
+      "expected": "not_matched",
+      "group": "fixed_groups",
+      "id": 497,
+      "pattern": "https://{exa/mple}.com/*"
+    },
+    {
+      "base": "https://base.example/dir/base",
+      "candidate": "https://exa/a",
+      "expected": "matched",
+      "group": "fixed_groups",
+      "id": 498,
+      "pattern": "https://{exa/mple}.com/*"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 499,
+      "pattern": "/a{.}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 500,
+      "pattern": "/a{.}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 501,
+      "pattern": "/a{.}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 502,
+      "pattern": "/a/{..}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 503,
+      "pattern": "/a/{..}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 504,
+      "pattern": "/a/{..}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 505,
+      "pattern": "/a{b}/../c"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 506,
+      "pattern": "/a{b}/../c"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 507,
+      "pattern": "/a{b}/../c"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 508,
+      "pattern": "/{a}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 509,
+      "pattern": "/{a}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 510,
+      "pattern": "/{a}/../b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 511,
+      "pattern": "/{%2e}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 512,
+      "pattern": "/{%2e}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 513,
+      "pattern": "/{%2e}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "group": "fixed_path_groups",
+      "id": 514,
+      "pattern": "/{%2e%2e}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/a/b",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 515,
+      "pattern": "/{%2e%2e}/b"
+    },
+    {
+      "base": "https://example.com/base",
+      "candidate": "https://example.com/c",
+      "expected": "not_matched",
+      "group": "fixed_path_groups",
+      "id": 516,
+      "pattern": "/{%2e%2e}/b"
+    }
+  ],
+  "evaluation_sha256": "88b88d373df534bf2daf6fafc6d3521d4b9380987fc71505178124c911feb7e9",
+  "full_string_cases": 517,
+  "generator_sha256": "26d20b593c94a60f5cafd202cbe7e6d38ea0480c7ea5dcfbb0c69f978c3613eb",
+  "hostname_object_controls": [
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 0,
+        "value": "example.com."
+      },
+      "id": 0,
+      "literal": "EXAMPLE.COM.",
+      "node": {
+        "constructed": true,
+        "id": 0,
+        "value": "example.com."
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 1,
+        "value": "127.0.0.1"
+      },
+      "id": 1,
+      "literal": "127.1",
+      "node": {
+        "constructed": true,
+        "id": 1,
+        "value": "127.0.0.1"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 2,
+        "value": "example.com"
+      },
+      "id": 2,
+      "literal": "exa\tmple.com",
+      "node": {
+        "constructed": true,
+        "id": 2,
+        "value": "example.com"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 3,
+        "value": "example.com"
+      },
+      "id": 3,
+      "literal": "example.com/ignored",
+      "node": {
+        "constructed": true,
+        "id": 3,
+        "value": "example.com"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 4,
+        "value": "example.com"
+      },
+      "id": 4,
+      "literal": "example.com\\ignored",
+      "node": {
+        "constructed": true,
+        "id": 4,
+        "value": "example.com"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 5,
+        "value": "example.com"
+      },
+      "id": 5,
+      "literal": "example.com?ignored",
+      "node": {
+        "constructed": true,
+        "id": 5,
+        "value": "example.com"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 6,
+        "value": "example.com"
+      },
+      "id": 6,
+      "literal": "example.com#ignored",
+      "node": {
+        "constructed": true,
+        "id": 6,
+        "value": "example.com"
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": false,
+        "id": 7
+      },
+      "id": 7,
+      "literal": "example.com:443",
+      "node": {
+        "constructed": false,
+        "id": 7
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 8,
+        "value": ""
+      },
+      "id": 8,
+      "literal": "/ignored",
+      "node": {
+        "constructed": false,
+        "id": 8
+      },
+      "normative": "reject_empty_special_host"
+    },
+    {
+      "chromium": {
+        "constructed": false,
+        "id": 9
+      },
+      "id": 9,
+      "literal": "\\ignored",
+      "node": {
+        "constructed": false,
+        "id": 9
+      },
+      "normative": "reference_agreement"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 10,
+        "value": ""
+      },
+      "id": 10,
+      "literal": "?ignored",
+      "node": {
+        "constructed": false,
+        "id": 10
+      },
+      "normative": "reject_empty_special_host"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 11,
+        "value": ""
+      },
+      "id": 11,
+      "literal": "#ignored",
+      "node": {
+        "constructed": false,
+        "id": 11
+      },
+      "normative": "reject_empty_special_host"
+    },
+    {
+      "chromium": {
+        "constructed": true,
+        "id": 12,
+        "value": ""
+      },
+      "id": 12,
+      "literal": "",
+      "node": {
+        "constructed": true,
+        "id": 12,
+        "value": ""
+      },
+      "normative": "reference_agreement"
+    }
+  ],
+  "hostname_reference_disagreements": [
+    8,
+    10,
+    11
+  ],
+  "input_sha256": "4a2745254c08867499d90a7e17504a3e360e8b81f6edf510d83a8ecb5319dde5",
+  "references": {
+    "chromium": {
+      "binary_sha256": "79a4ebf6da53e4ceab11844257aabc5166f17b595dc694d6382cbee8ff50565f",
+      "driver_sha256": "cdb68fb7c5de1e8db562cc77ec767c67802cc45f7aaf5fff1b2f37590ab41a60",
+      "version": "153.0.8010.36"
+    },
+    "node": {
+      "binary_sha256": "8a22a371fd85aecf5411636574309f6380fbc42694aaf0651a089a8ef9c44e52",
+      "libatomic_sha256": "9d8a34468e614a71a6427dbabb0ac24eb8cb1e324dc6aa3bf95eb6f59201f000",
+      "version": "v26.8.2"
+    }
+  },
+  "schema": 1,
+  "specification_commit": "696b4029d52e5854044bac6b72cdb198cb962ed0"
+}

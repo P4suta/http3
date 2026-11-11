@@ -1,4 +1,11 @@
 #!/usr/bin/env escript
+%%! +S 1:1 +SDcpu 1 +SDio 1 +A 1 +hmax 33554432 +hmaxib true +hmaxk true +hmaxel false
+%% SPDX-FileCopyrightText: 2026 the http contributors
+%% SPDX-License-Identifier: MIT OR Apache-2.0
+-include("process_runner.hrl").
+-include("diagnostic_failure.hrl").
+-include("quic_core_hex_tests.hrl").
+-compile(nowarn_unused_function).
 
 -define(MAX_OUTER_BYTES, 16 * 1024 * 1024).
 -define(MAX_CONTENT_BYTES, 128 * 1024 * 1024).
@@ -8,11 +15,12 @@ main(Arguments) ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error, "quic_core package gate failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "quic_core package gate failed: ~s~n",
+                      [json:encode(diagnostic_failure_details(Class, Reason, Stacktrace))]),
             halt(1)
     end.
 
+run(["--self-test"]) -> hex_self_test();
 run(["normalize", Input, Output]) ->
     normalize(Input, Output);
 run(["normalize-export", Project, Output]) ->
@@ -46,9 +54,16 @@ normalize(Input, Output) ->
         {ctime, 0},
         {uid, 0},
         {gid, 0},
-        {mode, 8#600}
+        %% OTP 28 emits this regular-file mode for binary members; OTP 29+
+        %% honors the explicit option. Keep the archive bytes identical.
+        {mode, 8#100644}
     ],
     ok = erl_tar:create(Output, Files, Options),
+    {ok, Table} = erl_tar:table(Output, [verbose]),
+    ensure(lists:all(fun
+        ({_, regular, _, 0, 8#100644, 0, 0}) -> true;
+        (_) -> false
+    end, Table), noncanonical_archive_metadata),
     {_CanonicalVersion, CanonicalMetadata, Contents} = read_and_audit(Output),
     Digest = file_digest(Output),
     io:format("canonical quic_core Hex archive ~s  ~s~n", [Digest, Output]),

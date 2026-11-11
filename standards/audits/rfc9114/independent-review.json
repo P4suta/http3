@@ -1,0 +1,5131 @@
+{
+  "schema": 1,
+  "review": "RFC 9114 requirements inventory independent adversarial review",
+  "review_mode": "static-only; no Gleam, Erlang, escript, or native process executed",
+  "reviewed_on": "2026-09-12",
+  "scope": {
+    "canonical_rows": 215,
+    "inventory_rows": 215,
+    "implemented_and_not_applicable_rows_scored": 161,
+    "open_rows_preserved_without_rescoring": 54
+  },
+  "canonical_comparison": {
+    "fields": [
+      "id",
+      "section",
+      "source_line",
+      "source_column",
+      "source_occurrence",
+      "source_clause_sha256",
+      "level",
+      "roles"
+    ],
+    "row_count_match": true,
+    "unique_inventory_ids": true,
+    "contiguous_source_occurrences": true,
+    "mismatch_count": 0,
+    "mismatches": []
+  },
+  "hashes": {
+    "standards/requirements.json": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+    "build/root-validation/rfc9114-requirements-inventory/inventory.json": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243",
+    "build/root-validation/rfc9114-requirements-inventory/README.md": "6acd765f592c2d563c2b0b53f38cd2f4ee507002369ebb2d39f55a83d86f60e6",
+    "build/root-validation/rfc9114-requirements-inventory/manifest.json": "59554ebd02050a02edca92ed2ae674e18153ce403695ee8e07d5c89b4d8b4b37",
+    "build/root-validation/rfc9114-requirements-inventory/generate.mjs": "b67864efbad2ee7874c507508ed5d6ee4fc673ed2c8b7830ca564f99764778bd"
+  },
+  "manifest_integrity": [
+    {
+      "path": "build/root-validation/rfc9114-requirements-inventory/inventory.json",
+      "recorded_sha256": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243",
+      "actual_sha256": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243",
+      "matches": true
+    },
+    {
+      "path": "build/root-validation/rfc9114-requirements-inventory/README.md",
+      "recorded_sha256": "6acd765f592c2d563c2b0b53f38cd2f4ee507002369ebb2d39f55a83d86f60e6",
+      "actual_sha256": "6acd765f592c2d563c2b0b53f38cd2f4ee507002369ebb2d39f55a83d86f60e6",
+      "matches": true
+    },
+    {
+      "path": "build/root-validation/rfc9114-requirements-inventory/generate.mjs",
+      "recorded_sha256": "b67864efbad2ee7874c507508ed5d6ee4fc673ed2c8b7830ca564f99764778bd",
+      "actual_sha256": "b67864efbad2ee7874c507508ed5d6ee4fc673ed2c8b7830ca564f99764778bd",
+      "matches": true
+    }
+  ],
+  "scoring": {
+    "scale": {
+      "0": "absent, irrelevant, unsupported, or contradicted",
+      "1": "same feature area but no direct assertion of the normative behavior",
+      "2": "core condition is asserted, but actor/role, branch, ordering, or required wire result is missing",
+      "3": "cited test directly asserts actor, trigger, and required result; cited source contains the branch"
+    },
+    "closure_rule": "Only score 3 supports Implemented. NotApplicable is judged by normative actor and shipped profile, not by absence of a feature alone.",
+    "score_counts": {
+      "0": 14,
+      "1": 57,
+      "2": 29,
+      "3": 61
+    }
+  },
+  "submitted_counts": {
+    "Implemented": 122,
+    "Open": 54,
+    "NotApplicable": 39
+  },
+  "recommended_counts": {
+    "Implemented": 31,
+    "NotApplicable": 36,
+    "Open": 148
+  },
+  "findings": {
+    "total_misclassified": 94,
+    "implemented_to_open": 91,
+    "not_applicable_to_open": 3,
+    "retained_implemented": 31,
+    "retained_not_applicable": 36,
+    "critical_contradiction": {
+      "id": "RFC9114-7-2-5-167-MUST",
+      "normative_summary": "If a client receives a previously promised push ID with mismatching decompressed fields, it MUST respond with H3_GENERAL_PROTOCOL_ERROR.",
+      "detail": "InconsistentDuplicatePromise is mapped to 0x108 (H3_ID_ERROR), but this clause requires H3_GENERAL_PROTOCOL_ERROR (0x101).",
+      "source": "packages/http3/src/http3/internal/native/protocol.gleam:185",
+      "source_mapping_line": 192,
+      "cited_behavior_test": "packages/http3/test/native/http3_push_test.gleam:25",
+      "contradictory_mapping_test": "packages/http3/test/native/http3_protocol_test.gleam:438",
+      "required_assertion": "Inject two PUSH_PROMISE frames with the same push ID and mismatching decompressed fields through the client protocol adapter; assert the connection closes with application error 0x101, never 0x108."
+    }
+  },
+  "assessments": [
+    {
+      "id": "RFC9114-3.1-MUST-VERIFY-CERTIFICATE-FOR-URI-ORIGIN",
+      "source_occurrence": 1,
+      "section": "3.1",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/client.gleam",
+          "symbol": "connect_to"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_endpoint_test.gleam",
+          "symbol": "explicit_destination_keeps_certificate_identity_verification_test"
+        }
+      ],
+      "assessment": "The cited TLS authority/SNI test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3.1-MUST-NOT-AUTHORIZE-UNVERIFIED-ORIGIN",
+      "source_occurrence": 2,
+      "section": "3.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/client.gleam",
+          "symbol": "connect_to"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_endpoint_test.gleam",
+          "symbol": "explicit_destination_keeps_certificate_identity_verification_test"
+        }
+      ],
+      "assessment": "The cited TLS authority/SNI test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3-1-2-004-MUST",
+      "source_occurrence": 4,
+      "section": "3.1.2",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The profile exclusion is plausible and independently supported by HTTPS-only/origin-bound APIs, but the submitted row intentionally contains no source or negative-profile test citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3-2-005-MUST",
+      "source_occurrence": 5,
+      "section": "3.2",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/client.gleam",
+          "symbol": "connect_to"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_endpoint_test.gleam",
+          "symbol": "explicit_destination_keeps_certificate_identity_verification_test"
+        }
+      ],
+      "assessment": "The test verifies certificate identity for a configured destination; it never observes that the TLS handshake carries a target-host indication.",
+      "required_test": "Capture or parse ClientHello and assert the requested DNS host is carried by the implemented target-host mechanism."
+    },
+    {
+      "id": "RFC9114-3.2-MUST-SEND-SNI-FOR-DOMAIN-NAME",
+      "source_occurrence": 6,
+      "section": "3.2",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/client.gleam",
+          "symbol": "connect_to"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_endpoint_test.gleam",
+          "symbol": "explicit_destination_keeps_certificate_identity_verification_test"
+        }
+      ],
+      "assessment": "The test infers hostname use from certificate failure but does not inspect ClientHello SNI or prove the documented alternative mechanism.",
+      "required_test": "For a DNS origin, inspect ClientHello and assert the SNI value; add an explicit case for any claimed alternative mechanism."
+    },
+    {
+      "id": "RFC9114-3-2-007-MUST",
+      "source_occurrence": 7,
+      "section": "3.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control receiver enforces SETTINGS-first for incoming frames, but the pair does not inspect each endpoint's first locally emitted control frame after QUIC establishment.",
+      "required_test": "Establish both client and server connections, decode each first local control-stream frame, and assert it is SETTINGS."
+    },
+    {
+      "id": "RFC9114-3-3-008-MUST",
+      "source_occurrence": 8,
+      "section": "3.3",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The profile exclusion is plausible and independently supported by HTTPS-only/origin-bound APIs, but the submitted row intentionally contains no source or negative-profile test citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3-3-009-MUST-NOT",
+      "source_occurrence": 9,
+      "section": "3.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The profile exclusion is plausible and independently supported by HTTPS-only/origin-bound APIs, but the submitted row intentionally contains no source or negative-profile test citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3-3-010-SHOULD",
+      "source_occurrence": 10,
+      "section": "3.3",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The profile exclusion is plausible and independently supported by HTTPS-only/origin-bound APIs, but the submitted row intentionally contains no source or negative-profile test citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-3-3-011-SHOULD",
+      "source_occurrence": 11,
+      "section": "3.3",
+      "level": "SHOULD",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The profile exclusion is plausible and independently supported by HTTPS-only/origin-bound APIs, but the submitted row intentionally contains no source or negative-profile test citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-1-015-MUST",
+      "source_occurrence": 15,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited request-state test sends one header section and never attempts a second request on the same client-initiated stream.",
+      "required_test": "Add a role-specific executable test that triggers “A client MUST send only a single request on a given stream.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-1-016-MUST",
+      "source_occurrence": 16,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited test does not inject two requests or a second final response; its post-finish trailer assertion is a different condition.",
+      "required_test": "Add a role-specific executable test that triggers “On a given stream, receipt of multiple requests or receipt of an additional HTTP response following a final HTTP response MUST be treated as malformed.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4.1-MUST-ERROR-ON-INVALID-MESSAGE-FRAME-SEQUENCE",
+      "source_occurrence": 17,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "Invalid ordering is asserted only as a local message_stream error; the cited evidence never observes connection closure with H3_FRAME_UNEXPECTED (0x105).",
+      "required_test": "Inject each invalid message-frame sequence through the protocol adapter and assert peer-visible connection close code 0x105."
+    },
+    {
+      "id": "RFC9114-4-1-018-MUST",
+      "source_occurrence": 18,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "Neither cited function accepts a PUSH_PROMISE frame or a push-stream role, so the prohibited placement and H3_FRAME_UNEXPECTED result are untested.",
+      "required_test": "Inject PUSH_PROMISE on a push stream and assert peer-visible connection close code 0x105."
+    },
+    {
+      "id": "RFC9114-4.1-MUST-NOT-USE-TRANSFER-ENCODING",
+      "source_occurrence": 19,
+      "section": "4.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "message_stream never sees HTTP fields, and its cited test contains no Transfer-Encoding field.",
+      "required_test": "Add a role-specific executable test that triggers “Transfer codings (see Section 7 of [HTTP/1.1]) are not defined for HTTP/3; the Transfer-Encoding header field MUST NOT be used.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-1-020-MUST",
+      "source_occurrence": 20,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited receive-side state machine does not send a request or assert FIN after the request body.",
+      "required_test": "Add a role-specific executable test that triggers “After sending a request, a client MUST close the stream for sending.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-1-021-MUST-NOT",
+      "source_occurrence": 21,
+      "section": "4.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited test does not hold a response back and prove that request-stream FIN is independent of response receipt.",
+      "required_test": "Add a role-specific executable test that triggers “Unless using the CONNECT method (see Section 4.4), clients MUST NOT make stream closure dependent on receiving a response to their request.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-1-022-MUST",
+      "source_occurrence": 22,
+      "section": "4.1",
+      "level": "MUST",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited receive-side state machine does not send a final server response or assert FIN.",
+      "required_test": "Add a role-specific executable test that triggers “After sending a final response, the server MUST close the stream for sending.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-1-023-SHOULD",
+      "source_occurrence": 23,
+      "section": "4.1",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The cited message stream sequencing test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-1-024-SHOULD",
+      "source_occurrence": 24,
+      "section": "4.1",
+      "level": "SHOULD",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The test does not terminate an incomplete request and does not observe a server abort using H3_REQUEST_INCOMPLETE (0x10d).",
+      "required_test": "FIN an incomplete request at the server and assert response-direction abort code 0x10d."
+    },
+    {
+      "id": "RFC9114-4.1-MUST-NOT-DISCARD-COMPLETE-EARLY-RESPONSE",
+      "source_occurrence": 26,
+      "section": "4.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_headers"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "receive_data"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "sequences_request_body_trailers_and_finish_test"
+        }
+      ],
+      "assessment": "The test contains no early complete response followed by abrupt termination of the request direction, and asserts no response delivery.",
+      "required_test": "Deliver a complete early response, abruptly terminate the request direction, and assert the client still exposes the complete response."
+    },
+    {
+      "id": "RFC9114-4-1-1-029-SHOULD",
+      "source_occurrence": 29,
+      "section": "4.1.1",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/client_worker.gleam",
+          "symbol": "handle_cancel"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/server_worker.gleam",
+          "symbol": "handle_cancel_request"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_test.gleam",
+          "symbol": "streaming_client_cancellation_is_idempotent_test"
+        },
+        {
+          "path": "packages/http3/test/server_test.gleam",
+          "symbol": "server_request_cancellation_resets_both_directions_idempotently_test"
+        }
+      ],
+      "assessment": "The cited request cancellation test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-1-1-033-SHOULD",
+      "source_occurrence": 33,
+      "section": "4.1.1",
+      "level": "SHOULD",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/client_worker.gleam",
+          "symbol": "handle_cancel"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/server_worker.gleam",
+          "symbol": "handle_cancel_request"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_test.gleam",
+          "symbol": "streaming_client_cancellation_is_idempotent_test"
+        },
+        {
+          "path": "packages/http3/test/server_test.gleam",
+          "symbol": "server_request_cancellation_resets_both_directions_idempotently_test"
+        }
+      ],
+      "assessment": "The client cancellation test checks the local API result only; it does not let the peer observe RESET_STREAM/STOP_SENDING with 0x10c.",
+      "required_test": "Cancel from the client while both directions are open and assert the peer observes RESET_STREAM and STOP_SENDING with 0x10c."
+    },
+    {
+      "id": "RFC9114-4-1-1-034-MUST-NOT",
+      "source_occurrence": 34,
+      "section": "4.1.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/client_worker.gleam",
+          "symbol": "handle_cancel"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/server_worker.gleam",
+          "symbol": "handle_cancel_request"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_test.gleam",
+          "symbol": "streaming_client_cancellation_is_idempotent_test"
+        },
+        {
+          "path": "packages/http3/test/server_test.gleam",
+          "symbol": "server_request_cancellation_resets_both_directions_idempotently_test"
+        }
+      ],
+      "assessment": "No cited test proves the client cannot originate H3_REQUEST_REJECTED, or covers the sole exception after a server uses that code.",
+      "required_test": "Exercise every local client cancellation path and assert it never originates 0x10b; separately inject a server 0x10b stop request and assert allowed handling."
+    },
+    {
+      "id": "RFC9114-4-1-2-037-MUST-NOT",
+      "source_occurrence": 37,
+      "section": "4.1.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-1-2-038-MUST",
+      "source_occurrence": 38,
+      "section": "4.1.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "unsupported",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The second sentence is not limited grammatically to intermediaries: any detected malformed request/response must become H3_MESSAGE_ERROR. Endpoint code already detects malformed messages, so the endpoint profile cannot exclude this row.",
+      "required_test": "Inject a malformed request and malformed response at each endpoint and assert stream error H3_MESSAGE_ERROR (0x10e) with no application delivery."
+    },
+    {
+      "id": "RFC9114-4-1-2-039-MUST-NOT",
+      "source_occurrence": 39,
+      "section": "4.1.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "Both cited header tests validate request sections; neither supplies a malformed response and verifies it is withheld from the client application.",
+      "required_test": "Add a role-specific executable test that triggers “Clients MUST NOT accept a malformed response.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-2-041-MUST",
+      "source_occurrence": 41,
+      "section": "4.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-2-042-MUST-NOT",
+      "source_occurrence": 42,
+      "section": "4.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The test proves receive-side rejection of a connection-specific field, but the clause at this occurrence is the sender prohibition on generating one.",
+      "required_test": "Encode outbound request and response fields containing each connection-specific name and assert generation is rejected before QPACK output."
+    },
+    {
+      "id": "RFC9114-4-2-043-MUST",
+      "source_occurrence": 43,
+      "section": "4.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-2-044-MUST-NOT",
+      "source_occurrence": 44,
+      "section": "4.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-2-045-MUST",
+      "source_occurrence": 45,
+      "section": "4.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-048-MUST-NOT",
+      "source_occurrence": 48,
+      "section": "4.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited validate function and tests are receive-side only; they do not inspect an encoded outbound field section for undefined pseudo-headers.",
+      "required_test": "Add a role-specific executable test that triggers “Endpoints MUST NOT generate pseudo-header fields other than those defined in this document.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-049-MUST-NOT",
+      "source_occurrence": 49,
+      "section": "4.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited tests never place a request pseudo-header in a response section.",
+      "required_test": "Add a role-specific executable test that triggers “Pseudo-header fields defined for requests MUST NOT appear in responses; pseudo-header fields defined for responses MUST NOT appear in requests.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-050-MUST-NOT",
+      "source_occurrence": 50,
+      "section": "4.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited tests never place :status in a request section.",
+      "required_test": "Add a role-specific executable test that triggers “Pseudo-header fields defined for requests MUST NOT appear in responses; pseudo-header fields defined for responses MUST NOT appear in requests.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-051-MUST-NOT",
+      "source_occurrence": 51,
+      "section": "4.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited tests never validate a trailer section containing a pseudo-header; the more relevant trailer test is not cited.",
+      "required_test": "Add a role-specific executable test that triggers “Pseudo-header fields MUST NOT appear in trailer sections.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-052-MUST",
+      "source_occurrence": 52,
+      "section": "4.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-053-MUST",
+      "source_occurrence": 53,
+      "section": "4.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The test proves receive-side rejection after a regular field, while this occurrence requires endpoints to generate pseudo-headers first.",
+      "required_test": "Inspect encoded outbound request and response sections and assert all pseudo-headers precede regular fields."
+    },
+    {
+      "id": "RFC9114-4-3-054-MUST",
+      "source_occurrence": 54,
+      "section": "4.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-1-055-MUST-NOT",
+      "source_occurrence": 55,
+      "section": "4.3.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test supplies userinfo in an http/https :authority value.",
+      "required_test": "Add a role-specific executable test that triggers “The authority MUST NOT include the deprecated userinfo subcomponent for URIs of scheme \"http\" or \"https\".” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-1-056-MUST",
+      "source_occurrence": 56,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-1-057-SHOULD",
+      "source_occurrence": 57,
+      "section": "4.3.1",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test inspects a directly generated client request to prove :authority is used instead of Host.",
+      "required_test": "Send a normal client request and decode its field section, asserting :authority is present and Host is absent."
+    },
+    {
+      "id": "RFC9114-4-3-1-058-MUST",
+      "source_occurrence": 58,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-1-059-MUST-NOT",
+      "source_occurrence": 59,
+      "section": "4.3.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test supplies an empty :path for an http/https request.",
+      "required_test": "Add a role-specific executable test that triggers “This pseudo-header field MUST NOT be empty for \"http\" or \"https\" URIs; \"http\" or \"https\" URIs that do not contain a path component MUST include a value of / (ASCII 0x2f).” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-1-060-MUST",
+      "source_occurrence": 60,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test constructs a URI without a path and inspects the emitted :path value '/' (0x2f).",
+      "required_test": "Generate a request from an http/https URI with no path component and assert decoded :path equals '/'."
+    },
+    {
+      "id": "RFC9114-4-3-1-061-MUST",
+      "source_occurrence": 61,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The test covers duplicate :method and a separate missing :authority case, but not exactly-one enforcement for :method, :scheme, and :path.",
+      "required_test": "Add a role-specific executable test that triggers “All HTTP/3 requests MUST include exactly one value for the :method, :scheme, and :path pseudo-header fields, unless the request is a CONNECT request; see Section 4.4.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-1-062-MUST",
+      "source_occurrence": 62,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-3-1-063-MUST-NOT",
+      "source_occurrence": 63,
+      "section": "4.3.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test supplies empty :authority or Host values.",
+      "required_test": "Add a role-specific executable test that triggers “If these fields are present, they MUST NOT be empty.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-1-064-MUST",
+      "source_occurrence": 64,
+      "section": "4.3.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test supplies both Host and :authority with different values.",
+      "required_test": "Add a role-specific executable test that triggers “If both fields are present, they MUST contain the same value.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-3-1-065-MUST-NOT",
+      "source_occurrence": 65,
+      "section": "4.3.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "No cited test uses a scheme without a mandatory authority component and supplies forbidden :authority or Host fields.",
+      "required_test": "Validate a request using a scheme without mandatory authority while supplying :authority and Host separately; assert each is rejected as malformed."
+    },
+    {
+      "id": "RFC9114-4-3-2-066-MUST",
+      "source_occurrence": 66,
+      "section": "4.3.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "Both cited tests validate request sections; neither asserts that a response without :status is malformed.",
+      "required_test": "Add a role-specific executable test that triggers “This pseudo- header field MUST be included in all responses; otherwise, the response is malformed (see Section 4.1.2).” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-4-4-067-MUST",
+      "source_occurrence": 67,
+      "section": "4.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "establish_connect"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "validates_connect_and_negotiated_extended_connect_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "connect_mode_allows_data_but_forbids_more_headers_test"
+        }
+      ],
+      "assessment": "A hand-written valid CONNECT field list is accepted, but outbound CONNECT construction and the exact required pseudo-header set are not asserted.",
+      "required_test": "Generate ordinary CONNECT and decode the outgoing field section, asserting exactly :method=CONNECT and :authority, with :scheme/:path omitted."
+    },
+    {
+      "id": "RFC9114-4-4-068-MUST",
+      "source_occurrence": 68,
+      "section": "4.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+          "symbol": "establish_connect"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "validates_connect_and_negotiated_extended_connect_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+          "symbol": "connect_mode_allows_data_but_forbids_more_headers_test"
+        }
+      ],
+      "assessment": "Only HEADERS-after-CONNECT is checked as a local state error; other known frame types and the H3_FRAME_UNEXPECTED wire result are not asserted.",
+      "required_test": "After a successful CONNECT response, inject every known non-DATA frame type and assert connection close code 0x105."
+    },
+    {
+      "id": "RFC9114-4-4-069-SHOULD-NOT",
+      "source_occurrence": 69,
+      "section": "4.4",
+      "level": "SHOULD NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-4-070-MUST",
+      "source_occurrence": 70,
+      "section": "4.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-4-071-MUST",
+      "source_occurrence": 71,
+      "section": "4.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-4-072-SHOULD",
+      "source_occurrence": 72,
+      "section": "4.4",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-4-073-SHOULD",
+      "source_occurrence": 73,
+      "section": "4.4",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-4-074-SHOULD",
+      "source_occurrence": 74,
+      "section": "4.4",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-6-075-SHOULD",
+      "source_occurrence": 75,
+      "section": "4.6",
+      "level": "SHOULD",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-6-076-MUST",
+      "source_occurrence": 76,
+      "section": "4.6",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited push tests use allowed IDs; they do not receive a push stream before MAX_PUSH_ID or above its limit and observe H3_ID_ERROR.",
+      "required_test": "Receive push streams before advertising MAX_PUSH_ID and above the advertised value; assert connection close code 0x108."
+    },
+    {
+      "id": "RFC9114-4-6-077-MUST",
+      "source_occurrence": 77,
+      "section": "4.6",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-6-078-MUST",
+      "source_occurrence": 78,
+      "section": "4.6",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-4-6-085-SHOULD",
+      "source_occurrence": 85,
+      "section": "4.6",
+      "level": "SHOULD",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "Neither cited push test advances the timeout or observes STOP_SENDING/discard for an unpromised push stream.",
+      "required_test": "Let an unpromised push-stream deadline expire and assert STOP_SENDING plus already-read data discard at the transport/application boundary."
+    },
+    {
+      "id": "RFC9114-4-6-086-MUST-NOT",
+      "source_occurrence": 86,
+      "section": "4.6",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-5-2-089-SHOULD",
+      "source_occurrence": 89,
+      "section": "5.2",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "receive_goaway"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "start"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"
+        }
+      ],
+      "assessment": "The pure drain test returns rejected identifiers after refining a cutoff, but it never observes explicit transport cancellation after GOAWAY is sent.",
+      "required_test": "Send GOAWAY with active IDs at/above the cutoff and assert peer-visible cancellation for each affected request/push."
+    },
+    {
+      "id": "RFC9114-5-2-091-MUST-NOT",
+      "source_occurrence": 91,
+      "section": "5.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "receive_goaway"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "start"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"
+        }
+      ],
+      "assessment": "Only client request creation after peer GOAWAY is tested; the symmetric server push prohibition is not exercised.",
+      "required_test": "After peer GOAWAY, assert both client request creation and server push promise creation are rejected."
+    },
+    {
+      "id": "RFC9114-5-2-093-MUST-NOT",
+      "source_occurrence": 93,
+      "section": "5.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "receive_goaway"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "start"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"
+        }
+      ],
+      "assessment": "The sender test demonstrates a legal decreasing refinement but never attempts an increasing locally sent GOAWAY identifier.",
+      "required_test": "Add a role-specific executable test that triggers “An endpoint MAY send multiple GOAWAY frames indicating different identifiers, but the identifier in each frame MUST NOT be greater than the identifier in any previous frame, since clients might already have retried unprocessed requests on another HTTP connection.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-5-2-094-MUST",
+      "source_occurrence": 94,
+      "section": "5.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "receive_goaway"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/drain.gleam",
+          "symbol": "start"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "peer_goaway_detaches_retryable_requests_and_stops_new_work_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_drain_test.gleam",
+          "symbol": "server_two_stage_drain_rejects_cutoff_and_converges_test"
+        }
+      ],
+      "assessment": "The test asserts a typed IncreasingGoAwayIdentifier value but does not observe H3_ID_ERROR (0x108) on the connection.",
+      "required_test": "Receive an increasing GOAWAY through the protocol transport and assert connection close code 0x108."
+    },
+    {
+      "id": "RFC9114-6-1-099-MUST",
+      "source_occurrence": 99,
+      "section": "6.1",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "Neither cited test opens a server-initiated bidirectional stream or asserts H3_STREAM_CREATION_ERROR.",
+      "required_test": "Add a role-specific executable test that triggers “Clients MUST treat receipt of a server-initiated bidirectional stream as a connection error of type H3_STREAM_CREATION_ERROR unless such an extension has been negotiated.” and directly observes the required result, including the required wire error code."
+    },
+    {
+      "id": "RFC9114-6-2-100-MUST",
+      "source_occurrence": 100,
+      "section": "6.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "Application critical-stream bootstrap is not a QUIC transport-parameter assertion; no cited test checks max_streams_uni >= 3 from both roles.",
+      "required_test": "Inspect client and server QUIC transport parameters and assert initial_max_streams_uni is at least 3."
+    },
+    {
+      "id": "RFC9114-6-2-102-SHOULD",
+      "source_occurrence": 102,
+      "section": "6.2",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited unidirectional and critical streams/QPACK bootstrap test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-6-2-103-MUST",
+      "source_occurrence": 103,
+      "section": "6.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited parser test does not open an unknown unidirectional stream and verify discard or abort behavior.",
+      "required_test": "Open an unknown unidirectional stream and assert the chosen behavior discards data or aborts reading without semantic dispatch."
+    },
+    {
+      "id": "RFC9114-6-2-104-SHOULD",
+      "source_occurrence": 104,
+      "section": "6.2",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "No cited test selects the abort branch for an unknown stream or observes H3_STREAM_CREATION_ERROR/reserved reset code.",
+      "required_test": "Force the unknown-stream abort branch and assert reset code H3_STREAM_CREATION_ERROR or a reserved code."
+    },
+    {
+      "id": "RFC9114-6-2-105-MUST-NOT",
+      "source_occurrence": 105,
+      "section": "6.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "No cited test proves an unknown stream type is tolerated without closing the connection.",
+      "required_test": "Open an unknown unidirectional stream and prove the connection remains usable."
+    },
+    {
+      "id": "RFC9114-6-2-106-SHOULD-NOT",
+      "source_occurrence": 106,
+      "section": "6.2",
+      "level": "SHOULD NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "A truncated varint is detected, but no transport test proves bytes are retained/read until the type is known before discard.",
+      "required_test": "Fragment the stream-type varint and prove the receiver waits for the complete type before applying discard policy."
+    },
+    {
+      "id": "RFC9114-6-2-107-MUST-NOT",
+      "source_occurrence": 107,
+      "section": "6.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "Bootstrap covers mandatory QPACK streams, not a state-changing optional stream gated on peer support.",
+      "required_test": "Attempt to send a state-changing optional stream before and after peer negotiation and assert only the negotiated attempt emits bytes."
+    },
+    {
+      "id": "RFC9114-6.2.1-MUST-OPEN-ONE-CONTROL-STREAM-WITH-SETTINGS-FIRST",
+      "source_occurrence": 109,
+      "section": "6.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited unidirectional and critical streams/QPACK bootstrap test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-6-2-1-110-MUST",
+      "source_occurrence": 110,
+      "section": "6.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited stream-registry/bootstrap tests do not feed a non-SETTINGS first frame on a peer control stream.",
+      "required_test": "Open a peer control stream whose first frame is not SETTINGS and assert close code 0x10a."
+    },
+    {
+      "id": "RFC9114-6-2-1-111-MUST",
+      "source_occurrence": 111,
+      "section": "6.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "Duplicate control-stream registration is asserted, but the cited evidence does not map or observe H3_STREAM_CREATION_ERROR (0x103).",
+      "required_test": "Open a second peer control stream and assert close code 0x103."
+    },
+    {
+      "id": "RFC9114-6-2-1-112-MUST-NOT",
+      "source_occurrence": 112,
+      "section": "6.2.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "No cited test attempts to close the locally sent control stream.",
+      "required_test": "Attempt local control-stream FIN and assert the implementation prevents it."
+    },
+    {
+      "id": "RFC9114-6-2-1-113-MUST-NOT",
+      "source_occurrence": 113,
+      "section": "6.2.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "No cited test attempts STOP_SENDING against the peer control stream.",
+      "required_test": "Attempt STOP_SENDING on the peer control stream and assert the implementation prevents it."
+    },
+    {
+      "id": "RFC9114-6-2-1-114-MUST",
+      "source_occurrence": 114,
+      "section": "6.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The test closes a QPACK encoder stream, not a control stream, and does not observe H3_CLOSED_CRITICAL_STREAM (0x104).",
+      "required_test": "Close each peer control stream and assert connection close code 0x104."
+    },
+    {
+      "id": "RFC9114-6-2-2-116-MUST",
+      "source_occurrence": 116,
+      "section": "6.2.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited test never opens a push stream from a client peer at a server.",
+      "required_test": "Open a client-initiated push stream at a server and assert close code 0x103."
+    },
+    {
+      "id": "RFC9114-6-2-2-118-MUST",
+      "source_occurrence": 118,
+      "section": "6.2.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited test does not open two push streams using the same push ID.",
+      "required_test": "Open two push streams with one push ID and assert the second is rejected."
+    },
+    {
+      "id": "RFC9114-6-2-2-119-MUST",
+      "source_occurrence": 119,
+      "section": "6.2.2",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited test does not trigger duplicate push-stream IDs or observe H3_ID_ERROR.",
+      "required_test": "Exercise duplicate push-stream IDs through the client protocol adapter and assert close code 0x108."
+    },
+    {
+      "id": "RFC9114-6-2-3-120-MUST-NOT",
+      "source_occurrence": 120,
+      "section": "6.2.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+          "symbol": "open"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "bootstrap"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test"
+        }
+      ],
+      "assessment": "The cited test does not successfully decode/open a reserved unidirectional stream and prove it has no semantic effect.",
+      "required_test": "Open a valid reserved unidirectional stream, send bytes, and assert no protocol/application event is produced."
+    },
+    {
+      "id": "RFC9114-6-2-3-121-SHOULD",
+      "source_occurrence": 121,
+      "section": "6.2.3",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "profile-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The conditional sender duty is plausibly outside the profile because the implementation does not originate reserved padding streams; the inventory gives no direct negative-profile citation.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-1-122-MUST",
+      "source_occurrence": 122,
+      "section": "7.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "The tests cover selected malformed frames but do not exercise exact payload shapes for every identified frame description.",
+      "required_test": "Add a role-specific executable test that triggers “Each frame's payload MUST contain exactly the fields identified in its description.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-7-1-123-MUST",
+      "source_occurrence": 123,
+      "section": "7.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "Truncation is detected locally, but extra trailing bytes in a fixed-field payload and the H3_FRAME_ERROR connection result are not both asserted.",
+      "required_test": "For fixed-field frames, test both surplus payload bytes and premature payload end through the protocol adapter and assert 0x106."
+    },
+    {
+      "id": "RFC9114-7-1-124-MUST",
+      "source_occurrence": 124,
+      "section": "7.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "No cited case uses a deliberately inconsistent redundant length encoding and observes rejection.",
+      "required_test": "Supply a deliberately inconsistent redundant length encoding and assert H3_FRAME_ERROR."
+    },
+    {
+      "id": "RFC9114-7-1-125-MUST",
+      "source_occurrence": 125,
+      "section": "7.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "Clean FIN with a truncated last frame yields TruncatedFrame locally, but the cited evidence does not observe H3_FRAME_ERROR (0x106).",
+      "required_test": "FIN a stream in the middle of a frame and assert peer-visible connection close code 0x106."
+    },
+    {
+      "id": "RFC9114-7-2-1-126-MUST",
+      "source_occurrence": 126,
+      "section": "7.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "The codec accepts DATA without stream context; neither cited test proves DATA is associated with a request or response.",
+      "required_test": "Add a role-specific executable test that triggers “DATA frames MUST be associated with an HTTP request or response.” and directly observes the required result."
+    },
+    {
+      "id": "RFC9114-7-2-1-127-MUST",
+      "source_occurrence": 127,
+      "section": "7.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "Neither cited test places DATA on a control stream or observes H3_FRAME_UNEXPECTED.",
+      "required_test": "Receive DATA on a control stream and assert connection close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-2-128-MUST",
+      "source_occurrence": 128,
+      "section": "7.2.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "absent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "Neither cited test places HEADERS on a control stream or observes H3_FRAME_UNEXPECTED.",
+      "required_test": "Receive HEADERS on a control stream and assert connection close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-3-134-MUST",
+      "source_occurrence": 134,
+      "section": "7.2.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited push-state tests do not place CANCEL_PUSH on a non-control stream.",
+      "required_test": "Place CANCEL_PUSH on every non-control stream class and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-3-135-MUST",
+      "source_occurrence": 135,
+      "section": "7.2.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited tests do not receive CANCEL_PUSH above the currently permitted push ID and observe H3_ID_ERROR.",
+      "required_test": "Receive CANCEL_PUSH above the permitted ID through the server endpoint and assert close code 0x108."
+    },
+    {
+      "id": "RFC9114-7-2-3-136-MUST",
+      "source_occurrence": 136,
+      "section": "7.2.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited tests do not exercise the server receiving CANCEL_PUSH for an unmentioned push ID.",
+      "required_test": "At a server, receive CANCEL_PUSH for an ID never promised and assert close code 0x108."
+    },
+    {
+      "id": "RFC9114-7-2-4-137-MUST",
+      "source_occurrence": 137,
+      "section": "7.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The control receiver requires SETTINGS first, but the cited pair does not prove that each local endpoint sends SETTINGS as its first control frame.",
+      "required_test": "Observe both roles from transport readiness and assert the first local control frame is SETTINGS."
+    },
+    {
+      "id": "RFC9114-7-2-4-138-MUST-NOT",
+      "source_occurrence": 138,
+      "section": "7.2.4",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control frames and SETTINGS test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-4-139-MUST",
+      "source_occurrence": 139,
+      "section": "7.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control frames and SETTINGS test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-4-140-MUST-NOT",
+      "source_occurrence": 140,
+      "section": "7.2.4",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited tests do not attempt to send SETTINGS on a request, push, or QPACK stream.",
+      "required_test": "Attempt SETTINGS emission on request, push, and QPACK streams and assert no bytes are sent."
+    },
+    {
+      "id": "RFC9114-7-2-4-141-MUST",
+      "source_occurrence": 141,
+      "section": "7.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited tests do not receive SETTINGS on a non-control stream and observe H3_FRAME_UNEXPECTED.",
+      "required_test": "Inject SETTINGS on each non-control stream class and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-4-142-MUST-NOT",
+      "source_occurrence": 142,
+      "section": "7.2.4",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control test has no duplicate identifier; the error-code test only maps a preconstructed DuplicateSetting error.",
+      "required_test": "Decode SETTINGS containing a duplicate identifier and assert rejection; cite that test and the 0x109 mapping if claiming the optional connection error."
+    },
+    {
+      "id": "RFC9114-7-2-4-143-MUST",
+      "source_occurrence": 143,
+      "section": "7.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control frames and SETTINGS test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-4-1-145-MUST-NOT",
+      "source_occurrence": 145,
+      "section": "7.2.4.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control frames and SETTINGS test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-4-1-146-MUST-NOT",
+      "source_occurrence": 146,
+      "section": "7.2.4.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test attempts to encode an HTTP/2-only reserved setting (2, 3, 4, or 5).",
+      "required_test": "Attempt to encode settings 2, 3, 4, and 5 and assert each is rejected."
+    },
+    {
+      "id": "RFC9114-7-2-4-1-147-MUST",
+      "source_occurrence": 147,
+      "section": "7.2.4.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test decodes an HTTP/2-only reserved setting and observes H3_SETTINGS_ERROR (0x109).",
+      "required_test": "Decode settings 2, 3, 4, and 5 through the protocol adapter and assert connection close code 0x109."
+    },
+    {
+      "id": "RFC9114-7-2-4-2-150-MUST-NOT",
+      "source_occurrence": 150,
+      "section": "7.2.4.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited evidence is entirely receive-side and does not prove local SETTINGS transmission is independent of peer data.",
+      "required_test": "Withhold all peer packets, make the local transport writable, and assert SETTINGS is emitted."
+    },
+    {
+      "id": "RFC9114-7-2-4-2-151-MUST",
+      "source_occurrence": 151,
+      "section": "7.2.4.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited evidence does not observe SETTINGS emission immediately when transport write capability becomes available.",
+      "required_test": "Timestamp transport writability and first control-stream bytes and assert SETTINGS is sent immediately without peer input."
+    },
+    {
+      "id": "RFC9114-7-2-5-162-MUST-NOT",
+      "source_occurrence": 162,
+      "section": "7.2.5",
+      "level": "MUST NOT",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-163-MUST",
+      "source_occurrence": 163,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The server allocation bound is related, but no cited client receive path injects an over-limit PUSH_PROMISE and observes H3_ID_ERROR.",
+      "required_test": "Receive a PUSH_PROMISE above advertised MAX_PUSH_ID and assert connection close code 0x108."
+    },
+    {
+      "id": "RFC9114-7-2-5-164-MUST",
+      "source_occurrence": 164,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-165-MUST",
+      "source_occurrence": 165,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-166-SHOULD",
+      "source_occurrence": 166,
+      "section": "7.2.5",
+      "level": "SHOULD",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-167-MUST",
+      "source_occurrence": 167,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The implementation maps InconsistentDuplicatePromise to 0x108 (H3_ID_ERROR), while the RFC requires H3_GENERAL_PROTOCOL_ERROR (0x101); the cited test checks only the typed mismatch.",
+      "required_test": "Change the mismatch mapping to H3_GENERAL_PROTOCOL_ERROR and add an end-to-end duplicate-promise mismatch test asserting close code 0x101."
+    },
+    {
+      "id": "RFC9114-7-2-5-168-SHOULD",
+      "source_occurrence": 168,
+      "section": "7.2.5",
+      "level": "SHOULD",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-169-SHOULD",
+      "source_occurrence": 169,
+      "section": "7.2.5",
+      "level": "SHOULD",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited server push test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-5-170-MUST",
+      "source_occurrence": 170,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "The cited push-state tests do not place PUSH_PROMISE on a control stream.",
+      "required_test": "Receive PUSH_PROMISE on the control stream and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-5-171-MUST-NOT",
+      "source_occurrence": 171,
+      "section": "7.2.5",
+      "level": "MUST NOT",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "No cited test attempts client-side PUSH_PROMISE generation.",
+      "required_test": "Exercise the client send API surface and prove PUSH_PROMISE cannot be emitted."
+    },
+    {
+      "id": "RFC9114-7-2-5-172-MUST",
+      "source_occurrence": 172,
+      "section": "7.2.5",
+      "level": "MUST",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "promise"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "open_stream"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test"
+        }
+      ],
+      "assessment": "No cited test injects PUSH_PROMISE into a server endpoint and observes H3_FRAME_UNEXPECTED.",
+      "required_test": "Inject PUSH_PROMISE into a server request stream and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-6-173-MUST",
+      "source_occurrence": 173,
+      "section": "7.2.6",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The error-code test maps a fabricated invalid GOAWAY identifier; it does not receive an invalid stream-ID class from a server peer.",
+      "required_test": "Receive GOAWAY with every invalid stream-ID class and assert close code 0x108."
+    },
+    {
+      "id": "RFC9114-7-2-6-174-MUST",
+      "source_occurrence": 174,
+      "section": "7.2.6",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test places GOAWAY on a non-control stream.",
+      "required_test": "Place GOAWAY on each non-control stream class and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-7-175-MUST",
+      "source_occurrence": 175,
+      "section": "7.2.7",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test places MAX_PUSH_ID on a non-control stream.",
+      "required_test": "Place MAX_PUSH_ID on each non-control stream class and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-7-176-MUST-NOT",
+      "source_occurrence": 176,
+      "section": "7.2.7",
+      "level": "MUST NOT",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The source/test pair concerns received control frames and does not prove a server cannot send MAX_PUSH_ID.",
+      "required_test": "Exercise server outbound control APIs and prove MAX_PUSH_ID cannot be sent."
+    },
+    {
+      "id": "RFC9114-7-2-7-177-MUST",
+      "source_occurrence": 177,
+      "section": "7.2.7",
+      "level": "MUST",
+      "roles": [
+        "client"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The generic PushControlFromServer mapping is tested, but no cited test receives an actual MAX_PUSH_ID at a client endpoint.",
+      "required_test": "Receive MAX_PUSH_ID at a client endpoint and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-7-2-7-178-MUST",
+      "source_occurrence": 178,
+      "section": "7.2.7",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "The cited control frames and SETTINGS test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-7-2-8-179-MUST-NOT",
+      "source_occurrence": 179,
+      "section": "7.2.8",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "A SETTINGS parameter is preserved as unknown, but no reserved frame is received and shown to have no meaning.",
+      "required_test": "Receive each reserved frame type and assert no semantic event is emitted."
+    },
+    {
+      "id": "RFC9114-7-2-8-180-MUST-NOT",
+      "source_occurrence": 180,
+      "section": "7.2.8",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test attempts to send an HTTP/2-reserved HTTP/3 frame type.",
+      "required_test": "Attempt to encode/send each HTTP/2-reserved frame type and assert it is rejected."
+    },
+    {
+      "id": "RFC9114-7-2-8-181-MUST",
+      "source_occurrence": 181,
+      "section": "7.2.8",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/control.gleam",
+          "symbol": "receive"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+          "symbol": "receive_control_frame"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_control_test.gleam",
+          "symbol": "requires_and_validates_settings_before_control_frames_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_protocol_test.gleam",
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test"
+        }
+      ],
+      "assessment": "No cited test receives an HTTP/2-reserved frame type and observes H3_FRAME_UNEXPECTED.",
+      "required_test": "Receive each HTTP/2-reserved frame type through the protocol adapter and assert close code 0x105."
+    },
+    {
+      "id": "RFC9114-8-182-MUST",
+      "source_occurrence": 182,
+      "section": "8",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/error_code.gleam",
+          "symbol": "effective"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/protocol.gleam",
+          "symbol": "peer_application_error_code"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_error_code_test.gleam",
+          "symbol": "maps_registered_and_unknown_application_errors_test"
+        }
+      ],
+      "assessment": "The cited error and extension handling test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-9-MUST-IGNORE-UNKNOWN-EXTENSIBLE-VALUES",
+      "source_occurrence": 184,
+      "section": "9",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/error_code.gleam",
+          "symbol": "effective"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/protocol.gleam",
+          "symbol": "peer_application_error_code"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_error_code_test.gleam",
+          "symbol": "maps_registered_and_unknown_application_errors_test"
+        }
+      ],
+      "assessment": "Unknown error-code handling cannot prove the requirement across all extensible protocol elements.",
+      "required_test": "Add a table-driven suite for unknown frame types, settings, stream types, and error codes, asserting the required ignore/discard semantics for each."
+    },
+    {
+      "id": "RFC9114-9-185-MUST",
+      "source_occurrence": 185,
+      "section": "9",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/error_code.gleam",
+          "symbol": "effective"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/protocol.gleam",
+          "symbol": "peer_application_error_code"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_error_code_test.gleam",
+          "symbol": "maps_registered_and_unknown_application_errors_test"
+        }
+      ],
+      "assessment": "The cited error-code test does not open an unknown unidirectional stream or assert discard/abort.",
+      "required_test": "Open an unknown unidirectional stream and assert discard or STOP_SENDING while the connection remains usable."
+    },
+    {
+      "id": "RFC9114-9-186-SHOULD",
+      "source_occurrence": 186,
+      "section": "9",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 1,
+      "evidence_specificity_grade": "adjacent",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/error_code.gleam",
+          "symbol": "effective"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/protocol.gleam",
+          "symbol": "peer_application_error_code"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_error_code_test.gleam",
+          "symbol": "maps_registered_and_unknown_application_errors_test"
+        }
+      ],
+      "assessment": "The cited error-code test does not place an unknown frame before SETTINGS and assert H3_MISSING_SETTINGS.",
+      "required_test": "Send an unknown frame as the first control frame and assert H3_MISSING_SETTINGS."
+    },
+    {
+      "id": "RFC9114-9-187-MUST",
+      "source_occurrence": 187,
+      "section": "9",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "unsupported",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "This is a runtime obligation on implementations that use semantics-changing extensions. The repository implements negotiated extensions (for example Extended CONNECT and HTTP Datagrams), so treating it as only a specification-author duty is incorrect.",
+      "required_test": "For each implemented semantics-changing extension, test use before/without negotiation is rejected and use after negotiation succeeds."
+    },
+    {
+      "id": "RFC9114-9-188-MUST",
+      "source_occurrence": 188,
+      "section": "9",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 0,
+      "evidence_specificity_grade": "unsupported",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "This applies whenever an implementation uses SETTINGS for extension negotiation. The repository has such settings, so the disabled-on-omission default requires executable verification rather than NotApplicable.",
+      "required_test": "For every extension negotiated by SETTINGS, omit the setting and assert the extension remains disabled at its RFC-defined default."
+    },
+    {
+      "id": "RFC9114-10-3-189-MUST",
+      "source_occurrence": 189,
+      "section": "10.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-10-3-190-MUST",
+      "source_occurrence": 190,
+      "section": "10.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+          "symbol": "validate"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+          "symbol": "rejects_smuggling_prone_regular_fields_test"
+        }
+      ],
+      "assessment": "The cited field and pseudo-header semantics test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-10-4-191-MUST",
+      "source_occurrence": 191,
+      "section": "10.4",
+      "level": "MUST",
+      "roles": [
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-10-5-192-SHOULD",
+      "source_occurrence": 192,
+      "section": "10.5",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/config.gleam",
+          "symbol": "default_limits"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "new"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_test.gleam",
+          "symbol": "server_push_limit_is_bounded_and_can_be_disabled_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"
+        }
+      ],
+      "assessment": "The cited resource limits test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-10-5-193-SHOULD",
+      "source_occurrence": 193,
+      "section": "10.5",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/config.gleam",
+          "symbol": "default_limits"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/push.gleam",
+          "symbol": "new"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/client_test.gleam",
+          "symbol": "server_push_limit_is_bounded_and_can_be_disabled_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_push_test.gleam",
+          "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test"
+        }
+      ],
+      "assessment": "Only push-count limits are cited; the broader referenced feature-use tracking and limits are not demonstrated.",
+      "required_test": "Add bounded-use tests for every feature referenced by the surrounding denial-of-service section, including concurrent request and push accounting."
+    },
+    {
+      "id": "RFC9114-10-8-196-MUST",
+      "source_occurrence": 196,
+      "section": "10.8",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 2,
+      "evidence_specificity_grade": "partial",
+      "recommended_disposition": "Open",
+      "misclassified": true,
+      "candidate_implementation": [
+        {
+          "path": "packages/http3/src/http3/internal/native/frame.gleam",
+          "symbol": "decode"
+        },
+        {
+          "path": "packages/http3/src/http3/internal/native/frame_parser.gleam",
+          "symbol": "finish"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/native/http3_frame_test.gleam",
+          "symbol": "rejects_http2_duplicates_truncation_and_resource_exhaustion_test"
+        },
+        {
+          "path": "packages/http3/test/native/http3_frame_parser_test.gleam",
+          "symbol": "rejects_oversized_buffers_frames_and_truncated_fin_test"
+        }
+      ],
+      "assessment": "The cited malformed-frame tests do not construct each fixed-field frame with surplus/short fields and prove exact declared-length agreement.",
+      "required_test": "For every fixed-field frame, test short and surplus payload lengths and assert exact agreement with the declared length."
+    },
+    {
+      "id": "RFC9114-10-9-197-MUST",
+      "source_occurrence": 197,
+      "section": "10.9",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "Implemented",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "direct",
+      "recommended_disposition": "Implemented",
+      "misclassified": false,
+      "candidate_implementation": [
+        {
+          "path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam",
+          "symbol": "record_verified"
+        },
+        {
+          "path": "packages/quic_core/src/quic_core/internal/tls/replay_guard.gleam",
+          "symbol": "permits"
+        }
+      ],
+      "candidate_tests": [
+        {
+          "path": "packages/http3/test/transport_test.gleam",
+          "symbol": "zero_rtt_resumption_is_typed_and_replay_safe_test"
+        },
+        {
+          "path": "packages/quic_core/test/tls_anti_replay_test.gleam",
+          "symbol": "rejects_replay_bounds_memory_and_prunes_expired_entries_test"
+        }
+      ],
+      "assessment": "The cited 0-RTT anti-replay test directly exercises the clause's trigger and asserts its required outcome; the cited source contains the corresponding branch.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-1-198-SHOULD",
+      "source_occurrence": 198,
+      "section": "11.2.1",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-1-199-MUST",
+      "source_occurrence": 199,
+      "section": "11.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-1-200-MUST",
+      "source_occurrence": 200,
+      "section": "11.2.1",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-1-201-MUST-NOT",
+      "source_occurrence": 201,
+      "section": "11.2.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-1-202-MUST-NOT",
+      "source_occurrence": 202,
+      "section": "11.2.1",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-2-203-SHOULD",
+      "source_occurrence": 203,
+      "section": "11.2.2",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-2-204-MUST",
+      "source_occurrence": 204,
+      "section": "11.2.2",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-2-205-SHOULD",
+      "source_occurrence": 205,
+      "section": "11.2.2",
+      "level": "SHOULD",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-2-206-MUST-NOT",
+      "source_occurrence": 206,
+      "section": "11.2.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-2-207-MUST-NOT",
+      "source_occurrence": 207,
+      "section": "11.2.2",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-3-208-MUST",
+      "source_occurrence": 208,
+      "section": "11.2.3",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-3-209-MUST-NOT",
+      "source_occurrence": 209,
+      "section": "11.2.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-3-210-MUST-NOT",
+      "source_occurrence": 210,
+      "section": "11.2.3",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-4-211-MUST",
+      "source_occurrence": 211,
+      "section": "11.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-4-212-MUST",
+      "source_occurrence": 212,
+      "section": "11.2.4",
+      "level": "MUST",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-4-213-MUST-NOT",
+      "source_occurrence": 213,
+      "section": "11.2.4",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-11-2-4-214-MUST-NOT",
+      "source_occurrence": 214,
+      "section": "11.2.4",
+      "level": "MUST NOT",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    },
+    {
+      "id": "RFC9114-A-4-215-REQUIRED",
+      "source_occurrence": 215,
+      "section": "A.4",
+      "level": "REQUIRED",
+      "roles": [
+        "client",
+        "server"
+      ],
+      "submitted_disposition": "NotApplicable",
+      "evidence_specificity_score": 3,
+      "evidence_specificity_grade": "actor-specific",
+      "recommended_disposition": "NotApplicable",
+      "misclassified": false,
+      "candidate_implementation": [],
+      "candidate_tests": [],
+      "assessment": "The normative actor or conditional feature is outside the shipped endpoint profile (intermediary/proxy/cache/operator/IANA/spec-author/lexical case), and the reason identifies that boundary specifically.",
+      "required_test": null
+    }
+  ]
+}

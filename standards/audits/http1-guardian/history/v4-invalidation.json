@@ -1,0 +1,13 @@
+{
+  "independent_review_sha256": "6a99821082cff90986809cb0cbaa312d52179381d77c5519568cfca4cab71d3d",
+  "blockers": 15,
+  "schema": 1,
+  "replacement": "v5",
+  "native_execution": "prohibited_and_not_invoked",
+  "independent_audit_sha256": "d8b759dd1f5835c573a977ddd00c6ec0a9fa25dc394acbd4965915f3e61cc8c1",
+  "status": "Rejected",
+  "revision": "v4",
+  "false_green_mutants": 12,
+  "classification": "independent_adversarial_false_green",
+  "completed_mutants": 12
+}

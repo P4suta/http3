@@ -27,10 +27,9 @@ accept(Key) when is_binary(Key) ->
             case base64:encode(Decoded) of
                 Key ->
                     Digest = crypto:hash(
-                        sha, <<Key/binary, ?WEBSOCKET_GUID/binary>>
-                    ),
+                        sha, <<Key/binary, ?WEBSOCKET_GUID/binary>>),
                     {ok, base64:encode(Digest)};
-                _ -> {error, nil}
+                _NonCanonical -> {error, nil}
             end;
         _ -> {error, nil}
     catch
@@ -49,13 +48,22 @@ random_mask() ->
 
 -spec mask(binary(), binary()) -> {ok, binary()} | {error, nil}.
 mask(Payload, <<A, B, C, D>>) when is_binary(Payload) ->
-    {ok, mask_bytes(Payload, {A, B, C, D}, 0, <<>>)};
+    {ok, mask_bytes(Payload, {A, B, C, D}, [])};
 mask(_, _) ->
     {error, nil}.
 
--spec mask_bytes(binary(), {byte(), byte(), byte(), byte()}, non_neg_integer(), binary()) -> binary().
-mask_bytes(<<>>, _Key, _Offset, Accumulator) ->
-    Accumulator;
-mask_bytes(<<Byte, Rest/binary>>, Key, Offset, Accumulator) ->
-    MaskByte = element((Offset rem 4) + 1, Key),
-    mask_bytes(Rest, Key, Offset + 1, <<Accumulator/binary, (Byte bxor MaskByte)>>).
+-spec mask_bytes(binary(), {byte(), byte(), byte(), byte()}, iolist()) -> binary().
+mask_bytes(<<W, X, Y, Z, Rest/binary>>, {A, B, C, D} = Key, Accumulator) ->
+    mask_bytes(Rest, Key,
+               [<<(W bxor A), (X bxor B), (Y bxor C), (Z bxor D)>> |
+                Accumulator]);
+mask_bytes(<<W, X, Y>>, {A, B, C, _D}, Accumulator) ->
+    iolist_to_binary(lists:reverse(
+        [<<(W bxor A), (X bxor B), (Y bxor C)>> | Accumulator]));
+mask_bytes(<<W, X>>, {A, B, _C, _D}, Accumulator) ->
+    iolist_to_binary(lists:reverse(
+        [<<(W bxor A), (X bxor B)>> | Accumulator]));
+mask_bytes(<<W>>, {A, _B, _C, _D}, Accumulator) ->
+    iolist_to_binary(lists:reverse([<<(W bxor A)>> | Accumulator]));
+mask_bytes(<<>>, _Key, Accumulator) ->
+    iolist_to_binary(lists:reverse(Accumulator)).

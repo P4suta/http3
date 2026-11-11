@@ -9,9 +9,13 @@
     idle_activity/3,
     idle_due/2,
     idle_new/2,
+    idle_stop_alias/0,
+    idle_signal_stop/1,
+    idle_join/2,
     idle_snapshot/1,
     material_burst_compression/2,
     idle_stop/1,
+    not_ect_configuration/2,
     open/4,
     open/5,
     packet_too_big_snapshot/1,
@@ -25,7 +29,9 @@
 -define(MAXIMUM_QUEUED_COMMANDS, 8).
 -define(MAXIMUM_UDP_PAYLOAD_BYTES, 65527).
 -define(SOCKET_BUFFER_BYTES, 262144).
--define(CALL_GRACE_MILLISECONDS, 1000).
+-define(CALL_COMPLETION_TAIL_MILLISECONDS, 20).
+-define(FORCE_JOIN_MILLISECONDS, 10).
+-define(OWNER_MAX_HEAP_WORDS, 524288).
 -define(MAXIMUM_COUNTER, 9223372036854775807).
 
 -define(STATE, 1).
@@ -55,6 +61,10 @@
 -define(MESSAGE_TOO_LARGE_SENDS, 25).
 -define(FRAGMENTATION_RETRIES, 26).
 -define(BUFFERED_PAYLOAD_BYTES, 27).
+-define(TERMINAL_CAUSE, 28).
+
+-define(TERMINAL_CAUSE_NONE, 0).
+-define(TERMINAL_CAUSE_SETUP_TIMEOUT, 2).
 
 -define(MATERIAL_BURST_COMPRESSION_MICROSECONDS, 1000).
 %% The owner loop sends one datagram per send command and never
@@ -63,9 +73,9 @@
 
 -define(IDLE_STATE, 1).
 -define(IDLE_TIMEOUT, 2).
--define(IDLE_DEADLINE, 3).
+
 -define(IDLE_PENDING, 4).
--define(IDLE_ACTIVITIES, 5).
+-define(IDLE_FAILURE, 5).
 -define(IDLE_WAKE_SIGNALS, 6).
 -define(IDLE_OWNER_WAKEUPS, 7).
 -define(IDLE_DEADLINE_CHECKS, 8).
@@ -77,7 +87,11 @@
 -define(IDLE_ACTIVE, 0).
 -define(IDLE_STOPPED, 1).
 -define(IDLE_EXPIRED, 2).
--define(IDLE_LOCKED, 3).
+-define(IDLE_UNAVAILABLE, 3).
+-define(IDLE_STOP_WORD, -9223372036854775808).
+-define(IDLE_EXPIRED_WORD, -9223372036854775807).
+-define(IDLE_MIN_CLOCK, -9223372036854775806).
+-define(IDLE_CAS_ATTEMPTS, 256).
 
 -define(STATE_SETUP, 0).
 -define(STATE_OPEN, 1).
@@ -100,6 +114,37 @@
 -type socket_family() :: 4 | 6.
 -type counters() :: atomics:atomics_ref().
 -type idle_state() :: atomics:atomics_ref().
+
+%% One terminal notification is independent of activity wake admission. OTP
+%% deactivates a reply alias on its first accepted message; repeated senders
+%% need no application-side reservation which could outlive a killed sender.
+%% The alias is reclaimed automatically when its creating idle owner exits.
+-spec idle_stop_alias() -> reference().
+idle_stop_alias() -> erlang:alias([reply]).
+
+-spec idle_signal_stop(reference()) -> nil.
+idle_signal_stop(Alias) when is_reference(Alias) ->
+    Alias ! {Alias},
+    nil.
+
+%% Joining never kills the owner: it may be running an already bounded resource
+%% cleanup. The caller must preserve false as an incomplete close result.
+-spec idle_join(pid(), pos_integer()) -> boolean().
+idle_join(Owner, Timeout) when is_pid(Owner), is_integer(Timeout),
+                             Timeout > 0, Timeout =< 2147483647 ->
+    case Owner =:= self() of
+        true -> true;
+        false ->
+            Monitor = erlang:monitor(process, Owner),
+            receive
+                {'DOWN', Monitor, process, Owner, _} -> true
+            after Timeout ->
+                erlang:demonitor(Monitor, [flush]),
+                false
+            end
+    end;
+idle_join(_, _) -> false.
+
 -type handle() :: #{
     tag := http_masque_udp_socket,
     pid := pid(),
@@ -209,143 +254,186 @@ wait_event_forever(Handle) ->
             end
     end.
 
-%% One lock-protected monotonic idle deadline. Activity and expiry compete for
-%% the same state slot, so an expiry can never commit against a deadline that
-%% a concurrent activity update has already replaced. The pending bit grants
-%% mailbox credit before a wake signal is sent; at most one command is queued.
+%% The control word contains either an absolute monotonic deadline or one of
+%% two reserved terminal values. No process owns a writer lock. Every CAS loop
+%% has a fixed budget; failure is latched and reported as unavailable, never as
+%% a successful activity or an idle expiry. The existing owner rechecks this
+%% word at its previous deadline even if a wake-credit holder dies before send.
 -spec idle_new(pos_integer(), integer()) -> idle_state().
-idle_new(Timeout, Now)
-    when is_integer(Timeout), Timeout > 0, Timeout =< 2147483647,
-         is_integer(Now) ->
+idle_new(Timeout, Now) ->
     State = atomics:new(12, [{signed, true}]),
-    atomics:put(State, ?IDLE_TIMEOUT, Timeout),
-    atomics:put(State, ?IDLE_DEADLINE, Now + Timeout),
+    atomics:put(State, ?IDLE_STATE, ?IDLE_STOP_WORD),
+    case idle_clock(Timeout, Now) of
+        {ok, Deadline} ->
+            atomics:put(State, ?IDLE_TIMEOUT, Timeout),
+            atomics:put(State, ?IDLE_STATE, Deadline);
+        error -> atomics:put(State, ?IDLE_FAILURE, 1)
+    end,
     State.
 
--spec idle_activity(idle_state(), integer(), 1 | 2) -> 0 | 1.
-idle_activity(State, Now, Direction)
-    when is_integer(Now), (Direction =:= 1 orelse Direction =:= 2) ->
-    case acquire_idle_state(State) of
-        active ->
-            Timeout = atomics:get(State, ?IDLE_TIMEOUT),
-            atomics:put(State, ?IDLE_DEADLINE, Now + Timeout),
-            saturating_increment(State, ?IDLE_ACTIVITIES),
-            case Direction of
-                1 -> saturating_increment(State, ?IDLE_OUTBOUND_ACTIVITIES);
-                2 -> saturating_increment(State, ?IDLE_INBOUND_ACTIVITIES)
-            end,
-            Wake = reserve_idle_wake(State),
-            atomics:put(State, ?IDLE_STATE, ?IDLE_ACTIVE),
-            Wake;
-        stopped -> 0;
-        expired -> 0;
-        invalid -> 0
+-spec idle_activity(idle_state(), integer(), 1 | 2) -> 0 | 1 | 2.
+idle_activity(State, Now, Direction) when Direction =:= 1; Direction =:= 2 ->
+    try
+        case idle_clock(atomics:get(State, ?IDLE_TIMEOUT), Now) of
+            {ok, Deadline} ->
+                case idle_extend(State, Deadline, ?IDLE_CAS_ATTEMPTS) of
+                    active -> idle_record_activity(State, Direction);
+                    terminal -> 0;
+                    unavailable -> 2
+                end;
+            error -> idle_fail(State, 1)
+        end
+    catch
+        error:badarg -> 2
     end;
-idle_activity(_State, _Now, _Direction) ->
-    0.
+idle_activity(State, _Now, _Direction) ->
+    try idle_fail(State, 1)
+    catch error:badarg -> 2
+    end.
 
 -spec idle_ack(idle_state()) -> integer().
 idle_ack(State) ->
-    try atomics:exchange(State, ?IDLE_PENDING, 0) of
-        1 ->
-            saturating_increment(State, ?IDLE_OWNER_WAKEUPS),
-            idle_public_state(State);
-        _ -> idle_public_state(State)
-    catch
-        _:_ -> ?IDLE_STOPPED
+    try
+        case atomics:exchange(State, ?IDLE_PENDING, 0) of
+            1 -> _ = idle_increment(State, ?IDLE_OWNER_WAKEUPS);
+            _ -> ok
+        end,
+        idle_public_state(State)
+    catch error:badarg -> ?IDLE_UNAVAILABLE
     end.
 
 -spec idle_due(idle_state(), integer()) -> {integer(), non_neg_integer()}.
-idle_due(State, Now) when is_integer(Now) ->
-    case acquire_idle_state(State) of
-        active ->
-            saturating_increment(State, ?IDLE_DEADLINE_CHECKS),
-            Deadline = atomics:get(State, ?IDLE_DEADLINE),
-            case Now >= Deadline of
-                true ->
-                    atomics:put(State, ?IDLE_PENDING, 0),
-                    saturating_increment(State, ?IDLE_EXPIRATIONS),
-                    atomics:put(State, ?IDLE_STATE, ?IDLE_EXPIRED),
-                    {?IDLE_EXPIRED, 0};
-                false ->
-                    atomics:put(State, ?IDLE_STATE, ?IDLE_ACTIVE),
-                    {?IDLE_ACTIVE, Deadline - Now}
-            end;
-        stopped -> {?IDLE_STOPPED, 0};
-        expired -> {?IDLE_EXPIRED, 0};
-        invalid -> {?IDLE_STOPPED, 0}
-    end;
-idle_due(_State, _Now) ->
-    {?IDLE_STOPPED, 0}.
+idle_due(State, Now) ->
+    try
+        case is_integer(Now) andalso Now >= ?IDLE_MIN_CLOCK andalso Now =< ?MAXIMUM_COUNTER of
+            true ->
+                case idle_increment(State, ?IDLE_DEADLINE_CHECKS) of
+                    ok -> idle_expire(State, Now, ?IDLE_CAS_ATTEMPTS);
+                    unavailable -> {?IDLE_UNAVAILABLE, 0}
+                end;
+            false ->
+                _ = idle_fail(State, 1),
+                {idle_public_state(State), 0}
+        end
+    catch error:badarg -> {?IDLE_UNAVAILABLE, 0}
+    end.
 
--spec idle_stop(idle_state()) -> 0 | 1.
+-spec idle_stop(idle_state()) -> 0 | 1 | 2.
 idle_stop(State) ->
-    case acquire_idle_state(State) of
-        active ->
-            saturating_increment(State, ?IDLE_STOP_SIGNALS),
-            Wake = reserve_idle_wake(State),
-            atomics:put(State, ?IDLE_STATE, ?IDLE_STOPPED),
-            Wake;
-        stopped -> 0;
-        expired -> 0;
-        invalid -> 0
+    try idle_stop_loop(State, ?IDLE_CAS_ATTEMPTS)
+    catch error:badarg -> 2
     end.
 
 -spec idle_snapshot(idle_state()) ->
     {integer(), integer(), integer(), boolean(), integer(), integer(),
      integer(), integer(), integer(), integer(), integer(), integer()}.
 idle_snapshot(State) ->
-    case acquire_idle_state(State) of
-        active ->
-            %% A diagnostic read participates in the same lock as activity and
-            %% expiry. In particular, total and directional activity counters
-            %% can never be returned from different transitions.
-            try idle_snapshot_values(State, ?IDLE_ACTIVE)
-            catch
-                _:_ -> idle_snapshot_default()
-            after
-                atomics:put(State, ?IDLE_STATE, ?IDLE_ACTIVE)
-            end;
-        stopped -> safe_idle_snapshot_values(State, ?IDLE_STOPPED);
-        expired -> safe_idle_snapshot_values(State, ?IDLE_EXPIRED);
-        invalid -> idle_snapshot_default()
-    end.
-
--spec safe_idle_snapshot_values(idle_state(), integer()) ->
-    {integer(), integer(), integer(), boolean(), integer(), integer(),
-     integer(), integer(), integer(), integer(), integer(), integer()}.
-safe_idle_snapshot_values(State, PublicState) ->
     try
-        idle_snapshot_values(State, PublicState)
+        %% This is an observational read, not a multi-field transaction. The
+        %% directional sum is exact by construction, including saturation.
+        %% At the shared ceiling, inbound is clipped to remaining total credit.
+        Outbound = atomics:get(State, ?IDLE_OUTBOUND_ACTIVITIES),
+        Inbound = erlang:min(atomics:get(State, ?IDLE_INBOUND_ACTIVITIES),
+                            ?MAXIMUM_COUNTER - Outbound),
+        Control = atomics:get(State, ?IDLE_STATE),
+        PublicState = idle_state_value(State, Control),
+        Deadline = case Control >= ?IDLE_MIN_CLOCK of
+            true -> Control;
+            false -> 0
+        end,
+        {PublicState, atomics:get(State, ?IDLE_TIMEOUT), Deadline,
+         atomics:get(State, ?IDLE_PENDING) =:= 1, Outbound + Inbound,
+         Outbound, Inbound, atomics:get(State, ?IDLE_WAKE_SIGNALS),
+         atomics:get(State, ?IDLE_OWNER_WAKEUPS), atomics:get(State, ?IDLE_DEADLINE_CHECKS),
+         atomics:get(State, ?IDLE_EXPIRATIONS), atomics:get(State, ?IDLE_STOP_SIGNALS)}
     catch
-        _:_ -> idle_snapshot_default()
+        error:badarg -> {?IDLE_UNAVAILABLE, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0}
     end.
 
--spec idle_snapshot_values(idle_state(), integer()) ->
-    {integer(), integer(), integer(), boolean(), integer(), integer(),
-     integer(), integer(), integer(), integer(), integer(), integer()}.
-idle_snapshot_values(State, PublicState) ->
-    {
-        PublicState,
-        atomics:get(State, ?IDLE_TIMEOUT),
-        atomics:get(State, ?IDLE_DEADLINE),
-        atomics:get(State, ?IDLE_PENDING) =:= 1,
-        atomics:get(State, ?IDLE_ACTIVITIES),
-        atomics:get(State, ?IDLE_OUTBOUND_ACTIVITIES),
-        atomics:get(State, ?IDLE_INBOUND_ACTIVITIES),
-        atomics:get(State, ?IDLE_WAKE_SIGNALS),
-        atomics:get(State, ?IDLE_OWNER_WAKEUPS),
-        atomics:get(State, ?IDLE_DEADLINE_CHECKS),
-        atomics:get(State, ?IDLE_EXPIRATIONS),
-        atomics:get(State, ?IDLE_STOP_SIGNALS)
-    }.
+idle_clock(Timeout, Now)
+    when is_integer(Timeout), Timeout > 0, Timeout =< 2147483647,
+         is_integer(Now), Now >= ?IDLE_MIN_CLOCK,
+         Now =< ?MAXIMUM_COUNTER - Timeout -> {ok, Now + Timeout};
+idle_clock(_, _) -> error.
 
--spec idle_snapshot_default() ->
-    {integer(), integer(), integer(), boolean(), integer(), integer(),
-     integer(), integer(), integer(), integer(), integer(), integer()}.
-idle_snapshot_default() ->
-    {?IDLE_STOPPED, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0}.
+idle_extend(State, Deadline, Remaining) ->
+    Current = atomics:get(State, ?IDLE_STATE),
+    case idle_state_value(State, Current) of
+        ?IDLE_ACTIVE when Current >= Deadline -> active;
+        ?IDLE_ACTIVE when Remaining > 0 ->
+            case atomics:compare_exchange(State, ?IDLE_STATE, Current, Deadline) of
+                ok -> active;
+                _ -> idle_extend(State, Deadline, Remaining - 1)
+            end;
+        ?IDLE_ACTIVE -> _ = idle_fail(State, 2), unavailable;
+        ?IDLE_UNAVAILABLE -> unavailable;
+        _ -> terminal
+    end.
 
+idle_record_activity(State, Direction) ->
+    Index = case Direction of
+        1 -> ?IDLE_OUTBOUND_ACTIVITIES;
+        2 -> ?IDLE_INBOUND_ACTIVITIES
+    end,
+    case idle_increment(State, Index) of
+        ok -> reserve_idle_wake(State);
+        unavailable -> 2
+    end.
+
+idle_expire(State, Now, Remaining) ->
+    Current = atomics:get(State, ?IDLE_STATE),
+    case idle_state_value(State, Current) of
+        ?IDLE_ACTIVE when Current > Now ->
+            {?IDLE_ACTIVE, erlang:min(atomics:get(State, ?IDLE_TIMEOUT), Current - Now)};
+        ?IDLE_ACTIVE when Remaining > 0 ->
+            case atomics:compare_exchange(State, ?IDLE_STATE, Current, ?IDLE_EXPIRED_WORD) of
+                ok ->
+                    atomics:put(State, ?IDLE_PENDING, 0),
+                    atomics:put(State, ?IDLE_EXPIRATIONS, 1),
+                    {?IDLE_EXPIRED, 0};
+                _ -> idle_expire(State, Now, Remaining - 1)
+            end;
+        ?IDLE_ACTIVE -> _ = idle_fail(State, 2), {?IDLE_UNAVAILABLE, 0};
+        PublicState -> {PublicState, 0}
+    end.
+
+idle_stop_loop(State, Remaining) ->
+    Current = atomics:get(State, ?IDLE_STATE),
+    case Current of
+        ?IDLE_STOP_WORD -> atomics:put(State, ?IDLE_PENDING, 0), 0;
+        ?IDLE_EXPIRED_WORD -> 0;
+        _ when Remaining > 0 ->
+            case atomics:compare_exchange(State, ?IDLE_STATE, Current, ?IDLE_STOP_WORD) of
+                ok ->
+                    atomics:put(State, ?IDLE_STOP_SIGNALS, 1),
+                    atomics:put(State, ?IDLE_PENDING, 0),
+                    1;
+                _ -> idle_stop_loop(State, Remaining - 1)
+            end;
+        _ -> idle_fail(State, 2)
+    end.
+
+idle_fail(State, Cause) ->
+    case atomics:get(State, ?IDLE_STATE) of
+        ?IDLE_STOP_WORD -> 0;
+        ?IDLE_EXPIRED_WORD -> 0;
+        _ ->
+            _ = atomics:compare_exchange(State, ?IDLE_FAILURE, 0, Cause),
+            2
+    end.
+
+idle_increment(State, Index) -> idle_increment(State, Index, ?IDLE_CAS_ATTEMPTS).
+idle_increment(State, Index, Remaining) ->
+    Current = atomics:get(State, Index),
+    case Current >= ?MAXIMUM_COUNTER of
+        true -> ok;
+        false when Remaining > 0 ->
+            case atomics:compare_exchange(State, Index, Current, Current + 1) of
+                ok -> ok;
+                _ -> idle_increment(State, Index, Remaining - 1)
+            end;
+        false -> _ = idle_fail(State, 2), unavailable
+    end.
 -spec close(handle(), integer()) -> {ok, nil} | {error, integer()}.
 close(Handle, Timeout)
     when is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
@@ -353,18 +441,11 @@ close(Handle, Timeout)
         false ->
             {error, 1};
         true ->
+            Deadlines = call_deadlines(Timeout),
             case counter(Handle, ?STATE, ?STATE_CLOSED) of
-                ?STATE_CLOSED -> {ok, nil};
-                _ ->
-                    case direct_call(Handle, close, Timeout) of
-                        {error, Reason}
-                            when Reason =:= 2; Reason =:= 4 ->
-                            case counter(Handle, ?STATE, ?STATE_CLOSED) of
-                                ?STATE_CLOSED -> {ok, nil};
-                                _ -> {error, Reason}
-                            end;
-                        Result -> Result
-                    end
+                ?STATE_CLOSED ->
+                    confirm_closed_owner(Handle, Deadlines);
+                _ -> close_call(Handle, Deadlines)
             end
     end;
 close(_Handle, _Timeout) ->
@@ -375,13 +456,13 @@ close(_Handle, _Timeout) ->
      integer(), integer(), integer(), boolean(), boolean(), integer(), integer(),
      integer(), integer(), integer(), integer(), integer(), integer(),
      boolean(), boolean(), integer(), integer(), integer(), integer(),
-     integer(), integer(), integer(), integer()}.
+     integer(), integer(), integer(), integer(), integer()}.
 snapshot(Handle) ->
     case valid_handle(Handle) of
         false ->
             {?STATE_CLOSED, ?MAXIMUM_QUEUED_COMMANDS, ?SOCKET_BUFFER_BYTES,
              0, 0, ?MAXIMUM_UDP_PAYLOAD_BYTES, 0, 0, 0, false, false, 0, 0,
-             0, 0, 0, 0, 0, 0, false, false, 0, 1, 0, 0, 0, 0, 0, 0};
+             0, 0, 0, 0, 0, 0, false, false, 0, 1, 0, 0, 0, 0, 0, 0, 0};
         true ->
             {
                 counter(Handle, ?STATE, ?STATE_CLOSED),
@@ -404,7 +485,7 @@ snapshot(Handle) ->
                 counter(Handle, ?EVENT_TIMEOUTS, 0),
                 counter(Handle, ?SOCKET_FAILURES, 0),
                 counter(Handle, ?DONT_FRAGMENT, 0) =:= 1,
-                counter(Handle, ?NOT_ECT, 0) =:= 1,
+                counter(Handle, ?NOT_ECT, 0) > 0,
                 counter(Handle, ?RELAY_TIMING_SAMPLES, 0),
                 ?SEND_BATCH_PACKETS,
                 counter(Handle, ?MAXIMUM_RELAY_DELAY_MICROSECONDS, 0),
@@ -414,7 +495,8 @@ snapshot(Handle) ->
                     Handle, ?MAXIMUM_BURST_COMPRESSION_MICROSECONDS, 0
                 ),
                 counter(Handle, ?MESSAGE_TOO_LARGE_SENDS, 0),
-                counter(Handle, ?FRAGMENTATION_RETRIES, 0)
+                counter(Handle, ?FRAGMENTATION_RETRIES, 0),
+                counter(Handle, ?NOT_ECT, 0)
             }
     end.
 
@@ -432,12 +514,13 @@ open_owner(PeerAddress, Family, Port, Owner, TargetPayloadLimit, Timeout) ->
     Caller = self(),
     StartReference = make_ref(),
     SocketReference = make_ref(),
-    Counters = atomics:new(27, [{signed, true}]),
+    {OperationDeadline, CompletionDeadline} = call_deadlines(Timeout),
+    Counters = atomics:new(28, [{signed, true}]),
     PacketTooBig = http_masque_packet_too_big_ffi:diagnostics_new(
         TargetPayloadLimit, Family
     ),
-    {Pid, Monitor} = spawn_monitor(fun() ->
-        owner_init(
+    OwnerSpawn = try spawn_opt(fun() ->
+        owner_start_gate(
             Caller,
             StartReference,
             SocketReference,
@@ -447,46 +530,158 @@ open_owner(PeerAddress, Family, Port, Owner, TargetPayloadLimit, Timeout) ->
             Port,
             Owner,
             {Family, TargetPayloadLimit, PacketTooBig, Timeout},
-            Timeout
+            OperationDeadline
         )
-    end),
+    end, [monitor, {max_heap_size, #{
+        size => ?OWNER_MAX_HEAP_WORDS,
+        kill => true,
+        error_logger => false,
+        include_shared_binaries => true
+    }}]) of
+        {SpawnedPid, SpawnedMonitor} -> {ok, SpawnedPid, SpawnedMonitor}
+    catch _:_ -> error
+    end,
+    case OwnerSpawn of
+        {ok, Pid, Monitor} ->
+            open_wait_ready(
+                Pid,
+                Monitor,
+                Caller,
+                StartReference,
+                SocketReference,
+                Counters,
+                PacketTooBig,
+                Owner,
+                OperationDeadline,
+                CompletionDeadline
+            );
+        error -> {error, 8}
+    end.
+
+open_wait_ready(
+    Pid,
+    Monitor,
+    Caller,
+    StartReference,
+    SocketReference,
+    Counters,
+    PacketTooBig,
+    Owner,
+    OperationDeadline,
+    CompletionDeadline
+) ->
+    Remaining = erlang:max(
+        0, OperationDeadline - erlang:monotonic_time(millisecond)
+    ),
     receive
-        {StartReference,
-         {ok, DontFragment, NotEct, ReceiveBufferBytes, SendBufferBytes}} ->
-            erlang:demonitor(Monitor, [flush]),
-            set_boolean(Counters, ?DONT_FRAGMENT, DontFragment),
-            set_boolean(Counters, ?NOT_ECT, NotEct),
-            atomics:put(
-                Counters, ?RECEIVE_BUFFER_BYTES, ReceiveBufferBytes
-            ),
-            atomics:put(Counters, ?SEND_BUFFER_BYTES, SendBufferBytes),
-            {ok, #{
-                tag => http_masque_udp_socket,
-                pid => Pid,
-                reference => SocketReference,
-                owner => Owner,
-                counters => Counters,
-                packet_too_big => PacketTooBig
-            }};
-        {StartReference, {error, Reason}} ->
-            await_down(Pid, Monitor),
-            {error, open_error_code(Reason)};
+        {StartReference, owner_ready, Pid} ->
+            case operation_reply_is_timely(
+                erlang:monotonic_time(millisecond), OperationDeadline
+            ) of
+                true ->
+                    Pid ! {StartReference, start_owner, Caller},
+                    open_wait_result(
+                        Pid,
+                        Monitor,
+                        StartReference,
+                        SocketReference,
+                        Counters,
+                        PacketTooBig,
+                        Owner,
+                        OperationDeadline,
+                        CompletionDeadline
+                    );
+                false ->
+                    Pid ! {StartReference, cancel_owner, Caller},
+                    open_force_join(
+                        Pid, Monitor, StartReference, CompletionDeadline, 2
+                    )
+            end;
         {'DOWN', Monitor, process, Pid, _Reason} ->
             drain_start_reply(StartReference),
             {error, 8}
-    after Timeout ->
-        exit(Pid, kill),
-        await_down(Pid, Monitor),
-        drain_start_reply(StartReference),
-        {error, 2}
+    after Remaining ->
+        Pid ! {StartReference, cancel_owner, Caller},
+        open_force_join(Pid, Monitor, StartReference, CompletionDeadline, 2)
     end.
 
--spec owner_init(
-    pid(), reference(), reference(), counters(), inet:ip_address(),
-    socket_family(), inet:port_number(), pid(), packet_too_big_config(),
-    pos_integer()
-) -> no_return().
-owner_init(
+open_wait_result(
+    Pid,
+    Monitor,
+    StartReference,
+    SocketReference,
+    Counters,
+    PacketTooBig,
+    Owner,
+    OperationDeadline,
+    CompletionDeadline
+) ->
+    Remaining = erlang:max(
+        0, OperationDeadline - erlang:monotonic_time(millisecond)
+    ),
+    receive
+        {StartReference,
+         {ok, DontFragment, NotEct, ReceiveBufferBytes, SendBufferBytes}} ->
+            case operation_reply_is_timely(
+                erlang:monotonic_time(millisecond), OperationDeadline
+            ) of
+                true ->
+                    erlang:demonitor(Monitor, [flush]),
+                    set_boolean(Counters, ?DONT_FRAGMENT, DontFragment),
+                    atomics:put(Counters, ?NOT_ECT, NotEct),
+                    atomics:put(
+                        Counters, ?RECEIVE_BUFFER_BYTES, ReceiveBufferBytes
+                    ),
+                    atomics:put(Counters, ?SEND_BUFFER_BYTES, SendBufferBytes),
+                    {ok, #{
+                        tag => http_masque_udp_socket,
+                        pid => Pid,
+                        reference => SocketReference,
+                        owner => Owner,
+                        counters => Counters,
+                        packet_too_big => PacketTooBig
+                    }};
+                false ->
+                    open_force_join(
+                        Pid, Monitor, StartReference, CompletionDeadline, 2
+                    )
+            end;
+        {StartReference, {error, Reason}} ->
+            case operation_reply_is_timely(
+                erlang:monotonic_time(millisecond), OperationDeadline
+            ) of
+                true ->
+                    ForceAt = force_join_at(
+                        OperationDeadline, CompletionDeadline
+                    ),
+                    case join_or_force_until(
+                        Pid, Monitor, ForceAt, CompletionDeadline
+                    ) of
+                        true -> {error, open_error_code(Reason)};
+                        false -> {error, 8}
+                    end;
+                false ->
+                    open_force_join(
+                        Pid, Monitor, StartReference, CompletionDeadline, 2
+                    )
+            end;
+        {'DOWN', Monitor, process, Pid, _Reason} ->
+            drain_start_reply(StartReference),
+            {error, 8}
+    after Remaining ->
+        open_force_join(Pid, Monitor, StartReference, CompletionDeadline, 2)
+    end.
+
+open_force_join(Pid, Monitor, StartReference, CompletionDeadline, ErrorCode) ->
+    exit(Pid, kill),
+    Joined = await_down_until(Pid, Monitor, CompletionDeadline),
+    drain_start_reply(StartReference),
+    case Joined of
+        true -> {error, ErrorCode};
+        false -> {error, 8}
+    end.
+
+owner_start_gate(
     Caller,
     StartReference,
     SocketReference,
@@ -496,41 +691,134 @@ owner_init(
     Port,
     Owner,
     PacketTooBig,
-    SetupTimeout
+    OperationDeadline
+) ->
+    CallerMonitor = erlang:monitor(process, Caller),
+    Caller ! {StartReference, owner_ready, self()},
+    Remaining = erlang:max(
+        0, OperationDeadline - erlang:monotonic_time(millisecond)
+    ),
+    receive
+        {StartReference, start_owner, Caller} ->
+            case operation_reply_is_timely(
+                erlang:monotonic_time(millisecond), OperationDeadline
+            ) of
+                true ->
+                    owner_init(
+                        Caller,
+                        CallerMonitor,
+                        StartReference,
+                        SocketReference,
+                        Counters,
+                        PeerAddress,
+                        Family,
+                        Port,
+                        Owner,
+                        PacketTooBig,
+                        OperationDeadline
+                    );
+                false ->
+                    Caller ! {StartReference, {error, timeout}},
+                    exit(normal)
+            end;
+        {StartReference, cancel_owner, Caller} -> exit(normal);
+        {'DOWN', CallerMonitor, process, Caller, _Reason} -> exit(normal)
+    after Remaining ->
+        Caller ! {StartReference, {error, timeout}},
+        exit(normal)
+    end.
+
+-spec owner_init(
+    pid(), reference(), reference(), reference(), counters(), inet:ip_address(),
+    socket_family(), inet:port_number(), pid(), packet_too_big_config(),
+    integer()
+) -> no_return().
+owner_init(
+    Caller,
+    CallerMonitor,
+    StartReference,
+    SocketReference,
+    Counters,
+    PeerAddress,
+    Family,
+    Port,
+    Owner,
+    PacketTooBig,
+    SetupDeadline
+) ->
+    case erlang:is_process_alive(Caller) of
+        false ->
+            erlang:demonitor(CallerMonitor, [flush]),
+            exit(normal);
+        true -> owner_init_socket(
+            Caller,
+            CallerMonitor,
+            StartReference,
+            SocketReference,
+            Counters,
+            PeerAddress,
+            Family,
+            Port,
+            Owner,
+            PacketTooBig,
+            SetupDeadline
+        )
+    end.
+
+owner_init_socket(
+    Caller,
+    CallerMonitor,
+    StartReference,
+    SocketReference,
+    Counters,
+    PeerAddress,
+    Family,
+    Port,
+    Owner,
+    PacketTooBig,
+    SetupDeadline
 ) ->
     case open_socket(Family, PeerAddress, Port) of
         {error, Reason} ->
             Caller ! {StartReference, {error, Reason}},
+            erlang:demonitor(CallerMonitor, [flush]),
             exit(normal);
         {ok, Socket, DontFragment, NotEct, ReceiveBufferBytes,
          SendBufferBytes} ->
-            OwnerMonitor = erlang:monitor(process, Owner),
-            case activate_once(Socket) of
-                ok ->
-                    Caller ! {
-                        StartReference,
-                        {ok, DontFragment, NotEct, ReceiveBufferBytes,
-                         SendBufferBytes}
-                    },
-                    SetupDeadline =
-                        erlang:monotonic_time(millisecond) + SetupTimeout,
-                    setup_loop(
-                        Socket,
-                        PeerAddress,
-                        Port,
-                        Owner,
-                        OwnerMonitor,
-                        SocketReference,
-                        Counters,
-                        PacketTooBig,
-                        SetupDeadline,
-                        none
-                    );
-                {error, Reason} ->
+            case erlang:is_process_alive(Caller) of
+                false ->
                     gen_udp:close(Socket),
-                    erlang:demonitor(OwnerMonitor, [flush]),
-                    Caller ! {StartReference, {error, Reason}},
-                    exit(normal)
+                    erlang:demonitor(CallerMonitor, [flush]),
+                    exit(normal);
+                true ->
+                    OwnerMonitor = erlang:monitor(process, Owner),
+                    case activate_once(Socket) of
+                        ok ->
+                            Caller ! {
+                                StartReference,
+                                {ok, DontFragment, NotEct,
+                                 ReceiveBufferBytes, SendBufferBytes}
+                            },
+                            erlang:demonitor(CallerMonitor, [flush]),
+                            setup_loop(
+                                Socket,
+                                PeerAddress,
+                                Port,
+                                Owner,
+                                OwnerMonitor,
+                                SocketReference,
+                                Counters,
+                                PacketTooBig,
+                                SetupDeadline,
+                                none
+                            );
+                        {error, Reason} ->
+                            gen_udp:close(Socket),
+                            erlang:demonitor(OwnerMonitor, [flush]),
+                            Caller ! {StartReference, {error, Reason}},
+                            erlang:demonitor(CallerMonitor, [flush]),
+                            exit(normal)
+                    end
             end
     end.
 
@@ -551,6 +839,40 @@ setup_loop(
     Deadline,
     Buffered
 ) ->
+    case operation_reply_is_timely(
+        erlang:monotonic_time(millisecond), Deadline
+    ) of
+        false ->
+            mark_setup_timeout(Counters),
+            close_owner(Socket, OwnerMonitor, Counters, PacketTooBig),
+            exit(normal);
+        true ->
+            setup_loop_wait(
+                Socket,
+                PeerAddress,
+                Port,
+                Owner,
+                OwnerMonitor,
+                SocketReference,
+                Counters,
+                PacketTooBig,
+                Deadline,
+                Buffered
+            )
+    end.
+
+setup_loop_wait(
+    Socket,
+    PeerAddress,
+    Port,
+    Owner,
+    OwnerMonitor,
+    SocketReference,
+    Counters,
+    PacketTooBig,
+    Deadline,
+    Buffered
+) ->
     Remaining = erlang:max(
         0, Deadline - erlang:monotonic_time(millisecond)
     ),
@@ -559,21 +881,40 @@ setup_loop(
          {adopt, ClaimedOwner}} ->
             case Caller =:= Owner andalso ClaimedOwner =:= Owner of
                 true ->
-                    Caller ! {http_masque_udp_reply, CallReference, {ok, nil}},
-                    atomics:put(Counters, ?STATE, ?STATE_OPEN),
-                    owner_loop(
-                        Socket,
-                        PeerAddress,
-                        Port,
-                        Owner,
-                        OwnerMonitor,
-                        SocketReference,
-                        Counters,
-                        PacketTooBig,
-                        Buffered,
-                        none,
-                        none
-                    );
+                    case operation_reply_is_timely(
+                        erlang:monotonic_time(millisecond), Deadline
+                    ) of
+                        true ->
+                            publish_adoption(
+                                Counters,
+                                Caller,
+                                CallReference,
+                                fun() -> ok end
+                            ),
+                            owner_loop(
+                                Socket,
+                                PeerAddress,
+                                Port,
+                                Owner,
+                                OwnerMonitor,
+                                SocketReference,
+                                Counters,
+                                PacketTooBig,
+                                Buffered,
+                                none,
+                                none
+                            );
+                        false ->
+                            reject_expired_adoption(
+                                Socket,
+                                OwnerMonitor,
+                                Counters,
+                                PacketTooBig,
+                                Caller,
+                                CallReference,
+                                fun() -> ok end
+                            )
+                    end;
                 false ->
                     Caller ! {http_masque_udp_reply, CallReference, {error, 1}},
                     setup_loop(
@@ -642,9 +983,47 @@ setup_loop(
                 Buffered
             )
     after Remaining ->
+        mark_setup_timeout(Counters),
         close_owner(Socket, OwnerMonitor, Counters, PacketTooBig),
         exit(normal)
     end.
+
+-spec publish_adoption(
+    counters(), pid(), reference(), fun(() -> term())
+) -> ok.
+publish_adoption(Counters, Caller, CallReference, AfterPublish) ->
+    %% Publish the open state before acknowledging adoption. Once the caller
+    %% observes success, its next command must not race the setup-state gate.
+    atomics:put(Counters, ?STATE, ?STATE_OPEN),
+    _ = AfterPublish(),
+    Caller ! {http_masque_udp_reply, CallReference, {ok, nil}},
+    ok.
+
+-spec reject_expired_adoption(
+    gen_udp:socket(), reference(), counters(), packet_too_big_config(),
+    pid(), reference(), fun(() -> term())
+) -> no_return().
+reject_expired_adoption(
+    Socket,
+    OwnerMonitor,
+    Counters,
+    PacketTooBig,
+    Caller,
+    CallReference,
+    AfterClose
+) ->
+    %% The hook is private and production supplies a no-op. Source-probe tests
+    %% stop here to prove explicit socket closure precedes the typed timeout;
+    %% this function contains the stale-adoption path's only close_owner call.
+    mark_setup_timeout(Counters),
+    close_owner(Socket, OwnerMonitor, Counters, PacketTooBig),
+    _ = AfterClose(),
+    Caller ! {
+        http_masque_udp_reply,
+        CallReference,
+        {error, 2}
+    },
+    exit(normal).
 
 -spec owner_loop(
     gen_udp:socket(), inet:ip_address(), inet:port_number(), pid(), reference(),
@@ -728,7 +1107,7 @@ owner_loop(
                     )
             end;
         {http_masque_udp_call, SocketReference, CallReference, Caller,
-         {receive_udp, Timeout}} ->
+         {receive_udp, Deadline}} ->
             release_command(Counters),
             case {DatagramWaiter, Buffered} of
                 {none, BufferedEvent} when BufferedEvent =/= none ->
@@ -770,7 +1149,7 @@ owner_loop(
                 {none, none} ->
                     atomics:put(Counters, ?RECEIVE_WAITING, 1),
                     Timer = erlang:send_after(
-                        Timeout,
+                        erlang:max(0, Deadline - erlang:monotonic_time(millisecond)),
                         self(),
                         {http_masque_udp_receive_timeout, CallReference}
                     ),
@@ -807,13 +1186,13 @@ owner_loop(
                     )
             end;
         {http_masque_udp_call, SocketReference, CallReference, Caller,
-         {receive_event, Timeout}} ->
+         {receive_event, Deadline}} ->
             release_command(Counters),
             case EventWaiter of
                 none ->
                     atomics:put(Counters, ?EVENT_WAITING, 1),
                     Timer = erlang:send_after(
-                        Timeout,
+                        erlang:max(0, Deadline - erlang:monotonic_time(millisecond)),
                         self(),
                         {http_masque_udp_event_timeout, CallReference}
                     ),
@@ -1171,30 +1550,344 @@ monitored_call(
     Command,
     Timeout
 ) ->
+    {OperationDeadline, CompletionDeadline} = call_deadlines(Timeout),
     CallReference = make_ref(),
     Monitor = erlang:monitor(process, Pid),
-    Pid ! {
-        http_masque_udp_call,
-        SocketReference,
-        CallReference,
-        self(),
-        Command
-    },
-    Wait = call_wait(Timeout),
+    case operation_reply_is_timely(
+        erlang:monotonic_time(millisecond), OperationDeadline
+    ) of
+        true ->
+            Pid ! {
+                http_masque_udp_call,
+                SocketReference,
+                CallReference,
+                self(),
+                waiter_command_deadline(Command, OperationDeadline, CompletionDeadline)
+            },
+            monitored_call_wait(
+                Pid,
+                Monitor,
+                CallReference,
+                Counters,
+                PacketTooBigDiagnostics,
+                OperationDeadline,
+                CompletionDeadline,
+                is_waiter_command(Command)
+            );
+        false ->
+            force_failed_call(
+                Pid,
+                Monitor,
+                CallReference,
+                Counters,
+                PacketTooBigDiagnostics,
+                CompletionDeadline
+            )
+    end.
+
+-spec waiter_command_deadline(term(), integer(), integer()) -> term().
+waiter_command_deadline({receive_udp, _Timeout}, Deadline, CompletionDeadline) ->
+    {receive_udp, Deadline - erlang:max(1, CompletionDeadline - Deadline)};
+waiter_command_deadline({receive_event, _Timeout}, Deadline, CompletionDeadline) ->
+    {receive_event, Deadline - erlang:max(1, CompletionDeadline - Deadline)};
+waiter_command_deadline(Command, _Deadline, _CompletionDeadline) -> Command.
+
+-spec is_waiter_command(term()) -> boolean().
+is_waiter_command({receive_udp, _Timeout}) -> true;
+is_waiter_command({receive_event, _Timeout}) -> true;
+is_waiter_command(_Command) -> false.
+
+monitored_call_wait(
+    Pid,
+    Monitor,
+    CallReference,
+    Counters,
+    PacketTooBigDiagnostics,
+    OperationDeadline,
+    CompletionDeadline,
+    Waiting
+) ->
+    Remaining = erlang:max(
+        0, OperationDeadline - erlang:monotonic_time(millisecond)
+    ),
     receive
         {http_masque_udp_reply, CallReference, Result} ->
-            erlang:demonitor(Monitor, [flush]),
-            Result;
+            case operation_result_is_timely(
+                erlang:monotonic_time(millisecond), OperationDeadline,
+                CompletionDeadline, Waiting, Result
+            ) of
+                true ->
+                    erlang:demonitor(Monitor, [flush]),
+                    Result;
+                false ->
+                    force_failed_call(
+                        Pid,
+                        Monitor,
+                        CallReference,
+                        Counters,
+                        PacketTooBigDiagnostics,
+                        CompletionDeadline
+                    )
+            end;
         {'DOWN', Monitor, process, Pid, _Reason} ->
             mark_owner_down(Counters, PacketTooBigDiagnostics),
             drain_call_reply(CallReference),
-            {error, 4}
-    after Wait ->
+            terminal_down_error(Counters, 4)
+    after Remaining ->
+        case Waiting of
+            true ->
+                await_waiter_timeout(
+                    Pid, Monitor, CallReference, Counters,
+                    PacketTooBigDiagnostics, OperationDeadline,
+                    CompletionDeadline
+                );
+            false ->
+                force_failed_call(
+                    Pid, Monitor, CallReference, Counters,
+                    PacketTooBigDiagnostics, CompletionDeadline
+                )
+        end
+    end.
+
+%% The owner's timeout is a negative acknowledgement that its receive credit
+%% is already returned. Its confirmation may use the existing cleanup tail;
+%% payloads and other successful replies must still precede the operation deadline.
+-spec await_waiter_timeout(
+    pid(), reference(), reference(), counters(), term(), integer(), integer()
+) -> {error, integer()}.
+await_waiter_timeout(
+    Pid, Monitor, CallReference, Counters, PacketTooBigDiagnostics,
+    OperationDeadline, CompletionDeadline
+) ->
+    ForceAt = force_join_at(OperationDeadline, CompletionDeadline),
+    Remaining = erlang:max(0, ForceAt - erlang:monotonic_time(millisecond)),
+    receive
+        {http_masque_udp_reply, CallReference, {error, 2}} ->
+            case erlang:monotonic_time(millisecond) < ForceAt of
+                true ->
+                    erlang:demonitor(Monitor, [flush]),
+                    {error, 2};
+                false ->
+                    force_failed_call(
+                        Pid, Monitor, CallReference, Counters,
+                        PacketTooBigDiagnostics, CompletionDeadline
+                    )
+            end;
+        {http_masque_udp_reply, CallReference, _LateResult} ->
+            force_failed_call(
+                Pid, Monitor, CallReference, Counters,
+                PacketTooBigDiagnostics, CompletionDeadline
+            );
+        {'DOWN', Monitor, process, Pid, _Reason} ->
+            mark_owner_down(Counters, PacketTooBigDiagnostics),
+            drain_call_reply(CallReference),
+            terminal_down_error(Counters, 4)
+    after Remaining ->
+        force_failed_call(
+            Pid, Monitor, CallReference, Counters,
+            PacketTooBigDiagnostics, CompletionDeadline
+        )
+    end.
+
+-spec operation_result_is_timely(integer(), integer(), integer(), boolean(), term()) ->
+    boolean().
+operation_result_is_timely(Now, OperationDeadline, CompletionDeadline, Waiting, Result) ->
+    operation_reply_is_timely(Now, OperationDeadline) orelse
+        (Waiting andalso Result =:= {error, 2} andalso
+         Now < force_join_at(OperationDeadline, CompletionDeadline)).
+
+force_failed_call(
+    Pid,
+    Monitor,
+    CallReference,
+    Counters,
+    PacketTooBigDiagnostics,
+    CompletionDeadline
+) ->
+    exit(Pid, kill),
+    _Joined = await_down_until(Pid, Monitor, CompletionDeadline),
+    mark_owner_down(Counters, PacketTooBigDiagnostics),
+    drain_call_reply(CallReference),
+    {error, 8}.
+
+close_call(
+    #{pid := Pid, reference := SocketReference, counters := Counters,
+      packet_too_big := PacketTooBigDiagnostics},
+    {OperationDeadline, CompletionDeadline}
+) ->
+    CallReference = make_ref(),
+    Monitor = erlang:monitor(process, Pid),
+    case operation_reply_is_timely(
+        erlang:monotonic_time(millisecond), OperationDeadline
+    ) of
+        true ->
+            Pid ! {
+                http_masque_udp_call,
+                SocketReference,
+                CallReference,
+                self(),
+                close
+            },
+            close_call_wait(
+                Pid,
+                Monitor,
+                CallReference,
+                Counters,
+                PacketTooBigDiagnostics,
+                OperationDeadline,
+                CompletionDeadline,
+                none,
+                false
+            );
+        false ->
+            force_failed_close(
+                Pid,
+                Monitor,
+                CallReference,
+                Counters,
+                PacketTooBigDiagnostics,
+                CompletionDeadline
+            )
+    end.
+
+close_call_wait(
+    Pid,
+    Monitor,
+    CallReference,
+    Counters,
+    PacketTooBigDiagnostics,
+    OperationDeadline,
+    CompletionDeadline,
+    Reply,
+    Down
+) ->
+    case {Reply, Down} of
+        {{some, Result}, true} ->
+            drain_call_reply(CallReference),
+            case erlang:monotonic_time(millisecond) =< CompletionDeadline of
+                true -> Result;
+                false ->
+                    mark_owner_down(Counters, PacketTooBigDiagnostics),
+                    {error, 8}
+            end;
+        {none, true} ->
+            mark_owner_down(Counters, PacketTooBigDiagnostics),
+            drain_call_reply(CallReference),
+            terminal_down_error(Counters, 8);
+        _ ->
+            WaitUntil = case Reply of
+                none -> OperationDeadline;
+                {some, _} -> force_join_at(
+                    OperationDeadline, CompletionDeadline
+                )
+            end,
+            Remaining = erlang:max(
+                0, WaitUntil - erlang:monotonic_time(millisecond)
+            ),
+            receive
+                {http_masque_udp_reply, CallReference, Result} ->
+                    case operation_reply_is_timely(
+                        erlang:monotonic_time(millisecond),
+                        OperationDeadline
+                    ) of
+                        true ->
+                            close_call_wait(
+                                Pid,
+                                Monitor,
+                                CallReference,
+                                Counters,
+                                PacketTooBigDiagnostics,
+                                OperationDeadline,
+                                CompletionDeadline,
+                                {some, Result},
+                                Down
+                            );
+                        false ->
+                            force_failed_close(
+                                Pid,
+                                Monitor,
+                                CallReference,
+                                Counters,
+                                PacketTooBigDiagnostics,
+                                CompletionDeadline
+                            )
+                    end;
+                {'DOWN', Monitor, process, Pid, normal} ->
+                    close_call_wait(
+                        Pid,
+                        Monitor,
+                        CallReference,
+                        Counters,
+                        PacketTooBigDiagnostics,
+                        OperationDeadline,
+                        CompletionDeadline,
+                        Reply,
+                        true
+                    );
+                {'DOWN', Monitor, process, Pid, _Reason} ->
+                    mark_owner_down(Counters, PacketTooBigDiagnostics),
+                    drain_call_reply(CallReference),
+                    terminal_down_error(Counters, 8)
+            after Remaining ->
+                force_failed_close(
+                    Pid,
+                    Monitor,
+                    CallReference,
+                    Counters,
+                    PacketTooBigDiagnostics,
+                    CompletionDeadline
+                )
+            end
+    end.
+
+force_failed_close(
+    Pid,
+    Monitor,
+    CallReference,
+    Counters,
+    PacketTooBigDiagnostics,
+    CompletionDeadline
+) ->
+    exit(Pid, kill),
+    _Joined = await_down_until(Pid, Monitor, CompletionDeadline),
+    mark_owner_down(Counters, PacketTooBigDiagnostics),
+    drain_call_reply(CallReference),
+    {error, 8}.
+
+confirm_closed_owner(
+    #{pid := Pid, counters := Counters,
+      packet_too_big := PacketTooBigDiagnostics},
+    {OperationDeadline, CompletionDeadline}
+) ->
+    Monitor = erlang:monitor(process, Pid),
+    Remaining = erlang:max(
+        0, force_join_at(OperationDeadline, CompletionDeadline)
+            - erlang:monotonic_time(millisecond)
+    ),
+    receive
+        {'DOWN', Monitor, process, Pid, normal} ->
+            closed_join_result(CompletionDeadline);
+        {'DOWN', Monitor, process, Pid, noproc} ->
+            closed_join_result(CompletionDeadline);
+        {'DOWN', Monitor, process, Pid, _Reason} ->
+            mark_owner_down(Counters, PacketTooBigDiagnostics),
+            {error, 8}
+    after Remaining ->
         exit(Pid, kill),
-        await_down(Pid, Monitor),
-        mark_owner_down(Counters, PacketTooBigDiagnostics),
-        drain_call_reply(CallReference),
-        {error, 8}
+        case await_down_until(Pid, Monitor, CompletionDeadline) of
+            true ->
+                mark_owner_down(Counters, PacketTooBigDiagnostics),
+                {error, 8};
+            false ->
+                mark_owner_down(Counters, PacketTooBigDiagnostics),
+                {error, 8}
+        end
+    end.
+
+closed_join_result(CompletionDeadline) ->
+    case erlang:monotonic_time(millisecond) =< CompletionDeadline of
+        true -> {ok, nil};
+        false -> {error, 8}
     end.
 
 -spec monitored_call_forever(handle(), term()) ->
@@ -1266,7 +1959,7 @@ release_command(Counters) ->
     end.
 
 -spec open_socket(socket_family(), inet:ip_address(), inet:port_number()) ->
-    {ok, gen_udp:socket(), boolean(), boolean(), non_neg_integer(),
+    {ok, gen_udp:socket(), boolean(), 1..3, non_neg_integer(),
      non_neg_integer()} | {error, term()}.
 open_socket(Family, PeerAddress, Port) ->
     Options = [
@@ -1287,10 +1980,16 @@ open_socket(Family, PeerAddress, Port) ->
                 ok ->
                     DontFragment = set_dont_fragment(Socket, Family),
                     NotEct = set_not_ect(Socket, Family),
-                    {ReceiveBufferBytes, SendBufferBytes} =
-                        socket_buffer_sizes(Socket),
-                    {ok, Socket, DontFragment, NotEct, ReceiveBufferBytes,
-                     SendBufferBytes}
+                    case NotEct of
+                        0 ->
+                            gen_udp:close(Socket),
+                            {error, not_ect_configuration_failed};
+                        _ ->
+                            {ReceiveBufferBytes, SendBufferBytes} =
+                                socket_buffer_sizes(Socket),
+                            {ok, Socket, DontFragment, NotEct, ReceiveBufferBytes,
+                             SendBufferBytes}
+                    end
             end
     end.
 
@@ -1572,6 +2271,28 @@ mark_owner_down(Counters, PacketTooBigDiagnostics) ->
     end,
     ok.
 
+-spec mark_setup_timeout(counters()) -> ok.
+mark_setup_timeout(Counters) ->
+    try atomics:compare_exchange(
+        Counters,
+        ?TERMINAL_CAUSE,
+        ?TERMINAL_CAUSE_NONE,
+        ?TERMINAL_CAUSE_SETUP_TIMEOUT
+    ) of
+        _ -> ok
+    catch
+        _:_ -> ok
+    end.
+
+-spec terminal_down_error(counters(), integer()) -> {error, integer()}.
+terminal_down_error(Counters, Default) ->
+    case safe_atomic_get(
+        Counters, ?TERMINAL_CAUSE, ?TERMINAL_CAUSE_NONE
+    ) of
+        ?TERMINAL_CAUSE_SETUP_TIMEOUT -> {error, 2};
+        _ -> {error, Default}
+    end.
+
 -spec finish_unusable_owner(reference(), counters()) -> ok.
 finish_unusable_owner(OwnerMonitor, Counters) ->
     atomics:put(Counters, ?QUEUED_COMMANDS, 0),
@@ -1583,20 +2304,40 @@ finish_unusable_owner(OwnerMonitor, Counters) ->
     erlang:demonitor(OwnerMonitor, [flush]),
     ok.
 
--spec set_not_ect(gen_udp:socket(), socket_family()) -> boolean().
+-spec set_not_ect(gen_udp:socket(), socket_family()) -> 0..3.
 set_not_ect(Socket, Family) ->
     Option = case Family of
         4 -> {tos, 0};
         6 -> {tclass, 0}
     end,
-    try inet:setopts(Socket, [Option]) of
+    Name = element(1, Option),
+    not_ect_configuration(fun() -> inet:setopts(Socket, [Option]) end,
+        fun() -> inet:getopts(Socket, [Name]) end).
+
+%% Production-used option boundary, also exercised by deterministic platform
+%% capability faults without changing machine-wide socket configuration.
+-spec not_ect_configuration(fun(() -> term()), fun(() -> term())) -> 0..3.
+not_ect_configuration(SetOption, ReadOption) ->
+    Configured = try SetOption() of
         ok -> true;
-        {error, _Reason} ->
-            %% A newly opened OTP UDP socket has the default Not-ECT marking.
-            %% No operation in this owner can install a non-zero marking.
-            true
-    catch
-        _:_ -> true
+        _ -> false
+    catch _:_ -> false
+    end,
+    Observed = try ReadOption() of
+        {ok, [{Name, Value}]} when (Name =:= tos orelse Name =:= tclass),
+            is_integer(Value), Value >= 0, Value =< 255 ->
+            {observed, Value band 3};
+        _ -> unobserved
+    catch _:_ -> unobserved
+    end,
+    case {Observed, Configured} of
+        {{observed, 0}, _} -> 3;
+        {{observed, _}, _} -> 0;
+        {unobserved, true} -> 2;
+        %% Only fresh sockets reach this boundary. This owner never installs
+        %% a nonzero ECN marking, but an unreadable default is not evidence
+        %% of an observed socket option or of a packet captured on the wire.
+        {unobserved, false} -> 1
     end.
 
 -spec socket_buffer_sizes(gen_udp:socket()) ->
@@ -1821,66 +2562,86 @@ set_boolean(Counters, Index, Value) ->
         false -> 0
     end).
 
--spec acquire_idle_state(idle_state()) ->
-    active | stopped | expired | invalid.
-acquire_idle_state(State) ->
-    try atomics:get(State, ?IDLE_STATE) of
-        ?IDLE_ACTIVE ->
-            case atomics:compare_exchange(
-                State, ?IDLE_STATE, ?IDLE_ACTIVE, ?IDLE_LOCKED
-            ) of
-                ok -> active;
-                _ -> acquire_idle_state(State)
-            end;
-        ?IDLE_LOCKED ->
-            erlang:yield(),
-            acquire_idle_state(State);
-        ?IDLE_STOPPED -> stopped;
-        ?IDLE_EXPIRED -> expired;
-        _ -> invalid
-    catch
-        _:_ -> invalid
-    end.
-
--spec reserve_idle_wake(idle_state()) -> 0 | 1.
+-spec reserve_idle_wake(idle_state()) -> 0 | 1 | 2.
 reserve_idle_wake(State) ->
-    case atomics:compare_exchange(
-        State, ?IDLE_PENDING, 0, 1
-    ) of
+    case atomics:compare_exchange(State, ?IDLE_PENDING, 0, 1) of
         ok ->
-            saturating_increment(State, ?IDLE_WAKE_SIGNALS),
-            1;
+            case idle_public_state(State) of
+                ?IDLE_ACTIVE ->
+                    case idle_increment(State, ?IDLE_WAKE_SIGNALS) of
+                        ok -> 1;
+                        unavailable -> 2
+                    end;
+                ?IDLE_UNAVAILABLE -> atomics:put(State, ?IDLE_PENDING, 0), 2;
+                _ -> atomics:put(State, ?IDLE_PENDING, 0), 0
+            end;
         _ -> 0
     end.
 
 -spec idle_public_state(idle_state()) -> integer().
-idle_public_state(State) ->
-    try atomics:get(State, ?IDLE_STATE) of
-        ?IDLE_LOCKED -> ?IDLE_ACTIVE;
-        Value -> Value
-    catch
-        _:_ -> ?IDLE_STOPPED
+idle_public_state(State) -> idle_state_value(State, atomics:get(State, ?IDLE_STATE)).
+
+idle_state_value(_State, ?IDLE_EXPIRED_WORD) -> ?IDLE_EXPIRED;
+idle_state_value(State, Control) ->
+    case atomics:get(State, ?IDLE_FAILURE) of
+        0 when Control =:= ?IDLE_STOP_WORD -> ?IDLE_STOPPED;
+        0 -> ?IDLE_ACTIVE;
+        _ -> ?IDLE_UNAVAILABLE
+    end.
+-spec call_deadlines(pos_integer()) -> {integer(), integer()}.
+call_deadlines(Timeout) ->
+    call_deadlines_at(erlang:monotonic_time(millisecond), Timeout).
+
+-spec call_deadlines_at(integer(), pos_integer()) -> {integer(), integer()}.
+call_deadlines_at(Now, Timeout) ->
+    CompletionDeadline = Now + Timeout,
+    CleanupTail = erlang:min(
+        ?CALL_COMPLETION_TAIL_MILLISECONDS, Timeout div 4
+    ),
+    {CompletionDeadline - CleanupTail, CompletionDeadline}.
+
+-spec operation_reply_is_timely(integer(), integer()) -> boolean().
+operation_reply_is_timely(Now, OperationDeadline) ->
+    Now < OperationDeadline.
+
+-spec force_join_at(integer(), integer()) -> integer().
+force_join_at(OperationDeadline, CompletionDeadline) ->
+    CleanupTail = erlang:max(
+        0, CompletionDeadline - OperationDeadline
+    ),
+    ForceTail = erlang:min(
+        ?FORCE_JOIN_MILLISECONDS, CleanupTail div 2
+    ),
+    erlang:max(OperationDeadline, CompletionDeadline - ForceTail).
+
+-spec await_down_until(pid(), reference(), integer()) -> boolean().
+await_down_until(Pid, Monitor, Deadline) ->
+    Remaining = erlang:max(
+        0, Deadline - erlang:monotonic_time(millisecond)
+    ),
+    receive
+        {'DOWN', Monitor, process, Pid, _Reason} -> true
+    after Remaining ->
+        erlang:demonitor(Monitor, [flush]),
+        false
     end.
 
--spec call_wait(pos_integer()) -> pos_integer().
-call_wait(Timeout) ->
-    erlang:min(2147483647, Timeout + ?CALL_GRACE_MILLISECONDS).
-
--spec await_down(pid(), reference()) -> ok.
-await_down(Pid, Monitor) ->
-    receive
-        {'DOWN', Monitor, process, Pid, _Reason} -> ok
-    after ?CALL_GRACE_MILLISECONDS ->
-        exit(Pid, kill),
-        receive
-            {'DOWN', Monitor, process, Pid, _Reason} -> ok
-        end
+-spec join_or_force_until(pid(), reference(), integer(), integer()) -> boolean().
+join_or_force_until(Pid, Monitor, ForceAt, CompletionDeadline) ->
+    case await_down_until(Pid, Monitor, ForceAt) of
+        true -> true;
+        false ->
+            %% await_down_until released its monitor on expiry, so the forced
+            %% phase installs exactly one replacement monitor before kill.
+            ForceMonitor = erlang:monitor(process, Pid),
+            exit(Pid, kill),
+            await_down_until(Pid, ForceMonitor, CompletionDeadline)
     end.
 
 -spec drain_start_reply(reference()) -> ok.
 drain_start_reply(Reference) ->
     receive
-        {Reference, _Outcome} -> ok
+        {Reference, _Outcome} -> drain_start_reply(Reference)
     after 0 ->
         ok
     end.
@@ -1888,7 +2649,8 @@ drain_start_reply(Reference) ->
 -spec drain_call_reply(reference()) -> ok.
 drain_call_reply(Reference) ->
     receive
-        {http_masque_udp_reply, Reference, _Outcome} -> ok
+        {http_masque_udp_reply, Reference, _Outcome} ->
+            drain_call_reply(Reference)
     after 0 ->
         ok
     end.

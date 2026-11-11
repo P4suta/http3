@@ -45,7 +45,19 @@
     "packages/quic_core/manifest.toml",
     "packages/quic_core/mix.exs",
     "scripts/coverage.escript",
-    "scripts/fresh_build.sh"
+    "scripts/fresh_build.sh",
+    "scripts/fresh_build_manifest.escript",
+    "scripts/fresh_build_identity.hrl",
+    "scripts/evidence_identity.hrl",
+    "scripts/file_identity.hrl",
+    "scripts/execution_identity.hrl",
+    "scripts/diagnostic_failure.hrl",
+    "scripts/process_runner.hrl",
+    "scripts/command_capture.hrl",
+    "scripts/coverage_git_test.escript",
+    "scripts/qualification_eunit_listener.erl",
+    "scripts/suite_evidence.hrl",
+    "scripts/suite_discovery.hrl"
   ],
   "source_trees": [
     "src",

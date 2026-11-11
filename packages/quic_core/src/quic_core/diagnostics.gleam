@@ -4,10 +4,90 @@
 //// never expose sockets, processes, native terms, certificate contents,
 //// session-ticket fields, or traffic secrets.
 
+import gleam/list
 import gleam/result
 import quic_core.{type CongestionControl, type Version}
 import quic_core/internal/qlog
 import quic_core/internal/udp
+
+/// Opaque, garbage-collected storage for at most 64 scalar connect events.
+/// Reusing a trace allocates no additional slots; attempt numbers distinguish concurrent connections, and overflow increments the dropped counter.
+pub type ConnectTrace
+
+pub type ConnectPhase {
+  NameResolution
+  UdpOpen
+  TlsHandshake
+  OwnershipPublication
+}
+
+pub type ConnectOutcome {
+  Started
+  Succeeded
+  Failed
+  Abandoned
+  Skipped
+}
+
+pub type ConnectEvent {
+  ConnectEvent(
+    sequence: Int,
+    attempt: Int,
+    candidate: Int,
+    phase: ConnectPhase,
+    outcome: ConnectOutcome,
+    elapsed_milliseconds: Int,
+  )
+}
+
+/// A consistent snapshot has fully published rows and exact loss accounting.
+/// Unfinished writers, or exhaustion of the finite loss-counter update budget,
+/// produce `consistent: False`; `dropped` is then a lower bound.
+/// Event storage and counters remain bounded even when many connections share one trace.
+pub type ConnectSnapshot {
+  ConnectSnapshot(consistent: Bool, dropped: Int, events: List(ConnectEvent))
+}
+
+/// Start an empty bounded trace.
+/// Snapshots remain readable after failure,
+/// cancellation, or connection-owner exit and contain no endpoint or secrets.
+@external(erlang, "quic_core_connect_trace_ffi", "new")
+pub fn new_connect_trace() -> ConnectTrace
+
+@external(erlang, "quic_core_connect_trace_ffi", "snapshot")
+fn raw_connect_snapshot(
+  trace: ConnectTrace,
+) -> #(Bool, Int, List(#(Int, Int, Int, Int, Int, Int)))
+
+pub fn connect_snapshot(trace: ConnectTrace) -> ConnectSnapshot {
+  let #(consistent, dropped, events) = raw_connect_snapshot(trace)
+  ConnectSnapshot(
+    consistent,
+    dropped,
+    list.map(events, fn(event) {
+      let #(sequence, attempt, candidate, phase, outcome, elapsed) = event
+      ConnectEvent(
+        sequence,
+        attempt,
+        candidate,
+        case phase {
+          1 -> NameResolution
+          2 -> UdpOpen
+          3 -> TlsHandshake
+          _ -> OwnershipPublication
+        },
+        case outcome {
+          1 -> Started
+          2 -> Succeeded
+          3 -> Failed
+          4 -> Abandoned
+          _ -> Skipped
+        },
+        elapsed,
+      )
+    }),
+  )
+}
 
 /// Stable connection lifecycle.
 pub type Phase {
@@ -77,6 +157,16 @@ pub type ConnectionStats {
 /// boundary.
 pub type ResourceStats {
   ResourceStats(runtime_stream_handles: Int, transport_streams: Int)
+}
+
+/// Live listener routing occupancy; identifiers and reset tokens are excluded.
+pub type ListenerConnectionIdStats {
+  ListenerConnectionIdStats(connections: Int, routes: Int)
+}
+
+/// Local connection-ID lifecycle counts, including sequence zero.
+pub type ConnectionIdStats {
+  ConnectionIdStats(active: Int, issued: Int, retired: Int, history_limit: Int)
 }
 
 /// Bounded diagnostic writer counters without trace contents.
@@ -254,6 +344,8 @@ pub fn validate_directory(directory: String) -> Result(Nil, Error) {
 /// stalls. One writer-wide watermark serializes timestamps from every producer:
 /// an accepted observation older than the preceding accepted observation is
 /// emitted at the preceding time. Dropped observations never move the watermark.
+/// Numeric event fields fit nonnegative signed 64-bit values, and frame stream
+/// identifiers fit QUIC's 62-bit range. Invalid observations are discarded.
 pub fn open(
   directory: String,
   vantage_point: VantagePoint,
@@ -608,6 +700,11 @@ pub fn connection_closed(writer: Writer, now_milliseconds: Int) -> Nil {
 }
 
 /// Flush and close the writer idempotently.
+/// A live writer reports success only after its admission, guardian, device worker and file I/O process have exited.
+/// A four-second flush deadline and one-second child join allowance bound shutdown;
+/// expiry or the 32-caller close limit returns a typed write failure.
+/// Owner exit also has an independent five-second shutdown deadline followed by a one-second child join allowance, even when admission stops responding.
+/// Filesystem setup before writer admission remains synchronous.
 pub fn close(writer: Writer) -> Result(Nil, Error) {
   let Writer(handle) = writer
   qlog.close(handle) |> map_qlog_result
@@ -617,6 +714,7 @@ pub fn close(writer: Writer) -> Result(Nil, Error) {
 ///
 /// `queued_events` includes the in-flight device write and never exceeds the
 /// maximum supplied to `open`.
+/// Drop and write-error counters saturate at 2_147_483_647.
 pub fn stats(writer: Writer) -> Result(Stats, Error) {
   let Writer(handle) = writer
   case qlog.stats(handle) {

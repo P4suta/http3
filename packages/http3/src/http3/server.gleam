@@ -30,6 +30,7 @@ pub opaque type Configuration {
     certificate: BitArray,
     private_key: BitArray,
     alternative_certificates: List(#(String, BitArray, BitArray)),
+    authority_policies: server_backend.AuthorityPolicies,
     port: Int,
     bind_address: Option(address.Address),
     deadlines: policy.Deadlines,
@@ -42,6 +43,13 @@ pub opaque type Configuration {
     replay_guard: Option(server_backend.ReplayGuard),
     operational_keys: Option(OperationalKeys),
   )
+}
+
+/// RFC 9114 Section 4.3.1 authority rule for a custom URI scheme.
+pub type AuthorityPolicy {
+  MandatoryAuthority
+  OptionalAuthority
+  NoAuthority
 }
 
 /// A validated 256-bit server key with no secret accessor.
@@ -131,6 +139,11 @@ pub type ConfigurationError {
   InvalidPrivateKey
   InvalidServerName
   DuplicateServerName
+  InvalidAuthorityScheme
+  ReservedAuthorityScheme
+  DuplicateAuthorityScheme
+  AuthoritySchemeTooLong(maximum: Int)
+  AuthorityPolicyLimitExceeded(maximum: Int)
   InvalidPort(Int)
   InvalidTimeout
   InvalidRequestBodyLimit
@@ -188,6 +201,7 @@ pub fn new(
     certificate: certificate,
     private_key: private_key,
     alternative_certificates: [],
+    authority_policies: server_backend.authority_policies(),
     port: 0,
     bind_address: None,
     deadlines: policy.default_deadlines(),
@@ -202,10 +216,36 @@ pub fn new(
   ))
 }
 
+/// Configure the authority rule for one custom URI scheme.
+///
+/// Scheme names use RFC URI ASCII syntax, are normalized to lower case, and are limited to 64 bytes.
+/// At most 32 custom schemes can be configured.
+/// `http` and `https` always require an authority component, supplied through `:authority` or `Host`, and cannot be overridden.
+/// Requests with any other unconfigured scheme are rejected.
+pub fn with_custom_scheme_authority_policy(
+  configuration configuration: Configuration,
+  scheme scheme: String,
+  authority_policy authority_policy: AuthorityPolicy,
+) -> Result(Configuration, ConfigurationError) {
+  server_backend.with_custom_scheme_authority_policy(
+    policies: configuration.authority_policies,
+    scheme: scheme,
+    policy: case authority_policy {
+      MandatoryAuthority -> server_backend.MandatoryAuthority
+      OptionalAuthority -> server_backend.OptionalAuthority
+      NoAuthority -> server_backend.NoAuthority
+    },
+  )
+  |> result.map(fn(authority_policies) {
+    Configuration(..configuration, authority_policies: authority_policies)
+  })
+  |> result.map_error(map_authority_policy_error)
+}
+
 /// Enable 0-RTT using this listener process's finite replay cache.
 ///
-/// Disabled by default. This mode is suitable only while a single listener
-/// actor remains alive; it safely rejects early data after a restart.
+/// Disabled by default.
+/// This mode is suitable only while a single listener actor remains alive; it safely rejects early data after a restart.
 pub fn with_single_node_zero_rtt(
   configuration: Configuration,
 ) -> Configuration {
@@ -214,11 +254,9 @@ pub fn with_single_node_zero_rtt(
 
 /// Construct a bounded external atomic test-and-record guard.
 ///
-/// The callback must store an unseen fingerprint for at least the supplied
-/// validity interval and return `AcceptEarlyData` only when that insertion was
-/// atomic and successful. `Error`, callback exit, rejection, and timeout all
-/// fall back to authenticated 1-RTT without failing the connection. The guard
-/// deadline must be from one through 10,000 milliseconds.
+/// The callback must store an unseen fingerprint for at least the supplied validity interval and return `AcceptEarlyData` only when that insertion was atomic and successful.
+/// `Error`, callback exit, rejection, and timeout all fall back to authenticated 1-RTT without failing the connection.
+/// The guard deadline must be from one through 10,000 milliseconds.
 pub fn replay_guard(
   timeout_milliseconds timeout_milliseconds: Int,
   check check: fn(ReplayAttempt) -> Result(ReplayDecision, Nil),
@@ -313,6 +351,21 @@ pub fn with_deadlines(
   Configuration(..configuration, deadlines: deadlines)
 }
 
+/// Change one native server deadline without exposing Configuration layout.
+@internal
+pub fn with_deadline(
+  configuration configuration: Configuration,
+  phase phase: runtime_failure.TimeoutPhase,
+  milliseconds milliseconds: Int,
+) -> Result(Configuration, policy.Error) {
+  use deadlines <- result.try(policy.with_deadline(
+    configuration.deadlines,
+    phase,
+    milliseconds,
+  ))
+  Ok(Configuration(..configuration, deadlines:))
+}
+
 /// Apply one validated set of finite resource limits atomically.
 pub fn with_limits(
   configuration configuration: Configuration,
@@ -323,9 +376,8 @@ pub fn with_limits(
 
 /// Add a certificate selected by an exact SNI name or `*.` wildcard.
 ///
-/// Exact names take precedence over wildcard names. The certificate and key
-/// are parsed eagerly; the original certificate remains the fallback for an
-/// unknown name or a client that omits SNI.
+/// Exact names take precedence over wildcard names.
+/// The certificate and key are parsed eagerly; the original certificate remains the fallback for an unknown name or a client that omits SNI.
 pub fn with_certificate(
   configuration configuration: Configuration,
   server_name server_name: String,
@@ -366,8 +418,8 @@ pub fn with_certificate(
 
 /// Send periodic QUIC PING frames on accepted connections.
 ///
-/// Keepalive is disabled by default. The interval must be from one through
-/// twenty-nine seconds so it remains below the advertised idle timeout.
+/// Keepalive is disabled by default.
+/// The interval must be from one through twenty-nine seconds so it remains below the advertised idle timeout.
 pub fn with_keepalive(
   configuration configuration: Configuration,
   milliseconds milliseconds: Int,
@@ -401,8 +453,8 @@ pub fn with_ipv6(configuration: Configuration) -> Configuration {
 
 /// Enable qlog tracing for accepted connections.
 ///
-/// Trace files can contain sensitive connection metadata. qlog remains off
-/// unless this function is called explicitly.
+/// Trace files can contain sensitive connection metadata.
+/// qlog remains off unless this function is called explicitly.
 pub fn with_qlog(
   configuration configuration: Configuration,
   qlog qlog: transport.Qlog,
@@ -424,9 +476,8 @@ pub fn with_port(
 
 /// Bind the UDP listener to one exact IPv4 or IPv6 address.
 ///
-/// The port remains controlled by `with_port`; zero requests an
-/// operating-system-assigned port. This setting takes precedence over the
-/// wildcard selected by `with_address_family`.
+/// The port remains controlled by `with_port`; zero requests an operating-system-assigned port.
+/// This setting takes precedence over the wildcard selected by `with_address_family`.
 pub fn with_bind_address(
   configuration configuration: Configuration,
   bind_address bind_address: address.Address,
@@ -488,6 +539,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
     certificate,
     private_key,
     alternative_certificates,
+    authority_policies,
     port,
     bind_address,
     deadlines,
@@ -505,6 +557,7 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
       certificate,
       private_key,
       alternative_certificates,
+      authority_policies,
       port,
       option.map(bind_address, address.to_bytes),
       policy.deadline(deadlines, runtime_failure.Operation),
@@ -542,20 +595,31 @@ pub fn start(configuration: Configuration) -> Result(Listener, Error) {
   }
 }
 
+fn map_authority_policy_error(
+  error: server_backend.AuthorityPolicyError,
+) -> ConfigurationError {
+  case error {
+    server_backend.InvalidAuthorityScheme -> InvalidAuthorityScheme
+    server_backend.ReservedAuthorityScheme -> ReservedAuthorityScheme
+    server_backend.DuplicateAuthorityScheme -> DuplicateAuthorityScheme
+    server_backend.AuthoritySchemeTooLong(maximum) ->
+      AuthoritySchemeTooLong(maximum)
+    server_backend.AuthorityPolicyLimitExceeded(maximum) ->
+      AuthorityPolicyLimitExceeded(maximum)
+  }
+}
+
 /// Obtain typed advanced controls for an accepted request stream.
 pub fn request_transport(request: Request) -> transport.Stream {
   make_transport_stream(request.handle)
 }
 
-/// Return a lifetime-stable HTTP Datagram payload ceiling for an accepted
-/// Extended CONNECT request.
+/// Return a lifetime-stable HTTP Datagram payload ceiling for an accepted Extended CONNECT request.
 ///
-/// This read-only query is available before the response is sent, allowing a
-/// server to acquire and validate downstream resources without sending an
-/// optimistic 2xx. It reserves the QUIC path floor and worst-case ACK debt, so
-/// it remains valid after migration, black-hole fallback, or ACK fragmentation.
-/// Use `transport.maximum_datagram_size` after association when a point-in-time
-/// larger value is appropriate. An ordinary request remains unassociated.
+/// This read-only query is available before the response is sent, allowing a server to acquire and validate downstream resources without sending an optimistic 2xx.
+/// It reserves the QUIC path floor and worst-case ACK debt, so it remains valid after migration, black-hole fallback, or ACK fragmentation.
+/// Use `transport.maximum_datagram_size` after association when a point-in-time larger value is appropriate.
+/// An ordinary request remains unassociated.
 pub fn request_datagram_capacity(
   request: Request,
 ) -> Result(Int, transport.Error) {
@@ -576,9 +640,9 @@ pub fn port(listener: Listener) -> Result(Int, Error) {
 
 /// Atomically replace the complete certificate set for future handshakes.
 ///
-/// Build `replacement` with `new` and `with_certificate`. All non-certificate
-/// settings on it are ignored. Existing connections remain authenticated and
-/// open; a validation failure occurs before this function can be called.
+/// Build `replacement` with `new` and `with_certificate`.
+/// All non-certificate settings on it are ignored.
+/// Existing connections remain authenticated and open; a validation failure occurs before this function can be called.
 pub fn reload_certificates(
   listener listener: Listener,
   replacement replacement: Configuration,
@@ -595,8 +659,7 @@ pub fn reload_certificates(
 
 /// Atomically rotate ticket, address-token, and stateless-reset key rings.
 ///
-/// New values use each current key while values authenticated by the single
-/// previous generation remain valid for a bounded deployment transition.
+/// New values use each current key while values authenticated by the single previous generation remain valid for a bounded deployment transition.
 pub fn reload_operational_keys(
   listener listener: Listener,
   keys keys: OperationalKeys,
@@ -651,16 +714,19 @@ pub fn scheme(request: Request) -> String {
   request.scheme
 }
 
-/// Return the validated request `:authority` pseudo-header.
+/// Return the validated effective request authority.
+///
+/// For ordinary requests this is taken from `:authority`, or from `Host` when the request used the RFC 9114 permitted Host-only form.
+///
+/// This is the empty string when a configured `NoAuthority` custom scheme correctly omitted both `:authority` and `Host`.
 pub fn authority(request: Request) -> String {
   request.authority
 }
 
 /// Return this request connection's currently validated peer endpoint.
 ///
-/// QUIC migration and NAT rebinding update this value only after path
-/// validation succeeds. The endpoint therefore never exposes an unvalidated
-/// candidate address.
+/// QUIC migration and NAT rebinding update this value only after path validation succeeds.
+/// The endpoint therefore never exposes an unvalidated candidate address.
 pub fn peer_endpoint(request: Request) -> Result(address.Endpoint, Error) {
   use #(bytes, port) <- result.try(
     server_backend.peer_endpoint(request.handle) |> map_backend,
@@ -677,14 +743,55 @@ pub fn peer_endpoint(request: Request) -> Result(address.Endpoint, Error) {
   )
 }
 
+/// Compare whether two accepted requests belong to one connection actor.
+///
+/// The actor handle, process identifier, connection ID, and endpoint remain private.
+/// This finite observation exists for deterministic conformance tests.
+@internal
+pub fn same_connection(first first: Request, second second: Request) -> Bool {
+  server_backend.same_connection(first: first.handle, second: second.handle)
+}
+
 /// Return an accepted request's non-pseudo headers.
 pub fn headers(request: Request) -> List(#(String, String)) {
   request.headers
 }
 
+/// Configured per-operation duration; this does not start a read.
+@internal
+pub fn operation_timeout_milliseconds(request: Request) -> Int {
+  server_backend.operation_timeout_milliseconds(request.handle)
+}
+
+/// Queue one finite, payload-free application failure code for diagnostics.
+///
+/// This internal hook is asynchronous so a disabled, stopped, or saturated diagnostic destination cannot delay stream cleanup.
+@internal
+pub fn record_application_error(
+  request request: Request,
+  code code: Int,
+) -> Nil {
+  server_backend.record_application_error(request: request.handle, code: code)
+}
+
 /// Pull the next request-body event.
 pub fn next_event(request: Request) -> Result(RequestEvent, Error) {
-  case server_backend.next_event(request.handle) {
+  map_next_event(server_backend.next_event(request.handle))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  request request: Request,
+  deadline_milliseconds deadline: Int,
+) -> Result(RequestEvent, Error) {
+  map_next_event(server_backend.next_event_until(request.handle, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(server_backend.RawEvent, server_backend.Failure),
+) -> Result(RequestEvent, Error) {
+  case outcome {
     Ok(#(1, _, chunk)) -> Ok(Data(chunk))
     Ok(#(2, trailers, _)) -> Ok(Trailers(trailers))
     Ok(#(3, _, _)) -> Ok(End)
@@ -695,9 +802,8 @@ pub fn next_event(request: Request) -> Result(RequestEvent, Error) {
 
 /// Cancel both directions of an accepted request stream idempotently.
 ///
-/// A successful first cancellation sends HTTP/3 `H3_REQUEST_CANCELLED`
-/// (0x10c) in both QUIC stream directions. Pending request-body and Datagram
-/// receivers are released by the connection actor before this call returns.
+/// A successful first cancellation sends HTTP/3 `H3_REQUEST_CANCELLED` (0x10c) in both QUIC stream directions.
+/// Pending request-body and Datagram receivers are released by the connection actor before this call returns.
 pub fn cancel(request: Request) -> Result(Cancellation, Error) {
   case server_backend.cancel(request.handle) {
     Ok(1) -> Ok(Cancelled)
@@ -715,6 +821,62 @@ pub fn request_state_stats(
 ) -> Result(#(Int, Int, Int, Int, Int, Int, Int, Int, Int), Error) {
   let Request(handle, ..) = request
   server_backend.request_state_stats(handle)
+  |> result.map_error(from_backend_failure)
+}
+
+/// Test-only direction and retained-event snapshot for one request.
+@internal
+pub fn request_lifecycle_stats(
+  request: Request,
+) -> Result(#(Bool, Bool, Bool, Option(Int), Int, Int, Bool), Error) {
+  let Request(handle, ..) = request
+  server_backend.request_lifecycle_stats(handle)
+  |> result.map_error(from_backend_failure)
+}
+
+/// A payload-free snapshot of the blocking waiters retained by a request.
+///
+/// This type is internal so tests and diagnostics can use the worker mailbox round trip as a registration and release barrier without exposing request internals in the supported library API.
+@internal
+pub type RequestWaiterStats {
+  RequestWaiterStats(
+    body_waiter_registered: Bool,
+    datagram_waiter_registered: Bool,
+  )
+}
+
+@internal
+pub fn request_waiter_stats(
+  request: Request,
+) -> Result(RequestWaiterStats, Error) {
+  let Request(handle, ..) = request
+  case server_backend.request_waiter_stats(handle) {
+    Ok(#(body_waiter_registered, datagram_waiter_registered)) ->
+      Ok(RequestWaiterStats(
+        body_waiter_registered: body_waiter_registered,
+        datagram_waiter_registered: datagram_waiter_registered,
+      ))
+    Error(error) -> Error(from_backend_failure(error))
+  }
+}
+
+/// Test-only scalar send-buffer, pending-send, and completion-waiter counts.
+@internal
+pub fn send_resource_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int), Error) {
+  let Request(handle, ..) = request
+  server_backend.send_resource_stats(handle)
+  |> result.map_error(from_backend_failure)
+}
+
+/// Test-only connection-wide terminal-delivery ownership and ceilings.
+@internal
+pub fn terminal_delivery_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int, Int, Int, Int), Error) {
+  let Request(handle, ..) = request
+  server_backend.terminal_delivery_stats(handle)
   |> result.map_error(from_backend_failure)
 }
 
@@ -787,8 +949,8 @@ pub fn send_response(
 
 /// Send one informational response before the final response.
 ///
-/// Status 101 is forbidden by HTTP/3. Multiple informational responses are
-/// permitted until the final response head is sent.
+/// Status 101 is forbidden by HTTP/3.
+/// Multiple informational responses are permitted until the final response head is sent.
 pub fn send_informational(
   request request: Request,
   status status: Int,
@@ -833,6 +995,17 @@ pub fn finish_response(request: Request) -> Result(Nil, Error) {
   map_backend(server_backend.finish_response(request.handle))
 }
 
+/// Wait until the response FIN is acknowledged or its send direction fails.
+///
+/// This does not read or consume the request body.
+/// One waiter is permitted per request, independently of a body or Datagram reader, within the configured operation timeout.
+/// Cancelling the waiting caller releases its waiter slot.
+/// Recent terminal outcomes are retained within the transport's finite history.
+/// An evicted outcome returns a local failure instead of inferring success.
+pub fn await_response_completion(request: Request) -> Result(Nil, Error) {
+  map_backend(server_backend.await_response_completion(request.handle))
+}
+
 /// Send response trailers and finish the response stream atomically.
 pub fn send_trailers(
   request request: Request,
@@ -847,8 +1020,8 @@ pub fn send_trailers(
 
 /// Promise one same-origin GET request.
 ///
-/// The path must be absolute and cannot contain a fragment. Push capacity is
-/// explicitly bounded by the client's `with_push_limit` configuration.
+/// The path must be absolute and cannot contain a fragment.
+/// Push capacity is explicitly bounded by the client's `with_push_limit` configuration.
 pub fn promise_push(
   request request: Request,
   path path: String,
@@ -958,6 +1131,9 @@ pub fn send_push_trailers(
 }
 
 /// Stop a listener and all owned connections idempotently.
+///
+/// Each established connection sends the server-role initial and final GOAWAY,
+/// cancels remaining application work, and waits for transport acknowledgement within the configured drain deadline before exact `H3_NO_ERROR` close.
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   let Listener(handle) = listener
   case server_backend.stop(handle) {
@@ -970,8 +1146,9 @@ pub fn stop(listener: Listener) -> Result(StopResult, Error) {
 
 /// Stop accepting new work, send GOAWAY, and drain active requests.
 ///
-/// `Forced` means the configured listener timeout expired; all remaining
-/// streams are then closed deterministically before this function returns.
+/// `Forced` means the configured listener timeout expired; all remaining streams are then closed deterministically before this function returns.
+/// A peer disappearing before its accepted work completes returns a typed connection-closed failure after the other peers have finished draining.
+/// Successful drain confirms both GOAWAY frames and all accepted response output at transport before exact `H3_NO_ERROR` close.
 pub fn graceful_stop(listener: Listener) -> Result(DrainResult, Error) {
   let Listener(handle) = listener
   case server_backend.graceful_stop(handle) {

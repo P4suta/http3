@@ -5,8 +5,15 @@ import gleeunit
 import http/context
 import http/error
 
+@external(erlang, "http_server_contract_test_ffi", "cancel_primitive_failures_are_closed")
+fn cancel_primitive_failures_are_closed() -> Bool
+
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+pub fn cancellation_primitive_failures_are_typed_closed_state_test() -> Nil {
+  assert cancel_primitive_failures_are_closed()
 }
 
 pub fn context_exposes_typed_transport_metadata_and_opaque_values_test() -> Nil {

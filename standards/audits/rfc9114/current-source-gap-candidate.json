@@ -1,0 +1,328 @@
+{
+  "schema": 1,
+  "standard": "RFC9114",
+  "status": "Candidate",
+  "evidence_mode": "StaticOnly",
+  "generated_on": "2026-09-13",
+  "release_eligible": false,
+  "purpose": "A concise, fail-closed partition of all 215 exact RFC 9114 occurrences while the current source tree is still being integrated. It is an audit planning artifact, not an update to standards/requirements.json and not Ready evidence.",
+  "source_identity": {
+    "requested_baseline_commit": "c24f8b1",
+    "working_tree_state": "unfrozen-concurrent-integration",
+    "working_tree_note": "The push, connection broker, and SETTINGS/0-RTT changes are present. Orderly GOAWAY integration is in progress. Any later source, test, audit-input, tool, or workflow change invalidates the current-source overrides below.",
+    "rfc_text": {
+      "path": "build/standards/rfc9114.txt",
+      "sha256": "6b84555c88eeebcf5d2b2e1d9d7b58630abc97ab877b2cf62dee4cd635db34e4"
+    },
+    "requirements_input": {
+      "path": "standards/requirements.json",
+      "sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+      "mutated_by_this_artifact": false
+    },
+    "candidate_inventory": {
+      "path": "standards/audits/rfc9114/candidate-inventory.json",
+      "sha256": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243",
+      "rows": 215
+    },
+    "independent_review": {
+      "path": "standards/audits/rfc9114/independent-review.json",
+      "sha256": "74cc3dc2db970c4eb3a36e9fd73f11886fbc80dfdc3ab3aa510a5b0b0170fbb9",
+      "scored_rows": 161,
+      "preserved_open_rows": 54
+    },
+    "final_regeneration_contract": [
+      "Freeze the final commit identity after orderly GOAWAY and all other source integration is complete.",
+      "Regenerate candidate-inventory.json and independent-review.json from that exact source, RFC text, and requirements input.",
+      "Replace every hash above, reapply the complete partition rules, and require source_occurrence 1 through 215 exactly once.",
+      "Resolve every path and symbol named by the regenerated rows, execute the cited tests on the frozen source, and obtain a new independent review before any Ready claim."
+    ]
+  },
+  "complete_partition": {
+    "identity_rule": "The exact identity of each row is candidate-inventory.json rows[].{source_occurrence,id,source_clause_sha256}. Exact evidence symbols are that row's candidate_implementation and candidate_tests path/symbol pairs, augmented only by the explicit current-source delta symbols below.",
+    "selection_order": "Apply baseline_rules in listed order to all 215 inventory rows, then apply current_source_overrides by exact id. No row may match zero or multiple final groups.",
+    "baseline_rules": [
+      {
+        "group": "direct_executable_evidence",
+        "predicate": "a matching independent-review assessment has recommended_disposition=Implemented",
+        "count": 31
+      },
+      {
+        "group": "unsupported_or_not_applicable_candidate",
+        "predicate": "a matching independent-review assessment has recommended_disposition=NotApplicable",
+        "count": 36
+      },
+      {
+        "group": "plausible_but_insufficient",
+        "predicate": "a matching independent-review assessment has recommended_disposition=Open and evidence_specificity_score is 1 or 2",
+        "count": 80
+      },
+      {
+        "group": "implementation_gap",
+        "predicate": "a matching independent-review assessment has recommended_disposition=Open and evidence_specificity_score=0",
+        "count": 14
+      },
+      {
+        "group": "implementation_gap",
+        "predicate": "candidate-inventory audited_disposition=Open and the row is one of the 54 rows deliberately preserved without rescoring by independent-review",
+        "count": 54
+      }
+    ],
+    "baseline_counts": {
+      "direct_executable_evidence": 31,
+      "plausible_but_insufficient": 80,
+      "unsupported_or_not_applicable_candidate": 36,
+      "implementation_gap": 68,
+      "total": 215
+    },
+    "current_source_overrides": [
+      {
+        "from": "implementation_gap",
+        "to": "direct_executable_evidence",
+        "ids": [
+          "RFC9114-4-6-079-MUST",
+          "RFC9114-4-6-080-MUST",
+          "RFC9114-4-6-081-MUST-NOT",
+          "RFC9114-4-6-082-SHOULD",
+          "RFC9114-4-6-083-MUST-NOT",
+          "RFC9114-4-6-084-SHOULD"
+        ],
+        "count": 6,
+        "reason": "The current push adapter binds the promise to the associated authenticated origin, rejects unsafe/content-bearing/non-cacheable/unauthorized requests, emits CANCEL_PUSH, retains no rejected response data, and has focused ordering and fail-closed tests. This is still Candidate/StaticOnly until those tests run on a frozen tree."
+      },
+      {
+        "from": "implementation_gap",
+        "to": "direct_executable_evidence",
+        "ids": [
+          "RFC9114-7-2-4-2-154-SHOULD",
+          "RFC9114-7-2-4-2-155-MUST",
+          "RFC9114-7-2-4-2-156-MUST",
+          "RFC9114-7-2-4-2-157-MUST-NOT",
+          "RFC9114-7-2-4-2-158-MUST-NOT",
+          "RFC9114-7-2-4-2-159-MUST",
+          "RFC9114-7-2-4-2-160-MUST",
+          "RFC9114-7-2-4-2-161-MUST"
+        ],
+        "count": 8,
+        "reason": "The current tree carries peer SETTINGS in the resumption application context, applies remembered/default settings during accepted 0-RTT, checks non-reduction and omission, and maps incompatible post-acceptance settings through a typed failure. Focused deterministic symbols cover encoding, compatibility, omission, accepted and rejected 0-RTT. This is Candidate/StaticOnly until execution and frozen-source review."
+      },
+      {
+        "from": "implementation_gap",
+        "to": "plausible_but_insufficient",
+        "ids": [
+          "RFC9114-3.3-SHOULD-NOT-OPEN-MULTIPLE-CONNECTIONS-PER-ENDPOINT",
+          "RFC9114-3-3-013-SHOULD"
+        ],
+        "count": 2,
+        "reason": "A bounded endpoint/configuration-keyed in-flight generation broker is wired into the real route path and deterministic actor tests cover joins, publication failure, leader exit, deadline, drain, close, and empty census. The current tests exercise the broker seam rather than observing two full concurrent authenticated HTTP/3 dials end to end, so the exact wire-level advisory remains short of direct evidence."
+      },
+      {
+        "from": "plausible_but_insufficient",
+        "to": "implementation_gap",
+        "ids": [
+          "RFC9114-7-2-5-167-MUST"
+        ],
+        "count": 1,
+        "reason": "At this audit instant push.InconsistentDuplicatePromise is still mapped to 0x108. RFC 9114 section 7.2.5 requires H3_GENERAL_PROTOCOL_ERROR 0x101. The orderly GOAWAY integration owner is expected to apply the correction and a protocol-adapter test; this row must be regenerated, never presumed closed."
+      }
+    ],
+    "current_candidate_counts": {
+      "direct_executable_evidence": 45,
+      "plausible_but_insufficient": 81,
+      "unsupported_or_not_applicable_candidate": 36,
+      "implementation_gap": 53,
+      "total": 215
+    },
+    "completeness_invariants": [
+      "31 + 80 + 36 + 68 = 215 for the frozen review baseline.",
+      "45 + 81 + 36 + 53 = 215 after the four exact current-source overrides.",
+      "The source_occurrence set must equal every integer from 1 through 215, with no duplicate id and no duplicate source_occurrence.",
+      "A Candidate/StaticOnly row cannot be copied into canonical requirements as Implemented solely from this artifact."
+    ]
+  },
+  "priority_deltas": [
+    {
+      "cluster": "endpoint_connection_generation_broker",
+      "classification": "plausible_but_insufficient",
+      "ids": [
+        "RFC9114-3.3-SHOULD-NOT-OPEN-MULTIPLE-CONNECTIONS-PER-ENDPOINT",
+        "RFC9114-3-3-013-SHOULD"
+      ],
+      "implementation_symbols": [
+        "src/http/client.gleam:start_new_https_route",
+        "src/http/client.gleam:begin_http3_dial_within",
+        "src/http/client.gleam:run_after_http3_dial_publication",
+        "src/http/client.gleam:http3_dial_census"
+      ],
+      "test_symbols": [
+        "test/http3_dial_broker_test.gleam:same_key_slot_one_waiter_joins_single_dial_test",
+        "test/http3_dial_broker_test.gleam:dial_failure_wakes_every_waiter_and_releases_reservation_test",
+        "test/http3_dial_broker_test.gleam:dial_leader_exit_wakes_waiter_without_leaking_capacity_test",
+        "test/http3_dial_broker_test.gleam:waiter_absolute_deadline_removes_only_that_waiter_test",
+        "test/http3_dial_broker_test.gleam:drain_wakes_waiter_and_reclaims_dial_test",
+        "test/http3_dial_broker_test.gleam:close_wakes_waiter_and_terminal_census_is_empty_test"
+      ],
+      "next_evidence": "Run a deterministic two-caller integrated route test and prove one authenticated QUIC connection is created for one endpoint/configuration key while both callers complete and the broker/resource census returns to zero."
+    },
+    {
+      "cluster": "push_origin_policy_and_no_use",
+      "classification": "direct_executable_evidence",
+      "ids": [
+        "RFC9114-4-6-079-MUST",
+        "RFC9114-4-6-080-MUST",
+        "RFC9114-4-6-081-MUST-NOT",
+        "RFC9114-4-6-082-SHOULD",
+        "RFC9114-4-6-083-MUST-NOT",
+        "RFC9114-4-6-084-SHOULD"
+      ],
+      "implementation_symbols": [
+        "packages/http3/src/http3/internal/native/origin.gleam:same_authenticated_origin",
+        "packages/http3/src/http3/internal/native/push.gleam:allocate_promise_for_associated_request",
+        "packages/http3/src/http3/internal/native/push.gleam:promise_for_associated_request",
+        "packages/http3/src/http3/internal/native/push.gleam:assess_promised_request",
+        "packages/http3/src/http3/internal/native/push.gleam:remember_rejected_promise",
+        "packages/http3/src/http3/internal/native/push.gleam:promised_origin_authorized",
+        "packages/http3/src/http3/internal/native/push.gleam:conservatively_cacheable_fields",
+        "packages/http3/src/http3/internal/native/connection_state.gleam:process_push_promise",
+        "packages/http3/src/http3/internal/native/protocol.gleam:apply_push_rejection_advisories"
+      ],
+      "test_symbols": [
+        "packages/http3/test/native/http3_origin_test.gleam:authenticated_origin_comparison_normalizes_host_and_default_port_test",
+        "packages/http3/test/native/http3_push_test.gleam:promise_policy_binds_origin_and_rejects_non_cacheable_inputs_test",
+        "packages/http3/test/native/http3_push_test.gleam:rejected_promise_retains_no_request_or_authority_bytes_test",
+        "packages/http3/test/native/http3_push_test.gleam:server_cannot_allocate_a_cross_origin_promise_test",
+        "packages/http3/test/native/http3_connection_state_test.gleam:server_push_promise_is_bound_to_the_associated_request_origin_test",
+        "packages/http3/test/native/http3_protocol_test.gleam:rejected_push_promises_emit_cancel_and_never_deliver_response_data_test",
+        "packages/http3/test/native/http3_protocol_test.gleam:buffered_push_response_is_discarded_when_its_later_promise_is_rejected_test",
+        "packages/http3/test/native/http3_protocol_test.gleam:promise_is_written_before_the_promised_response_headers_and_data_test"
+      ],
+      "next_evidence": "Execute the focused tests on the frozen source and preserve a red mutation proving cross-origin acceptance, absent CANCEL_PUSH, response delivery, and reversed promise ordering are each detected."
+    },
+    {
+      "cluster": "settings_and_zero_rtt_memory",
+      "classification": "direct_executable_evidence",
+      "ids": [
+        "RFC9114-7-2-4-2-154-SHOULD",
+        "RFC9114-7-2-4-2-155-MUST",
+        "RFC9114-7-2-4-2-156-MUST",
+        "RFC9114-7-2-4-2-157-MUST-NOT",
+        "RFC9114-7-2-4-2-158-MUST-NOT",
+        "RFC9114-7-2-4-2-159-MUST",
+        "RFC9114-7-2-4-2-160-MUST",
+        "RFC9114-7-2-4-2-161-MUST"
+      ],
+      "implementation_symbols": [
+        "packages/http3/src/http3/internal/native/settings_memory.gleam:advertised",
+        "packages/http3/src/http3/internal/native/settings_memory.gleam:encode",
+        "packages/http3/src/http3/internal/native/settings_memory.gleam:decode",
+        "packages/http3/src/http3/internal/native/settings_memory.gleam:compatible",
+        "packages/http3/src/http3/internal/native/client_connection.gleam:synchronise_zero_rtt",
+        "packages/http3/src/http3/internal/native/client_connection.gleam:complete_pending_ticket",
+        "packages/http3/src/http3/internal/native/client_connection.gleam:remembered_peer_settings",
+        "packages/http3/src/http3/internal/native/client_connection.gleam:decode_remembered_settings_context",
+        "packages/http3/src/http3/internal/native/connection_state.gleam:accept_zero_rtt",
+        "packages/http3/src/http3/internal/native/connection_state.gleam:install_peer_settings",
+        "packages/http3/src/http3/internal/native/connection_state.gleam:require_zero_rtt_settings_compatible",
+        "packages/http3/src/http3/internal/native/server_worker.gleam:configure_core_server"
+      ],
+      "test_symbols": [
+        "packages/http3/test/native/http3_settings_memory_test.gleam:remembered_settings_encoding_is_canonical_and_bounded_test",
+        "packages/http3/test/native/http3_settings_memory_test.gleam:zero_rtt_compatibility_checks_limits_values_and_omission_test",
+        "packages/http3/test/native/client_connection_status_test.gleam:ticket_settings_context_fails_closed_and_defaults_when_absent_test",
+        "packages/http3/test/native/http3_connection_state_test.gleam:accepted_zero_rtt_uses_remembered_settings_and_rejects_reduction_test",
+        "packages/http3/test/native/http3_connection_state_test.gleam:accepted_zero_rtt_rejects_omitted_remembered_non_default_test",
+        "packages/http3/test/native/http3_connection_state_test.gleam:compatible_settings_preserve_zero_rtt_qpack_outstanding_state_test",
+        "packages/http3/test/native/http3_connection_state_test.gleam:rejected_zero_rtt_can_install_changed_settings_test"
+      ],
+      "next_evidence": "Execute the focused suite plus an integrated resumed connection proof that binds the ticket's HTTP/3 application context to the authenticated origin and shows H3_SETTINGS_ERROR on both reduction and understood non-default omission."
+    },
+    {
+      "cluster": "orderly_goaway_pending_integration",
+      "classification": "baseline-rules-only-pending-regeneration",
+      "ids": [
+        "RFC9114-3.3-SHOULD-SEND-GOAWAY-BEFORE-TERMINATING",
+        "RFC9114-5-2-089-SHOULD",
+        "RFC9114-5-2-090-SHOULD",
+        "RFC9114-5-2-091-MUST-NOT",
+        "RFC9114-5-2-092-SHOULD",
+        "RFC9114-5-2-093-MUST-NOT",
+        "RFC9114-5-2-094-MUST",
+        "RFC9114-5-2-095-SHOULD",
+        "RFC9114-5-4-096-MUST",
+        "RFC9114-7-2-6-173-MUST",
+        "RFC9114-7-2-6-174-MUST"
+      ],
+      "implementation_symbols": [
+        "packages/http3/src/http3/internal/native/orderly_close.gleam:initial_queued",
+        "packages/http3/src/http3/internal/native/orderly_close.gleam:final_queued",
+        "packages/http3/src/http3/internal/native/orderly_close.gleam:observe",
+        "packages/http3/src/http3/internal/native/orderly_close.gleam:confirm_closed",
+        "packages/http3/src/http3/internal/native/protocol.gleam:start_drain",
+        "packages/http3/src/http3/internal/native/protocol.gleam:refine_drain",
+        "packages/http3/src/http3/internal/native/server_worker.gleam:begin_connection_goaway"
+      ],
+      "test_symbols": [
+        "packages/http3/test/native/http3_orderly_close_test.gleam:server_goaway_application_flush_and_exact_close_are_causal_test",
+        "packages/http3/test/native/http3_orderly_close_test.gleam:client_goaway_identifiers_are_role_correct_and_nonincreasing_test",
+        "packages/http3/test/native/http3_orderly_close_test.gleam:absolute_deadline_wins_at_edge_without_relative_extension_test",
+        "packages/http3/test/native/http3_orderly_close_test.gleam:wrong_order_clock_rollback_and_non_no_error_close_are_rejected_test",
+        "packages/http3/test/native/http3_drain_test.gleam:peer_goaway_detaches_retryable_requests_and_stops_new_work_test",
+        "packages/http3/test/native/http3_drain_test.gleam:server_two_stage_drain_rejects_cutoff_and_converges_test",
+        "packages/http3/test/native/http3_drain_test.gleam:fixed_drain_timeout_returns_transport_cleanup_targets_test",
+        "packages/http3/test/native/http3_drain_test.gleam:client_goaway_controls_pushes_and_server_promises_test"
+      ],
+      "next_evidence": "After the owner finishes integration, remap each exact row separately. Require peer-visible cancellation of late IDs, both role-specific identifier classes, non-increasing repeated GOAWAY, application-data flush before exact H3_NO_ERROR close, absolute-deadline timeout cleanup, and no new request or push after receipt."
+    },
+    {
+      "cluster": "duplicate_push_promise_error_code",
+      "classification": "implementation_gap",
+      "ids": [
+        "RFC9114-7-2-5-167-MUST"
+      ],
+      "contradictory_symbol": "packages/http3/src/http3/internal/native/protocol.gleam:push_application_error_code",
+      "current_observation": "push.InconsistentDuplicatePromise is grouped with H3_ID_ERROR 0x108 in the current source.",
+      "required_symbol": "packages/http3/test/native/http3_protocol_test.gleam:duplicate_push_promise_mismatch_uses_general_protocol_error_test",
+      "next_evidence": "Inject two PUSH_PROMISE frames with one push ID and unequal decompressed fields through the protocol adapter; require 0x101 and an explicit negative assertion against 0x108."
+    }
+  ],
+  "next_bounded_gap_clusters": [
+    {
+      "name": "review_score_zero_exact_obligations",
+      "count": 14,
+      "ids": [
+        "RFC9114-3-2-007-MUST",
+        "RFC9114-4-1-018-MUST",
+        "RFC9114-4.1-MUST-NOT-USE-TRANSFER-ENCODING",
+        "RFC9114-4-1-020-MUST",
+        "RFC9114-4-1-021-MUST-NOT",
+        "RFC9114-4-1-022-MUST",
+        "RFC9114-4-1-2-038-MUST",
+        "RFC9114-4-3-1-065-MUST-NOT",
+        "RFC9114-7-1-124-MUST",
+        "RFC9114-7-2-1-126-MUST",
+        "RFC9114-7-2-1-127-MUST",
+        "RFC9114-7-2-2-128-MUST",
+        "RFC9114-9-187-MUST",
+        "RFC9114-9-188-MUST"
+      ],
+      "action": "Reinspect current adapters for exact actor, trigger, frame placement, FIN/truncation, and peer-visible error-code assertions. Keep a row Open when only a fabricated mapper value or a helper-level state transition is cited."
+    },
+    {
+      "name": "goaway_and_transport_close",
+      "count": 11,
+      "ids_source": "priority_deltas[3].ids",
+      "action": "Finish the in-progress integration and then regenerate; do not apply a blanket section-level disposition."
+    },
+    {
+      "name": "endpoint_broker_end_to_end",
+      "count": 2,
+      "ids_source": "priority_deltas[0].ids",
+      "action": "Add the one remaining end-to-end authenticated connection-generation proof before promoting from plausible to direct."
+    },
+    {
+      "name": "push_duplicate_mismatch",
+      "count": 1,
+      "ids_source": "priority_deltas[4].ids",
+      "action": "Correct 0x108 to 0x101 and add the protocol-adapter red/green assertion during the coordinated GOAWAY edit."
+    }
+  ]
+}

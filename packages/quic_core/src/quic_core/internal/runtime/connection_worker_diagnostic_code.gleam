@@ -9,6 +9,7 @@
 import quic_core/internal/connection_state
 import quic_core/internal/driver
 import quic_core/internal/runtime/server_transport
+import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
 
 /// Connection-worker operation which observed a fatal internal result.
@@ -24,6 +25,8 @@ pub type Operation {
   PrepareDatagram
   SendDatagram
   CommitDatagram
+  IssueConnectionId
+  ResumePreviousPath
 }
 
 /// Stable operation code in the 3000 range.
@@ -40,6 +43,8 @@ pub fn operation(operation: Operation) -> Int {
     PrepareDatagram -> 3009
     SendDatagram -> 3010
     CommitDatagram -> 3011
+    IssueConnectionId -> 3012
+    ResumePreviousPath -> 3013
   }
 }
 
@@ -47,7 +52,7 @@ pub fn operation(operation: Operation) -> Int {
 pub fn server_transport_error(error: server_transport.Error) -> List(Int) {
   case error {
     server_transport.InvalidInput -> [3101]
-    server_transport.TlsFailure(error) -> [3102, engine_error(error)]
+    server_transport.TlsFailure(error) -> [3102, ..engine_error_codes(error)]
     server_transport.DriverFailure(error) -> [3103, ..driver_error(error)]
     server_transport.StatelessResetFailure(_) -> [3104]
   }
@@ -98,7 +103,7 @@ fn connection_error(error: connection_state.Error) -> List(Int) {
     connection_state.ConnectionIdFailure(_) -> [3327]
     connection_state.PmtuFailure(_) -> [3328]
     // 3329 is permanently reserved for a retired pre-v1 classification.
-    connection_state.TlsFailure(error) -> [3330, engine_error(error)]
+    connection_state.TlsFailure(error) -> [3330, ..engine_error_codes(error)]
     connection_state.FrameAtWrongEncryptionLevel(level, kind) -> [
       3331,
       encryption_level(level),
@@ -140,6 +145,9 @@ fn protocol_violation_reason(
     connection_state.AckEcnRangesEmpty -> 3727
     connection_state.AckEcnValidationFailure -> 3728
     connection_state.ReservedBitsViolation -> 3729
+    connection_state.LocalConnectionIdNotIssued -> 3730
+    connection_state.RetiredPacketDestinationConnectionId -> 3731
+    connection_state.NewTokenAtServer -> 3732
   }
 }
 
@@ -176,6 +184,34 @@ fn frame_kind(kind: connection_state.FrameKind) -> Int {
     connection_state.ConnectionCloseApplicationFrame -> 3620
     connection_state.HandshakeDoneFrame -> 3621
     connection_state.DatagramFrame -> 3622
+  }
+}
+
+fn engine_error_codes(error: engine.Error) -> List(Int) {
+  case error {
+    engine.AuthenticationFailure(cause) -> [
+      engine_error(error),
+      authentication_error(cause),
+    ]
+    _ -> [engine_error(error)]
+  }
+}
+
+// Authentication details append to the existing 3423 classification.
+// Only these fixed local causes are admitted: no peer scheme, certificate, signature,
+// callback exception, or private runtime term enters the trace.
+fn authentication_error(cause: authentication.Error) -> Int {
+  case cause {
+    authentication.NonByteAligned -> 3801
+    authentication.InvalidInput -> 3802
+    authentication.InvalidPem -> 3803
+    authentication.EmptyCertificateChain -> 3804
+    authentication.UntrustedCertificate -> 3805
+    authentication.IdentityMismatch -> 3806
+    authentication.InvalidSignature -> 3807
+    authentication.IncompatibleSignatureScheme -> 3808
+    authentication.InvalidCertificatePurpose -> 3809
+    authentication.RuntimeUnavailable -> 3810
   }
 }
 

@@ -3,6 +3,9 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("evidence_identity.hrl").
+-include("fresh_build_identity.hrl").
+
 -define(SF_MODULE, 'http@structured_fields').
 -define(REPORT, "build/structured-fields-oracle/report.json").
 
@@ -11,9 +14,8 @@ main(Arguments) ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "Structured Fields oracle gate failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "Structured Fields oracle gate failed: ~p~n",
+                      [diagnostic_failure_details(Class, Reason, Stacktrace)]),
             halt(1)
     end.
 
@@ -21,6 +23,16 @@ run(["--self-test"]) ->
     add_code_paths(),
     self_test();
 run(["run", LockPath, CorpusDirectory]) ->
+    Identity = evidence_begin(?REPORT),
+    fresh_with_verified_build("http", fun(Snapshot) ->
+        run_verified(LockPath, CorpusDirectory, Identity, Snapshot)
+    end);
+run(_) ->
+    erlang:error({usage,
+                  "--self-test | run LOCK_PATH CORPUS_DIRECTORY"}).
+
+run_verified(LockPath, CorpusDirectory, Identity, Snapshot) ->
+    Build = maps:get(report, Snapshot),
     add_code_paths(),
     Lock = read_json(LockPath),
     Fixtures = validate_lock(Lock),
@@ -43,9 +55,14 @@ run(["run", LockPath, CorpusDirectory]) ->
             <<"corpus_sha256">> => corpus_digest(Fixtures, CorpusDirectory)
         },
         <<"summary">> => summary_json(Summary),
-        <<"implementation_sha256">> => implementation_digest(LockPath)
+        <<"implementation_sha256">> => implementation_digest(LockPath),
+        <<"build_identity">> => Build,
+        <<"build_manifest_sha256">> => maps:get(sha256, Snapshot)
     },
-    ok = write_json(?REPORT, Report),
+    FinalSnapshot = fresh_verify_locked("http"),
+    Build = maps:get(report, FinalSnapshot),
+    true = maps:get(sha256, Snapshot) =:= maps:get(sha256, FinalSnapshot),
+    ok = write_json(?REPORT, evidence_complete(Report, Identity)),
     io:format("Structured Fields oracle passed ~B cases: ~B mandatory valid, "
               "~B mandatory failures, ~B advisory accepted, ~B advisory "
               "rejected; report: ~s~n",
@@ -55,10 +72,7 @@ run(["run", LockPath, CorpusDirectory]) ->
                maps:get(can_fail_accepted, Summary),
                maps:get(can_fail_rejected, Summary),
                ?REPORT]),
-    ok;
-run(_) ->
-    erlang:error({usage,
-                  "--self-test | run LOCK_PATH CORPUS_DIRECTORY"}).
+    ok.
 
 self_test() ->
     Valid = #{<<"name">> => <<"valid list">>,

@@ -106,6 +106,11 @@ pub fn buffered_bytes(decoder: Decoder) -> Int {
   bit_array.byte_size(decoder.buffered)
 }
 
+/// Release all retained input when the enclosing WebSocket becomes terminal.
+pub fn clear(decoder: Decoder) -> Decoder {
+  Decoder(..decoder, buffered: <<>>)
+}
+
 /// Pull one complete frame, retaining an incomplete suffix.
 pub fn next(decoder: Decoder) -> Result(Outcome, Error) {
   case decoder.buffered {

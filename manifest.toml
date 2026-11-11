@@ -33,3 +33,4 @@ gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 glinter = { version = ">= 2.19.2 and < 3.0.0" }
 http3 = { path = "packages/http3" }
+quic_core = { path = "packages/quic_core" }

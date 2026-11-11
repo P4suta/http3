@@ -13,6 +13,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 http3 = { path = "packages/http3" }
 
 [dev_dependencies]
+quic_core = { path = "packages/quic_core" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 glance = ">= 7.0.0 and < 8.0.0"
 glinter = ">= 2.19.2 and < 3.0.0"
@@ -20,6 +21,7 @@ glinter = ">= 2.19.2 and < 3.0.0"
 [documentation]
 pages = [
   { title = "Architecture", path = "architecture.html", source = "docs/ARCHITECTURE.md" },
+  { title = "Certificate service identity", path = "certificate-identity.html", source = "docs/CERTIFICATE_IDENTITY.md" },
   { title = "Conformance", path = "conformance.html", source = "docs/CONFORMANCE.md" },
   { title = "Pre-publication security review", path = "security-review.html", source = "docs/SECURITY_REVIEW.md" },
   { title = "Test-driven development", path = "testing.html", source = "docs/TESTING.md" },
@@ -39,9 +41,8 @@ unused_exports = "error"
 
 [tools.glinter.ignore]
 "test/**/*.gleam" = ["unused_exports"]
-# Body cursors and wire-size helpers intentionally keep the conventional
-# `body, limit` positional shape. Explicit finite True/False branches name
-# error outcomes more clearly than guard continuations in this state machine.
+# Body cursors and wire-size helpers intentionally keep the conventional `body, limit` positional shape.
+# Explicit finite True/False branches name error outcomes more clearly than guard continuations in this state machine.
 "src/http/body.gleam" = ["label_possible", "prefer_guard_clause"]
 "src/http/context.gleam" = ["label_possible", "prefer_guard_clause"]
 "src/http/diagnostics.gleam" = ["label_possible", "prefer_guard_clause"]
@@ -58,12 +59,10 @@ unused_exports = "error"
   "thrown_away_error",
   "unused_exports",
 ]
-# The reusable client is an orchestration boundary: public pipeline setters use
-# conventional positional `config, policy` arguments, while recursive retry,
-# discovery, and two-route race state stays in one typed coordinator. Backend
-# and optional resolver failures are intentionally collapsed or ignored at the
-# documented fail-closed policy edge. Adapter runtime errors are likewise
-# collapsed into the non-secret SecurityPolicy classification.
+# The reusable client is an orchestration boundary: public pipeline setters use conventional positional `config, policy` arguments, while recursive retry,
+# discovery, and two-route race state stays in one typed coordinator.
+# Backend and optional resolver failures are intentionally collapsed or ignored at the documented fail-closed policy edge.
+# Adapter runtime errors are likewise collapsed into the non-secret SecurityPolicy classification.
 "src/http/client.gleam" = [
   "deep_nesting",
   "error_context_lost",
@@ -72,11 +71,8 @@ unused_exports = "error"
   "thrown_away_error",
   "unused_exports",
 ]
-# RFC 9651 parsing keeps a byte cursor, finite counters, and ordered output in
-# positional recursive passes that mirror the grammar. Conversion failures are
-# intentionally collapsed to the module's strict public Invalid result; the
-# public constructors and codecs are stable surface consumed by downstream
-# packages rather than by this package itself.
+# RFC 9651 parsing keeps a byte cursor, finite counters, and ordered output in positional recursive passes that mirror the grammar.
+# Conversion failures are intentionally collapsed to the module's strict public Invalid result; the public constructors and codecs are stable surface consumed by downstream packages rather than by this package itself.
 "src/http/structured_fields.gleam" = [
   "deep_nesting",
   "error_context_lost",
@@ -85,28 +81,33 @@ unused_exports = "error"
   "unused_exports",
 ]
 "test/structured_fields_test.gleam" = ["assert_ok_pattern"]
-# RFC 9211/9209 serializers use small positional accumulator helpers so they
-# compose as pipelines in registered-parameter order. The explicit Boolean
-# branch is the single semantic validation boundary for public constructors.
+# These finite fixture constructors deliberately fail the test on a typed setup error, following the existing protocol test convention.
+"test/dictionary_store_contract_test.gleam" = ["assert_ok_pattern"]
+"test/dictionary_request_policy_test.gleam" = ["assert_ok_pattern"]
+"test/dictionary_request_wire_test.gleam" = ["assert_ok_pattern"]
+"test/dictionary_selection_time_test.gleam" = ["assert_ok_pattern"]
+"test/http_presecured_test.gleam" = ["assert_ok_pattern"]
+"test/http_alpn_test.gleam" = ["assert_ok_pattern"]
+"test/body_transfer_observers_test.gleam" = ["assert_ok_pattern"]
+"test/http2_cleanup_isolation_test.gleam" = ["assert_ok_pattern"]
+# RFC 9211/9209 serializers use small positional accumulator helpers so they compose as pipelines in registered-parameter order.
+# The explicit Boolean branch is the single semantic validation boundary for public constructors.
 "src/http/status.gleam" = [
   "label_possible",
   "prefer_guard_clause",
   "unused_exports",
 ]
 "test/status_test.gleam" = ["assert_ok_pattern"]
-# Digest vectors intentionally destructure Result values to show exact RFC
-# field output. Public codec exports are also consumed by downstream packages.
+# Digest vectors intentionally destructure Result values to show exact RFC field output.
+# Public codec exports are also consumed by downstream packages.
 "src/http/digest.gleam" = ["unused_exports"]
 "test/digest_test.gleam" = ["assert_ok_pattern"]
-# RFC 7239 parsing walks the forwarded-pair grammar in positional recursive
-# passes that mirror it, and names each refusal in an explicit True/False
-# branch rather than continuing past it. Its vectors destructure Result values
-# to show the exact field output a proxy would emit.
+# RFC 7239 parsing walks the forwarded-pair grammar in positional recursive passes that mirror it, and names each refusal in an explicit True/False branch rather than continuing past it.
+# Its vectors destructure Result values to show the exact field output a proxy would emit.
 "src/http/forwarded.gleam" = ["label_possible", "prefer_guard_clause"]
 "test/forwarded_test.gleam" = ["assert_ok_pattern"]
-# RFC 9421 base construction preserves ordered component and metadata state in
-# positional helpers. The nested message/role match is the explicit matrix of
-# valid derived components; public wire helpers are downstream stable surface.
+# RFC 9421 base construction preserves ordered component and metadata state in positional helpers.
+# The nested message/role match is the explicit matrix of valid derived components; public wire helpers are downstream stable surface.
 "src/http/signature.gleam" = [
   "deep_nesting",
   "label_possible",
@@ -123,9 +124,8 @@ unused_exports = "error"
   "unused_exports",
 ]
 "test/bhttp_test.gleam" = ["assert_ok_pattern"]
-# OHTTP keeps RFC 9180 labeled HKDF state and role-specific contexts in
-# positional helpers. Cryptographic errors are deliberately collapsed at the
-# non-secret public boundary, and deterministic entry points exist for vectors.
+# OHTTP keeps RFC 9180 labeled HKDF state and role-specific contexts in positional helpers.
+# Cryptographic errors are deliberately collapsed at the non-secret public boundary, and deterministic entry points exist for vectors.
 "src/http/ohttp.gleam" = [
   "deep_nesting",
   "error_context_lost",
@@ -134,9 +134,8 @@ unused_exports = "error"
   "unused_exports",
 ]
 "test/ohttp_test.gleam" = ["assert_ok_pattern"]
-# Compression combines bounded recursive stored-block and dictionary matching
-# state with strict Structured Fields. FFI errors are collapsed at the public
-# non-secret codec boundary; public APIs are consumed by downstream packages.
+# Compression combines bounded recursive stored-block and dictionary matching state with strict Structured Fields.
+# FFI errors are collapsed at the public non-secret codec boundary; public APIs are consumed by downstream packages.
 "src/http/compression.gleam" = [
   "deep_nesting",
   "error_context_lost",
@@ -145,9 +144,8 @@ unused_exports = "error"
   "unused_exports",
 ]
 "test/compression_test.gleam" = ["assert_ok_pattern"]
-# The protocol-neutral WebSocket session mirrors the RFC 6455 frame grammar
-# with bounded recursive fragmentation. Public handshake and framing exports
-# are stable adapters for all three HTTP protocol implementations.
+# The protocol-neutral WebSocket session mirrors the RFC 6455 frame grammar with bounded recursive fragmentation.
+# Public handshake and framing exports are stable adapters for all three HTTP protocol implementations.
 "src/http/websocket.gleam" = [
   "deep_nesting",
   "label_possible",
@@ -155,21 +153,18 @@ unused_exports = "error"
   "unused_exports",
 ]
 "test/websocket_test.gleam" = ["assert_ok_pattern"]
-# MASQUE keeps wire-order recursive codecs and explicit bounded policy/state
-# transitions in one stable protocol module. Assertions occur only after public
-# address validation has established the internal route invariants.
+# MASQUE keeps wire-order recursive codecs and explicit bounded policy/state transitions in one stable protocol module.
+# Assertions occur only after public address validation has established the internal route invariants.
 "src/http/masque.gleam" = [
   "deep_nesting",
   "label_possible",
   "prefer_guard_clause",
   "unused_exports",
 ]
-# MASQUE setup tests deliberately inject one resolver panic to verify that the
-# bounded adapter supervisor redacts and contains application callback faults.
+# MASQUE setup tests deliberately inject one resolver panic to verify that the bounded adapter supervisor redacts and contains application callback faults.
 "test/masque_test.gleam" = ["assert_ok_pattern", "avoid_panic"]
-# Deterministic qualification corpora intentionally stop at the first violated
-# invariant and mirror seed/state order in short recursive generators. Their
-# exported entry points are invoked directly from scripts/campaign.escript.
+# Deterministic qualification corpora intentionally stop at the first violated invariant and mirror seed/state order in short recursive generators.
+# Their exported entry points are invoked directly from scripts/campaign.escript.
 "test/masque_property_corpus.gleam" = [
   "assert_ok_pattern",
   "label_possible",
@@ -180,9 +175,8 @@ unused_exports = "error"
   "label_possible",
   "prefer_guard_clause",
 ]
-# These private policy parsers use short positional recursive passes. Invalid
-# optional fields are deliberately ignored so malformed peer metadata cannot
-# become a request failure or escape the redacted public error surface.
+# These private policy parsers use short positional recursive passes.
+# Invalid optional fields are deliberately ignored so malformed peer metadata cannot become a request failure or escape the redacted public error surface.
 "src/http/internal/alt_svc.gleam" = [
   "label_possible",
   "thrown_away_error",
@@ -201,9 +195,8 @@ unused_exports = "error"
   "label_possible",
   "thrown_away_error",
 ]
-# Wire parsers use short positional recursive helpers whose argument order is
-# stable within one module. Explicit Boolean branches keep syntax failures
-# adjacent to the relevant RFC predicate.
+# Wire parsers use short positional recursive helpers whose argument order is stable within one module.
+# Explicit Boolean branches keep syntax failures adjacent to the relevant RFC predicate.
 "src/http/internal/http1.gleam" = ["label_possible", "prefer_guard_clause"]
 "src/http/internal/http1/body.gleam" = [
   "label_possible",
@@ -235,8 +228,8 @@ unused_exports = "error"
 ]
 "src/http/internal/http2/connection.gleam" = ["label_possible"]
 "src/http/internal/http2/data.gleam" = ["deep_nesting", "label_possible"]
-# DATA framing is a private positional wire-slicing state machine. Its short
-# recursive helpers mirror the byte cursor and dual-credit order directly.
+# DATA framing is a private positional wire-slicing state machine.
+# Its short recursive helpers mirror the byte cursor and dual-credit order directly.
 "src/http/internal/http2/data_writer.gleam" = [
   "label_possible",
   "prefer_guard_clause",
@@ -297,19 +290,16 @@ unused_exports = "error"
   "label_possible",
   "prefer_guard_clause",
 ]
-# This one-shot driver keeps socket/wire/response/deadline order positional at
-# every recursive call. Backend failures are deliberately collapsed into the
-# stable redacted ErrorKind, and explicit branches keep cleanup adjacent to the
-# relevant transport outcome.
+# This one-shot driver keeps socket/wire/response/deadline order positional at every recursive call.
+# Backend failures are deliberately collapsed into the stable redacted ErrorKind, and explicit branches keep cleanup adjacent to the relevant transport outcome.
 "src/http/internal/http2/exchange.gleam" = [
   "deep_nesting",
   "error_context_lost",
   "label_possible",
   "prefer_guard_clause",
 ]
-# The connection actor keeps socket, wire, stream, and worker ownership in one
-# visible transition order. Protocol/backend failures are intentionally
-# collapsed into the stable redacted ErrorKind at this private adapter edge.
+# The connection actor keeps socket, wire, stream, and worker ownership in one visible transition order.
+# Protocol/backend failures are intentionally collapsed into the stable redacted ErrorKind at this private adapter edge.
 "src/http/internal/http2/server.gleam" = [
   "deep_nesting",
   "error_context_lost",
@@ -317,26 +307,22 @@ unused_exports = "error"
   "prefer_guard_clause",
   "thrown_away_error",
 ]
-# The pure accumulator mirrors ordered connection actions. Positional state
-# threading and explicit Boolean resource checks make the protocol sequence
-# visible without runtime terms or side effects.
+# The pure accumulator mirrors ordered connection actions.
+# Positional state threading and explicit Boolean resource checks make the protocol sequence visible without runtime terms or side effects.
 "src/http/internal/http2/exchange_state.gleam" = [
   "label_possible",
   "prefer_guard_clause",
 ]
-# This adapter is the intentional redaction boundary between public HTTP/3
-# failures and the common Error type. Its accept/stream loops keep transport
-# state positional, and listener shutdown plus best-effort 500 fallback are
-# terminal ownership edges where the original error cannot be propagated.
+# This adapter is the intentional redaction boundary between public HTTP/3 failures and the common Error type.
+# Its accept/stream loops keep transport state positional, and listener shutdown plus best-effort 500 fallback are terminal ownership edges where the original error cannot be propagated.
 "src/http/internal/http3/server.gleam" = [
   "error_context_lost",
   "label_possible",
   "prefer_guard_clause",
   "thrown_away_error",
 ]
-# The streaming reader mirrors one ordered action batch and emits DATA instead
-# of retaining it. Positional state threading and explicit Boolean limit
-# branches keep credit ownership and terminal transitions adjacent.
+# The streaming reader mirrors one ordered action batch and emits DATA instead of retaining it.
+# Positional state threading and explicit Boolean limit branches keep credit ownership and terminal transitions adjacent.
 "src/http/internal/http2/response_reader.gleam" = [
   "label_possible",
   "prefer_guard_clause",
@@ -345,10 +331,8 @@ unused_exports = "error"
   "label_possible",
   "prefer_guard_clause",
 ]
-# The exchange is an explicitly redacting state machine: parser, encoder, and
-# backend errors are deliberately collapsed into the stable public ErrorKind.
-# Short positional recursive helpers keep socket/decoder/deadline transitions
-# visible at each call site.
+# The exchange is an explicitly redacting state machine: parser, encoder, and backend errors are deliberately collapsed into the stable public ErrorKind.
+# Short positional recursive helpers keep socket/decoder/deadline transitions visible at each call site.
 "src/http/internal/http1/exchange.gleam" = [
   "error_context_lost",
   "label_possible",
@@ -362,8 +346,7 @@ unused_exports = "error"
   "thrown_away_error",
   "unused_exports",
 ]
-# Fixed public contract fixtures deliberately fail at the first unexpected
-# Result variant so the reported source line identifies the broken contract.
+# Fixed public contract fixtures deliberately fail at the first unexpected Result variant so the reported source line identifies the broken contract.
 "test/body_test.gleam" = ["assert_ok_pattern"]
 "test/context_test.gleam" = ["assert_ok_pattern"]
 "test/diagnostics_test.gleam" = [
@@ -428,8 +411,7 @@ unused_exports = "error"
   "assert_ok_pattern",
   "label_possible",
 ]
-# Loopback fixtures intentionally normalize heterogeneous server-side errors
-# to Nil so a failed assertion identifies the broken protocol boundary.
+# Loopback fixtures intentionally normalize heterogeneous server-side errors to Nil so a failed assertion identifies the broken protocol boundary.
 "test/http2_exchange_test.gleam" = [
   "assert_ok_pattern",
   "error_context_lost",
@@ -450,6 +432,15 @@ unused_exports = "error"
 ]
 "test/tls_transport_test.gleam" = ["assert_ok_pattern"]
 "test/http3_server_adapter_test.gleam" = ["assert_ok_pattern"]
+"test/http3_client_adapter_test.gleam" = ["assert_ok_pattern"]
+"test/response_diagnostics_test.gleam" = ["assert_ok_pattern"]
+"test/server_body_lifetime_test.gleam" = ["assert_ok_pattern"]
+"test/server_handler_lifetime_test.gleam" = ["assert_ok_pattern"]
+"test/diagnostic_delivery_test.gleam" = ["assert_ok_pattern"]
+"test/client_diagnostics_test.gleam" = ["assert_ok_pattern"]
+"test/client_upload_test.gleam" = ["assert_ok_pattern"]
+"test/http_models_test.gleam" = ["assert_ok_pattern"]
+"test/tcp_admission_test.gleam" = ["assert_ok_pattern"]
 "test/tunnel_test.gleam" = [
   "assert_ok_pattern",
   "label_possible",

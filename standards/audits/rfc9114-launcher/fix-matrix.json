@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "matrix_kind": "rfc9114_launcher_independent_audit_fix_matrix",
+  "generation": 4,
+  "status": "ImplementedAwaitingRefreeze",
+  "shareable": true,
+  "source_audit_sha256": "15b54017c152dfa1e6357f070d301ec48828a46e8707c23f28f5a70691fbeda9",
+  "blocker_count": 8,
+  "blockers": [
+    {
+      "id": "live_inventory_drift",
+      "state": "PendingRefreeze",
+      "evidence": ["source_epoch", "source_identity_stale"]
+    },
+    {
+      "id": "ready_freeze_absent",
+      "state": "PendingIndependentAudit",
+      "evidence": ["independent_audit", "independent_audit_pending"]
+    },
+    {
+      "id": "checker_allows_unsupervised_invocation",
+      "state": "Fixed",
+      "evidence": ["external_invocation_surface_is_exact"]
+    },
+    {
+      "id": "checker_allows_disabled_atomic_writer",
+      "state": "Fixed",
+      "evidence": ["atomic_writer_contract_is_executable"]
+    },
+    {
+      "id": "checker_allows_disabled_hidden_flags",
+      "state": "Fixed",
+      "evidence": ["hidden_stdio_same_live_try_dataflow"]
+    },
+    {
+      "id": "hash_map_not_strict",
+      "state": "Fixed",
+      "evidence": ["identity_map_comparison_fails_closed"]
+    },
+    {
+      "id": "evidence_has_no_consumer_gate",
+      "state": "PendingIntegration",
+      "evidence": ["gate_controls", "valid_static_bundle"]
+    },
+    {
+      "id": "shared_evidence_path_race",
+      "state": "Fixed",
+      "evidence": ["per_run_evidence_path_is_unique"]
+    }
+  ],
+  "false_green_count": 5,
+  "false_greens": [
+    {
+      "id": "atomic_writer_early_return",
+      "state": "Detected",
+      "replacement_mutation_id": "atomic-writer-early-return"
+    },
+    {
+      "id": "atomic_writer_early_throw",
+      "state": "Detected",
+      "replacement_mutation_id": "atomic-writer-early-throw"
+    },
+    {
+      "id": "atomic_writer_indirect_dead_branch",
+      "state": "Detected",
+      "replacement_mutation_id": "atomic-writer-indirect-dead-path"
+    },
+    {
+      "id": "hidden_flags_indirect_false",
+      "state": "Detected",
+      "replacement_mutation_id": "hidden-flags-indirect-dead-branch"
+    },
+    {
+      "id": "direct_call_before_supervisor",
+      "state": "Detected",
+      "replacement_mutation_id": "direct-ampersand-outer-runner"
+    }
+  ],
+  "remaining": [
+    "config_integration",
+    "source_refreeze",
+    "dual_engine_rerun",
+    "independent_reaudit"
+  ]
+}

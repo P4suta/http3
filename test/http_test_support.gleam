@@ -1,6 +1,11 @@
 //// Test-only finite task and credential fixtures.
 
+import http/internal/transport
 import http/masque
+
+/// Leave a diagnostic reservation unpublished, without retaining resources.
+@external(erlang, "http_test_ffi", "transport_orphaned_trace")
+pub fn transport_orphaned_trace() -> transport.Diagnostics
 
 /// Race every HTTP/1 listener phase writer against fixed-size snapshots.
 @external(erlang, "http_test_ffi", "http1_listener_snapshot_race")
@@ -162,13 +167,36 @@ pub fn start_udp_fixed_response_server(
   response: BitArray,
 ) -> #(UdpEchoServer, masque.UdpEndpoint)
 
-/// Start an IPv4 echo peer that observes incoming TOS and marks replies CE.
+/// Start an IPv4 peer that independently attempts TOS observation and CE configuration.
+/// Unsupported observations remain explicit in its snapshot.
 @external(erlang, "http_test_ffi", "start_udp_ecn_echo_server")
 pub fn start_udp_ecn_echo_server() -> #(UdpEchoServer, masque.UdpEndpoint)
 
-/// Return packet count, last incoming TOS, and configured reply TOS.
+/// Force ordinary UDP messages to verify forwarding without ancillary data.
+@external(erlang, "http_test_ffi", "start_udp_unobserved_echo_server")
+pub fn start_udp_unobserved_echo_server() -> #(
+  UdpEchoServer,
+  masque.UdpEndpoint,
+)
+
+pub type EcnObservation {
+  EcnUnobserved
+  EcnObserved(Int)
+}
+
+/// Option acceptance is separate from received ancillary evidence; a runtime can accept recvtos while still delivering packets without that metadata.
+pub type UdpEcnSnapshot {
+  UdpEcnSnapshot(
+    received_packets: Int,
+    incoming_tos: EcnObservation,
+    configured_reply_tos: EcnObservation,
+    receive_tos_option_accepted: Bool,
+  )
+}
+
+/// Return actual observation capability without substituting a default value for absent packet metadata or failed CE configuration.
 @external(erlang, "http_test_ffi", "udp_ecn_echo_snapshot")
-pub fn udp_ecn_echo_snapshot(server: UdpEchoServer) -> #(Int, Int, Int)
+pub fn udp_ecn_echo_snapshot(server: UdpEchoServer) -> UdpEcnSnapshot
 
 /// Stop the loopback endpoint and wait for its socket owner to terminate.
 @external(erlang, "http_test_ffi", "stop_udp_echo_server")

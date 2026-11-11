@@ -8,6 +8,7 @@ import http3/capsule
 import http3/client
 import http3/config
 import http3/failure as runtime_failure
+import http3/internal/clock
 import http3/internal/transport_backend
 import http3/server
 import http3/transport
@@ -508,15 +509,26 @@ pub fn server_cancel_releases_body_and_datagram_waiters_with_local_provenance_te
     http3_test_support.start_task(fn() {
       transport.next_datagram(server_transport)
     })
-  http3_test_support.pause_milliseconds(20)
+  let registration_deadline = clock.monotonic_milliseconds() + 2000
+  assert await_request_waiters(incoming, registration_deadline)
+    == server.RequestWaiterStats(True, True)
 
   assert server.cancel(incoming) == Ok(server.Cancelled)
+  // The cancel reply is sent after the worker has failed and detached both waiters.
+  // This snapshot is therefore a causal release barrier.
+  assert server.request_waiter_stats(incoming) |> should.be_ok
+    == server.RequestWaiterStats(False, False)
   let local_cancellation =
     runtime_failure.Closed(runtime_failure.Local, Some(0x10c))
   assert http3_test_support.await_task(body_waiter)
     == Error(server.Failure(local_cancellation))
   assert http3_test_support.await_task(datagram_waiter)
     == Error(transport.Failure(local_cancellation))
+  // `await_task` is monitor-backed and bounded.
+  // Once both owners are terminal,
+  // verify that neither waiter subject has been retained by the request.
+  assert server.request_waiter_stats(incoming) |> should.be_ok
+    == server.RequestWaiterStats(False, False)
   assert client.next_event(stream)
     == Error(
       client.Failure(runtime_failure.Closed(runtime_failure.Peer, Some(0x10c))),
@@ -524,6 +536,20 @@ pub fn server_cancel_releases_body_and_datagram_waiters_with_local_provenance_te
 
   assert client.close(connection) == Ok(client.Closed)
   assert server.stop(listener) == Ok(server.Stopped)
+}
+
+fn await_request_waiters(
+  request: server.Request,
+  deadline_milliseconds: Int,
+) -> server.RequestWaiterStats {
+  let stats = server.request_waiter_stats(request) |> should.be_ok
+  case stats {
+    server.RequestWaiterStats(True, True) -> stats
+    _ -> {
+      assert clock.monotonic_milliseconds() < deadline_milliseconds
+      await_request_waiters(request, deadline_milliseconds)
+    }
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

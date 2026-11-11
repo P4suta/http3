@@ -20,6 +20,23 @@ pub type PushHandle =
 pub type ReplayGuard =
   native_server.ReplayGuard
 
+pub type AuthorityPolicies =
+  native_server.AuthorityPolicies
+
+pub type AuthorityPolicy {
+  MandatoryAuthority
+  OptionalAuthority
+  NoAuthority
+}
+
+pub type AuthorityPolicyError {
+  InvalidAuthorityScheme
+  ReservedAuthorityScheme
+  DuplicateAuthorityScheme
+  AuthoritySchemeTooLong(maximum: Int)
+  AuthorityPolicyLimitExceeded(maximum: Int)
+}
+
 pub opaque type OperationalKey {
   OperationalKey(native: native_server.OperationalKey)
 }
@@ -81,6 +98,27 @@ pub fn valid_server_name(server_name: String) -> Bool {
   native_server.is_valid_server_name(server_name)
 }
 
+pub fn authority_policies() -> AuthorityPolicies {
+  native_server.authority_policies()
+}
+
+pub fn with_custom_scheme_authority_policy(
+  policies policies: AuthorityPolicies,
+  scheme scheme: String,
+  policy policy: AuthorityPolicy,
+) -> Result(AuthorityPolicies, AuthorityPolicyError) {
+  native_server.with_custom_scheme_authority_policy(
+    policies,
+    scheme,
+    case policy {
+      MandatoryAuthority -> native_server.MandatoryAuthority
+      OptionalAuthority -> native_server.OptionalAuthority
+      NoAuthority -> native_server.NoAuthority
+    },
+  )
+  |> result.map_error(map_authority_policy_error)
+}
+
 pub fn operational_key(bytes: BitArray) -> Result(OperationalKey, Nil) {
   native_server.operational_key(bytes)
   |> result.map(OperationalKey)
@@ -130,6 +168,7 @@ pub fn start(
   alternative_certificates alternative_certificates: List(
     #(String, BitArray, BitArray),
   ),
+  authority_policies authority_policies: AuthorityPolicies,
   port port: Int,
   bind_address bind_address: Option(BitArray),
   timeout_milliseconds timeout_milliseconds: Int,
@@ -166,6 +205,8 @@ pub fn start(
     configuration,
     alternative_certificates,
   ))
+  let configuration =
+    native_server.with_authority_policies(configuration, authority_policies)
   use configuration <- result.try(
     native_server.with_port(configuration, port)
     |> result.map_error(map_configuration_error),
@@ -295,6 +336,20 @@ pub fn start(
   native_server.start(configuration) |> result.map_error(map_native_error)
 }
 
+fn map_authority_policy_error(
+  error: native_server.AuthorityPolicyError,
+) -> AuthorityPolicyError {
+  case error {
+    native_server.InvalidAuthorityScheme -> InvalidAuthorityScheme
+    native_server.ReservedAuthorityScheme -> ReservedAuthorityScheme
+    native_server.DuplicateAuthorityScheme -> DuplicateAuthorityScheme
+    native_server.AuthoritySchemeTooLong(maximum) ->
+      AuthoritySchemeTooLong(maximum)
+    native_server.AuthorityPolicyLimitExceeded(maximum) ->
+      AuthorityPolicyLimitExceeded(maximum)
+  }
+}
+
 /// Replace the complete prevalidated certificate set for new handshakes.
 pub fn reload_certificates(
   listener listener: ListenerHandle,
@@ -400,8 +455,48 @@ pub fn peer_endpoint(
   native_server.peer_endpoint(request) |> result.map_error(map_native_error)
 }
 
+/// Compare request connection identity without exposing native handles.
+@internal
+pub fn same_connection(
+  first first: RequestHandle,
+  second second: RequestHandle,
+) -> Bool {
+  native_server.same_connection(first, second)
+}
+
+@internal
+pub fn operation_timeout_milliseconds(request: RequestHandle) -> Int {
+  native_server.operation_timeout_milliseconds(request)
+}
+
+/// Queue one payload-free application diagnostic on the owning connection.
+///
+/// Delivery is best effort and never waits for the optional qlog writer.
+@internal
+pub fn record_application_error(
+  request request: RequestHandle,
+  code code: Int,
+) -> Nil {
+  native_server.record_application_error(request, code)
+}
+
 pub fn next_event(request: RequestHandle) -> Result(RawEvent, Failure) {
-  case native_server.next_event(request) {
+  map_next_event(native_server.next_event(request))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  request request: RequestHandle,
+  deadline_milliseconds deadline: Int,
+) -> Result(RawEvent, Failure) {
+  map_next_event(native_server.next_event_until(request, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(native_server.RequestEvent, native_server.Error),
+) -> Result(RawEvent, Failure) {
+  case outcome {
     Ok(native_server.Data(bytes)) -> Ok(#(1, [], bytes))
     Ok(native_server.Trailers(headers)) -> Ok(#(2, headers, <<>>))
     Ok(native_server.End) -> Ok(#(3, [], <<>>))
@@ -424,6 +519,42 @@ pub fn request_state_stats(
   request: RequestHandle,
 ) -> Result(#(Int, Int, Int, Int, Int, Int, Int, Int, Int), Failure) {
   native_server.request_state_stats(request)
+  |> result.map_error(map_native_error)
+}
+
+/// Test-only direction and retained-event snapshot for one request.
+@internal
+pub fn request_lifecycle_stats(
+  request: RequestHandle,
+) -> Result(#(Bool, Bool, Bool, Option(Int), Int, Int, Bool), Failure) {
+  native_server.request_lifecycle_stats(request)
+  |> result.map_error(map_native_error)
+}
+
+/// Test-only payload-free snapshot of the blocking request waiters.
+@internal
+pub fn request_waiter_stats(
+  request: RequestHandle,
+) -> Result(#(Bool, Bool), Failure) {
+  native_server.request_waiter_stats(request)
+  |> result.map_error(map_native_error)
+}
+
+/// Test-only scalar send-buffer, pending-send, and completion-waiter counts.
+@internal
+pub fn send_resource_stats(
+  request: RequestHandle,
+) -> Result(#(Int, Int, Int), Failure) {
+  native_server.send_resource_stats(request)
+  |> result.map_error(map_native_error)
+}
+
+/// Test-only connection-wide terminal-delivery ownership and ceilings.
+@internal
+pub fn terminal_delivery_stats(
+  request: RequestHandle,
+) -> Result(#(Int, Int, Int, Int, Int, Int), Failure) {
+  native_server.terminal_delivery_stats(request)
   |> result.map_error(map_native_error)
 }
 
@@ -472,6 +603,13 @@ pub fn send_capsule(
   bytes bytes: BitArray,
 ) -> Result(Nil, Failure) {
   native_server.send_capsule(request, bytes)
+  |> result.map_error(map_native_error)
+}
+
+pub fn await_response_completion(
+  request: RequestHandle,
+) -> Result(Nil, Failure) {
+  native_server.await_response_completion(request)
   |> result.map_error(map_native_error)
 }
 

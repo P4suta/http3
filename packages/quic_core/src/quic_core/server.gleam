@@ -2,11 +2,12 @@
 ////
 //// A listener accepts opaque connections; each connection opens or accepts
 //// opaque streams and exchanges raw application bytes selected by ALPN. No
-//// process, socket, mailbox value, TLS state, private key, or secret crosses
-//// this module.
+//// raw process identity, socket, mailbox value, TLS state, private key, or
+//// secret crosses this module. Supervised adapters identify an owner only
+//// through a package-opaque finite-lifetime capability.
 
 import gleam/bit_array
-import gleam/erlang/process
+import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -15,10 +16,12 @@ import quic_core/config.{type Deadlines, type Limits}
 import quic_core/diagnostics
 import quic_core/failure
 import quic_core/internal/connection_state as transport
+import quic_core/internal/local_connection_id
 import quic_core/internal/qlog
 import quic_core/internal/runtime/connection as runtime_connection
 import quic_core/internal/runtime/connection_worker
 import quic_core/internal/runtime/server_worker
+import quic_core/internal/stream_completion
 import quic_core/internal/stream_state
 import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
@@ -44,6 +47,7 @@ pub opaque type Server {
     congestion_control: CongestionControl,
     qlog_directory: String,
     allow_zero_rtt: Bool,
+    zero_rtt_application_context: BitArray,
     replay_guard: Option(external_replay_guard.Guard),
     operational_keys: Option(OperationalKeys),
   )
@@ -123,6 +127,39 @@ pub type Read {
   Reset(application_error_code: Int)
 }
 
+/// The terminal result of the stream's local send direction.
+/// Acknowledgement proves transport delivery of FIN; it does not imply application processing.
+pub type SendCompletion {
+  SendAcknowledged
+  /// The peer requested that this endpoint stop sending.
+  SendStopped(application_error_code: Int)
+  /// This endpoint reset its own send direction.
+  SendReset(application_error_code: Int)
+}
+
+/// One connection-ordered terminal send outcome for higher-level protocol adapters.
+/// It carries only scalar stream identity and the typed outcome.
+pub type SendCompletionEvent {
+  SendCompletionEvent(
+    cursor: Int,
+    stream_identifier: Int,
+    outcome: SendCompletion,
+  )
+}
+
+/// One finite batch from the connection's completion ring.
+pub type SendCompletionBatch {
+  SendCompletionBatch(cursor: Int, events: List(SendCompletionEvent))
+}
+
+/// Opaque liveness capability for a supervised completion-feed owner.
+///
+/// Create it in the actor that owns the higher-level connection.
+/// The generated package interface hides its constructor and field, so no process-identity type or accessor enters a dependent package's typed API.
+pub opaque type CompletionFeedOwner {
+  CompletionFeedOwner(owner: Pid)
+}
+
 /// Idempotent listener stop outcome.
 pub type StopResult {
   Stopped
@@ -138,6 +175,7 @@ pub type CloseResult {
 /// Invalid credentials, ALPN, endpoint, qlog, replay, or key policy.
 pub type ConfigurationError {
   InvalidCertificate
+  InsufficientKeyStrength
   InvalidPrivateKey
   IncompatiblePrivateKey
   InvalidClientCaCertificate
@@ -147,6 +185,7 @@ pub type ConfigurationError {
   InvalidPort(Int)
   InvalidQlogDirectory
   InvalidReplayGuardTimeout
+  InvalidZeroRttApplicationContext
   InvalidOperationalKey
   DuplicateOperationalKey
 }
@@ -158,6 +197,7 @@ pub type Error {
   InvalidDirection
   StreamFinished
   ConcurrentOperation
+  CompletionHistoryExceeded(oldest_available_cursor: Int)
 }
 
 /// Return whether bytes decode as a non-empty PEM certificate chain.
@@ -190,6 +230,7 @@ pub fn new(
     authentication.certificate_chain_from_pem(certificate_pem)
     |> result.replace_error(InvalidCertificate),
   )
+  use Nil <- result.try(require_secure_server_certificate(certificate_chain))
   use signing_key <- result.try(
     authentication.signing_key_from_pem(private_key_pem)
     |> result.replace_error(InvalidPrivateKey),
@@ -224,6 +265,7 @@ pub fn new(
         quic_core.NewReno,
         "",
         False,
+        <<>>,
         None,
         None,
       ))
@@ -318,6 +360,7 @@ pub fn with_certificate(
     authentication.certificate_chain_from_pem(certificate_pem)
     |> result.replace_error(InvalidCertificate),
   )
+  use Nil <- result.try(require_secure_server_certificate(certificate_chain))
   use signing_key <- result.try(
     authentication.signing_key_from_pem(private_key_pem)
     |> result.replace_error(InvalidPrivateKey),
@@ -351,7 +394,19 @@ pub fn with_certificate(
   }
 }
 
+fn require_secure_server_certificate(
+  certificate_chain: List(BitArray),
+) -> Result(Nil, ConfigurationError) {
+  case authentication.server_certificate_public_key_secure(certificate_chain) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error(InsufficientKeyStrength)
+    Error(_) -> Error(InvalidCertificate)
+  }
+}
+
 /// Enable one bounded asynchronous qlog writer per connection.
+/// This checks path syntax only. Each admitted connection checks writability
+/// after reserving its diagnostic work; an idle listener opens no trace.
 pub fn with_qlog(
   server: Server,
   directory: String,
@@ -359,7 +414,7 @@ pub fn with_qlog(
   case directory {
     "" -> Ok(Server(..server, qlog_directory: ""))
     value ->
-      qlog.validate_directory(value)
+      qlog.validate_path(value)
       |> result.map(fn(_) { Server(..server, qlog_directory: value) })
       |> result.replace_error(InvalidQlogDirectory)
   }
@@ -384,6 +439,20 @@ pub fn with_single_node_zero_rtt(server: Server) -> Server {
 pub fn with_external_zero_rtt(server: Server, guard: ReplayGuard) -> Server {
   let ReplayGuard(handle) = guard
   Server(..server, allow_zero_rtt: True, replay_guard: Some(handle))
+}
+
+/// Bind early-data acceptance and issued tickets to bounded opaque state owned by an application protocol adapter.
+/// The QUIC layer compares exact bytes and never interprets or exposes their contents in diagnostics.
+pub fn with_zero_rtt_application_context(
+  server: Server,
+  context: BitArray,
+) -> Result(Server, ConfigurationError) {
+  case
+    bit_array.bit_size(context) % 8 == 0 && bit_array.byte_size(context) <= 4096
+  {
+    True -> Ok(Server(..server, zero_rtt_application_context: context))
+    False -> Error(InvalidZeroRttApplicationContext)
+  }
 }
 
 /// Validate one caller-managed AES/HMAC operational key.
@@ -467,6 +536,7 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     to_transport_congestion(server.congestion_control),
     server.qlog_directory,
     server.allow_zero_rtt,
+    server.zero_rtt_application_context,
     server.replay_guard,
     ticket_keys,
     address_token_keys,
@@ -565,6 +635,116 @@ pub fn finish(stream: Stream) -> Result(Nil, Error) {
 pub fn send_finished(stream: Stream) -> Result(Bool, Error) {
   let Stream(handle) = stream
   connection_worker.send_finished(handle) |> result.map_error(map_error)
+}
+
+/// Wait for send completion without consuming the stream's receive direction.
+///
+/// The wait uses the smaller of the positive requested duration and this connection's configured Operation deadline.
+/// At most one caller may wait on each stream; concurrent waits return `ConcurrentOperation`.
+/// Caller exit removes the registration without waiting for the operation deadline.
+/// A connection admits at most `min(Queue, 256)` active waiters and charges each one 8 KiB from its endpoint memory grant before registering it.
+///
+/// Terminal outcomes remain available for the most recent `min(Queue, 32)` streams.
+/// After evidence is evicted and transport state is retired, this returns `StreamFinished`, never an inferred successful acknowledgement.
+pub fn await_send_completion(
+  stream: Stream,
+  within_milliseconds: Int,
+) -> Result(SendCompletion, Error) {
+  let Stream(handle) = stream
+  connection_worker.await_send_completion(handle, within_milliseconds)
+  |> result.map(fn(outcome) {
+    case outcome {
+      stream_completion.Acknowledged -> SendAcknowledged
+      stream_completion.Stopped(code) -> SendStopped(code)
+      stream_completion.Reset(code) -> SendReset(code)
+    }
+  })
+  |> result.map_error(map_error)
+}
+
+/// Pull retained connection completion events after a cursor.
+///
+/// This internal feed lets a protocol adapter observe peer STOP_SENDING and local send termination without occupying one waiter per live stream.
+@internal
+pub fn next_send_completions(
+  connection: Connection,
+  after_cursor: Int,
+  within_milliseconds: Int,
+) -> Result(SendCompletionBatch, Error) {
+  let Connection(handle) = connection
+  connection_worker.next_send_completions(
+    handle,
+    after_cursor,
+    within_milliseconds,
+  )
+  |> result.map(fn(batch) {
+    let connection_worker.CompletionBatch(cursor, events) = batch
+    SendCompletionBatch(
+      cursor,
+      list.map(events, fn(event) {
+        let stream_completion.Event(event_cursor, identifier, outcome) = event
+        SendCompletionEvent(event_cursor, identifier, case outcome {
+          stream_completion.Acknowledged -> SendAcknowledged
+          stream_completion.Stopped(code) -> SendStopped(code)
+          stream_completion.Reset(code) -> SendReset(code)
+        })
+      }),
+    )
+  })
+  |> result.map_error(map_error)
+}
+
+/// Capture the calling actor as a completion-feed owner.
+///
+/// This starts no worker and installs no monitor.
+/// The opaque result carries no accessor, so a dependent package can use it only with the bounded completion wait below.
+pub fn completion_feed_owner() -> CompletionFeedOwner {
+  CompletionFeedOwner(process.self())
+}
+
+/// Return the finite extra wait required to complete listener shutdown.
+///
+/// A higher-level protocol adapter adds this scalar after its own drain deadline.
+/// The value is derived from this listener's configured operation timeout plus the core reply grace and exposes no endpoint or runtime handle.
+pub fn stop_completion_allowance_milliseconds(listener: Listener) -> Int {
+  let Listener(handle) = listener
+  server_worker.stop_completion_allowance_milliseconds(handle)
+}
+
+/// Pull retained completions for a supervised protocol adapter.
+///
+/// The wait ends when data arrives, its finite deadline expires, the connection closes, or `owner` exits.
+/// The opaque owner capability is used only to install that monitor; it is never returned, logged, included in an error, or retained after settlement.
+/// A long poll therefore cannot outlive its connection owner.
+pub fn next_send_completions_until_owner_exits(
+  connection: Connection,
+  after_cursor: Int,
+  within_milliseconds: Int,
+  owner: CompletionFeedOwner,
+) -> Result(SendCompletionBatch, Error) {
+  let Connection(handle) = connection
+  let CompletionFeedOwner(owner) = owner
+  connection_worker.next_send_completions_until_owner_exits(
+    handle,
+    after_cursor,
+    within_milliseconds,
+    owner,
+  )
+  |> result.map(fn(batch) {
+    let connection_worker.CompletionBatch(cursor, events) = batch
+    SendCompletionBatch(
+      cursor,
+      list.map(events, fn(event) {
+        let stream_completion.Event(event_cursor, identifier, outcome) = event
+        SendCompletionEvent(event_cursor, identifier, case outcome {
+          stream_completion.Acknowledged -> SendAcknowledged
+          stream_completion.Stopped(code) -> SendStopped(code)
+          stream_completion.Reset(code) -> SendReset(code)
+        })
+      }),
+    )
+  })
+  |> result.map_error(map_error)
 }
 
 pub fn send_and_finish(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
@@ -735,6 +915,32 @@ pub fn connection_stats(
   |> result.map_error(map_error)
 }
 
+/// Observe active listener routes without exposing connection identifiers.
+pub fn connection_id_stats(
+  listener: Listener,
+) -> Result(diagnostics.ListenerConnectionIdStats, Error) {
+  let Listener(handle) = listener
+  server_worker.connection_id_stats(handle)
+  |> result.map(fn(value) {
+    let #(connections, routes) = value
+    diagnostics.ListenerConnectionIdStats(connections, routes)
+  })
+  |> result.map_error(map_error)
+}
+
+/// Observe local issuance and retirement without identifiers or reset tokens.
+pub fn local_connection_id_stats(
+  connection: Connection,
+) -> Result(diagnostics.ConnectionIdStats, Error) {
+  let Connection(handle) = connection
+  connection_worker.local_connection_id_stats(handle)
+  |> result.map(fn(value) {
+    let local_connection_id.Snapshot(active, issued, retired, limit) = value
+    diagnostics.ConnectionIdStats(active, issued, retired, limit)
+  })
+  |> result.map_error(map_error)
+}
+
 /// Snapshot current stream-resource pressure without exposing stream IDs.
 pub fn resource_stats(
   connection: Connection,
@@ -746,6 +952,61 @@ pub fn resource_stats(
     diagnostics.ResourceStats(runtime_streams, transport_streams)
   })
   |> result.map_error(map_error)
+}
+
+/// Return payload-free send-buffer and waiter convergence counters.
+///
+/// No stream identifier, payload, grant amount, or native handle crosses this seam.
+/// `pending_sends` counts writes still owning a finite send reservation;
+/// `completion_waiters` includes both per-stream waiters and adapter feed pulls.
+/// The immutable scalar tuple is intended for bounded shutdown and resource release decisions, rather than transport-content inspection.
+pub fn send_resource_stats(
+  connection: Connection,
+) -> Result(#(Int, Int, Int), Error) {
+  let Connection(handle) = connection
+  use snapshot <- result.try(
+    connection_worker.memory_grant_snapshot(handle)
+    |> result.map_error(map_error),
+  )
+  use completions <- result.try(
+    connection_worker.send_completion_counts(handle)
+    |> result.map_error(map_error),
+  )
+  Ok(#(
+    snapshot.buffered_send_bytes,
+    list.length(snapshot.pending_sends),
+    completions.0,
+  ))
+}
+
+/// Prove that all application-space output has reached acknowledgement.
+///
+/// This payload-free barrier is intended for an upper-layer orderly close after its final control frame.
+/// It combines the connection recovery queue with actor-owned writes, so an empty stream buffer alone cannot be mistaken for delivery of an unacknowledged control frame.
+pub fn application_send_settled(connection: Connection) -> Result(Bool, Error) {
+  let Connection(handle) = connection
+  use snapshot <- result.try(
+    connection_worker.memory_grant_snapshot(handle)
+    |> result.map_error(map_error),
+  )
+  let connection_worker.MemoryGrantSnapshot(
+    buffered_send_bytes: buffered,
+    transport_progress: transport.SendProgress(
+      application_outstanding_packets: outstanding,
+      queued_application_frames: queued,
+      active_streams: active,
+      ..,
+    ),
+    pending_sends: pending,
+    ..,
+  ) = snapshot
+  Ok(
+    buffered == 0
+    && outstanding == 0
+    && queued == 0
+    && active == []
+    && pending == [],
+  )
 }
 
 /// Count the inbound datagrams this connection lost before its owner could see
@@ -951,7 +1212,11 @@ pub fn close_with_code(
   {
     Ok(connection_worker.Closed) -> Ok(Closed)
     Ok(connection_worker.AlreadyClosed) -> Ok(AlreadyClosed)
-    Error(connection_worker.ConnectionClosed) -> Ok(AlreadyClosed)
+    Error(connection_worker.ConnectionClosed)
+    | Error(connection_worker.PeerClosedWithCode(_))
+    | Error(connection_worker.TransportFailureWithCode(_))
+    | Error(connection_worker.PeerTransportFailureWithCode(_)) ->
+      Ok(AlreadyClosed)
     Error(error) -> Error(map_error(error))
   }
 }
@@ -959,6 +1224,25 @@ pub fn close_with_code(
 pub fn stop(listener: Listener) -> Result(StopResult, Error) {
   let Listener(handle) = listener
   case server_worker.stop(handle) {
+    Ok(server_worker.Stopped) -> Ok(Stopped)
+    Ok(server_worker.AlreadyStopped) -> Ok(AlreadyStopped)
+    Error(connection_worker.ListenerClosed) -> Ok(AlreadyStopped)
+    Error(error) -> Error(map_error(error))
+  }
+}
+
+/// Stop under a caller-owned absolute completion deadline.
+///
+/// `deadline_milliseconds` must be a future, non-negative value from `quic_core/diagnostics.monotonic_milliseconds` and no greater than 9,223,372,036,854,775,807.
+/// Every connection receives the same boundary;
+/// listener cleanup, qlog confirmation, reservation return, and listener DOWN must all complete inside it.
+/// Invalid values return `InvalidOperation` and expiry returns `Failure(Timeout(Operation))`.
+pub fn stop_until(
+  listener: Listener,
+  deadline_milliseconds: Int,
+) -> Result(StopResult, Error) {
+  let Listener(handle) = listener
+  case server_worker.stop_until(handle, deadline_milliseconds) {
     Ok(server_worker.Stopped) -> Ok(Stopped)
     Ok(server_worker.AlreadyStopped) -> Ok(AlreadyStopped)
     Error(connection_worker.ListenerClosed) -> Ok(AlreadyStopped)
@@ -1066,6 +1350,10 @@ fn map_error(error: connection_worker.Error) -> Error {
       Failure(failure.Closed(failure.Local, None))
     connection_worker.ConnectionClosed ->
       Failure(failure.Closed(failure.Peer, None))
+    connection_worker.PeerClosedWithCode(code) ->
+      Failure(failure.Closed(failure.Peer, Some(code)))
+    connection_worker.PeerTransportFailureWithCode(code) ->
+      Failure(failure.Quic(failure.Peer, Some(code)))
     connection_worker.StreamClosed -> StreamFinished
     connection_worker.InvalidDirection -> InvalidDirection
     connection_worker.ConcurrentSend
@@ -1096,11 +1384,15 @@ fn map_error(error: connection_worker.Error) -> Error {
     | connection_worker.QuicFailure
     | connection_worker.StreamQueueFailure(_) ->
       Failure(failure.Quic(failure.Peer, None))
+    connection_worker.TransportFailureWithCode(code) ->
+      Failure(failure.Quic(failure.Local, Some(code)))
     connection_worker.CongestionLimited ->
       Failure(failure.Overload(failure.Queue))
     connection_worker.EndpointMemoryExceeded ->
       Failure(failure.Overload(failure.EndpointMemory))
     connection_worker.QlogUnavailable ->
       Failure(failure.Socket(failure.WriteFile))
+    connection_worker.CompletionHistoryExceeded(oldest) ->
+      CompletionHistoryExceeded(oldest)
   }
 }

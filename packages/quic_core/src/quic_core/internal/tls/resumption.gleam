@@ -21,6 +21,7 @@ pub opaque type ClientOffer {
     placeholder: pre_shared_key.Offered,
     encoded_extensions: List(extension.Extension),
     request_early_data: Bool,
+    prepared_at_milliseconds: Int,
   )
 }
 
@@ -33,6 +34,7 @@ pub opaque type ServerPolicy {
     replay_cache: anti_replay.Cache,
     permit_early_data: Bool,
     external_replay_guard: Option(replay_guard.Guard),
+    expected_application_context: BitArray,
   )
 }
 
@@ -132,6 +134,7 @@ pub fn client_offer(
         placeholder:,
         encoded_extensions:,
         request_early_data:,
+        prepared_at_milliseconds: now_milliseconds,
       ))
     }
   }
@@ -215,14 +218,17 @@ pub fn server_policy_with_keys(
     && ticket_age_tolerance_milliseconds <= 600_000
   {
     True ->
-      Ok(ServerPolicy(
-        ticket_keys:,
-        now_milliseconds:,
-        ticket_age_tolerance_milliseconds:,
-        replay_cache:,
-        permit_early_data: True,
-        external_replay_guard: None,
-      ))
+      Ok(
+        ServerPolicy(
+          ticket_keys:,
+          now_milliseconds:,
+          ticket_age_tolerance_milliseconds:,
+          replay_cache:,
+          permit_early_data: True,
+          external_replay_guard: None,
+          expected_application_context: <<>>,
+        ),
+      )
     False -> Error(InvalidPolicy)
   }
 }
@@ -231,6 +237,20 @@ pub fn server_policy_with_keys(
 /// QUIC Retry uses this policy because receiving Retry invalidates early data.
 pub fn reject_early_data(policy: ServerPolicy) -> ServerPolicy {
   ServerPolicy(..policy, permit_early_data: False)
+}
+
+/// Bind 0-RTT acceptance to an exact, bounded opaque application context.
+/// Context mismatch rejects early data while retaining authenticated PSK resumption at 1-RTT.
+pub fn with_application_context(
+  policy: ServerPolicy,
+  context: BitArray,
+) -> Result(ServerPolicy, Error) {
+  case
+    bit_array.bit_size(context) % 8 == 0 && bit_array.byte_size(context) <= 4096
+  {
+    True -> Ok(ServerPolicy(..policy, expected_application_context: context))
+    False -> Error(InvalidPolicy)
+  }
 }
 
 /// Validate the finite execution deadline of a caller-managed replay guard.
@@ -315,6 +335,28 @@ pub fn select(
 /// Return whether the client placed early_data in ClientHello.
 pub fn client_early_data_requested(offer offer: ClientOffer) -> Bool {
   offer.request_early_data
+}
+
+/// Reject early data and regenerate ticket age and the binder placeholder.
+/// An absent receive time preserves the prepared time for pure model callers;
+/// live transports supply a monotonic time, rejecting rollback or ticket expiry.
+pub fn client_reject_early_data(
+  offer offer: ClientOffer,
+  now_milliseconds now_milliseconds: Option(Int),
+) -> Result(ClientOffer, Error) {
+  let now = case now_milliseconds {
+    None -> offer.prepared_at_milliseconds
+    Some(value) -> value
+  }
+  case now >= offer.prepared_at_milliseconds {
+    False -> Error(InvalidClientTicket)
+    True ->
+      client_offer(
+        ticket: offer.ticket,
+        now_milliseconds: now,
+        request_early_data: False,
+      )
+  }
 }
 
 /// Return the resumption cipher suite selected by the ticket.
@@ -502,6 +544,7 @@ fn authenticate_identity(
     cipher_suite: cipher_suite,
     permit_early_data: permit_early_data,
     remembered_transport_parameters: remembered_transport_parameters,
+    remembered_application_context: remembered_application_context,
     ..,
   ) = claims
   case list.contains(cipher_suites, cipher_suite) {
@@ -534,6 +577,8 @@ fn authenticate_identity(
               remembered_transport_parameters,
               expected_transport_parameters,
             ),
+            remembered_application_context
+              == policy.expected_application_context,
           ))
           Ok(
             Resumed(Selected(
@@ -607,6 +652,7 @@ fn decide_early_data(
   permitted: Bool,
   algorithm: crypto.HashAlgorithm,
   transport_parameters_match: Bool,
+  application_contexts_match: Bool,
 ) -> Result(#(Bool, anti_replay.Cache), Error) {
   let age_is_valid =
     session_ticket.ticket_age_is_valid(
@@ -621,6 +667,7 @@ fn decide_early_data(
     && policy.permit_early_data
     && age_is_valid
     && transport_parameters_match
+    && application_contexts_match
   {
     False -> Ok(#(False, policy.replay_cache))
     True -> {

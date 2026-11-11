@@ -4,6 +4,18 @@ import gleeunit/should
 import quic_core
 import quic_core/diagnostics
 import quic_core/internal/qlog
+import quic_core/internal/runtime/qlog_budget
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn fixed_qlog_working_set_includes_one_terminal_record_test() -> Nil {
+  let #(runtime, terminal) = qlog_budget.connection_reservation_breakdown()
+  let fixed = qlog_budget.connection_reservation_bytes()
+  let dynamic = qlog_budget.event_reservation_bytes()
+  assert runtime == 1_032_192
+  assert terminal == 16_384
+  assert fixed == runtime + terminal
+  assert qlog_budget.reservation_bytes(1) == fixed + dynamic
+}
 
 @external(erlang, "qlog_test_ffi", "with_directory")
 fn with_directory(run: fn(String) -> value) -> value
@@ -32,9 +44,7 @@ fn with_suspended_device_writer(
 @external(erlang, "qlog_test_ffi", "write_probe_file")
 fn write_probe_file(directory: String) -> Bool
 
-// The two environment overrides below mutate the process-global environment, so
-// they rely on gleeunit running test modules sequentially; each restores every
-// variable it touched before returning.
+// The two environment overrides below mutate the process-global environment, so they rely on gleeunit running test modules sequentially; each restores every variable it touched before returning.
 @external(erlang, "qlog_test_ffi", "with_tmpdir_override")
 fn with_tmpdir_override(run: fn(String) -> value) -> value
 
@@ -51,8 +61,7 @@ pub fn scratch_directory_falls_back_to_temp_environment_test() -> Nil {
   assert_scratch_directory_is_writable_under_root(with_temp_override)
 }
 
-/// Assert the scratch directory sits under the root the override installed and
-/// that a file can actually be written inside it.
+/// Assert the scratch directory sits under the root the override installed and that a file can actually be written inside it.
 fn assert_scratch_directory_is_writable_under_root(
   with_override: fn(fn(String) -> Nil) -> Nil,
 ) -> Nil {

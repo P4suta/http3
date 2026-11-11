@@ -1,11 +1,10 @@
 # http
 
 `http` is a unified Gleam HTTP product for the Erlang target.
-The repository contains three packages:
-
-- `http` provides the common API and HTTP/1.1 and HTTP/2 runtimes.
-- `http3` provides HTTP/3, QPACK, Capsules, Datagrams, and WebSocket over HTTP/3.
-- `quic_core` provides application-protocol-independent QUIC v1/v2 and TLS 1.3.
+The repository contains three packages.
+`http` provides the common API and HTTP/1.1 and HTTP/2 runtimes.
+`http3` provides HTTP/3, QPACK, Capsules, Datagrams, and WebSocket over HTTP/3.
+`quic_core` provides application-protocol-independent QUIC v1/v2 and TLS 1.3.
 
 The root API includes bounded `http/body` and `http/error` values, the reusable `http/client`, and protocol-neutral `http/server`, `http/context`, `http/middleware`, `http/resource`, and `http/diagnostics` contracts.
 The [server guide](SERVER.md) describes the shared handler and lifecycle model.
@@ -87,6 +86,8 @@ pub fn main() -> Nil {
 
 Cleartext requires explicit opt-in on both sides, as shown above.
 A TLS listener takes a certificate, private key, and service identity, and the client always verifies that identity.
+
+[Certificate identity](CERTIFICATE_IDENTITY.md) defines the supported identifiers and open qualification gates.
 
 All three packages remain unpublished `0.1.0` development packages, and none is a supported production release.
 Release readiness depends on completing the conformance, resource, interoperability, performance, documentation, and independent-audit gates.

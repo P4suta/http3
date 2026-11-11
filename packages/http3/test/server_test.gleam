@@ -13,7 +13,37 @@ import http3/client
 import http3/config
 import http3/failure
 import http3/server
+import http3/transport
 import http3_test_support
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_datagram_advertisement_preserves_default_server_get_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let task =
+    http3_test_support.start_task(fn() {
+      let outgoing =
+        request.new()
+        |> request.set_host("localhost")
+        |> request.set_port(port)
+        |> request.set_path("/asymmetric-datagrams")
+        |> request.set_body(<<>>)
+      client.send(
+        client_configuration(ca_certificate) |> client.with_http_datagrams,
+        outgoing,
+      )
+    })
+  let accepted = server.accept(listener)
+  let replied = case accepted {
+    Ok(incoming) -> server.respond(incoming, 201, [], <<"plain HTTP">>)
+    Error(failure) -> Error(failure)
+  }
+  let received = http3_test_support.await_task(task)
+  let stopped = server.stop(listener)
+  assert result.is_ok(replied)
+  assert result.map(received, fn(reply) { #(reply.status, reply.body) })
+    == Ok(#(201, <<"plain HTTP">>))
+  assert result.is_ok(stopped)
+}
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bounded_server_round_trip_over_real_udp_test() -> Nil {
@@ -53,11 +83,8 @@ pub fn bounded_server_round_trip_over_real_udp_test() -> Nil {
   assert server.stop(listener) == Ok(server.AlreadyStopped)
 }
 
-/// A one-byte crossing of the initial connection window still has to move a
-/// full MiB through stream-level credit updates. Pure BEAM crypto on a host
-/// whose path correctly stays at QUIC's 1200-byte floor can take more than ten
-/// seconds, so keep a portable finite outer bound for this throughput-neutral
-/// flow-control regression.
+/// A one-byte crossing of the initial connection window still has to move a full MiB through stream-level credit updates.
+/// Pure BEAM crypto on a host whose path correctly stays at QUIC's 1200-byte floor can take more than ten seconds, so keep a portable finite outer bound for this throughput-neutral flow-control regression.
 const large_request_bound_milliseconds = 30_000
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -183,9 +210,8 @@ pub fn exact_bind_and_validated_request_context_test() -> Nil {
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
-// A listener which is already bound owns that endpoint exclusively. Allowing a
-// second bind would silently redirect the first listener's UDP traffic on
-// platforms whose SO_REUSEADDR UDP semantics select the newest socket.
+// A listener which is already bound owns that endpoint exclusively.
+// Allowing a second bind would silently redirect the first listener's UDP traffic on platforms whose SO_REUSEADDR UDP semantics select the newest socket.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn second_listener_cannot_steal_an_exact_live_endpoint_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
@@ -221,6 +247,80 @@ pub fn server_keepalive_interval_is_bounded_test() -> Nil {
     == Error(server.InvalidKeepalive)
   let _configured = server.with_keepalive(configuration, 1000) |> should.be_ok
   Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn custom_scheme_authority_configuration_is_bounded_test() -> Nil {
+  let #(certificate, private_key, _) = http3_test_support.server_credentials()
+  let configuration = server.new(certificate, private_key) |> should.be_ok
+  assert server.with_custom_scheme_authority_policy(
+      configuration,
+      "HTTPS",
+      server.OptionalAuthority,
+    )
+    == Error(server.ReservedAuthorityScheme)
+  assert server.with_custom_scheme_authority_policy(
+      configuration,
+      "1invalid",
+      server.OptionalAuthority,
+    )
+    == Error(server.InvalidAuthorityScheme)
+  assert server.with_custom_scheme_authority_policy(
+      configuration,
+      string.repeat("a", 65),
+      server.OptionalAuthority,
+    )
+    == Error(server.AuthoritySchemeTooLong(64))
+  let configured =
+    server.with_custom_scheme_authority_policy(
+      configuration,
+      "Case-Safe",
+      server.OptionalAuthority,
+    )
+    |> should.be_ok
+  assert server.with_custom_scheme_authority_policy(
+      configured,
+      "case-safe",
+      server.MandatoryAuthority,
+    )
+    == Error(server.DuplicateAuthorityScheme)
+
+  let full =
+    add_optional_authority_schemes(
+      configuration: configuration,
+      next: 0,
+      remaining: 32,
+    )
+  assert server.with_custom_scheme_authority_policy(
+      full,
+      "overflow",
+      server.NoAuthority,
+    )
+    == Error(server.AuthorityPolicyLimitExceeded(32))
+}
+
+fn add_optional_authority_schemes(
+  configuration configuration: server.Configuration,
+  next next: Int,
+  remaining remaining: Int,
+) -> server.Configuration {
+  case remaining {
+    0 -> configuration
+    _ -> {
+      let configured =
+        server.with_custom_scheme_authority_policy(
+          configuration,
+          "custom" <> int.to_string(next),
+          server.OptionalAuthority,
+        )
+        |> should.be_ok
+      add_optional_authority_schemes(
+        configuration: configured,
+        next: next + 1,
+        remaining: remaining - 1,
+      )
+    }
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -286,9 +386,8 @@ pub fn certificate_reload_is_atomic_and_preserves_existing_connections_test() ->
   ) = http3_test_support.server_certificate_selection_credentials()
   let valid =
     server.new(localhost_certificate, localhost_private_key) |> should.be_ok
-  // Certificate replacement is the subject of this test. Keep address-family
-  // racing in its dedicated transport coverage so a rejected TLS handshake
-  // cannot be hidden behind a slower Happy Eyeballs candidate on CI.
+  // Certificate replacement is the subject of this test.
+  // Keep address-family racing in its dedicated transport coverage so a rejected TLS handshake cannot be hidden behind a slower Happy Eyeballs candidate on CI.
   let valid = server.with_address_family(valid, config.Ipv4)
   let listener = server.start(valid) |> should.be_ok
   let port = server.port(listener) |> should.be_ok
@@ -518,6 +617,28 @@ pub fn server_request_cancellation_preserves_completed_stream_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn retained_request_cancellation_after_peer_and_listener_close_is_idempotent_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let _stream =
+    client.open_stream(connection, streaming_request(port, "/closed-cancel"))
+    |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert client.close(connection) == Ok(client.Closed)
+  let terminal_observed = case server.next_event(incoming) {
+    Error(server.Failure(failure.Closed(_, _))) -> True
+    _ -> False
+  }
+  assert terminal_observed
+  // stop joins the connection actors, so a retained handle cannot accidentally reach the earlier live-worker idempotency branch in this regression.
+  assert server.stop(listener) == Ok(server.Stopped)
+  assert server.cancel(incoming) == Ok(server.AlreadyCompleted)
+  assert server.cancel(incoming) == Ok(server.AlreadyCompleted)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn graceful_stop_drains_active_request_and_rejects_accept_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let client_task =
@@ -554,11 +675,75 @@ pub fn graceful_stop_drains_active_request_and_rejects_accept_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn graceful_stop_reports_peer_loss_before_response_completion_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let connection =
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  let stream =
+    client.open_stream(connection, streaming_request(port, "/unfinished-drain"))
+    |> should.be_ok
+  client.finish(stream) |> should.be_ok
+  let incoming = server.accept(listener) |> should.be_ok
+  assert server.next_event(incoming) == Ok(server.End)
+  server.send_response(incoming, 200, []) |> should.be_ok
+  assert client.next_event(stream) == Ok(client.Response(200, []))
+  let drain_task =
+    http3_test_support.start_task(fn() { server.graceful_stop(listener) })
+  await_connection_draining(connection: connection, port: port, attempts: 100)
+  assert http3_test_support.abrupt_connection_close(connection)
+  let outcome = http3_test_support.await_task(drain_task)
+  let _stopped = server.stop(listener)
+  assert_peer_closed(outcome)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn graceful_stop_preserves_incomplete_peer_failure_after_other_peers_drain_test() -> Nil {
+  let #(listener, port, ca_certificate) = start_server()
+  let connect = fn() {
+    client.connect(client_configuration(ca_certificate), "localhost", port)
+    |> should.be_ok
+  }
+  let interrupted = connect()
+  let interrupted_stream =
+    client.open_stream(interrupted, streaming_request(port, "/interrupted"))
+    |> should.be_ok
+  client.finish(interrupted_stream) |> should.be_ok
+  let interrupted_request = server.accept(listener) |> should.be_ok
+  assert server.next_event(interrupted_request) == Ok(server.End)
+  let surviving = connect()
+  let surviving_stream =
+    client.open_stream(surviving, streaming_request(port, "/surviving"))
+    |> should.be_ok
+  client.finish(surviving_stream) |> should.be_ok
+  let surviving_request = server.accept(listener) |> should.be_ok
+  assert server.next_event(surviving_request) == Ok(server.End)
+  let drain_task =
+    http3_test_support.start_task(fn() { server.graceful_stop(listener) })
+  await_connection_draining(connection: surviving, port: port, attempts: 100)
+  assert http3_test_support.abrupt_connection_close(interrupted)
+  // The first peer has stopped while the second still owns accepted work.
+  server.next_event(interrupted_request) |> should.be_error
+  server.respond(surviving_request, 200, [], <<"complete":utf8>>)
+  |> should.be_ok
+  assert collect_response_events(surviving_stream, [])
+    == [client.Response(200, []), client.Data(<<"complete":utf8>>), client.End]
+  let outcome = http3_test_support.await_task(drain_task)
+  let _closed = client.close(surviving)
+  let _stopped = server.stop(listener)
+  assert_peer_closed(outcome)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let connection =
     client.connect(client_configuration(ca_certificate), "localhost", port)
     |> should.be_ok
+  // Safe scalar evidence: an authenticated, open connection is reusable.
+  assert connection_reuse_observation(connection) == 1
   let active =
     client.open_stream(connection, streaming_request(port, "/active-drain"))
     |> should.be_ok
@@ -567,9 +752,8 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
   let incoming = server.accept(listener) |> should.be_ok
   assert server.path(incoming) == "/active-drain"
   assert server.next_event(incoming) == Ok(server.End)
-  // QUIC does not order separate request streams. Establish the request that
-  // must drain at the application boundary before opening the request that
-  // must remain queued and be rejected by graceful shutdown.
+  // QUIC does not order separate request streams.
+  // Establish the request that must drain at the application boundary before opening the request that must remain queued and be rejected by graceful shutdown.
   let rejected =
     client.open_stream(connection, streaming_request(port, "/queued-drain"))
     |> should.be_ok
@@ -577,6 +761,8 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
   let drain_task =
     http3_test_support.start_task(fn() { server.graceful_stop(listener) })
   await_connection_draining(connection: connection, port: port, attempts: 100)
+  // The peer GOAWAY observed through the wire is terminal for future reuse.
+  assert connection_reuse_observation(connection) == 0
   assert server.accept(listener)
     == Error(server.Failure(failure.Closed(failure.Local, None)))
   assert client.next_event(rejected) == Error(client.RequestRejected)
@@ -591,15 +777,39 @@ pub fn graceful_stop_types_rejected_and_new_client_work_test() -> Nil {
     ]
   assert http3_test_support.await_task(drain_task) == Ok(server.Drained)
 
-  // The drained listener is gone, so an unclosed client here would be released
-  // only by its idle timeout, long after this test stopped observing it.
-  let _closed = client.close(connection)
+  // The drained listener is gone, so an unclosed client here would be released only by its idle timeout, long after this test stopped observing it.
+  let close_completed = result.is_ok(client.close(connection))
+  assert close_completed
+  // A stopped actor or closed core must never be reported as reusable.
+  // The exact typed close outcome remains intentionally outside this assertion.
+  assert connection_reuse_observation(connection) != 1
   Nil
+}
+
+fn connection_reuse_observation(connection: client.Connection) -> Int {
+  client.connection_reusable(connection)
+  |> result.map(fn(reusable) {
+    case reusable {
+      True -> 1
+      False -> 0
+    }
+  })
+  |> result.unwrap(-1)
+}
+
+fn assert_peer_closed(
+  outcome: Result(server.DrainResult, server.Error),
+) -> Nil {
+  assert case outcome {
+    Error(server.Failure(failure.Closed(failure.Peer, _code))) -> True
+    _ -> False
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
+  let before_client_close = http3_test_support.new_signal()
   let client_task =
     http3_test_support.start_task(fn() {
       let connection =
@@ -614,6 +824,9 @@ pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
       |> should.be_ok
       assert client.finish(stream) == Error(client.RequestAlreadyFinished)
       let events = collect_response_events(stream, [])
+      // Keep the authenticated peer alive while the server verifies its local response terminal state.
+      // Connection teardown is a separate contract.
+      http3_test_support.checkpoint(before_client_close)
       let _closed = client.close(connection)
       events
     })
@@ -632,8 +845,21 @@ pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
   server.send_chunk(incoming, <<"response":utf8>>) |> should.be_ok
   server.send_trailers(incoming, [#("digest", "response-digest")])
   |> should.be_ok
+  // Observe the ACK-driven retirement through the public live-priority API.
+  // The client remains at its checkpoint, so peer shutdown cannot substitute for request retirement or make this race scheduler-dependent.
+  await_response_retirement(incoming, 2000)
   assert server.finish_response(incoming)
     == Error(server.ResponseAlreadyFinished)
+  assert server.send_chunk(incoming, <<"late":utf8>>)
+    == Error(server.ResponseAlreadyFinished)
+  assert server.send_trailers(incoming, [])
+    == Error(server.ResponseAlreadyFinished)
+  assert server.send_response(incoming, 200, [])
+    == Error(server.ResponseAlreadyStarted)
+  assert server.send_informational(incoming, 103, [])
+    == Error(server.ResponseAlreadyStarted)
+  assert server.cancel(incoming) == Ok(server.AlreadyCompleted)
+  http3_test_support.release_signal(before_client_close)
 
   assert http3_test_support.await_task(client_task)
     == [
@@ -644,6 +870,21 @@ pub fn informational_and_bidirectional_trailers_round_trip_test() -> Nil {
       client.End,
     ]
   assert server.stop(listener) == Ok(server.Stopped)
+}
+
+fn await_response_retirement(request: server.Request, attempts: Int) -> Nil {
+  case transport.get_priority(server.request_transport(request)) {
+    Error(transport.UnknownStream) -> Nil
+    Ok(_) -> {
+      assert attempts > 0
+      http3_test_support.pause_milliseconds(1)
+      await_response_retirement(request, attempts - 1)
+    }
+    Error(error) -> {
+      assert error == transport.UnknownStream
+      Nil
+    }
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -760,7 +1001,7 @@ pub fn server_multiplexes_streams_on_one_connection_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
-pub fn server_reports_abrupt_peer_termination_test() -> Nil {
+pub fn server_reports_peer_request_cancellation_during_close_test() -> Nil {
   let #(listener, port, ca_certificate) = start_server()
   let signal = http3_test_support.new_signal()
   let client_task =
@@ -782,7 +1023,7 @@ pub fn server_reports_abrupt_peer_termination_test() -> Nil {
   http3_test_support.release_signal(signal)
   let _client_close = http3_test_support.await_task(client_task)
   assert http3_test_support.await_task(receive_task)
-    == Error(server.Failure(failure.Closed(failure.Peer, None)))
+    == Error(server.Failure(failure.Closed(failure.Peer, Some(0x10c))))
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
@@ -1133,10 +1374,7 @@ fn receive_client_body(
   }
 }
 
-// The listener flushes at most `maximum_packets_per_connection_flush` (16)
-// datagrams of at most `maximum_frame_data_bytes` (1000) payload bytes per
-// connection per turn, so a 64 KiB response body needs the flush to be
-// resumed several times after the request datagram has been consumed.
+// The listener flushes at most `maximum_packets_per_connection_flush` (16) datagrams of at most `maximum_frame_data_bytes` (1000) payload bytes per connection per turn, so a 64 KiB response body needs the flush to be resumed several times after the request datagram has been consumed.
 const capped_flush_body_bytes = 65_536
 
 const capped_flush_bound_milliseconds = 2000
@@ -1155,8 +1393,7 @@ pub fn capped_flush_drains_response_backlog_within_bound_test() -> Nil {
   let port = server.port(listener) |> should.be_ok
   let body = http3_test_support.repeated_bytes(capped_flush_body_bytes)
 
-  // The client sends its request and then nothing else, so the backlogged
-  // response has to be driven by the listener within the bound.
+  // The client sends its request and then nothing else, so the backlogged response has to be driven by the listener within the bound.
   let client_task =
     http3_test_support.start_task(fn() {
       let outbound =

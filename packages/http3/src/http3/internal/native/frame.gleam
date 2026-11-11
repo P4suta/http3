@@ -236,9 +236,15 @@ fn encode_payload(value: Frame) -> Result(#(Int, BitArray), Error) {
     }
     MaxPushId(push_id) -> encode_integer_payload(13, push_id)
     Unknown(frame_type, payload) ->
-      case frame_type >= 0 && frame_type <= varint.maximum {
-        False -> Error(InvalidFrame)
-        True -> aligned_payload(frame_type, payload)
+      case frame_type {
+        // RFC 9114 reserves these HTTP/2 frame types so that an endpoint can detect accidental HTTP/2 framing in either direction.
+        // Decoding has always rejected them; reject construction as well so local callers cannot put a prohibited frame on the wire through Unknown.
+        2 | 6 | 8 | 9 -> Error(ProhibitedHttp2FrameType(frame_type))
+        _ ->
+          case frame_type >= 0 && frame_type <= varint.maximum {
+            False -> Error(InvalidFrame)
+            True -> aligned_payload(frame_type, payload)
+          }
       }
   }
 }

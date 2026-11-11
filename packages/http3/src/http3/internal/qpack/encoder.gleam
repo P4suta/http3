@@ -96,6 +96,40 @@ pub fn set_capacity(state: State, capacity: Int) -> Result(State, Error) {
   ))
 }
 
+/// Apply compatible peer SETTINGS while retaining every 0-RTT insertion,
+/// outstanding section, acknowledgement counter, and queued instruction.
+pub fn apply_compatible_peer_settings(
+  state: State,
+  maximum_table_capacity: Int,
+  table_capacity: Int,
+  maximum_blocked_streams: Int,
+  maximum_field_section_size: Int,
+) -> Result(State, Error) {
+  case maximum_blocked_streams >= 0 && maximum_field_section_size >= 0 {
+    False -> Error(InvalidConfiguration)
+    True -> {
+      use table <- result.try(
+        dynamic_table.increase_maximum_allowed_capacity(
+          state.table,
+          maximum_table_capacity,
+        )
+        |> map_table_result,
+      )
+      let state =
+        State(
+          ..state,
+          table: table,
+          maximum_blocked_streams: maximum_blocked_streams,
+          maximum_field_section_size: maximum_field_section_size,
+        )
+      case dynamic_table.capacity(table) == table_capacity {
+        True -> Ok(state)
+        False -> set_capacity(state, table_capacity)
+      }
+    }
+  }
+}
+
 /// Insert one reusable field and hold it until the decoder acknowledges it.
 pub fn insert(state: State, field: Header) -> Result(State, Error) {
   let Header(name, value, never_index) = field

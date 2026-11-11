@@ -10,6 +10,7 @@ pub type Role {
   Listener
   Connection
   ConnectCandidate
+  ConnectSupervisor
   DnsResolver
   UdpRelay
   ReplayGuard
@@ -28,6 +29,7 @@ pub fn name(role: Role) -> String {
     Listener -> "quic_core.listener"
     Connection -> "quic_core.connection"
     ConnectCandidate -> "quic_core.connect_candidate"
+    ConnectSupervisor -> "quic_core.connect_supervisor"
     DnsResolver -> "quic_core.dns_resolver"
     UdpRelay -> "quic_core.udp_relay"
     ReplayGuard -> "quic_core.replay_guard"
@@ -42,6 +44,7 @@ pub fn all() -> List(Role) {
     Listener,
     Connection,
     ConnectCandidate,
+    ConnectSupervisor,
     DnsResolver,
     UdpRelay,
     ReplayGuard,
@@ -63,6 +66,7 @@ fn role_code(role: Role) -> Int {
     ReplayGuard -> 6
     QlogWriter -> 7
     Connection -> 8
+    ConnectSupervisor -> 9
   }
 }
 

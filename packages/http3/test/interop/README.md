@@ -47,15 +47,30 @@ mise run interop-campaign
 Override the bounded repetition count (1 through 100) with
 `HTTP3_INTEROP_REPETITIONS`. The report is written to
 `build/interop-campaign/aioquic.txt`. A failed trial stops immediately and
-copies the partial campaign report beside the peer/native logs and qlogs in
-`build/interop-failure`; a successful trial never hides a prior failure in the
-same campaign.
+copies only the scalar campaign report to `build/interop-failure/campaign.txt`.
+Failed drivers invalidate earlier successful results and retain a typed,
+source-bound record under the repository root's `build/interop/failures/`.
+Cleanup independently validates every retained record and publishes its
+bounded, current-source summary under `build/interop/failure-audits/`; unknown
+fields, stale attempts, links, hard links, and oversized inputs are rejected.
+Native logs and qlogs stay in the owned temporary directory until cleanup and
+are never copied into failure artifacts. A successful trial never hides a
+prior failure in the same campaign.
+
+CI passes the completed peer step's exact outcome to `interop_audit.escript --verify-published-failures-for PEER OUTCOME`.
+`success` requires no failure receipt; `failure` requires the named peer's current audited receipt.
+Cancelled, skipped, missing, or mixed evidence fails the evidence gate.
 
 The runner requires Bash and GNU `timeout`; the dedicated CI gate runs on
 Ubuntu. Every peer operation has a fixed deadline. A trap terminates remaining
 children and deletes its uniquely named temporary directory on success,
 failure, or interruption. It never writes qlogs or Python bytecode into the
 working tree.
+
+The shared notification reader accepts only complete, canonical readiness lines from a regular file, with a 1 MiB input limit and an absolute deadline.
+It watches the peer's actual lifetime while waiting.
+Native stop markers and JSON readiness files are closed before atomic publication; existing records are never replaced.
+`mise run interop-runner-audit` at the repository root includes actual reader checkpoints, deadline and special-file controls, and private-output regression tests for these boundaries.
 
 Set `HTTP3_AIOQUIC_PYTHON` to use an already prepared Python interpreter. When
 it is unset, the runner first looks for `build/interop-venv/bin/python` and

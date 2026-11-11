@@ -53,8 +53,13 @@ pub fn matches_rfc_wire_shapes_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rejects_http2_duplicates_truncation_and_resource_exhaustion_test() -> Nil {
   let limits = frame.Limits(8, 4, 2, 2)
-  assert frame.decode(<<2, 0>>, limits)
-    == Error(frame.ProhibitedHttp2FrameType(2))
+  let prohibited_http2_types = [2, 6, 8, 9]
+  list.each(prohibited_http2_types, fn(frame_type) {
+    assert frame.decode(<<frame_type, 0>>, limits)
+      == Error(frame.ProhibitedHttp2FrameType(frame_type))
+    assert frame.encode(frame.Unknown(frame_type, <<>>))
+      == Error(frame.ProhibitedHttp2FrameType(frame_type))
+  })
   assert frame.decode(<<4, 4, 1, 0, 1, 1>>, limits)
     == Error(frame.DuplicateSetting(1))
   assert frame.decode(<<4, 2, 2, 0>>, limits)
@@ -82,3 +87,5 @@ pub fn origin_frames_are_typed_empty_bounded_and_strictly_framed_test() -> Nil {
   assert frame.decode(<<0x0c, 4, 0:size(16), 0:size(16)>>, limits)
     == Error(frame.OriginFailure(origin.TooManyOrigins(maximum: 1)))
 }
+
+import gleam/list

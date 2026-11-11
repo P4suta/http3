@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/list
 import gleam/result
 import gleeunit
 import http/internal/transport
@@ -72,6 +73,39 @@ pub fn invalid_addresses_ports_deadlines_and_payloads_are_typed_test() -> Nil {
   assert transport.local_endpoint(listener) != Error(transport.InvalidInput)
   let assert Ok(Nil) = transport.stop(listener)
   Nil
+}
+
+pub fn unfinished_trace_record_never_claims_success_or_blocks_later_work_test() -> Nil {
+  let diagnostics = http_test_support.transport_orphaned_trace()
+  let observed = transport.diagnostics_snapshot(diagnostics)
+  assert !observed.consistent
+  assert list.all(observed.events, fn(event) {
+    event.outcome == transport.Pending
+  })
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let connected =
+    transport.connect_with_diagnostics(
+      "127.0.0.1",
+      port,
+      1000,
+      1000,
+      1500,
+      1000,
+      diagnostics,
+    )
+  let result = case connected {
+    Ok(socket) -> transport.close(socket)
+    Error(failure) -> Error(failure)
+  }
+  let assert Ok(Nil) = transport.stop(listener)
+  assert result == Ok(Nil)
+  let after_connect = transport.diagnostics_snapshot(diagnostics)
+  assert !after_connect.consistent
+  assert list.any(after_connect.events, fn(event) {
+    event.step == transport.ConnectionCompleted
+    && event.outcome == transport.Successful
+  })
 }
 
 fn read_exact(

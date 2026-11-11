@@ -6,13 +6,20 @@
     close/1,
     connect/4,
     connect_with_deadlines/6,
+    connect_with_diagnostics/7,
+    connect_with_runtime/8,
     connect_with_timeouts/5,
+    diagnostics_new/0,
+    diagnostics_snapshot/1,
     enable_half_close/1,
     listen/4,
     local_endpoint/1,
     monotonic_millisecond/0,
     peer_endpoint/1,
     read/3,
+    read_or_message/4,
+    read_or_select/4,
+    read_end_is_terminal/1,
     send/2,
     server_tls_options/2,
     sort_destinations/2,
@@ -26,7 +33,8 @@
     transfer_owner/2,
     unix_millisecond/0,
     upgrade_client_tls/5,
-    upgrade_server_tls/5
+    upgrade_server_tls/5,
+    with_listener_diagnostics/2
 ]).
 
 -define(MAXIMUM_RESOLVED_ADDRESSES, 16).
@@ -39,17 +47,28 @@
 %% A TLS alert description carries peer-supplied certificate names, so the text
 %% read out of one is bounded rather than taken whole.
 -define(MAXIMUM_ALERT_TEXT_BYTES, 4096).
+-define(MAXIMUM_RESOLVER_ROWS_INSPECTED, 256).
+-define(MAXIMUM_CONNECT_CALLBACKS, 18).
+-define(MAXIMUM_DIAGNOSTIC_EVENTS, 64).
+-define(CONNECT_CLEANUP_ALLOWANCE_MILLISECONDS, 500).
+-define(CONNECT_FORCED_JOIN_MILLISECONDS, 500).
+-define(CONNECT_REAPER_KILL_JOIN_MILLISECONDS, 50).
+-define(CONNECT_CALLBACK_MAX_HEAP_WORDS, 2097152).
+-define(CONNECT_GUARDIAN_MAX_HEAP_WORDS, 1048576).
 
 -type family() :: inet | inet6.
 -type listener() :: #{
     kind := listener,
     socket := gen_tcp:socket(),
-    send_timeout := pos_integer()
+    send_timeout := pos_integer(),
+    diagnostics => tuple()
 }.
 -type stream() :: #{
     kind := tcp | tls,
     socket := term(),
-    buffered := binary()
+    buffered := binary(),
+    armed => boolean(),
+    diagnostics => tuple()
 }.
 
 %% Wall-clock milliseconds since the Unix epoch.
@@ -135,10 +154,11 @@ peer_endpoint(_Socket) ->
 -spec accept(listener(), integer()) ->
     {ok, stream()} | {error, integer()}.
 accept(
-    #{kind := listener, socket := Listener, send_timeout := SendTimeout},
+    Handle = #{kind := listener, socket := Listener, send_timeout := SendTimeout},
     Timeout
 )
     when is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    trace_operation(maps:get(diagnostics, Handle, none), 7, 8, fun() ->
     try gen_tcp:accept(Listener, Timeout) of
         {ok, Socket} ->
             case configure_stream(Socket, SendTimeout) of
@@ -153,7 +173,8 @@ accept(
             {error, socket_error_code(Reason)}
     catch
         _Class:_Reason -> {error, 12}
-    end;
+    end
+    end);
 accept(_Listener, _Timeout) ->
     {error, 1}.
 
@@ -212,6 +233,26 @@ connect_with_deadlines(
     ConnectTimeout,
     TotalTimeout,
     SendTimeout
+) ->
+    connect_with_diagnostics(Host, Port, DnsTimeout, ConnectTimeout,
+        TotalTimeout, SendTimeout, none).
+
+-spec connect_with_diagnostics(binary(), integer(), integer(), integer(),
+    integer(), integer(), term()) -> {ok, stream()} | {error, integer()}.
+connect_with_diagnostics(Host, Port, DnsTimeout, ConnectTimeout,
+    TotalTimeout, SendTimeout, Trace) ->
+    connect_with_runtime(Host, Port, DnsTimeout, ConnectTimeout, TotalTimeout,
+        SendTimeout, #{resolve => fun inet:getaddrs/2,
+            connect => fun gen_tcp:connect/4}, Trace).
+
+%% Internal runtime seam: the production path and deterministic fault tests
+%% use the same finite resolver/dial implementation. No adapter crosses the
+%% public HTTP API, and only fixed-shape scalar metadata enters diagnostics.
+-spec connect_with_runtime(binary(), integer(), integer(), integer(), integer(),
+    integer(), map(), term()) -> {ok, stream()} | {error, integer()}.
+connect_with_runtime(
+    Host, Port, DnsTimeout, ConnectTimeout, TotalTimeout, SendTimeout,
+    Runtime, Trace
 )
     when is_binary(Host), byte_size(Host) > 0, byte_size(Host) =< 253,
          is_integer(Port), Port > 0, Port =< 65535,
@@ -225,54 +266,112 @@ connect_with_deadlines(
          SendTimeout =< 2147483647 ->
     case binary:match(Host, <<0>>) of
         nomatch ->
-            Now = erlang:monotonic_time(millisecond),
-            TotalDeadline = Now + TotalTimeout,
-            DnsDeadline = erlang:min(Now + DnsTimeout, TotalDeadline),
-            DnsTimeoutCode = timeout_code(DnsDeadline, TotalDeadline, 16),
-            case resolve_with_deadline(
-                binary_to_list(Host),
-                DnsDeadline,
-                DnsTimeoutCode
-            ) of
-                {ok, Addresses} ->
-                    ConnectDeadline = erlang:min(
-                        erlang:monotonic_time(millisecond) + ConnectTimeout,
-                        TotalDeadline
-                    ),
-                    ConnectTimeoutCode = timeout_code(
-                        ConnectDeadline,
-                        TotalDeadline,
-                        2
-                    ),
-                    connect_addresses(
-                        Addresses,
-                        Port,
-                        SendTimeout,
-                        ConnectDeadline,
-                        ConnectTimeoutCode,
-                        5
-                    );
-                {error, Code} ->
-                    {error, Code}
-            end;
+            start_connect(Host, Port, DnsTimeout, ConnectTimeout,
+                TotalTimeout, SendTimeout, Runtime, Trace);
         _Match ->
             {error, 1}
     end;
-connect_with_deadlines(
+connect_with_runtime(
     _Host,
     _Port,
     _DnsTimeout,
     _ConnectTimeout,
     _TotalTimeout,
-    _SendTimeout
+    _SendTimeout,
+    _Runtime,
+    _Trace
 ) ->
     {error, 1}.
+
+-spec diagnostics_new() -> tuple().
+diagnostics_new() ->
+    {http_transport_diagnostics,
+        atomics:new(2 + ?MAXIMUM_DIAGNOSTIC_EVENTS * 5, [{signed, true}]),
+        monotonic_millisecond()}.
+
+-spec with_listener_diagnostics(listener(), tuple()) -> listener().
+with_listener_diagnostics(Listener = #{kind := listener}, Trace) ->
+    Listener#{diagnostics => Trace}.
+
+-spec trace_operation(term(), pos_integer(), pos_integer(), fun(() -> term())) -> term().
+trace_operation(Trace, Started, Completed, Operation) ->
+    record_diagnostic(Trace, Started, 0, 0, 0),
+    Result = Operation(),
+    Code = case Result of
+        {error, Failure} -> Failure;
+        _ -> 0
+    end,
+    record_diagnostic(Trace, Completed, 0, 0, Code),
+    case {Trace, Result} of
+        {none, _} -> Result;
+        {_, {ok, Stream = #{kind := _}}} ->
+            {ok, Stream#{diagnostics => Trace}};
+        {_, {ok, {Stream = #{kind := _}, Protocol, Version}}} ->
+            {ok, {Stream#{diagnostics => Trace}, Protocol, Version}};
+        _ -> Result
+    end.
+
+-spec diagnostics_snapshot(tuple()) ->
+    {boolean(), non_neg_integer(), [tuple()]}.
+diagnostics_snapshot({http_transport_diagnostics, Counters, _Started}) ->
+    Count = atomics:get(Counters, 1),
+    Events = [list_to_tuple([atomics:get(Counters, 2 + Index * 5 + Field)
+        || Field <- lists:seq(1, 5)]) || Index <- lists:seq(0, Count - 1)],
+    Consistent = Count =:= atomics:get(Counters, 1) andalso
+        lists:all(fun(Event) -> element(1, Event) > 0 end, Events),
+    {Consistent, atomics:get(Counters, 2), Events}.
+
+-spec record_diagnostic(term(), pos_integer(), 0 | 4 | 6,
+    non_neg_integer(), non_neg_integer()) -> ok.
+record_diagnostic(none, _Kind, _Family, _Attempt, _Outcome) -> ok;
+record_diagnostic({http_transport_diagnostics, Counters, Started},
+    Kind, Family, Attempt, Outcome) ->
+    case reserve_diagnostic(Counters, 16) of
+        full ->
+            increment_dropped_diagnostics(Counters, 16);
+        Index ->
+            Offset = 2 + Index * 5,
+            atomics:put(Counters, Offset + 2, Family),
+            atomics:put(Counters, Offset + 3, Attempt),
+            atomics:put(Counters, Offset + 4,
+                erlang:max(0, monotonic_millisecond() - Started)),
+            atomics:put(Counters, Offset + 5, Outcome),
+            %% Publish the kind last so an overlapping snapshot is explicit.
+            atomics:put(Counters, Offset + 1, Kind)
+    end.
+
+-spec reserve_diagnostic(atomics:atomics_ref(), non_neg_integer()) ->
+    full | non_neg_integer().
+reserve_diagnostic(_Counters, 0) -> full;
+reserve_diagnostic(Counters, Remaining) ->
+    Index = atomics:get(Counters, 1),
+    case Index >= ?MAXIMUM_DIAGNOSTIC_EVENTS of
+        true -> full;
+        false ->
+            case atomics:compare_exchange(Counters, 1, Index, Index + 1) of
+                ok -> Index;
+                _ -> reserve_diagnostic(Counters, Remaining - 1)
+            end
+    end.
+
+-spec increment_dropped_diagnostics(atomics:atomics_ref(), non_neg_integer()) -> ok.
+increment_dropped_diagnostics(_Counters, 0) -> ok;
+increment_dropped_diagnostics(Counters, Remaining) ->
+    Count = atomics:get(Counters, 2),
+    case Count >= 2147483647 of
+        true -> ok;
+        false ->
+            case atomics:compare_exchange(Counters, 2, Count, Count + 1) of
+                ok -> ok;
+                _ -> increment_dropped_diagnostics(Counters, Remaining - 1)
+            end
+    end.
 
 -spec upgrade_client_tls(
     stream(), binary(), [binary()], [binary()], integer()
 ) -> {ok, {stream(), binary(), 12 | 13}} | {error, integer()}.
 upgrade_client_tls(
-    #{kind := tcp, socket := Socket},
+    Handle = #{kind := tcp, socket := Socket},
     ServerName,
     CaCertificates,
     AlpnProtocols,
@@ -282,6 +381,7 @@ upgrade_client_tls(
          byte_size(ServerName) =< 253,
          is_list(CaCertificates), is_list(AlpnProtocols),
          is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    trace_operation(maps:get(diagnostics, Handle, none), 9, 10, fun() ->
     case valid_server_name(ServerName) andalso
         valid_alpn_protocols(AlpnProtocols)
     of
@@ -309,7 +409,8 @@ upgrade_client_tls(
             end;
         false ->
             {error, 1}
-    end;
+    end
+    end);
 upgrade_client_tls(
     _Socket,
     _ServerName,
@@ -323,7 +424,7 @@ upgrade_client_tls(
     stream(), binary(), binary(), [binary()], integer()
 ) -> {ok, {stream(), binary(), 12 | 13}} | {error, integer()}.
 upgrade_server_tls(
-    #{kind := tcp, socket := Socket},
+    Handle = #{kind := tcp, socket := Socket},
     CertificatePem,
     PrivateKeyPem,
     AlpnProtocols,
@@ -333,6 +434,7 @@ upgrade_server_tls(
          is_binary(PrivateKeyPem), byte_size(PrivateKeyPem) > 0,
          is_list(AlpnProtocols),
          is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    trace_operation(maps:get(diagnostics, Handle, none), 11, 12, fun() ->
     case valid_alpn_protocols(AlpnProtocols) of
         true ->
             case server_credentials(CertificatePem, PrivateKeyPem) of
@@ -354,7 +456,8 @@ upgrade_server_tls(
             end;
         false ->
             {error, 1}
-    end;
+    end
+    end);
 upgrade_server_tls(
     _Socket,
     _CertificatePem,
@@ -457,6 +560,111 @@ read(Handle = #{kind := Kind, buffered := Buffered}, Maximum, Timeout)
 read(_Socket, _Maximum, _Timeout) ->
     {error, 1}.
 
+%% Select a single bounded producer completion alongside socket input. When
+%% the producer wins, the same active-once credit remains armed; a following
+%% receive must consume it instead of granting another socket message.
+read_or_message(Handle = #{kind := Kind, buffered := Buffered}, Maximum, Timeout,
+        {subject, Owner, Ref})
+    when (Kind =:= tcp orelse Kind =:= tls), Owner =:= self(),
+         is_reference(Ref), is_integer(Maximum), Maximum > 0,
+         is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    case Buffered of
+        <<>> -> selective_active_read(Handle, Maximum, Timeout, Ref);
+        _ -> selected_data(Handle, Buffered, Maximum)
+    end;
+read_or_message(_Handle, _Maximum, _Timeout, _Subject) -> {error, 1}.
+
+read_end_is_terminal(#{kind := tcp}) -> false;
+read_end_is_terminal(_) -> true.
+
+%% The pinned Gleam selector contains only typed control and monitor mappings.
+%% Match this socket before those mappings; unrelated sockets remain queued.
+read_or_select(Handle = #{kind := Kind, socket := Socket, buffered := Buffered},
+        Maximum, Timeout, {selector, Handlers})
+    when (Kind =:= tcp orelse Kind =:= tls), is_map(Handlers),
+         map_size(Handlers) =< 32, is_integer(Maximum), Maximum > 0,
+         is_integer(Timeout), Timeout > 0, Timeout =< 2147483647 ->
+    case Buffered of
+        <<>> -> case arm_read(Handle) of
+            ok ->
+                Armed = Handle#{armed => true},
+                receive
+                    {tcp, Socket, Data} when Kind =:= tcp, is_binary(Data) ->
+                        selected_data(Armed#{armed => false}, Data, Maximum);
+                    {ssl, Socket, Data} when Kind =:= tls, is_binary(Data) ->
+                        selected_data(Armed#{armed => false}, Data, Maximum);
+                    {tcp_closed, Socket} when Kind =:= tcp ->
+                        {ok, {Armed#{armed => false}, <<>>, 1, none}};
+                    {ssl_closed, Socket} when Kind =:= tls ->
+                        {ok, {Armed#{armed => false}, <<>>, 1, none}};
+                    {tcp_error, Socket, Reason} when Kind =:= tcp ->
+                        {error, read_error_code(Reason)};
+                    {ssl_error, Socket, Reason} when Kind =:= tls ->
+                        {error, read_error_code(Reason)};
+                    {'DOWN', Ref, Type, Pid, Reason} when is_map_key(Ref, Handlers) ->
+                        Transform = maps:get(Ref, Handlers),
+                        Tag = case Type of
+                            process -> process_down;
+                            port -> port_down
+                        end,
+                        Exit = case Reason of
+                            normal -> normal;
+                            killed -> killed;
+                            _ -> {abnormal, Reason}
+                        end,
+                        {ok, {Armed, <<>>, 2, {some, Transform({Tag, Ref, Pid, Exit})}}};
+                    Message when is_map_key({element(1, Message), tuple_size(Message)}, Handlers) ->
+                        Transform = maps:get({element(1, Message), tuple_size(Message)}, Handlers),
+                        {ok, {Armed, <<>>, 2, {some, Transform(Message)}}}
+                after Timeout ->
+                    _ = safe_close_stream(Kind, Socket),
+                    flush_socket_messages(Socket),
+                    {error, 2}
+                end;
+            {error, closed} -> {ok, {Handle, <<>>, 1, none}};
+            {error, einval} -> {ok, {Handle, <<>>, 1, none}};
+            {error, Reason} -> {error, read_error_code(Reason)}
+        end;
+        _ -> selected_data(Handle, Buffered, Maximum)
+    end;
+read_or_select(_, _, _, _) -> {error, 1}.
+
+selective_active_read(Handle = #{kind := Kind, socket := Socket}, Maximum, Timeout, Ref) ->
+    case arm_read(Handle) of
+        ok ->
+            Armed = Handle#{armed => true},
+            receive
+                {Ref, Message} -> {ok, {Armed, <<>>, 2, {some, Message}}};
+                {tcp, Socket, Data} when Kind =:= tcp, is_binary(Data) ->
+                    selected_data(Armed#{armed => false}, Data, Maximum);
+                {ssl, Socket, Data} when Kind =:= tls, is_binary(Data) ->
+                    selected_data(Armed#{armed => false}, Data, Maximum);
+                {tcp_closed, Socket} when Kind =:= tcp ->
+                    {ok, {Armed#{armed => false}, <<>>, 1, none}};
+                {ssl_closed, Socket} when Kind =:= tls ->
+                    {ok, {Armed#{armed => false}, <<>>, 1, none}};
+                {tcp_error, Socket, Reason} when Kind =:= tcp ->
+                    {error, read_error_code(Reason)};
+                {ssl_error, Socket, Reason} when Kind =:= tls ->
+                    {error, read_error_code(Reason)}
+            after Timeout ->
+                _ = safe_close_stream(Kind, Socket),
+                flush_socket_messages(Socket),
+                {error, 2}
+            end;
+        {error, closed} -> {ok, {Handle, <<>>, 1, none}};
+        {error, einval} -> {ok, {Handle, <<>>, 1, none}};
+        {error, Reason} -> {error, read_error_code(Reason)}
+    end.
+
+selected_data(Handle, Data, Maximum) ->
+    {ok, {Next, Chunk, 0}} = bounded_data(Handle, Data, Maximum),
+    {ok, {Next, Chunk, 0, none}}.
+
+arm_read(#{armed := true}) -> ok;
+arm_read(#{kind := tcp, socket := Socket}) -> inet:setopts(Socket, [{active, once}]);
+arm_read(#{kind := tls, socket := Socket}) -> ssl:setopts(Socket, [{active, once}]).
+
 -spec close(stream()) -> {ok, nil} | {error, integer()}.
 close(#{kind := Kind, socket := Socket}) when Kind =:= tcp; Kind =:= tls ->
     ok = safe_close_stream(Kind, Socket),
@@ -474,11 +682,11 @@ stop(_Listener) ->
 -spec active_read(stream(), pos_integer(), pos_integer()) ->
     {ok, {stream(), binary(), 0 | 1}} | {error, integer()}.
 active_read(Handle = #{kind := tcp, socket := Socket}, Maximum, Timeout) ->
-    case inet:setopts(Socket, [{active, once}]) of
+    case arm_read(Handle) of
         ok ->
             receive
                 {tcp, Socket, Data} when is_binary(Data) ->
-                    bounded_data(Handle, Data, Maximum);
+                    bounded_data(Handle#{armed => false}, Data, Maximum);
                 {tcp_closed, Socket} ->
                     {ok, {Handle, <<>>, 1}};
                 {tcp_error, Socket, Reason} ->
@@ -496,11 +704,11 @@ active_read(Handle = #{kind := tcp, socket := Socket}, Maximum, Timeout) ->
             {error, read_error_code(Reason)}
     end;
 active_read(Handle = #{kind := tls, socket := Socket}, Maximum, Timeout) ->
-    case ssl:setopts(Socket, [{active, once}]) of
+    case arm_read(Handle) of
         ok ->
             receive
                 {ssl, Socket, Data} when is_binary(Data) ->
-                    bounded_data(Handle, Data, Maximum);
+                    bounded_data(Handle#{armed => false}, Data, Maximum);
                 {ssl_closed, Socket} ->
                     {ok, {Handle, <<>>, 1}};
                 {ssl_error, Socket, Reason} ->
@@ -583,35 +791,1693 @@ encode_stream_endpoint(EndpointFun, Socket) ->
         _Class:_Reason -> {error, 12}
     end.
 
--spec resolve_with_deadline(string(), integer(), integer()) ->
-    {ok, [{family(), inet:ip_address()}]} | {error, integer()}.
-resolve_with_deadline(Host, Deadline, TimeoutCode) ->
+%% RFC 8305: two asynchronous family queries, a 50 ms resolution delay,
+%% 250 ms stagger, and a 100 ms minimum after a failed attempt. The existing
+%% 16-address limit also bounds candidate processes and simultaneous sockets.
+%% A private coordinator owns every completed socket until the winner is
+%% handed to the caller. A separately monitored reaper keeps a payload-free,
+%% finite ledger of coordinator and callback identities. No resolver or dial
+%% callback starts until both the coordinator and reaper own monitors for it.
+-spec start_connect(binary(), inet:port_number(), pos_integer(), pos_integer(),
+    pos_integer(), pos_integer(), map(), term()) ->
+    {ok, stream()} | {error, integer()}.
+start_connect(Host, Port, DnsTimeout, ConnectTimeout, TotalTimeout,
+    SendTimeout, Runtime, Trace) ->
     Parent = self(),
     Reference = make_ref(),
-    {Resolver, Monitor} = spawn_monitor(fun() ->
-        Parent ! {Reference, resolve_host(Host)}
-    end),
-    Timeout = remaining_milliseconds(Deadline),
+    %% Registration, handoff, result, and reaper sealing share this finite
+    %% lifecycle bus. It must remain active until the after-clause unaliases it.
+    ReplyAlias = erlang:alias(),
+    Now = monotonic_millisecond(),
+    TotalDeadline = Now + TotalTimeout,
+    CleanupDeadline = TotalDeadline + ?CONNECT_CLEANUP_ALLOWANCE_MILLISECONDS,
+    TerminationDeadline = CleanupDeadline + ?CONNECT_FORCED_JOIN_MILLISECONDS,
+    try start_connect_guardians(
+        Parent, ReplyAlias, Reference, Host, Port, DnsTimeout, ConnectTimeout,
+        SendTimeout, Runtime, Trace, Now, TotalDeadline, CleanupDeadline,
+        TerminationDeadline
+    ) of
+        {ok, Lifecycle} ->
+            run_guarded_connect(Lifecycle, Runtime, Trace, TotalDeadline,
+                CleanupDeadline, TerminationDeadline);
+        {error, Lifecycle} ->
+            {_FinalLifecycle, _Join} = force_connect_lifecycle(
+                Lifecycle, TerminationDeadline),
+            record_diagnostic(Trace, 6, 0, 0, 5),
+            {error, 5};
+        spawn_failed ->
+            record_diagnostic(Trace, 6, 0, 0, 5),
+            {error, 5}
+    after
+        erlang:unalias(ReplyAlias),
+        flush_connect_caller_messages(Reference)
+    end.
+
+-spec start_connect_guardians(
+    pid(), reference(), reference(), binary(), inet:port_number(),
+    pos_integer(), pos_integer(), pos_integer(), map(), term(), integer(),
+    integer(), integer(), integer()
+) -> {ok, map()} | {error, map()} | spawn_failed.
+start_connect_guardians(
+    Parent, ReplyAlias, Reference, Host, Port, DnsTimeout, ConnectTimeout,
+    SendTimeout, Runtime, Trace, Now, TotalDeadline, CleanupDeadline,
+    TerminationDeadline
+) ->
+    ReaperRun = fun() ->
+        connect_reaper(Parent, ReplyAlias, Reference, TerminationDeadline)
+    end,
+    case spawn_connect_guardian(ReaperRun) of
+        spawn_failed ->
+            spawn_failed;
+        {Reaper, ReaperMonitor} ->
+            CoordinatorRun = fun() ->
+                connect_coordinator(
+                    Parent, ReplyAlias, Reaper, Reference, Host, Port,
+                    DnsTimeout, ConnectTimeout, SendTimeout, Runtime, Trace,
+                    Now, TotalDeadline, CleanupDeadline
+                )
+            end,
+            case spawn_connect_guardian(CoordinatorRun) of
+                spawn_failed ->
+                    exit(Reaper, kill),
+                    Lifecycle = connect_lifecycle(
+                        none, none, Reaper, ReaperMonitor, Reference,
+                        ReplyAlias),
+                    {error, Lifecycle};
+                {Coordinator, CoordinatorMonitor} ->
+                    observe_runtime_process(Runtime, 3, Reaper),
+                    observe_runtime_process(Runtime, 0, Coordinator),
+                    Lifecycle = connect_lifecycle(
+                        Coordinator, CoordinatorMonitor, Reaper,
+                        ReaperMonitor, Reference, ReplyAlias),
+                    case connect_pre_start_probe(
+                        Runtime, ReplyAlias, Reference, Reaper, Coordinator,
+                        TotalDeadline
+                    ) of
+                        continue ->
+                            Reaper ! {
+                                Reference,
+                                http_transport_register_coordinator,
+                                Coordinator
+                            },
+                            {ok, Lifecycle};
+                        stop ->
+                            {error, Lifecycle}
+                    end
+            end
+    end.
+
+-spec spawn_connect_guardian(fun(() -> ok)) ->
+    {pid(), reference()} | spawn_failed.
+spawn_connect_guardian(Run) ->
+    try spawn_opt(Run, connect_guardian_spawn_options()) of
+        {Pid, Monitor} when is_pid(Pid), is_reference(Monitor) ->
+            {Pid, Monitor};
+        _ ->
+            spawn_failed
+    catch
+        _Class:_Reason -> spawn_failed
+    end.
+
+-spec connect_guardian_spawn_options() -> list().
+connect_guardian_spawn_options() ->
+    [monitor, {max_heap_size, #{
+        size => ?CONNECT_GUARDIAN_MAX_HEAP_WORDS,
+        kill => true,
+        error_logger => false,
+        include_shared_binaries => true
+    }}].
+
+-spec connect_callback_spawn_options() -> list().
+connect_callback_spawn_options() ->
+    [link, monitor, {max_heap_size, #{
+        size => ?CONNECT_CALLBACK_MAX_HEAP_WORDS,
+        kill => true,
+        error_logger => false,
+        include_shared_binaries => true
+    }}].
+
+-spec connect_lifecycle(
+    none | pid(), none | reference(), pid(), reference(), reference(),
+    reference()
+) -> map().
+connect_lifecycle(
+    Coordinator, CoordinatorMonitor, Reaper, ReaperMonitor, Reference,
+    ReplyAlias
+) ->
+    #{
+        reference => Reference,
+        reply_alias => ReplyAlias,
+        coordinator => Coordinator,
+        coordinator_monitor => CoordinatorMonitor,
+        coordinator_down => Coordinator =:= none,
+        reaper => Reaper,
+        reaper_monitor => ReaperMonitor,
+        reaper_down => false,
+        reaper_status => none,
+        workers => #{},
+        provisional_socket => none,
+        result => none,
+        forced => false,
+        ledger_overflow => false
+    }.
+
+%% This internal diagnostic synchronization point carries process identities
+%% and a reference only. It never carries hosts, addresses, results, or errors.
+-spec connect_pre_start_probe(
+    map(), reference(), reference(), pid(), pid(), integer()
+) -> continue | stop.
+connect_pre_start_probe(
+    Runtime, ReplyAlias, Reference, Reaper, Coordinator, Deadline
+) ->
+    case maps:get(lifecycle_probe, Runtime, none) of
+        {http_transport_lifecycle_probe, Observer, ProbeReference}
+            when is_pid(Observer), is_reference(ProbeReference) ->
+            Observer ! {
+                http_transport_connect_pre_start,
+                ProbeReference,
+                Reference,
+                ReplyAlias,
+                Reaper,
+                Coordinator
+            },
+            receive
+                {
+                    Reference,
+                    http_transport_continue_pre_start,
+                    ProbeReference
+                } ->
+                    case monotonic_millisecond() < Deadline of
+                        true -> continue;
+                        false -> stop
+                    end
+            after remaining_milliseconds(Deadline) ->
+                stop
+            end;
+        _ ->
+            continue
+    end.
+
+-spec flush_connect_caller_messages(reference()) -> ok.
+flush_connect_caller_messages(Reference) ->
     receive
-        {Reference, {ok, Addresses}} ->
-            erlang:demonitor(Monitor, [flush]),
-            {ok, Addresses};
-        {Reference, {error, _Reason}} ->
-            erlang:demonitor(Monitor, [flush]),
-            {error, 4};
-        {'DOWN', Monitor, process, Resolver, _Reason} ->
-            {error, 4}
-    after Timeout ->
-        exit(Resolver, kill),
-        receive
-            {'DOWN', Monitor, process, Resolver, _Reason} -> ok
-        end,
-        receive
-            {Reference, _LateResult} -> ok
-        after 0 ->
+        {http_transport_dial, Reference, Result} ->
+            close_connect_result_if_present(Result),
+            flush_connect_caller_messages(Reference);
+        {
+            Reference,
+            http_transport_socket_handoff,
+            _Coordinator,
+            Socket,
+            _HandoffReference
+        } ->
+            safe_close(Socket),
+            flush_connect_caller_messages(Reference);
+        {
+            Reference,
+            http_transport_coordinator_registered,
+            _Reaper,
+            _Coordinator,
+            _RegistrationReference
+        } ->
+            flush_connect_caller_messages(Reference);
+        {
+            Reference,
+            http_transport_worker_registered,
+            _Reaper,
+            Worker,
+            _Kind
+        } ->
+            exit(Worker, kill),
+            flush_connect_caller_messages(Reference);
+        {Reference, http_transport_reaper_sealed, _Reaper, _Status} ->
+            flush_connect_caller_messages(Reference);
+        {
+            Reference,
+            http_transport_continue_pre_start,
+            _ProbeReference
+        } ->
+            flush_connect_caller_messages(Reference)
+    after 0 ->
+        ok
+    end.
+
+-spec run_guarded_connect(
+    map(), map(), term(), integer(), integer(), integer()
+) -> {ok, stream()} | {error, integer()}.
+run_guarded_connect(
+    Lifecycle, _Runtime, Trace, TotalDeadline, CleanupDeadline,
+    TerminationDeadline
+) ->
+    case await_connect_registration(Lifecycle, TotalDeadline) of
+        {started, StartedLifecycle} ->
+            case await_connect_lifecycle(StartedLifecycle, CleanupDeadline) of
+                {complete, CompletedLifecycle} ->
+                    finalize_guarded_connect(
+                        CompletedLifecycle, Trace, TotalDeadline);
+                {deadline, PendingLifecycle} ->
+                    {FinalLifecycle, Join} = force_connect_lifecycle(
+                        PendingLifecycle, TerminationDeadline),
+                    finalize_forced_connect(
+                        FinalLifecycle, Join, Trace, TotalDeadline)
+            end;
+        {failed, FailedLifecycle} ->
+            {FinalLifecycle, Join} = force_connect_lifecycle(
+                FailedLifecycle, TerminationDeadline),
+            finalize_forced_connect(
+                FinalLifecycle, Join, Trace, TotalDeadline)
+    end.
+
+-spec await_connect_registration(map(), integer()) ->
+    {started, map()} | {failed, map()}.
+await_connect_registration(
+    Lifecycle = #{
+        reference := Reference,
+        coordinator := Coordinator,
+        reaper := Reaper,
+        coordinator_monitor := CoordinatorMonitor,
+        reaper_monitor := ReaperMonitor
+    },
+    Deadline
+) ->
+    receive
+        {
+            Reference,
+            http_transport_coordinator_registered,
+            Reaper,
+            Coordinator,
+            RegistrationReference
+        } when is_reference(RegistrationReference) ->
+            case monotonic_millisecond() < Deadline
+                andalso erlang:is_process_alive(Coordinator)
+                andalso erlang:is_process_alive(Reaper)
+            of
+                true ->
+                    Coordinator ! {
+                        RegistrationReference,
+                        http_transport_connect_start,
+                        self(),
+                        Reaper
+                    },
+                    {started, Lifecycle};
+                false ->
+                    {failed, Lifecycle}
+            end;
+        {'DOWN', CoordinatorMonitor, process, Coordinator, _Reason} ->
+            {failed, Lifecycle#{coordinator_down => true}};
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
+            {failed, Lifecycle#{reaper_down => true}}
+    after remaining_milliseconds(Deadline) ->
+        {failed, Lifecycle}
+    end.
+
+-spec await_connect_lifecycle(map(), integer()) ->
+    {complete, map()} | {deadline, map()}.
+await_connect_lifecycle(Lifecycle, Deadline) ->
+    case connect_lifecycle_complete(Lifecycle) of
+        true ->
+            {complete, Lifecycle};
+        false ->
+            await_connect_lifecycle_message(Lifecycle, Deadline)
+    end.
+
+-spec await_connect_lifecycle_message(map(), integer()) ->
+    {complete, map()} | {deadline, map()}.
+await_connect_lifecycle_message(
+    Lifecycle = #{
+        reference := Reference,
+        coordinator := Coordinator,
+        coordinator_monitor := CoordinatorMonitor,
+        reaper := Reaper,
+        reaper_monitor := ReaperMonitor,
+        workers := Workers
+    },
+    Deadline
+) ->
+    receive
+        {http_transport_dial, Reference, Result} ->
+            await_connect_lifecycle(
+                store_connect_result(Result, Lifecycle), Deadline);
+        {
+            Reference,
+            http_transport_socket_handoff,
+            Coordinator,
+            Socket,
+            HandoffReference
+        } when is_reference(HandoffReference) ->
+            await_connect_lifecycle(
+                store_connect_handoff(
+                    Coordinator, Socket, HandoffReference, Lifecycle
+                ),
+                Deadline
+            );
+        {
+            Reference,
+            http_transport_worker_registered,
+            Reaper,
+            Worker,
+            Kind
+        } when is_pid(Worker), (Kind =:= 1 orelse Kind =:= 2) ->
+            await_connect_lifecycle(
+                caller_register_connect_worker(Worker, Lifecycle), Deadline);
+        {Reference, http_transport_reaper_sealed, Reaper, Status}
+            when Status =:= ok; Status =:= timeout ->
+            await_connect_lifecycle(
+                Lifecycle#{reaper_status => Status}, Deadline);
+        {'DOWN', CoordinatorMonitor, process, Coordinator, _Reason} ->
+            await_connect_lifecycle(
+                close_uncommitted_handoff(
+                    Lifecycle#{coordinator_down => true}
+                ),
+                Deadline
+            );
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
+            await_connect_lifecycle(
+                Lifecycle#{reaper_down => true}, Deadline);
+        {'DOWN', WorkerMonitor, process, _Worker, _Reason}
+            when is_map_key(WorkerMonitor, Workers) ->
+            await_connect_lifecycle(
+                Lifecycle#{workers => maps:remove(WorkerMonitor, Workers)},
+                Deadline);
+        {
+            Reference,
+            http_transport_coordinator_registered,
+            Reaper,
+            Coordinator,
+            _RegistrationReference
+        } ->
+            await_connect_lifecycle(Lifecycle, Deadline);
+        {
+            Reference,
+            http_transport_continue_pre_start,
+            _ProbeReference
+        } ->
+            await_connect_lifecycle(Lifecycle, Deadline)
+    after remaining_milliseconds(Deadline) ->
+        {deadline, Lifecycle}
+    end.
+
+-spec store_connect_handoff(pid(), term(), reference(), map()) -> map().
+store_connect_handoff(
+    Coordinator,
+    Socket,
+    HandoffReference,
+    Lifecycle = #{provisional_socket := none}
+) ->
+    Recorded = Lifecycle#{
+        provisional_socket => {Socket, HandoffReference}
+    },
+    Coordinator ! {
+        HandoffReference,
+        http_transport_socket_handoff_ready,
+        self()
+    },
+    Recorded;
+store_connect_handoff(
+    Coordinator,
+    Socket,
+    HandoffReference,
+    Lifecycle = #{provisional_socket := {Socket, HandoffReference}}
+) ->
+    Coordinator ! {
+        HandoffReference,
+        http_transport_socket_handoff_ready,
+        self()
+    },
+    Lifecycle;
+store_connect_handoff(_Coordinator, Socket, _HandoffReference, Lifecycle) ->
+    safe_close(Socket),
+    Lifecycle#{ledger_overflow => true}.
+
+-spec caller_register_connect_worker(pid(), map()) -> map().
+caller_register_connect_worker(Worker, Lifecycle = #{workers := Workers}) ->
+    case map_size(Workers) >= ?MAXIMUM_CONNECT_CALLBACKS orelse
+        lists:member(Worker, maps:values(Workers))
+    of
+        true ->
+            exit(Worker, kill),
+            Lifecycle#{ledger_overflow => true};
+        false ->
+            try erlang:monitor(process, Worker) of
+                Monitor when is_reference(Monitor) ->
+                    Lifecycle#{
+                        workers => maps:put(Monitor, Worker, Workers)
+                    }
+            catch
+                _Class:_Reason ->
+                    exit(Worker, kill),
+                    Lifecycle#{ledger_overflow => true}
+            end
+    end.
+
+-spec store_connect_result(term(), map()) -> map().
+store_connect_result(
+    Result,
+    Lifecycle = #{result := none, provisional_socket := Provisional}
+) ->
+    Stored = case Result of
+        {ok, Stream = #{kind := Kind, socket := Socket}}
+            when Kind =:= tcp; Kind =:= tls ->
+            case Provisional of
+                {Socket, _HandoffReference} ->
+                    Lifecycle#{result => {ok, Stream}};
+                _ ->
+                    close_connect_result({ok, Stream}),
+                    Lifecycle#{result => {error, 5}}
+            end;
+        {error, Code} when is_integer(Code), Code >= 1, Code =< 18 ->
+            Lifecycle#{result => {error, Code}};
+        _ ->
+            Lifecycle#{result => {error, 5}}
+    end,
+    close_uncommitted_handoff(Stored);
+store_connect_result(Result, Lifecycle) ->
+    close_connect_result_if_present(Result),
+    Lifecycle.
+
+-spec close_uncommitted_handoff(map()) -> map().
+close_uncommitted_handoff(
+    Lifecycle = #{
+        provisional_socket := {Socket, _HandoffReference},
+        result := {ok, #{socket := Socket}}
+    }
+) ->
+    Lifecycle;
+close_uncommitted_handoff(
+    Lifecycle = #{provisional_socket := {Socket, _HandoffReference}}
+) ->
+    safe_close(Socket),
+    Lifecycle#{provisional_socket => none};
+close_uncommitted_handoff(Lifecycle) ->
+    Lifecycle.
+
+-spec connect_lifecycle_complete(map()) -> boolean().
+connect_lifecycle_complete(#{
+    coordinator_down := true,
+    reaper_down := true,
+    workers := Workers
+}) ->
+    map_size(Workers) =:= 0;
+connect_lifecycle_complete(_) ->
+    false.
+
+-spec force_connect_lifecycle(map(), integer()) ->
+    {map(), forced | timeout}.
+force_connect_lifecycle(Lifecycle, TerminationDeadline) ->
+    Stopping = kill_connect_lifecycle(Lifecycle#{forced => true}),
+    ReaperKillDeadline = erlang:max(
+        monotonic_millisecond(),
+        TerminationDeadline - ?CONNECT_REAPER_KILL_JOIN_MILLISECONDS
+    ),
+    case await_connect_lifecycle(Stopping, ReaperKillDeadline) of
+        {complete, Completed} ->
+            {Completed, forced};
+        {deadline, Pending} ->
+            HardStopping = hard_kill_connect_lifecycle(Pending),
+            case await_connect_lifecycle(
+                HardStopping, TerminationDeadline
+            ) of
+                {complete, Completed} ->
+                    {Completed, forced};
+                {deadline, Final} ->
+                    demonitor_connect_lifecycle(Final),
+                    {Final, timeout}
+            end
+    end.
+
+-spec kill_connect_lifecycle(map()) -> map().
+kill_connect_lifecycle(InitialLifecycle) ->
+    Lifecycle = close_connect_lifecycle_sockets(InitialLifecycle),
+    kill_connect_lifecycle_processes(Lifecycle).
+
+-spec kill_connect_lifecycle_processes(map()) -> map().
+kill_connect_lifecycle_processes(Lifecycle = #{
+    coordinator := Coordinator,
+    coordinator_down := CoordinatorDown,
+    reaper := Reaper,
+    reaper_down := ReaperDown,
+    workers := Workers
+}) ->
+    case CoordinatorDown orelse Coordinator =:= none of
+        true -> ok;
+        false -> exit(Coordinator, kill)
+    end,
+    maps:foreach(fun(_Monitor, Worker) -> exit(Worker, kill) end, Workers),
+    case ReaperDown of
+        true -> ok;
+        false -> Reaper ! {maps:get(reference, Lifecycle),
+            http_transport_force_reap, self()}
+    end,
+    Lifecycle.
+
+-spec close_connect_lifecycle_sockets(map()) -> map().
+close_connect_lifecycle_sockets(Lifecycle = #{result := Result}) ->
+    close_connect_result_if_present(Result),
+    case maps:get(provisional_socket, Lifecycle, none) of
+        {Socket, _HandoffReference} -> safe_close(Socket);
+        none -> ok
+    end,
+    Lifecycle#{provisional_socket => none}.
+
+-spec hard_kill_connect_lifecycle(map()) -> map().
+hard_kill_connect_lifecycle(Lifecycle = #{
+    reaper := Reaper,
+    reaper_down := ReaperDown
+}) ->
+    Stopping = kill_connect_lifecycle(Lifecycle),
+    case ReaperDown of
+        true -> ok;
+        false -> exit(Reaper, kill)
+    end,
+    Stopping.
+
+-spec demonitor_connect_lifecycle(map()) -> ok.
+demonitor_connect_lifecycle(#{
+    coordinator_monitor := CoordinatorMonitor,
+    reaper_monitor := ReaperMonitor,
+    workers := Workers
+}) ->
+    case CoordinatorMonitor of
+        none -> ok;
+        _ -> erlang:demonitor(CoordinatorMonitor, [flush])
+    end,
+    erlang:demonitor(ReaperMonitor, [flush]),
+    maps:foreach(fun(Monitor, _Worker) ->
+        erlang:demonitor(Monitor, [flush])
+    end, Workers),
+    ok.
+
+-spec finalize_guarded_connect(map(), term(), integer()) ->
+    {ok, stream()} | {error, integer()}.
+finalize_guarded_connect(
+    Lifecycle = #{
+        result := Result,
+        reaper_status := ReaperStatus,
+        ledger_overflow := LedgerOverflow
+    },
+    Trace,
+    TotalDeadline
+) ->
+    demonitor_connect_lifecycle(Lifecycle),
+    case {ReaperStatus, LedgerOverflow, Result} of
+        {ok, false, {ok, _} = Success} ->
+            finalize_connect_result(Trace, Success, TotalDeadline);
+        {ok, false, {error, _} = Failure} ->
+            finalize_connect_result(Trace, Failure, TotalDeadline);
+        {_, _, {ok, _} = Success} ->
+            close_connect_result(Success),
+            record_diagnostic(Trace, 6, 0, 0, 5),
+            {error, 5};
+        _ ->
+            record_diagnostic(Trace, 6, 0, 0, 5),
+            {error, 5}
+    end.
+
+-spec finalize_forced_connect(
+    map(), forced | timeout, term(), integer()
+) -> {error, integer()}.
+finalize_forced_connect(Lifecycle, Join, Trace, TotalDeadline) ->
+    Result = maps:get(result, Lifecycle),
+    close_connect_result_if_present(Result),
+    demonitor_connect_lifecycle(Lifecycle),
+    Code = case {Join, Result, monotonic_millisecond() >= TotalDeadline} of
+        {timeout, _, _} -> 5;
+        {_, {error, 5}, _} -> 5;
+        {_, _, true} -> 17;
+        _ -> 5
+    end,
+    record_diagnostic(Trace, 6, 0, 0, Code),
+    {error, Code}.
+
+-spec connect_coordinator(
+    pid(), reference(), pid(), reference(), binary(), inet:port_number(),
+    pos_integer(), pos_integer(), pos_integer(), map(), term(), integer(),
+    integer(), integer()
+) -> ok.
+connect_coordinator(
+    Parent, ReplyAlias, Reaper, Reference, Host, Port, DnsTimeout,
+    ConnectTimeout, SendTimeout, Runtime, Trace, Now, TotalDeadline,
+    CleanupDeadline
+) ->
+    ok = proc_lib:set_label(<<"http.connect_coordinator">>),
+    process_flag(trap_exit, true),
+    OwnerMonitor = erlang:monitor(process, Parent),
+    ReaperMonitor = erlang:monitor(process, Reaper),
+    receive
+        {
+            RegistrationReference,
+            http_transport_connect_start,
+            Parent,
+            Reaper
+        } when is_reference(RegistrationReference) ->
+            case monotonic_millisecond() < TotalDeadline
+                andalso erlang:is_process_alive(Parent)
+                andalso erlang:is_process_alive(Reaper)
+            of
+                true ->
+                    State = #{
+                        parent => Parent,
+                        reply_alias => ReplyAlias,
+                        owner_monitor => OwnerMonitor,
+                        reaper => Reaper,
+                        reaper_monitor => ReaperMonitor,
+                        reference => Reference,
+                        runtime => Runtime,
+                        trace => Trace,
+                        host => binary_to_list(Host),
+                        port => Port,
+                        send_timeout => SendTimeout,
+                        total_deadline => TotalDeadline,
+                        worker_cleanup_deadline => CleanupDeadline,
+                        dns_deadline => erlang:min(
+                            Now + DnsTimeout, TotalDeadline),
+                        connect_timeout => ConnectTimeout,
+                        connect_deadline => undefined,
+                        dns_pending => #{},
+                        answers => #{inet6 => [], inet => []},
+                        attempted => [],
+                        active => #{},
+                        workers => #{},
+                        next_launch => Now,
+                        last_launch => undefined,
+                        resolution_ready => undefined,
+                        last_code => 5,
+                        dns_timed_out => false
+                    },
+                    connect_loop(start_resolution(State));
+                false ->
+                    ReplyAlias ! {http_transport_dial, Reference, {error, 17}},
+                    ok
+            end;
+        {'DOWN', OwnerMonitor, process, Parent, _Reason} ->
+            ok;
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
             ok
+    after remaining_milliseconds(TotalDeadline) ->
+        ReplyAlias ! {http_transport_dial, Reference, {error, 17}},
+        ok
+    end.
+
+-spec connect_reaper(pid(), reference(), reference(), integer()) -> ok.
+connect_reaper(Caller, ReplyAlias, Reference, TerminationDeadline) ->
+    ok = proc_lib:set_label(<<"http.connect_reaper">>),
+    process_flag(trap_exit, true),
+    CallerMonitor = erlang:monitor(process, Caller),
+    connect_reaper_wait_for_coordinator(#{
+        caller => Caller,
+        caller_monitor => CallerMonitor,
+        caller_down => false,
+        reply_alias => ReplyAlias,
+        reference => Reference,
+        coordinator => none,
+        coordinator_monitor => none,
+        coordinator_down => true,
+        workers => #{},
+        termination_deadline => TerminationDeadline
+    }).
+
+-spec connect_reaper_wait_for_coordinator(map()) -> ok.
+connect_reaper_wait_for_coordinator(
+    State = #{
+        caller := Caller,
+        caller_monitor := CallerMonitor,
+        reply_alias := ReplyAlias,
+        reference := Reference,
+        termination_deadline := TerminationDeadline
+    }
+) ->
+    receive
+        {Reference, http_transport_register_coordinator, Coordinator}
+            when is_pid(Coordinator) ->
+            CoordinatorMonitor = erlang:monitor(process, Coordinator),
+            RegistrationReference = make_ref(),
+            Registered = State#{
+                coordinator => Coordinator,
+                coordinator_monitor => CoordinatorMonitor,
+                coordinator_down => false
+            },
+            case erlang:is_process_alive(Caller)
+                andalso erlang:is_process_alive(Coordinator)
+                andalso monotonic_millisecond() < TerminationDeadline
+            of
+                true ->
+                    ReplyAlias ! {
+                        Reference,
+                        http_transport_coordinator_registered,
+                        self(),
+                        Coordinator,
+                        RegistrationReference
+                    },
+                    connect_reaper_loop(Registered);
+                false ->
+                    connect_reaper_stop(Registered)
+            end;
+        {Reference, http_transport_force_reap, Caller} ->
+            connect_reaper_seal(State, ok);
+        {'DOWN', CallerMonitor, process, Caller, _Reason} ->
+            connect_reaper_seal(State#{caller_down => true}, ok)
+    after remaining_milliseconds(TerminationDeadline) ->
+        connect_reaper_seal(State, timeout)
+    end.
+
+-spec connect_reaper_loop(map()) -> ok.
+connect_reaper_loop(
+    State = #{
+        caller := Caller,
+        caller_monitor := CallerMonitor,
+        reference := Reference,
+        coordinator := Coordinator,
+        coordinator_monitor := CoordinatorMonitor,
+        workers := Workers,
+        termination_deadline := TerminationDeadline
+    }
+) ->
+    receive
+        {
+            Reference,
+            http_transport_spawn_worker,
+            Coordinator,
+            Kind,
+            RegistrationReference,
+            Label,
+            Deadline,
+            Run,
+            FailureMessage
+        } when is_reference(RegistrationReference), is_binary(Label),
+               is_integer(Deadline), is_function(Run, 0),
+               is_function(FailureMessage, 0),
+               (Kind =:= 1 orelse Kind =:= 2) ->
+            connect_reaper_loop(connect_reaper_spawn_worker(
+                Kind, RegistrationReference, Label, Deadline, Run,
+                FailureMessage, State));
+        {'DOWN', CallerMonitor, process, Caller, _Reason} ->
+            connect_reaper_stop(State#{caller_down => true});
+        {'DOWN', CoordinatorMonitor, process, Coordinator, _Reason} ->
+            connect_reaper_stop(State#{coordinator_down => true});
+        {'DOWN', WorkerMonitor, process, _Worker, _Reason}
+            when is_map_key(WorkerMonitor, Workers) ->
+            connect_reaper_loop(
+                State#{workers => maps:remove(WorkerMonitor, Workers)});
+        {'EXIT', _Worker, _Reason} ->
+            connect_reaper_loop(State);
+        {Reference, http_transport_force_reap, Caller} ->
+            connect_reaper_stop(State)
+    after remaining_milliseconds(TerminationDeadline) ->
+        connect_reaper_stop(State)
+    end.
+
+-spec connect_reaper_spawn_worker(
+    1 | 2, reference(), binary(), integer(), fun(() -> term()),
+    fun(() -> term()), map()
+) -> map().
+connect_reaper_spawn_worker(
+    Kind,
+    RegistrationReference,
+    Label,
+    Deadline,
+    Run,
+    FailureMessage,
+    State = #{
+        caller := Caller,
+        reply_alias := ReplyAlias,
+        reference := Reference,
+        coordinator := Coordinator,
+        workers := Workers
+    }
+) ->
+    case map_size(Workers) < ?MAXIMUM_CONNECT_CALLBACKS
+        andalso erlang:is_process_alive(Caller)
+        andalso erlang:is_process_alive(Coordinator)
+        andalso monotonic_millisecond() < Deadline
+    of
+        true ->
+            Reaper = self(),
+            WorkerRun = fun() ->
+                connect_callback_worker(
+                    Caller, Coordinator, Reaper, RegistrationReference,
+                    Label, Deadline, Run, FailureMessage)
+            end,
+            try spawn_opt(WorkerRun, connect_callback_spawn_options()) of
+                {Worker, WorkerMonitor}
+                    when is_pid(Worker), is_reference(WorkerMonitor) ->
+                    %% The persistent ledger stores only monitor and process
+                    %% identities; callback closures are discarded here.
+                    ReplyAlias ! {
+                        Reference,
+                        http_transport_worker_registered,
+                        self(),
+                        Worker,
+                        Kind
+                    },
+                    Coordinator ! {
+                        RegistrationReference,
+                        http_transport_worker_spawned,
+                        self(),
+                        Worker
+                    },
+                    State#{
+                        workers => maps:put(WorkerMonitor, Worker, Workers)
+                    };
+                _ ->
+                    Coordinator ! {
+                        RegistrationReference,
+                        http_transport_worker_rejected,
+                        self()
+                    },
+                    State
+            catch
+                _Class:_Reason ->
+                    Coordinator ! {
+                        RegistrationReference,
+                        http_transport_worker_rejected,
+                        self()
+                    },
+                    State
+            end;
+        false ->
+            Coordinator ! {
+                RegistrationReference,
+                http_transport_worker_rejected,
+                self()
+            },
+            State
+    end.
+
+-spec connect_reaper_stop(map()) -> ok.
+connect_reaper_stop(State) ->
+    Stopping = connect_reaper_kill(State),
+    connect_reaper_await_down(Stopping).
+
+-spec connect_reaper_kill(map()) -> map().
+connect_reaper_kill(State = #{
+    coordinator := Coordinator,
+    coordinator_down := CoordinatorDown,
+    workers := Workers
+}) ->
+    case CoordinatorDown of
+        true -> ok;
+        false -> exit(Coordinator, kill)
+    end,
+    maps:foreach(fun(_Monitor, Worker) -> exit(Worker, kill) end, Workers),
+    State.
+
+-spec connect_reaper_await_down(map()) -> ok.
+connect_reaper_await_down(
+    State = #{
+        caller := Caller,
+        caller_monitor := CallerMonitor,
+        reference := Reference,
+        coordinator := Coordinator,
+        coordinator_monitor := CoordinatorMonitor,
+        coordinator_down := CoordinatorDown,
+        workers := Workers,
+        termination_deadline := TerminationDeadline
+    }
+) ->
+    case CoordinatorDown andalso map_size(Workers) =:= 0 of
+        true ->
+            connect_reaper_seal(State, ok);
+        false ->
+            receive
+                {'DOWN', CallerMonitor, process, Caller, _Reason} ->
+                    connect_reaper_await_down(State#{caller_down => true});
+                {'DOWN', CoordinatorMonitor, process, Coordinator, _Reason} ->
+                    connect_reaper_await_down(
+                        State#{coordinator_down => true});
+                {'DOWN', WorkerMonitor, process, _Worker, _Reason}
+                    when is_map_key(WorkerMonitor, Workers) ->
+                    connect_reaper_await_down(State#{
+                        workers => maps:remove(WorkerMonitor, Workers)
+                    });
+                {
+                    Reference,
+                    http_transport_spawn_worker,
+                    Coordinator,
+                    _Kind,
+                    RegistrationReference,
+                    _Label,
+                    _WorkerDeadline,
+                    _Run,
+                    _FailureMessage
+                } when is_reference(RegistrationReference) ->
+                    %% The coordinator is the sole request sender. Its DOWN
+                    %% seals all earlier requests, and no callback is spawned
+                    %% after shutdown begins.
+                    Coordinator ! {
+                        RegistrationReference,
+                        http_transport_worker_rejected,
+                        self()
+                    },
+                    connect_reaper_await_down(State);
+                {'EXIT', _Worker, _Reason} ->
+                    connect_reaper_await_down(State);
+                {Reference, http_transport_force_reap, Caller} ->
+                    connect_reaper_await_down(connect_reaper_kill(State))
+            after remaining_milliseconds(TerminationDeadline) ->
+                connect_reaper_seal(connect_reaper_kill(State), timeout)
+            end
+    end.
+
+-spec connect_reaper_seal(map(), ok | timeout) -> ok.
+connect_reaper_seal(
+    #{
+        caller_monitor := CallerMonitor,
+        reply_alias := ReplyAlias,
+        reference := Reference,
+        coordinator_monitor := CoordinatorMonitor,
+        workers := Workers
+    },
+    Status
+) ->
+    erlang:demonitor(CallerMonitor, [flush]),
+    case CoordinatorMonitor of
+        none -> ok;
+        _ -> erlang:demonitor(CoordinatorMonitor, [flush])
+    end,
+    maps:foreach(fun(Monitor, _Worker) ->
+        erlang:demonitor(Monitor, [flush])
+    end, Workers),
+    ReplyAlias ! {
+        Reference,
+        http_transport_reaper_sealed,
+        self(),
+        Status
+    },
+    ok.
+
+-spec finalize_connect_result(term(), {ok, stream()} | {error, integer()},
+    integer()) ->
+    {ok, stream()} | {error, integer()}.
+finalize_connect_result(Trace, Result = {ok, _}, TotalDeadline) ->
+    case monotonic_millisecond() < TotalDeadline of
+        true ->
+            record_connect_completion(Trace, Result),
+            Result;
+        false ->
+            close_connect_result(Result),
+            record_diagnostic(Trace, 6, 0, 0, 17),
+            {error, 17}
+    end;
+finalize_connect_result(Trace, Result = {error, _}, _TotalDeadline) ->
+    record_connect_completion(Trace, Result),
+    Result.
+
+-spec close_connect_result({ok, stream()}) -> ok.
+close_connect_result({ok, Stream}) ->
+    _ = close(Stream),
+    ok.
+
+-spec close_connect_result_if_present(term()) -> ok.
+close_connect_result_if_present({ok, _} = Result) ->
+    close_connect_result(Result);
+close_connect_result_if_present(_) -> ok.
+
+-spec record_connect_completion(term(), {ok, stream()} | {error, integer()}) -> ok.
+record_connect_completion(Trace, Result) ->
+    Code = case Result of
+        {ok, _} -> 0;
+        {error, Failure} -> Failure
+    end,
+    record_diagnostic(Trace, 6, 0, 0, Code).
+
+%% An internal runtime may carry a private lifecycle capability. Guardians are
+%% recorded by the caller and callbacks by the coordinator before start. This
+%% never enters transport diagnostics.
+-spec observe_runtime_process(map(), 0 | 1 | 2 | 3, pid()) -> ok.
+observe_runtime_process(Runtime, Kind, Pid) ->
+    case maps:get(lifecycle_observer, Runtime, none) of
+        {http_transport_lifecycle_observer, Table, Owner, Reference}
+            when is_pid(Owner), is_reference(Reference) ->
+            try
+                _ = ets:insert(Table, {{http_transport_worker, Pid}, Kind}),
+                Owner ! {http_transport_worker_observed, Reference},
+                ok
+            catch
+                _:_ -> ok
+            end;
+        _ -> ok
+    end.
+
+-spec start_resolution(map()) -> map().
+start_resolution(State = #{host := Host, trace := Trace}) ->
+    case inet:parse_address(Host) of
+        {ok, Address} ->
+            Family = case tuple_size(Address) of
+                4 -> inet;
+                8 -> inet6
+            end,
+            record_diagnostic(Trace, 1, family_code(Family), 0, 0),
+            record_diagnostic(Trace, 2, family_code(Family), 0, 0),
+            State#{answers => maps:put(Family, [Address],
+                maps:get(answers, State))};
+        {error, _} ->
+            start_resolver(inet, start_resolver(inet6, State))
+    end.
+
+-spec start_resolver(family(), map()) -> map().
+start_resolver(Family, State = #{host := Host, reference := Ref,
+    runtime := #{resolve := Resolve}, trace := Trace,
+    dns_pending := Pending, dns_deadline := DnsDeadline}) ->
+    record_diagnostic(Trace, 1, family_code(Family), 0, 0),
+    Run = fun() ->
+        Result = try Resolve(Host, Family) of
+            {ok, Addresses} ->
+                {ok, bounded_unique_addresses(Addresses, Family)};
+            _ -> {error, 4}
+        catch _:_ -> {error, 4}
         end,
-        {error, TimeoutCode}
+        {resolved, Ref, self(), Family, Result}
+    end,
+    Failure = fun() ->
+        {resolved, Ref, self(), Family, {error, 4}}
+    end,
+    case start_connect_callback_worker(
+        1, <<"http.dns_resolver">>, DnsDeadline, Run, Failure, State
+    ) of
+        {ok, Pid, Started} ->
+            Started#{dns_pending => maps:put(Family, Pid, Pending)};
+        {error, Failed} ->
+            record_diagnostic(Trace, 2, family_code(Family), 0, 4),
+            Failed
+    end.
+
+-spec start_connect_callback_worker(
+    1 | 2, binary(), integer(), fun(() -> term()), fun(() -> term()), map()
+) -> {ok, pid(), map()} | {error, map()}.
+start_connect_callback_worker(
+    Kind,
+    Label,
+    Deadline,
+    Run,
+    FailureMessage,
+    State = #{
+        reaper := Reaper,
+        reference := Reference
+    }
+) ->
+    Coordinator = self(),
+    RegistrationReference = make_ref(),
+    Reaper ! {
+        Reference,
+        http_transport_spawn_worker,
+        Coordinator,
+        Kind,
+        RegistrationReference,
+        Label,
+        Deadline,
+        Run,
+        FailureMessage
+    },
+    await_connect_worker_registration(
+        Kind, RegistrationReference, Deadline, State).
+
+-spec await_connect_worker_registration(
+    1 | 2, reference(), integer(), map()
+) -> {ok, pid(), map()} | {error, map()}.
+await_connect_worker_registration(
+    Kind,
+    RegistrationReference,
+    Deadline,
+    State = #{
+        parent := Caller,
+        owner_monitor := CallerMonitor,
+        reaper := Reaper,
+        reaper_monitor := ReaperMonitor,
+        workers := Workers
+    }
+) ->
+    receive
+        {
+            RegistrationReference,
+            http_transport_worker_spawned,
+            Reaper,
+            Worker
+        } when is_pid(Worker) ->
+            WorkerMonitor = erlang:monitor(process, Worker),
+            erlang:link(Worker),
+            observe_runtime_process(maps:get(runtime, State), Kind, Worker),
+            Registered = State#{
+                workers => maps:put(Worker, WorkerMonitor, Workers)
+            },
+            case monotonic_millisecond() < Deadline
+                andalso erlang:is_process_alive(Caller)
+                andalso erlang:is_process_alive(Reaper)
+                andalso erlang:is_process_alive(Worker)
+            of
+                true ->
+                    Worker ! {
+                        RegistrationReference,
+                        http_transport_worker_start,
+                        self()
+                    },
+                    {ok, Worker, Registered};
+                false ->
+                    exit(Worker, kill),
+                    {error, Registered}
+            end;
+        {
+            RegistrationReference,
+            http_transport_worker_rejected,
+            Reaper
+        } ->
+            {error, State};
+        {'DOWN', CallerMonitor, process, Caller, _Reason} ->
+            abort_connect_coordinator(State);
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
+            abort_connect_coordinator(State);
+        {'EXIT', _Worker, _Reason} ->
+            await_connect_worker_registration(
+                Kind, RegistrationReference, Deadline, State)
+    after remaining_milliseconds(Deadline) ->
+        {error, State}
+    end.
+
+-spec abort_connect_coordinator(map()) -> no_return().
+abort_connect_coordinator(State) ->
+    _ = cleanup_connect_workers(State),
+    exit(normal).
+
+-spec connect_callback_worker(
+    pid(), pid(), pid(), reference(), binary(), integer(), fun(() -> term()),
+    fun(() -> term())
+) -> ok.
+connect_callback_worker(
+    Caller, Coordinator, Reaper, RegistrationReference, Label, Deadline,
+    Run, FailureMessage
+) ->
+    process_flag(trap_exit, false),
+    ok = proc_lib:set_label(Label),
+    CallerMonitor = erlang:monitor(process, Caller),
+    CoordinatorMonitor = erlang:monitor(process, Coordinator),
+    ReaperMonitor = erlang:monitor(process, Reaper),
+    receive
+        {
+            RegistrationReference,
+            http_transport_worker_start,
+            Coordinator
+        } ->
+            case monotonic_millisecond() < Deadline
+                andalso erlang:is_process_alive(Caller)
+                andalso erlang:is_process_alive(Coordinator)
+                andalso erlang:is_process_alive(Reaper)
+            of
+                true ->
+                    Message = try Run() of
+                        CallbackMessage -> CallbackMessage
+                    catch
+                        _Class:_Reason -> FailureMessage()
+                    end,
+                    Coordinator ! Message,
+                    ok;
+                false ->
+                    ok
+            end;
+        {'DOWN', CallerMonitor, process, Caller, _Reason} ->
+            ok;
+        {'DOWN', CoordinatorMonitor, process, Coordinator, _Reason} ->
+            ok;
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
+            ok
+    after remaining_milliseconds(Deadline) ->
+        ok
+    end.
+
+-spec bounded_unique_addresses(term(), family()) -> [inet:ip_address()].
+bounded_unique_addresses(Addresses, Family) ->
+    bounded_unique_addresses(Addresses, Family, [], 0, 0).
+
+-spec bounded_unique_addresses(term(), family(), [inet:ip_address()],
+    non_neg_integer(), non_neg_integer()) -> [inet:ip_address()].
+bounded_unique_addresses(
+    _Addresses, _Family, Found, ?MAXIMUM_RESOLVED_ADDRESSES, _Inspected
+) ->
+    lists:reverse(Found);
+bounded_unique_addresses(
+    _Addresses, _Family, Found, _Count, ?MAXIMUM_RESOLVER_ROWS_INSPECTED
+) ->
+    lists:reverse(Found);
+bounded_unique_addresses([], _Family, Found, _Count, _Inspected) ->
+    lists:reverse(Found);
+bounded_unique_addresses(
+    [Address | Rest], Family, Found, Count, Inspected
+) ->
+    %% Capacity counts distinct usable candidates, never duplicate DNS rows.
+    %% A separate finite inspection bound prevents duplicate-heavy or
+    %% improper callback values from consuming unbounded CPU or memory.
+    case valid_resolved_address(Address, Family) andalso not lists:member(Address, Found) of
+        true -> bounded_unique_addresses(
+            Rest, Family, [Address | Found], Count + 1, Inspected + 1);
+        false -> bounded_unique_addresses(
+            Rest, Family, Found, Count, Inspected + 1)
+    end;
+bounded_unique_addresses(_Improper, _Family, Found, _Count, _Inspected) ->
+    lists:reverse(Found).
+
+-spec valid_resolved_address(term(), family()) -> boolean().
+valid_resolved_address(Address, inet) when is_tuple(Address),
+    tuple_size(Address) =:= 4 ->
+    lists:all(fun(N) -> is_integer(N) andalso N >= 0 andalso N =< 255 end,
+        tuple_to_list(Address));
+valid_resolved_address(Address, inet6) when is_tuple(Address),
+    tuple_size(Address) =:= 8 ->
+    lists:all(fun(N) -> is_integer(N) andalso N >= 0 andalso N =< 65535 end,
+        tuple_to_list(Address));
+valid_resolved_address(_, _) -> false.
+
+-spec family_code(family()) -> 4 | 6.
+family_code(inet) -> 4;
+family_code(inet6) -> 6.
+
+-spec connect_loop(map()) -> ok.
+connect_loop(Initial) ->
+    State = expire_resolution(Initial),
+    Now = monotonic_millisecond(),
+    Total = maps:get(total_deadline, State),
+    Connect = maps:get(connect_deadline, State),
+    case Now >= Total of
+        true -> finish_connect(State, {error, 17});
+        false when is_integer(Connect), Now >= Connect ->
+            finish_connect(State, {error, timeout_code(Connect, Total, 2)});
+        false -> connect_progress(State, Now)
+    end.
+
+-spec connect_progress(map(), integer()) -> ok.
+connect_progress(State, Now) ->
+    Candidates = remaining_candidates(State),
+    Active = maps:get(active, State),
+    Pending = maps:get(dns_pending, State),
+    Attempted = maps:get(attempted, State),
+    case {Candidates, map_size(Active), map_size(Pending)} of
+        {[], 0, 0} -> finish_connect(State, {error, exhausted_code(State)});
+        {[], 0, _} when length(Attempted) >= ?MAXIMUM_RESOLVED_ADDRESSES ->
+            finish_connect(State, {error, maps:get(last_code, State)});
+        {[Candidate | _], _, _} ->
+            Ready = launch_ready(State, Now),
+            case Now >= Ready of
+                true -> connect_loop(start_candidate(Candidate, State, Now));
+                false -> await_connect_event(State, erlang:min(Ready,
+                    next_deadline(State)))
+            end;
+        {[], _, _} -> await_connect_event(State, next_deadline(State))
+    end.
+
+-spec exhausted_code(map()) -> integer().
+exhausted_code(#{attempted := [], dns_timed_out := true,
+    dns_deadline := Dns, total_deadline := Total}) ->
+    timeout_code(Dns, Total, 16);
+exhausted_code(#{attempted := []}) -> 4;
+exhausted_code(#{last_code := Code}) -> Code.
+
+-spec remaining_candidates(map()) -> [{family(), inet:ip_address()}].
+remaining_candidates(#{answers := Answers, attempted := Attempted}) ->
+    V6 = [{inet6, A} || A <- maps:get(inet6, Answers)],
+    V4 = [{inet, A} || A <- maps:get(inet, Answers)],
+    Ordered = interleave_candidates(V6, V4),
+    lists:sublist([A || A <- Ordered, not lists:member(A, Attempted)],
+        ?MAXIMUM_RESOLVED_ADDRESSES - length(Attempted)).
+
+-spec interleave_candidates([term()], [term()]) -> [term()].
+interleave_candidates([], Right) -> Right;
+interleave_candidates(Left, []) -> Left;
+interleave_candidates([Left | LeftRest], [Right | RightRest]) ->
+    [Left, Right | interleave_candidates(LeftRest, RightRest)].
+
+-spec launch_ready(map(), integer()) -> integer().
+launch_ready(#{last_launch := undefined, answers := Answers,
+    dns_pending := Pending, resolution_ready := Ready}, Now) ->
+    case {maps:get(inet6, Answers), maps:is_key(inet6, Pending), Ready} of
+        {[], true, At} when is_integer(At) -> At;
+        _ -> Now
+    end;
+launch_ready(#{next_launch := Ready}, _Now) -> Ready.
+
+-spec next_deadline(map()) -> integer().
+next_deadline(#{dns_deadline := Dns, dns_pending := Pending,
+    total_deadline := Total, connect_deadline := Connect}) ->
+    WithDns = case map_size(Pending) > 0 of
+        true -> erlang:min(Dns, Total);
+        false -> Total
+    end,
+    case Connect of
+        undefined -> WithDns;
+        _ -> erlang:min(Connect, WithDns)
+    end.
+
+-spec expire_resolution(map()) -> map().
+expire_resolution(State = #{dns_deadline := Dns, dns_pending := Pending,
+    total_deadline := Total, trace := Trace}) ->
+    case monotonic_millisecond() >= Dns andalso map_size(Pending) > 0 of
+        false -> State;
+        true ->
+            maps:foreach(fun(Family, Pid) ->
+                record_diagnostic(Trace, 2, family_code(Family), 0,
+                    timeout_code(Dns, Total, 16)),
+                exit(Pid, kill)
+            end, Pending),
+            State#{dns_pending => #{}, dns_timed_out => true}
+    end.
+
+-spec start_candidate({family(), inet:ip_address()}, map(), integer()) -> map().
+start_candidate(Candidate = {Family, Address}, State = #{
+    reference := Ref, runtime := #{connect := Dial},
+    port := Port, send_timeout := SendTimeout, total_deadline := Total,
+    connect_timeout := Timeout, connect_deadline := Previous,
+    attempted := Attempted, active := Active,
+    trace := Trace}, Now) ->
+    Deadline = case Previous of
+        undefined -> erlang:min(Now + Timeout, Total);
+        _ -> Previous
+    end,
+    Coordinator = self(),
+    Index = length(Attempted) + 1,
+    record_diagnostic(Trace, 3, family_code(Family), Index, 0),
+    Launching = State#{connect_deadline => Deadline, last_launch => Now,
+        next_launch => Now + 250, attempted => Attempted ++ [Candidate],
+        active => Active},
+    Run = fun() ->
+        Result = run_connect_candidate(
+            Dial, Address, Port, Family, SendTimeout, Deadline, Coordinator),
+        {candidate, Ref, self(), Result}
+    end,
+    Failure = fun() ->
+        {candidate, Ref, self(), {error_code, 5}}
+    end,
+    case start_connect_callback_worker(
+        2, <<"http.connect_candidate">>, Deadline, Run, Failure, Launching
+    ) of
+        {ok, Pid, Started} ->
+            Started#{active => maps:put(Pid, {Index, Family}, Active)};
+        {error, Failed} ->
+            record_diagnostic(Trace, 4, family_code(Family), Index, 5),
+            Failed#{last_code => 5,
+                next_launch => erlang:max(Now + 100,
+                    monotonic_millisecond())}
+    end.
+
+-spec run_connect_candidate(
+    fun(), inet:ip_address(), inet:port_number(), family(), pos_integer(),
+    integer(), pid()
+) -> {ok, gen_tcp:socket()} | {error, timeout} | {error_code, integer()}.
+run_connect_candidate(
+    Dial, Address, Port, Family, SendTimeout, Deadline, Coordinator
+) ->
+    Result = try
+        case remaining_milliseconds(Deadline) of
+            0 -> {error, timeout};
+            Remaining ->
+                Dial(Address, Port, stream_options(Family, SendTimeout),
+                    Remaining)
+        end
+    of
+        {ok, DialSocket} -> {ok, DialSocket};
+        {error, timeout} -> {error, timeout};
+        {error, DialReason} -> {error_code, connect_error_code(DialReason)};
+        _ -> {error_code, 5}
+    catch
+        _:_ -> {error_code, 5}
+    end,
+    case Result of
+        {ok, Socket} ->
+            try gen_tcp:controlling_process(Socket, Coordinator) of
+                ok -> {ok, Socket};
+                {error, Reason} ->
+                    safe_close(Socket),
+                    {error_code, connect_error_code(Reason)}
+            catch
+                _:_ ->
+                    safe_close(Socket),
+                    {error_code, 5}
+            end;
+        _ ->
+            Result
+    end.
+
+-spec await_connect_event(map(), integer()) -> ok.
+await_connect_event(State = #{reference := Ref, owner_monitor := OwnerMonitor,
+    parent := Parent, reaper := Reaper, reaper_monitor := ReaperMonitor},
+    Deadline) ->
+    receive
+        {resolved, Ref, Pid, Family, Result} ->
+            connect_loop(resolved_candidate_family(Pid, Family, Result, State));
+        {candidate, Ref, Pid, Result} ->
+            candidate_finished(Pid, Result, State);
+        {'DOWN', OwnerMonitor, process, Parent, _Reason} ->
+            abort_connect_coordinator(State);
+        {'DOWN', ReaperMonitor, process, Reaper, _Reason} ->
+            abort_connect_coordinator(State);
+        {'DOWN', Monitor, process, Pid, _Reason} ->
+            connect_loop(connect_worker_down(Pid, Monitor, State));
+        {'EXIT', _Pid, _Reason} ->
+            connect_loop(State)
+    after remaining_milliseconds(Deadline) ->
+        connect_loop(State)
+    end.
+
+-spec resolved_candidate_family(pid(), family(), term(), map()) -> map().
+resolved_candidate_family(Pid, Family, Result, State = #{
+    dns_pending := Pending, answers := Answers, trace := Trace,
+    resolution_ready := Ready, dns_deadline := Dns}) ->
+    case maps:find(Family, Pending) of
+        {ok, Pid} ->
+            {Addresses, Code} = case Result of
+                {ok, Values} when Values =/= [] -> {Values, 0};
+                _ -> {[], 4}
+            end,
+            record_diagnostic(Trace, 2, family_code(Family), 0, Code),
+            NextReady = case {Family, Addresses, Ready} of
+                {inet, [_ | _], undefined} ->
+                    erlang:min(monotonic_millisecond() + 50, Dns);
+                _ -> Ready
+            end,
+            State#{answers => maps:put(Family, Addresses, Answers),
+                dns_pending => maps:remove(Family, Pending),
+                resolution_ready => NextReady};
+        _ -> State
+    end.
+
+-spec candidate_finished(pid(), term(), map()) -> ok.
+candidate_finished(Pid, Result, State = #{active := Active, trace := Trace,
+    connect_deadline := Deadline, total_deadline := Total, last_launch := Last}) ->
+    case maps:find(Pid, Active) of
+        {ok, {Index, Family}} ->
+            Next = State#{active => maps:remove(Pid, Active)},
+            case Result of
+                {ok, Socket} ->
+                    record_diagnostic(Trace, 4, family_code(Family), Index, 0),
+                    finish_connect(Next, {ok, Socket});
+                {error, timeout} ->
+                    Code = timeout_code(Deadline, Total, 2),
+                    record_diagnostic(Trace, 4, family_code(Family), Index, Code),
+                    connect_loop(Next#{last_code => Code,
+                        next_launch => erlang:max(Last + 100,
+                            monotonic_millisecond())});
+                {error_code, Code}
+                    when is_integer(Code), Code >= 1, Code =< 18 ->
+                    record_diagnostic(Trace, 4, family_code(Family), Index, Code),
+                    connect_loop(Next#{last_code => Code,
+                        next_launch => erlang:max(Last + 100,
+                            monotonic_millisecond())});
+                _ ->
+                    record_diagnostic(Trace, 4, family_code(Family), Index, 5),
+                    connect_loop(Next#{last_code => 5,
+                        next_launch => erlang:max(Last + 100,
+                            monotonic_millisecond())})
+            end;
+        error -> connect_loop(State)
+    end.
+
+-spec connect_worker_down(pid(), reference(), map()) -> map().
+connect_worker_down(Pid, Monitor, State = #{workers := Workers,
+    dns_pending := Pending, active := Active}) ->
+    case maps:find(Pid, Workers) of
+        {ok, Monitor} ->
+            Without = State#{workers => maps:remove(Pid, Workers)},
+            case [Family || {Family, Worker} <- maps:to_list(Pending),
+                Worker =:= Pid] of
+                [Family] -> resolved_candidate_family(Pid, Family,
+                    {error, 4}, Without);
+                [] ->
+                    case maps:find(Pid, Active) of
+                        error -> Without;
+                        {ok, {Index, Family}} ->
+                            record_diagnostic(maps:get(trace, State), 4,
+                                family_code(Family), Index, 5),
+                            Without#{active => maps:remove(Pid, Active),
+                                last_code => 5,
+                                next_launch => erlang:max(
+                                    maps:get(last_launch, State) + 100,
+                                    monotonic_millisecond())}
+                    end
+            end;
+        _ -> State
+    end.
+
+-spec finish_connect(map(), {ok, gen_tcp:socket()} | {error, integer()}) -> ok.
+finish_connect(State = #{parent := Parent, reply_alias := ReplyAlias,
+    reference := Ref,
+    runtime := Runtime, trace := Trace, connect_deadline := Connect,
+    total_deadline := Total},
+    Result) ->
+    Cleanup = cleanup_connect_workers(State),
+    Final = case {Cleanup, Result} of
+        {timeout, {ok, Socket}} ->
+            safe_close(Socket),
+            {error, 5};
+        {timeout, {error, _}} -> {error, 5};
+        {ok, {ok, Socket}} ->
+            record_diagnostic(Trace, 5, 0, 0, 0),
+            Deadline = case Connect of
+                undefined -> Total;
+                _ -> Connect
+            end,
+            case remaining_milliseconds(Deadline) of
+                0 ->
+                    safe_close(Socket),
+                    {error, timeout_code(Deadline, Total, 2)};
+                _ ->
+                    connect_socket_handoff(
+                        State, Runtime, Socket, Parent, Ref, Deadline, Trace
+                    )
+            end;
+        {ok, {error, _}} -> Result
+    end,
+    ReplyAlias ! {http_transport_dial, Ref, Final},
+    ok.
+
+-spec connect_socket_handoff(
+    map(), map(), gen_tcp:socket(), pid(), reference(), integer(), term()
+) -> {ok, stream()} | {error, integer()}.
+connect_socket_handoff(
+    State, Runtime, Socket, Parent, Reference, Deadline, Trace
+) ->
+    HandoffReference = make_ref(),
+    OwnerMonitor = maps:get(owner_monitor, State),
+    ReaperMonitor = maps:get(reaper_monitor, State),
+    ReplyAlias = maps:get(reply_alias, State),
+    ReplyAlias ! {
+        Reference,
+        http_transport_socket_handoff,
+        self(),
+        Socket,
+        HandoffReference
+    },
+    receive
+        {
+            HandoffReference,
+            http_transport_socket_handoff_ready,
+            Parent
+        } ->
+            case remaining_milliseconds(Deadline) of
+                0 ->
+                    safe_close(Socket),
+                    {error, timeout_code(
+                        Deadline, maps:get(total_deadline, State), 2
+                    )};
+                _ ->
+                    connect_socket_transfer(
+                        Runtime, Socket, Parent, Deadline, Trace,
+                        maps:get(total_deadline, State)
+                    )
+            end;
+        {'DOWN', OwnerMonitor, process, Parent, _Reason} ->
+            safe_close(Socket),
+            {error, 5};
+        {'DOWN', ReaperMonitor, process, _Reaper, _Reason} ->
+            safe_close(Socket),
+            {error, 5}
+    after remaining_milliseconds(Deadline) ->
+        safe_close(Socket),
+        {error, timeout_code(
+            Deadline, maps:get(total_deadline, State), 2
+        )}
+    end.
+
+-spec connect_socket_transfer(
+    map(), gen_tcp:socket(), pid(), integer(), term(), integer()
+) -> {ok, stream()} | {error, integer()}.
+connect_socket_transfer(
+    Runtime, Socket, Parent, Deadline, Trace, TotalDeadline
+) ->
+    case gen_tcp:controlling_process(Socket, Parent) of
+        ok ->
+            case connect_post_transfer_probe(Runtime, Deadline) of
+                continue ->
+                    Stream = stream(Socket),
+                    case Trace of
+                        none -> {ok, Stream};
+                        _ -> {ok, Stream#{diagnostics => Trace}}
+                    end;
+                stop ->
+                    safe_close(Socket),
+                    {error, timeout_code(Deadline, TotalDeadline, 2)}
+            end;
+        {error, Reason} ->
+            safe_close(Socket),
+            {error, owner_error_code(Reason)}
+    end.
+
+%% This private synchronization point contains process identities and
+%% references only. It lets lifecycle tests stop the coordinator after the
+%% ownership transfer while the caller still treats the socket as provisional.
+-spec connect_post_transfer_probe(map(), integer()) ->
+    continue | stop.
+connect_post_transfer_probe(Runtime, Deadline) ->
+    case maps:get(handoff_probe, Runtime, none) of
+        {http_transport_handoff_probe, Observer, ProbeReference}
+            when is_pid(Observer), is_reference(ProbeReference) ->
+            Observer ! {
+                http_transport_connect_post_transfer,
+                ProbeReference,
+                self()
+            },
+            receive
+                {
+                    http_transport_continue_post_transfer,
+                    ProbeReference
+                } ->
+                    case remaining_milliseconds(Deadline) of
+                        0 -> stop;
+                        _ -> continue
+                    end
+            after remaining_milliseconds(Deadline) ->
+                stop
+            end;
+        _ ->
+            continue
+    end.
+
+-spec cleanup_connect_workers(map()) -> ok | timeout.
+cleanup_connect_workers(#{workers := Workers, active := Active,
+    dns_pending := Pending, trace := Trace,
+    worker_cleanup_deadline := CleanupDeadline}) ->
+    maps:foreach(fun(_Pid, {Index, Family}) ->
+        record_diagnostic(Trace, 4, family_code(Family), Index, 18)
+    end, Active),
+    maps:foreach(fun(Family, _Pid) ->
+        record_diagnostic(Trace, 2, family_code(Family), 0, 18)
+    end, Pending),
+    maps:foreach(fun(Pid, _Monitor) -> exit(Pid, kill) end, Workers),
+    PendingMonitors = await_connect_workers(Workers, CleanupDeadline),
+    maps:foreach(fun(_Pid, Monitor) ->
+        erlang:demonitor(Monitor, [flush])
+    end, PendingMonitors),
+    case map_size(PendingMonitors) of
+        0 -> ok;
+        _ -> timeout
+    end.
+
+-spec await_connect_workers(#{pid() => reference()}, integer()) ->
+    #{pid() => reference()}.
+await_connect_workers(Workers, _Deadline) when map_size(Workers) =:= 0 -> #{};
+await_connect_workers(Workers, Deadline) ->
+    receive
+        {'DOWN', Monitor, process, Pid, _Reason} ->
+            case maps:find(Pid, Workers) of
+                {ok, Monitor} ->
+                    await_connect_workers(maps:remove(Pid, Workers), Deadline);
+                _ -> await_connect_workers(Workers, Deadline)
+            end
+    after remaining_milliseconds(Deadline) -> Workers
     end.
 
 -spec resolve_host(string()) ->
@@ -933,210 +2799,6 @@ probed_source(Socket, Address) ->
             error
     end.
 
-%% Attempt every resolved address under one shared connect deadline.
-%%
-%% A single address is attempted directly with the whole remaining budget. Two
-%% or more are walked twice. The first walk bounds each attempt by the RFC 8305
-%% Connection Attempt Delay, so one address that answers nothing costs that
-%% delay instead of the entire budget, and the next address is reached
-%% immediately when an attempt is refused rather than stalled. Addresses that
-%% stalled are then walked again with the budget that is left, so a path whose
-%% handshake is genuinely slower than the delay is still reached.
-%%
-%% The walk is sequential on purpose. Racing candidates concurrently is what
-%% RFC 8305 section 5 describes, but it opens a connection per candidate, and a
-%% server that answers one connect would see several.
-%%
-%% What this replaces gave the first address every remaining millisecond and
-%% then abandoned the rest of the list on a timeout, so a name whose first
-%% address is black-holed was unreachable even when a later address answered
-%% immediately.
--spec connect_addresses(
-    [{family(), inet:ip_address()}],
-    inet:port_number(),
-    pos_integer(),
-    integer(),
-    integer(),
-    integer()
-) -> {ok, stream()} | {error, integer()}.
-connect_addresses(
-    [],
-    _Port,
-    _SendTimeout,
-    _Deadline,
-    _TimeoutCode,
-    LastCode
-) ->
-    {error, LastCode};
-connect_addresses(
-    [Candidate],
-    Port,
-    SendTimeout,
-    Deadline,
-    TimeoutCode,
-    _LastCode
-) ->
-    case connect_candidate(Candidate, Port, SendTimeout, Deadline, deadline) of
-        {ok, Socket} ->
-            {ok, stream(Socket)};
-        timeout ->
-            {error, TimeoutCode};
-        {failed, Code} ->
-            {error, Code}
-    end;
-connect_addresses(
-    Candidates,
-    Port,
-    SendTimeout,
-    Deadline,
-    TimeoutCode,
-    LastCode
-) ->
-    case
-        walk_candidates(
-            Candidates,
-            Port,
-            SendTimeout,
-            Deadline,
-            ?CONNECTION_ATTEMPT_DELAY,
-            [],
-            none
-        )
-    of
-        {ok, Socket} ->
-            {ok, stream(Socket)};
-        {exhausted, [], HardCode} ->
-            {error, attempt_error(HardCode, false, TimeoutCode, LastCode)};
-        {exhausted, Stalled, HardCode} ->
-            case
-                walk_candidates(
-                    Stalled,
-                    Port,
-                    SendTimeout,
-                    Deadline,
-                    deadline,
-                    [],
-                    HardCode
-                )
-            of
-                {ok, Socket} ->
-                    {ok, stream(Socket)};
-                {exhausted, _Remaining, PatientCode} ->
-                    {error,
-                        attempt_error(
-                            PatientCode,
-                            true,
-                            TimeoutCode,
-                            LastCode
-                        )}
-            end
-    end.
-
-%% Walk the candidates once, retaining the ones that stalled in resolution
-%% order so a later walk can give them the budget that is left.
--spec walk_candidates(
-    [{family(), inet:ip_address()}],
-    inet:port_number(),
-    pos_integer(),
-    integer(),
-    pos_integer() | deadline,
-    [{family(), inet:ip_address()}],
-    none | integer()
-) ->
-    {ok, gen_tcp:socket()}
-    | {exhausted, [{family(), inet:ip_address()}], none | integer()}.
-walk_candidates(
-    [],
-    _Port,
-    _SendTimeout,
-    _Deadline,
-    _AttemptBudget,
-    Stalled,
-    HardCode
-) ->
-    {exhausted, lists:reverse(Stalled), HardCode};
-walk_candidates(
-    [Candidate | Rest],
-    Port,
-    SendTimeout,
-    Deadline,
-    AttemptBudget,
-    Stalled,
-    HardCode
-) ->
-    case
-        connect_candidate(Candidate, Port, SendTimeout, Deadline, AttemptBudget)
-    of
-        {ok, Socket} ->
-            {ok, Socket};
-        timeout ->
-            case remaining_milliseconds(Deadline) of
-                0 ->
-                    {exhausted, lists:reverse([Candidate | Stalled]), HardCode};
-                _ ->
-                    walk_candidates(
-                        Rest,
-                        Port,
-                        SendTimeout,
-                        Deadline,
-                        AttemptBudget,
-                        [Candidate | Stalled],
-                        HardCode
-                    )
-            end;
-        {failed, Code} ->
-            walk_candidates(
-                Rest,
-                Port,
-                SendTimeout,
-                Deadline,
-                AttemptBudget,
-                Stalled,
-                first_code(HardCode, Code)
-            )
-    end.
-
--spec connect_candidate(
-    {family(), inet:ip_address()},
-    inet:port_number(),
-    pos_integer(),
-    integer(),
-    pos_integer() | deadline
-) -> {ok, gen_tcp:socket()} | timeout | {failed, integer()}.
-connect_candidate({Family, Address}, Port, SendTimeout, Deadline, Budget) ->
-    case attempt_milliseconds(Deadline, Budget) of
-        0 ->
-            timeout;
-        Remaining ->
-            Options = stream_options(Family, SendTimeout),
-            try gen_tcp:connect(Address, Port, Options, Remaining) of
-                {ok, Socket} -> {ok, Socket};
-                {error, timeout} -> timeout;
-                {error, Reason} -> {failed, connect_error_code(Reason)}
-            catch
-                _Class:_Reason -> {failed, 5}
-            end
-    end.
-
--spec attempt_milliseconds(integer(), pos_integer() | deadline) ->
-    non_neg_integer().
-attempt_milliseconds(Deadline, deadline) ->
-    remaining_milliseconds(Deadline);
-attempt_milliseconds(Deadline, Budget) ->
-    erlang:min(remaining_milliseconds(Deadline), Budget).
-
-%% Report a refusal ahead of a stall: a peer that answered says more about the
-%% attempt than an address that answered nothing.
--spec attempt_error(none | integer(), boolean(), integer(), integer()) ->
-    integer().
-attempt_error(none, true, TimeoutCode, _LastCode) -> TimeoutCode;
-attempt_error(none, false, _TimeoutCode, LastCode) -> LastCode;
-attempt_error(HardCode, _Stalled, _TimeoutCode, _LastCode) -> HardCode.
-
--spec first_code(none | integer(), integer()) -> integer().
-first_code(none, Code) -> Code;
-first_code(Existing, _Code) -> Existing.
-
 -spec timeout_code(integer(), integer(), integer()) -> integer().
 timeout_code(Deadline, TotalDeadline, _PhaseCode)
     when Deadline =:= TotalDeadline ->
@@ -1190,6 +2852,9 @@ tls_version(Socket) ->
 -spec client_tls_options(binary(), [binary()], [binary()]) -> list().
 client_tls_options(ServerName, TrustedCertificates, AlpnProtocols) ->
     [
+        %% Native alert reports can contain the requested name and certificate
+        %% SANs. The transport's bounded typed diagnostics carry their outcome.
+        {log_level, none},
         {verify, verify_peer},
         {cacerts, TrustedCertificates},
         {server_name_indication, binary_to_list(ServerName)},
@@ -1207,6 +2872,7 @@ client_tls_options(ServerName, TrustedCertificates, AlpnProtocols) ->
 -spec server_tls_options(map(), [binary()]) -> list().
 server_tls_options(CertsKeys, AlpnProtocols) ->
     [
+        {log_level, none},
         {certs_keys, [CertsKeys]},
         {verify, verify_none},
         {versions, ['tlsv1.3', 'tlsv1.2']},

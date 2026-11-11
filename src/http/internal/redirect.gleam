@@ -21,6 +21,22 @@ type Destination {
   )
 }
 
+type PayloadPlan {
+  EmptyPayload(method: Method)
+  ReplayPayload(method: Method)
+}
+
+/// A validated redirect that has not constructed or consumed its next body.
+/// Keeping replay materialisation separate lets the unified client confirm release of the previous response before invoking an application factory.
+@internal
+pub opaque type Plan {
+  Plan(
+    destination: Destination,
+    payload: PayloadPlan,
+    remove_representation_headers: Bool,
+  )
+}
+
 /// Resolve one redirect and construct a fresh safe request.
 ///
 /// The caller remains responsible for enforcing the finite redirect count.
@@ -29,10 +45,41 @@ pub fn follow(
   status status: Int,
   location location: String,
 ) -> Result(Request(body.Body), error.Error) {
+  use plan <- result.try(plan(
+    outgoing: outgoing,
+    status: status,
+    location: location,
+  ))
+  materialise(outgoing: outgoing, plan: plan)
+}
+
+/// Validate and resolve one redirect without invoking a body replay factory.
+@internal
+pub fn plan(
+  outgoing outgoing: Request(body.Body),
+  status status: Int,
+  location location: String,
+) -> Result(Plan, error.Error) {
   use destination <- result.try(resolve(outgoing, location))
-  use #(method, redirected_body, remove_representation_headers) <- result.try(
-    redirected_payload(outgoing, status),
-  )
+  use #(payload, remove_representation_headers) <- result.try(planned_payload(
+    outgoing,
+    status,
+  ))
+  Ok(Plan(destination, payload, remove_representation_headers))
+}
+
+/// Construct the request for a previously validated redirect.
+/// Replayable payload factories are invoked only at this explicit ownership boundary.
+@internal
+pub fn materialise(
+  outgoing outgoing: Request(body.Body),
+  plan plan: Plan,
+) -> Result(Request(body.Body), error.Error) {
+  let Plan(destination, payload, remove_representation_headers) = plan
+  use #(method, redirected_body) <- result.try(materialise_payload(
+    outgoing,
+    payload,
+  ))
   let Destination(scheme, host, port, path, query) = destination
   let headers = case remove_representation_headers {
     True -> strip_representation_headers(outgoing.headers)
@@ -54,18 +101,32 @@ pub fn follow(
   ))
 }
 
-fn redirected_payload(
+fn planned_payload(
   outgoing: Request(body.Body),
   status: Int,
-) -> Result(#(Method, body.Body, Bool), error.Error) {
+) -> Result(#(PayloadPlan, Bool), error.Error) {
   case status, outgoing.method {
-    303, Head -> Ok(#(Head, body.empty(), True))
-    303, _ -> Ok(#(Get, body.empty(), True))
-    301, Post | 302, Post -> Ok(#(Get, body.empty(), True))
+    303, Head -> Ok(#(EmptyPayload(Head), True))
+    303, _ -> Ok(#(EmptyPayload(Get), True))
+    301, Post | 302, Post -> Ok(#(EmptyPayload(Get), True))
     301, _ | 302, _ | 307, _ | 308, _ ->
-      body.replay(outgoing.body)
-      |> result.map(fn(replayed) { #(outgoing.method, replayed, False) })
+      case body.is_replayable(outgoing.body) {
+        True -> Ok(#(ReplayPayload(outgoing.method), False))
+        False -> Error(error.new(error.Body(error.NotReplayable)))
+      }
     _, _ -> Error(redirect_policy_error())
+  }
+}
+
+fn materialise_payload(
+  outgoing: Request(body.Body),
+  payload: PayloadPlan,
+) -> Result(#(Method, body.Body), error.Error) {
+  case payload {
+    EmptyPayload(method) -> Ok(#(method, body.empty()))
+    ReplayPayload(method) ->
+      body.replay(outgoing.body)
+      |> result.map(fn(replayed) { #(method, replayed) })
   }
 }
 

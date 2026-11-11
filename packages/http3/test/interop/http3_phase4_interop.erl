@@ -120,15 +120,19 @@ collect(Stream) ->
     collect(Stream, undefined, [], <<>>).
 
 collect(Stream, Status, Headers, Body) ->
+    collect(Stream, Status, Headers, Body, 4096).
+
+collect(_, _, _, _, 0) -> erlang:error(native_interop_event_limit);
+collect(Stream, Status, Headers, Body, Remaining) ->
     case http3@client:next_event(Stream) of
         {ok, {response, NewStatus, NewHeaders}} ->
-            collect(Stream, NewStatus, NewHeaders, Body);
-        {ok, {data, Chunk}} ->
-            collect(Stream, Status, Headers, <<Body/binary, Chunk/binary>>);
+            collect(Stream, NewStatus, NewHeaders, Body, Remaining - 1);
+        {ok, {data, Chunk}} when byte_size(Body) + byte_size(Chunk) =< 131072 ->
+            collect(Stream, Status, Headers, <<Body/binary, Chunk/binary>>, Remaining - 1);
+        {ok, {data, _}} -> erlang:error(native_interop_body_limit);
         {ok, {trailers, _}} ->
-            collect(Stream, Status, Headers, Body);
+            collect(Stream, Status, Headers, Body, Remaining - 1);
         {ok, 'end'} ->
             {Status, Headers, Body};
-        Other ->
-            erlang:error({unexpected_stream_event, Other})
+        _ -> erlang:error(unexpected_stream_event)
     end.

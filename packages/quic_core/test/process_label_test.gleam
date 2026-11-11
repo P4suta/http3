@@ -17,6 +17,7 @@ pub fn every_quic_actor_role_has_one_fixed_process_label_test() -> Nil {
     "quic_core.listener",
     "quic_core.connection",
     "quic_core.connect_candidate",
+    "quic_core.connect_supervisor",
     "quic_core.dns_resolver",
     "quic_core.udp_relay",
     "quic_core.replay_guard",

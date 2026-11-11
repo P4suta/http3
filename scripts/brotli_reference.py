@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 the http contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""Reproduce Brotli tables and independent fixtures from pinned primary sources.
+
+Python 3.10+ standard library only; never imports the decoder being tested.
+Run with --fetch to download the six hash-pinned inputs into build/diagnostics,
+then --check to verify retained artifacts, or --write to regenerate them.
+The ordinary Gleam/EUnit tests use retained artifacts and need no Python/network.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import urllib.request
+import zlib
+
+ROOT = Path(__file__).resolve().parent.parent
+REVISION = "4508218e7fef90fa4273286f7a415065946f2c43"
+GOOGLE = f"https://raw.githubusercontent.com/google/brotli/{REVISION}/"
+JAVA = "java/org/brotli/dec/"
+SOURCES = {
+    "SynthTest.java": (GOOGLE + JAVA + "SynthTest.java", "033822fa47c620293aae8417aa296bea83f088cc2f66ba21ea1af90abe0d99b7"),
+    "Context.java": (GOOGLE + JAVA + "Context.java", "862a4e8a0310b02c55f6a85e6a1aeb580a4f1a1bebc10b51e60b5ddb3229817c"),
+    "Transform.java": (GOOGLE + JAVA + "Transform.java", "b43509c93ff67ed195a6ab45c90ae751bf4b52f28be52998d82d72071558a619"),
+    "DictionaryData.java": (GOOGLE + JAVA + "DictionaryData.java", "a4046e6e3cb1815b0d81767bcbca85b73e9dd706852f617f53b9818157b91bc0"),
+    "LICENSE": (GOOGLE + "LICENSE", "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"),
+    "rfc7932.txt": ("https://www.rfc-editor.org/rfc/rfc7932.txt", "394abd1879e016f4eac89512c2acaf92f7b2d67feb8ab58b6b118c213be07146"),
+}
+STRING = r'"(?:\\.|[^"\\])*"'
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def unquote(token):
+    """Decode the limited Java string grammar, including Java octal escapes."""
+    def escape(match):
+        text = match[1]
+        if text.startswith("u"):
+            return chr(int(text.lstrip("u"), 16))
+        if text[0] in "01234567":
+            return chr(int(text, 8))
+        return {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r",
+                '"': '"', "'": "'", "\\": "\\"}[text]
+
+    return re.sub(r"\\(u+[0-9a-fA-F]{4}|[0-3][0-7]{0,2}|[4-7][0-7]?|.)",
+                  escape, token[1:-1])
+
+
+def java_constant(source, name):
+    match = re.search(r"\b" + name + r"\s*=\s*((?:" + STRING + r"|\s|\+)+);", source)
+    require(match is not None, "missing Java constant " + name)
+    return "".join(unquote(token) for token in re.findall(STRING, match[1]))
+
+
+def binary_literal(data):
+    def byte(value):
+        if value in (34, 92):
+            return "\\" + chr(value)
+        return chr(value) if 32 <= value <= 126 else f"\\{value:03o}"
+
+    lines = ['    "' + "".join(map(byte, data[i:i + 96])) + '"'
+             for i in range(0, len(data), 96)]
+    return "<<\n" + ",\n".join(lines) + "\n>>"
+
+
+def tables(sources):
+    source = sources["DictionaryData.java"]
+    dictionary = bytearray((java_constant(source, "DATA0") +
+                            java_constant(source, "DATA1")).encode("ascii"))
+    flips = java_constant(source, "SKIP_FLIP")
+    require(len(flips) % 2 == 0, "dictionary flip pairs")
+    offset = 0
+    for i in range(0, len(flips), 2):
+        for count, mask in ((ord(flips[i]) - 36, 3), (ord(flips[i + 1]) - 36, 236)):
+            require(count >= 0 and offset + count <= len(dictionary), "dictionary flip extent")
+            for j in range(offset, offset + count):
+                dictionary[j] ^= mask
+            offset += count
+    require(offset == len(dictionary) == 122784, "dictionary length")
+    require(zlib.crc32(dictionary) == 0x5136CB04, "dictionary CRC32")
+    require(hashlib.sha256(dictionary).hexdigest() ==
+            "20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70", "dictionary SHA256")
+    rfc_hex = "".join(re.findall(r"^      ([0-9a-f]{20,})$", sources["rfc7932.txt"], re.M))
+    require(bytes.fromhex(rfc_hex) == dictionary, "dictionary differs from RFC 7932 Appendix A")
+    utf_map = java_constant(sources["Context.java"], "UTF_MAP")
+    utf_rle = java_constant(sources["Context.java"], "UTF_RLE")
+    require(len(utf_map) == 128 and len(utf_rle) == 19, "context source lengths")
+    context = bytes([4 * (ord(c) - 32) for c in utf_map] +
+                    [i & 1 for i in range(64)] + [2 + (i & 1) for i in range(64)])
+    context += b"".join(bytes([i & 3]) * (ord(c) - 32) for i, c in enumerate(utf_rle))
+    require(len(context) == 512, "context table size")
+    transforms = bytes(ord(c) - 32 for c in java_constant(sources["Transform.java"], "TRANSFORMS_SRC"))
+    affixes = java_constant(sources["Transform.java"], "PREFIX_SUFFIX_SRC").split("#")
+    require(affixes[-1] == "" and len(affixes) == 51 and len(transforms) == 363, "transform table size")
+    header = f"""%% SPDX-FileCopyrightText: 2015 Google Inc.
+%% SPDX-FileCopyrightText: 2026 the http contributors
+%% SPDX-License-Identifier: LicenseRef-Brotli-MIT
+%% Generated by scripts/brotli_reference.py from pinned primary sources.
+%% Google reference revision: {REVISION}
+%% https://github.com/google/brotli/tree/{REVISION}/{JAVA.rstrip('/')}
+%% Dictionary independently equals RFC 7932 Appendix A: 122784 bytes,
+%% CRC32 5136cb04; SHA256 20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70.
+%% See LICENSES/LicenseRef-Brotli-MIT.txt for the preserved upstream license.
+"""
+    return header + "".join(f"-define({name}, {binary_literal(data)}).\n" for name, data in (
+        ("BROTLI_DICTIONARY", dictionary), ("BROTLI_UTF8_CONTEXT", context),
+        ("BROTLI_TRANSFORMS", transforms))) + "-define(BROTLI_AFFIXES, {" + ",".join(
+            binary_literal(value.encode("latin1")) for value in affixes[:-1]) + "}).\n"
+
+
+def expected_output(expression):
+    """Parse concatenated literals/times(integer,literal), without eval()."""
+    parts = []
+    pattern = re.compile(r"\s*(?:times\(\s*(\d+)\s*,\s*(" + STRING + r")\s*\)|(" + STRING + r"))\s*")
+    position = 0
+    size = 0
+    while position < len(expression):
+        match = pattern.match(expression, position)
+        require(match is not None, "unsupported expected-output expression")
+        count = int(match[1] or "1")
+        value = unquote(match[2] or match[3]).encode("latin1")
+        size += count * len(value)
+        require(size <= 16777216, "expected fixture output exceeds 16 MiB")
+        parts.append(value * count)
+        position = match.end()
+        if position < len(expression):
+            require(expression[position] == "+", "missing expression concatenation")
+            position += 1
+    return b"".join(parts)
+
+
+def fixtures(source):
+    # Strings are recognized first, so comment-looking bytes inside strings survive.
+    clean = re.sub(STRING + r"|//[^\n]*|/\*.*?\*/",
+                   lambda m: m[0] if m[0].startswith('"') else "", source, flags=re.S)
+    cases, omitted = [], []
+    methods = list(re.finditer(r"public void (test\w+)\(\)\s*\{", clean))
+    require(len(methods) == 46, "upstream test count changed")
+    for i, method in enumerate(methods):
+        body = clean[method.end():methods[i + 1].start() if i + 1 < len(methods) else len(clean)]
+        if "assumeTrue(false)" in body:
+            omitted.append(method[1])
+            continue
+        compressed = re.search(r"byte\[\] compressed\s*=\s*\{(.*?)\};", body, re.S)
+        check = re.search(r"checkSynth\(\s*compressed,\s*(true|false),\s*(.*?)\);", body, re.S)
+        require(compressed is not None and check is not None, "unsupported fixture " + method[1])
+        encoded = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})\b", compressed[1]))
+        expected = expected_output(check[2].strip())
+        cases.append({"name": method[1], "success": check[1] == "true", "compressed_hex": encoded.hex().upper(),
+                      "output_bytes": len(expected), "output_sha256": hashlib.sha256(expected).hexdigest().upper()})
+    require(len(cases) == 45 and sum(case["success"] for case in cases) == 27, "fixture outcome counts")
+    return json.dumps({"source": f"https://github.com/google/brotli/blob/{REVISION}/{JAVA}SynthTest.java",
+                       "license": "LicenseRef-Brotli-MIT; see LICENSES/LicenseRef-Brotli-MIT.txt", "omitted_upstream_disabled": omitted,
+                       "cases": cases}, indent=2) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fetch", action="store_true", help="fetch bounded, SHA256-pinned inputs")
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument("--check", action="store_true", help="verify generated artifacts without writing them")
+    actions.add_argument("--write", action="store_true", help="regenerate tables, fixture JSON, and license")
+    args = parser.parse_args()
+    directory = ROOT / "build/diagnostics/brotli-reference"
+    sources = {}
+    for name, (url, expected) in SOURCES.items():
+        path = directory / name
+        if args.fetch and not path.exists():
+            with urllib.request.urlopen(url, timeout=30) as response:
+                data = response.read(2 * 1024 * 1024 + 1)
+            require(len(data) <= 2 * 1024 * 1024, "reference download too large")
+            require(hashlib.sha256(data).hexdigest() == expected, "download hash mismatch " + name)
+            directory.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        data = path.read_bytes()
+        require(len(data) <= 2 * 1024 * 1024, "reference file too large")
+        require(hashlib.sha256(data).hexdigest() == expected, "source hash mismatch " + name)
+        sources[name] = data.decode("utf-8").replace("\r\n", "\n")
+    artifacts = {"src/http_brotli_tables.hrl": tables(sources),
+                 "test/fixtures/brotli-google-synthetic.json": fixtures(sources["SynthTest.java"]),
+                 "LICENSES/LicenseRef-Brotli-MIT.txt": sources["LICENSE"]}
+    for relative, content in artifacts.items():
+        path = ROOT / relative
+        if args.write:
+            path.write_text(content, encoding="utf-8", newline="\n")
+        else:
+            require(path.read_text(encoding="utf-8") == content, "generated artifact differs: " + relative)
+    print("Brotli reference artifacts verified: 6 source hashes, RFC dictionary, 121 transforms, 45 fixtures")
+
+
+if __name__ == "__main__":
+    main()

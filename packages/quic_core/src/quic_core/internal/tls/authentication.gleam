@@ -46,6 +46,11 @@ fn raw_system_trust_store() -> Result(TrustStore, Int)
 @external(erlang, "quic_core_tls_ffi", "certificate_chain_from_pem")
 fn raw_certificate_chain_from_pem(pem: BitArray) -> Result(List(BitArray), Int)
 
+@external(erlang, "quic_core_tls_ffi", "server_certificate_public_key_secure")
+fn raw_server_certificate_public_key_secure(
+  certificate_chain: List(BitArray),
+) -> Result(Bool, Int)
+
 @external(erlang, "quic_core_tls_ffi", "validate_server_certificate")
 fn raw_validate_server_certificate(
   certificate_chain: List(BitArray),
@@ -128,6 +133,21 @@ pub fn certificate_chain_from_pem(
   case raw_certificate_chain_from_pem(pem) |> map_result {
     Ok([]) -> Error(EmptyCertificateChain)
     other -> other
+  }
+}
+
+/// Check the RFC 9325 server-certificate key-strength boundary.
+///
+/// RSA leaf certificates require a public modulus of at least 2048 bits.
+/// Other certificate algorithms pass through to their algorithm-specific policy checks.
+pub fn server_certificate_public_key_secure(
+  certificate_chain certificate_chain: List(BitArray),
+) -> Result(Bool, Error) {
+  case certificate_chain, all_byte_aligned(certificate_chain) {
+    [], _ -> Error(EmptyCertificateChain)
+    _, False -> Error(NonByteAligned)
+    _, True ->
+      raw_server_certificate_public_key_secure(certificate_chain) |> map_result
   }
 }
 

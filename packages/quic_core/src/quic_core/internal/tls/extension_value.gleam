@@ -79,8 +79,14 @@ pub fn encode_server_name(
 pub fn decode_server_name(bytes bytes: BitArray) -> Result(String, Error) {
   use list <- result.try(exact_vector16(bytes))
   case list {
-    <<0, name_length:size(16), name:bits>> ->
-      decode_server_name_bytes(name, name_length)
+    <<0, name_length:size(16), name_and_rest:bits>> -> {
+      use #(name, rest) <- result.try(take(name_and_rest, name_length))
+      case rest {
+        <<>> -> decode_server_name_bytes(name, name_length)
+        <<0, _:bits>> -> Error(DuplicateIdentifier(0))
+        _ -> Error(TrailingData)
+      }
+    }
     _ -> Error(Truncated)
   }
 }

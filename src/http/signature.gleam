@@ -1,9 +1,7 @@
 //// Profile-driven RFC 9421 HTTP Message Signatures.
 ////
-//// This module implements strict message canonicalization, Signature-Input
-//// and Signature wire fields, HMAC-SHA256 signing, bounded verification, and
-//// a finite immutable nonce replay store. Applications must select a profile
-//// explicitly; signing is never enabled by a default client policy.
+//// This module implements strict message canonicalization, Signature-Input and Signature wire fields, HMAC-SHA256 signing, bounded verification, and a finite immutable nonce replay store.
+//// Applications must select a profile explicitly; signing is never enabled by a default client policy.
 
 import gleam/bit_array
 import gleam/int
@@ -11,6 +9,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http/internal/url_pattern/encoding as url_encoding
+import http/internal/url_pattern/host as url_host
 import http/structured_fields
 
 const maximum_components = 32
@@ -21,8 +21,12 @@ const minimum_hmac_key_bytes = 32
 
 const maximum_hmac_key_bytes = 4096
 
-/// One normalized HTTP field line. Repeated names remain separate and are
-/// combined in their original order during signature-base construction.
+const maximum_authority_bytes = 4096
+
+const maximum_scheme_bytes = 64
+
+/// One normalized HTTP field line.
+/// Repeated names remain separate and are combined in their original order during signature-base construction.
 pub type Header {
   Header(name: String, value: String)
 }
@@ -42,8 +46,7 @@ pub type Message {
 
 /// Supported unparameterized HTTP message components.
 ///
-/// RFC component parameters (`sf`, `key`, `bs`, `req`, and `tr`) are rejected
-/// rather than partially canonicalized by this profile implementation.
+/// RFC component parameters (`sf`, `key`, `bs`, `req`, and `tr`) are rejected rather than partially canonicalized by this profile implementation.
 pub type Component {
   Field(name: String)
   Method
@@ -54,8 +57,8 @@ pub type Component {
   Status
 }
 
-/// Registered signature algorithms. Only HMAC-SHA256 key material is accepted
-/// by this module's current signer; all names can be parsed without confusion.
+/// Registered signature algorithms.
+/// Only HMAC-SHA256 key material is accepted by this module's current signer; all names can be parsed without confusion.
 pub type Algorithm {
   HmacSha256
   RsaPssSha512
@@ -101,6 +104,7 @@ pub opaque type Profile {
     clock_skew_seconds: Int,
     require_nonce: Bool,
     authority: Option(String),
+    key_id: Option(String),
     tag: Option(String),
   )
 }
@@ -114,8 +118,8 @@ type ReplayEntry {
   ReplayEntry(key_id: String, nonce: String, expires: Int)
 }
 
-/// Finite immutable nonce state. Callers must retain the store returned by a
-/// successful verification before admitting the authenticated operation.
+/// Finite immutable nonce state.
+/// Callers must retain the store returned by a successful verification before admitting the authenticated operation.
 pub opaque type ReplayStore {
   ReplayStore(maximum_entries: Int, entries: List(ReplayEntry))
 }
@@ -130,6 +134,10 @@ type ParameterParts {
     tag: Option(String),
     extensions: List(structured_fields.Parameter),
   )
+}
+
+type ParsedSignatureInput {
+  ParsedSignatureInput(input: SignatureInput, serialized_parameters: String)
 }
 
 /// Syntax, canonicalization, policy, time, replay, or crypto failure.
@@ -170,6 +178,7 @@ pub fn profile(
         clock_skew_seconds: 0,
         require_nonce: False,
         authority: None,
+        key_id: None,
         tag: None,
       ))
     _, _, _, _, _ -> Error(InvalidProfile)
@@ -186,9 +195,16 @@ pub fn with_required_nonce(profile: Profile, required: Bool) -> Profile {
   Profile(..profile, require_nonce: required)
 }
 
-/// Bind a request profile to one exact lowercase service authority.
+/// Bind a request profile to one service authority.
+/// The expected and actual authorities are normalized with the request scheme before comparison.
 pub fn for_authority(profile: Profile, authority: String) -> Profile {
   Profile(..profile, authority: Some(authority))
+}
+
+/// Bind verification to the key identifier from trusted static configuration.
+/// Verification fails closed until a non-empty identifier has been bound.
+pub fn for_key_id(profile: Profile, key_id: String) -> Profile {
+  Profile(..profile, key_id: Some(key_id))
 }
 
 /// Bind a profile to an exact application-specific tag.
@@ -196,7 +212,8 @@ pub fn for_tag(profile: Profile, tag: String) -> Profile {
   Profile(..profile, tag: Some(tag))
 }
 
-/// Validate HMAC key bytes. Short keys are rejected before crypto is invoked.
+/// Validate HMAC key bytes.
+/// Short keys are rejected before crypto is invoked.
 pub fn hmac_key(value: BitArray) -> Result(HmacKey, Error) {
   case
     bit_array.bit_size(value) % 8,
@@ -222,6 +239,16 @@ pub fn signature_base(
   input input: SignatureInput,
   profile profile: Profile,
 ) -> Result(String, Error) {
+  use parameters <- result.try(serialize_parameters_value(input))
+  signature_base_with_parameters(message, input, profile, parameters)
+}
+
+fn signature_base_with_parameters(
+  message: Message,
+  input: SignatureInput,
+  profile: Profile,
+  serialized_parameters: String,
+) -> Result(String, Error) {
   use _ <- result.try(validate_profile(profile))
   use _ <- result.try(validate_message(message))
   use _ <- result.try(validate_input(message, input, profile))
@@ -232,8 +259,7 @@ pub fn signature_base(
       Ok(identifier <> ": " <> value)
     }),
   )
-  use parameters <- result.try(serialize_parameters_value(input))
-  let parameter_line = "\"@signature-params\": " <> parameters
+  let parameter_line = "\"@signature-params\": " <> serialized_parameters
   Ok(string.join(list.append(component_lines, [parameter_line]), with: "\n"))
 }
 
@@ -259,8 +285,7 @@ pub fn sign(
   Ok(SignedFields(signature_input: input_field, signature: signature_field))
 }
 
-/// Parse, policy-check, and authenticate one labelled signature, returning the
-/// replay store update that must be retained atomically with admission.
+/// Parse, policy-check, and authenticate one labelled signature, returning the replay store update that must be retained atomically with admission.
 pub fn verify(
   message message: Message,
   fields fields: SignedFields,
@@ -270,17 +295,23 @@ pub fn verify(
   replay replay: ReplayStore,
 ) -> Result(ReplayStore, Error) {
   use _ <- result.try(validate_profile(profile))
-  use inputs <- result.try(parse_inputs(fields.signature_input))
+  use inputs <- result.try(parse_verification_inputs(fields.signature_input))
   use signatures <- result.try(parse_signatures(fields.signature))
-  use #(input, signature) <- result.try(single_matching_signature(
+  use #(parsed_input, signature) <- result.try(single_matching_signature(
     inputs,
     signatures,
   ))
+  let ParsedSignatureInput(input, serialized_parameters) = parsed_input
+  use _ <- result.try(validate_verification_key_id(
+    input.parameters.key_id,
+    profile.key_id,
+  ))
   use _ <- result.try(validate_time(input.parameters, now, profile))
-  use base <- result.try(signature_base(
-    message: message,
-    input: input,
-    profile: profile,
+  use base <- result.try(signature_base_with_parameters(
+    message,
+    input,
+    profile,
+    serialized_parameters,
   ))
   use _ <- result.try(require_hmac(input.parameters.algorithm))
   use expected <- result.try(
@@ -294,15 +325,34 @@ pub fn verify(
   consume_nonce(replay, input.parameters, now, profile)
 }
 
-/// Parse all labelled Signature-Input members with strict supported component
-/// semantics. Component parameters are rejected.
+/// Parse all labelled Signature-Input members with strict supported component semantics.
+/// Component parameters are rejected.
 pub fn parse_inputs(value: String) -> Result(List(SignatureInput), Error) {
+  use inputs <- result.try(parse_verification_inputs(value))
+  Ok(
+    list.map(inputs, fn(parsed) {
+      let ParsedSignatureInput(input, _) = parsed
+      input
+    }),
+  )
+}
+
+fn parse_verification_inputs(
+  value: String,
+) -> Result(List(ParsedSignatureInput), Error) {
   use _ <- result.try(limit_field(value))
   use members <- result.try(
     structured_fields.parse_dictionary(value)
     |> result.map_error(from_structured_error),
   )
-  list.try_map(members, parse_input_member)
+  use inputs <- result.try(list.try_map(
+    members,
+    parse_verification_input_member,
+  ))
+  case dictionary_labels_unique(value) {
+    True -> Ok(inputs)
+    False -> Error(Invalid)
+  }
 }
 
 /// Serialize a single labelled Signature-Input dictionary member.
@@ -337,6 +387,18 @@ fn parse_input_member(
   }
 }
 
+fn parse_verification_input_member(
+  member: structured_fields.DictionaryMember,
+) -> Result(ParsedSignatureInput, Error) {
+  use input <- result.try(parse_input_member(member))
+  let structured_fields.DictionaryMember(_, value) = member
+  use serialized_parameters <- result.try(
+    structured_fields.serialize_list([value])
+    |> result.map_error(from_structured_error),
+  )
+  Ok(ParsedSignatureInput(input, serialized_parameters))
+}
+
 fn input_member(
   input: SignatureInput,
 ) -> Result(structured_fields.DictionaryMember, Error) {
@@ -364,16 +426,153 @@ fn parse_signatures(value: String) -> Result(List(#(String, BitArray)), Error) {
     structured_fields.parse_dictionary(value)
     |> result.map_error(from_structured_error),
   )
-  list.try_map(members, fn(member) {
-    let structured_fields.DictionaryMember(label, value) = member
-    case value {
-      structured_fields.ListItem(structured_fields.Item(
-        structured_fields.ByteSequence(signature),
-        [],
-      )) -> Ok(#(label, signature))
-      _ -> Error(Invalid)
-    }
-  })
+  use signatures <- result.try(
+    list.try_map(members, fn(member) {
+      let structured_fields.DictionaryMember(label, value) = member
+      case value {
+        structured_fields.ListItem(structured_fields.Item(
+          structured_fields.ByteSequence(signature),
+          [],
+        )) -> Ok(#(label, signature))
+        _ -> Error(Invalid)
+      }
+    }),
+  )
+  case dictionary_labels_unique(value) {
+    True -> Ok(signatures)
+    False -> Error(Invalid)
+  }
+}
+
+fn dictionary_labels_unique(value: String) -> Bool {
+  scan_dictionary_labels(
+    input: bit_array.from_string(value),
+    reading_label: True,
+    quoted: False,
+    escaped: False,
+    reversed_label: [],
+    seen: [],
+  )
+}
+
+fn scan_dictionary_labels(
+  input input: BitArray,
+  reading_label reading_label: Bool,
+  quoted quoted: Bool,
+  escaped escaped: Bool,
+  reversed_label reversed_label: List(BitArray),
+  seen seen: List(String),
+) -> Bool {
+  case input {
+    <<>> -> !reading_label && !quoted && !escaped
+    <<byte, rest:bits>> ->
+      case quoted, escaped, reading_label, byte {
+        True, True, _, _ ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: reading_label,
+            quoted: True,
+            escaped: False,
+            reversed_label: reversed_label,
+            seen: seen,
+          )
+        True, False, _, 0x5c ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: reading_label,
+            quoted: True,
+            escaped: True,
+            reversed_label: reversed_label,
+            seen: seen,
+          )
+        True, False, _, 0x22 ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: reading_label,
+            quoted: False,
+            escaped: False,
+            reversed_label: reversed_label,
+            seen: seen,
+          )
+        True, False, _, _ ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: reading_label,
+            quoted: True,
+            escaped: False,
+            reversed_label: reversed_label,
+            seen: seen,
+          )
+        False, _, True, 0x20 if reversed_label == [] ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: True,
+            quoted: False,
+            escaped: False,
+            reversed_label: [],
+            seen: seen,
+          )
+        False, _, True, 0x3d ->
+          case
+            reversed_label
+            |> list.reverse
+            |> bit_array.concat
+            |> bit_array.to_string
+          {
+            Ok(label) ->
+              case label != "" && !list.contains(seen, label) {
+                True ->
+                  scan_dictionary_labels(
+                    input: rest,
+                    reading_label: False,
+                    quoted: False,
+                    escaped: False,
+                    reversed_label: [],
+                    seen: [label, ..seen],
+                  )
+                False -> False
+              }
+            _ -> False
+          }
+        False, _, True, _ ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: True,
+            quoted: False,
+            escaped: False,
+            reversed_label: [<<byte>>, ..reversed_label],
+            seen: seen,
+          )
+        False, _, False, 0x22 ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: False,
+            quoted: True,
+            escaped: False,
+            reversed_label: [],
+            seen: seen,
+          )
+        False, _, False, 0x2c ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: True,
+            quoted: False,
+            escaped: False,
+            reversed_label: [],
+            seen: seen,
+          )
+        False, _, False, _ ->
+          scan_dictionary_labels(
+            input: rest,
+            reading_label: False,
+            quoted: False,
+            escaped: False,
+            reversed_label: [],
+            seen: seen,
+          )
+      }
+    _ -> False
+  }
 }
 
 fn serialize_signature(
@@ -392,15 +591,18 @@ fn serialize_signature(
 }
 
 fn single_matching_signature(
-  inputs: List(SignatureInput),
+  inputs: List(ParsedSignatureInput),
   signatures: List(#(String, BitArray)),
-) -> Result(#(SignatureInput, BitArray), Error) {
+) -> Result(#(ParsedSignatureInput, BitArray), Error) {
   case inputs {
-    [input] ->
+    [parsed_input] -> {
+      let ParsedSignatureInput(input, _) = parsed_input
       case signatures {
-        [#(label, signature)] if label == input.label -> Ok(#(input, signature))
+        [#(label, signature)] if label == input.label ->
+          Ok(#(parsed_input, signature))
         _ -> Error(Invalid)
       }
+    }
     _ -> Error(Invalid)
   }
 }
@@ -414,10 +616,11 @@ fn validate_profile(profile: Profile) -> Result(Nil, Error) {
     components_unique(profile.required_components),
     list.all(profile.required_components, valid_component),
     valid_optional_text(profile.authority),
+    valid_optional_text(profile.key_id),
     valid_optional_text(profile.tag)
   {
-    True, True, True, True, True, True, True, True -> Ok(Nil)
-    _, _, _, _, _, _, _, _ -> Error(InvalidProfile)
+    True, True, True, True, True, True, True, True, True -> Ok(Nil)
+    _, _, _, _, _, _, _, _, _ -> Error(InvalidProfile)
   }
 }
 
@@ -443,7 +646,35 @@ fn validate_input(
   )
   use _ <- result.try(validate_parameters(input.parameters))
   use _ <- result.try(validate_authority(message, input.components, profile))
+  use _ <- result.try(validate_optional_key_id(
+    input.parameters.key_id,
+    profile.key_id,
+  ))
   validate_tag(input.parameters.tag, profile.tag)
+}
+
+fn validate_optional_key_id(
+  actual: String,
+  expected: Option(String),
+) -> Result(Nil, Error) {
+  case expected {
+    None -> Ok(Nil)
+    Some(expected) ->
+      case actual == expected {
+        True -> Ok(Nil)
+        False -> Error(PolicyViolation)
+      }
+  }
+}
+
+fn validate_verification_key_id(
+  actual: String,
+  expected: Option(String),
+) -> Result(Nil, Error) {
+  case expected {
+    Some(expected) if actual == expected && expected != "" -> Ok(Nil)
+    _ -> Error(PolicyViolation)
+  }
 }
 
 fn validate_parameters(parameters: Parameters) -> Result(Nil, Error) {
@@ -468,9 +699,14 @@ fn validate_authority(
     None -> Ok(Nil)
     Some(expected) ->
       case message, list.contains(components, Authority) {
-        RequestMessage(authority: actual, ..), True
-          if actual == expected && expected != ""
-        -> Ok(Nil)
+        RequestMessage(scheme: scheme, authority: actual, ..), True -> {
+          use actual <- result.try(normalized_authority(scheme, actual))
+          use expected <- result.try(normalized_authority(scheme, expected))
+          case actual == expected {
+            True -> Ok(Nil)
+            False -> Error(AuthorityMismatch)
+          }
+        }
         _, _ -> Error(AuthorityMismatch)
       }
   }
@@ -570,14 +806,16 @@ fn validate_message(message: Message) -> Result(Nil, Error) {
     RequestMessage(method, scheme, authority, path, query, headers) ->
       case
         valid_token(method),
-        valid_derived_value(scheme) && string.lowercase(scheme) == scheme,
-        valid_authority(authority, scheme),
-        valid_derived_value(path)
-        && { path == "*" || string.starts_with(path, "/") },
+        valid_scheme(scheme),
+        valid_authority(authority),
+        { path == "*" || string.starts_with(path, "/") }
+        && string.byte_size(path) <= maximum_field_bytes
+        && valid_derived_component_value(path),
         valid_query(query),
         valid_headers(headers)
       {
-        True, True, True, True, True, True -> Ok(Nil)
+        True, True, True, True, True, True ->
+          normalized_authority(scheme, authority) |> result.map(fn(_) { Nil })
         _, _, _, _, _, _ -> Error(InvalidMessage)
       }
     ResponseMessage(status, headers) ->
@@ -598,8 +836,9 @@ fn component_value(
     Field(name), ResponseMessage(headers: headers, ..) ->
       header_value(headers, name)
     Method, RequestMessage(method: method, ..) -> Ok(method)
-    Scheme, RequestMessage(scheme: scheme, ..) -> Ok(scheme)
-    Authority, RequestMessage(authority: authority, ..) -> Ok(authority)
+    Scheme, RequestMessage(scheme: scheme, ..) -> Ok(string.lowercase(scheme))
+    Authority, RequestMessage(scheme: scheme, authority: authority, ..) ->
+      normalized_authority(scheme, authority)
     Path, RequestMessage(path: "", ..) -> Ok("/")
     Path, RequestMessage(path: path, ..) -> Ok(path)
     Query, RequestMessage(query: None, ..) -> Ok("?")
@@ -919,54 +1158,133 @@ fn valid_optional_text(value: Option(String)) -> Bool {
 fn valid_query(query: Option(String)) -> Bool {
   case query {
     None -> True
-    Some(query) -> valid_derived_value(query) && string.starts_with(query, "?")
+    Some(query) ->
+      string.starts_with(query, "?")
+      && string.byte_size(query) <= maximum_field_bytes
+      && valid_derived_component_value(query)
   }
 }
 
-/// Whether a derived component value is one RFC 9421 section 2.2 admits.
-///
-/// Such a value is limited to printable characters and spaces, carries no
-/// newline, and neither starts nor ends with whitespace. This is stricter: the
-/// space is refused everywhere, because no value derived here -- a scheme, an
-/// authority, a path, a query -- holds one in a well-formed message, and one
-/// that reached the signature base would have had to be percent-encoded to be
-/// there. The rule matters because every one of these values becomes a line of
-/// the signature base, and a value carrying a newline writes a line of the
-/// signer's choosing into it.
-fn valid_derived_value(value: String) -> Bool {
-  value != "" && printable_ascii(bit_array.from_string(value))
+fn valid_authority(authority: String) -> Bool {
+  authority != ""
+  && string.byte_size(authority) <= maximum_authority_bytes
+  && !string.contains(authority, " ")
+  && !string.contains(authority, "\t")
+  && !string.contains(authority, "\r")
+  && !string.contains(authority, "\n")
+  && !string.contains(authority, "\u{0000}")
+  && !string.contains(authority, "/")
+  && !string.contains(authority, "\\")
+  && !string.contains(authority, "?")
+  && !string.contains(authority, "#")
+  && !string.contains(authority, "@")
 }
 
-fn printable_ascii(value: BitArray) -> Bool {
+fn normalized_authority(
+  scheme: String,
+  authority: String,
+) -> Result(String, Error) {
+  use #(hostname, port) <- result.try(split_authority(authority))
+  use _ <- result.try(
+    url_host.canonicalize(hostname) |> result.replace_error(InvalidMessage),
+  )
+  let hostname = string.lowercase(hostname)
+  use port <- result.try(
+    url_encoding.encode(kind: url_encoding.Port, value: port)
+    |> result.replace_error(InvalidMessage),
+  )
+  let port = case string.lowercase(scheme), port {
+    "http", "80" | "https", "443" -> ""
+    _, port -> port
+  }
+  let authority = case port {
+    "" -> hostname
+    port -> hostname <> ":" <> port
+  }
+  case valid_derived_component_value(authority) {
+    True -> Ok(authority)
+    False -> Error(InvalidMessage)
+  }
+}
+
+fn split_authority(authority: String) -> Result(#(String, String), Error) {
+  case string.starts_with(authority, "[") {
+    True -> {
+      use #(prefix, rest) <- result.try(
+        string.split_once(authority, "]")
+        |> result.replace_error(InvalidMessage),
+      )
+      case rest {
+        "" -> Ok(#(prefix <> "]", ""))
+        ":" <> port -> Ok(#(prefix <> "]", port))
+        _ -> Error(InvalidMessage)
+      }
+    }
+    False ->
+      case string.split(authority, on: ":") {
+        [hostname] -> Ok(#(hostname, ""))
+        [hostname, port] -> Ok(#(hostname, port))
+        _ -> Error(InvalidMessage)
+      }
+  }
+}
+
+fn valid_scheme(value: String) -> Bool {
+  case
+    string.byte_size(value) <= maximum_scheme_bytes,
+    bit_array.from_string(value)
+  {
+    True, <<first, rest:bits>>
+      if first >= 0x41 && first <= 0x5a || first >= 0x61 && first <= 0x7a
+    -> valid_scheme_rest(rest)
+    _, _ -> False
+  }
+}
+
+fn valid_scheme_rest(value: BitArray) -> Bool {
   case value {
     <<>> -> True
-    <<byte, rest:bits>> ->
-      case byte >= 0x21 && byte <= 0x7e {
-        True -> printable_ascii(rest)
-        False -> False
-      }
+    <<byte, rest:bits>>
+      if byte >= 0x30
+      && byte <= 0x39
+      || byte >= 0x41
+      && byte <= 0x5a
+      || byte >= 0x61
+      && byte <= 0x7a
+      || byte == 0x2b
+      || byte == 0x2d
+      || byte == 0x2e
+    -> valid_scheme_rest(rest)
     _ -> False
   }
 }
 
-/// Whether an authority is already in the form RFC 9421 section 2.2.3 signs.
-///
-/// That section takes the value normalized as RFC 9110 section 4.2.3 normalizes
-/// it, which lowercases the host and omits a port that is the scheme's default.
-/// Normalizing here instead of refusing would sign a value the caller did not
-/// hand over, so a value that is not already normal is refused the way a scheme
-/// that is not already lowercase is.
-fn valid_authority(authority: String, scheme: String) -> Bool {
-  valid_derived_value(authority)
-  && string.lowercase(authority) == authority
-  && !string.contains(authority, "/")
-  && !carries_default_port(authority, scheme)
+fn valid_derived_component_value(value: String) -> Bool {
+  case bit_array.from_string(value) {
+    <<>> -> True
+    <<0x20, _rest:bits>> -> False
+    bytes -> valid_derived_component_bytes(bytes)
+  }
 }
 
-fn carries_default_port(authority: String, scheme: String) -> Bool {
-  case scheme {
-    "http" -> string.ends_with(authority, ":80")
-    "https" -> string.ends_with(authority, ":443")
+fn valid_derived_component_bytes(value: BitArray) -> Bool {
+  case value {
+    <<byte>> -> byte >= 0x21 && byte <= 0x7e
+    <<byte, rest:bits>> if byte >= 0x20 && byte <= 0x7e ->
+      valid_derived_component_bytes(rest)
+    _ -> False
+  }
+}
+
+fn valid_field_value(value: String) -> Bool {
+  valid_field_value_bytes(bit_array.from_string(value))
+}
+
+fn valid_field_value_bytes(value: BitArray) -> Bool {
+  case value {
+    <<>> -> True
+    <<byte, rest:bits>> if byte == 0x09 || { byte >= 0x20 && byte <= 0x7e } ->
+      valid_field_value_bytes(rest)
     _ -> False
   }
 }
@@ -976,31 +1294,12 @@ fn valid_headers(headers: List(Header)) -> Bool {
   && list.all(headers, fn(header) {
     valid_field_name(header.name)
     && string.byte_size(header.value) <= maximum_field_bytes
-    && ascii_field_value(bit_array.from_string(header.value))
+    && valid_field_value(header.value)
   })
 }
 
 fn valid_field_name(name: String) -> Bool {
   name != "" && valid_token(name)
-}
-
-/// Whether a field value is one RFC 9421 section 2.1 can put in the base.
-///
-/// That section requires every non-ASCII field value to be encoded to ASCII
-/// before it is added, so a value that has not been is refused rather than
-/// signed in whichever encoding it arrived in. Tab is admitted because a field
-/// value may hold one; every other control character, the newline included,
-/// would end the base line it appears in.
-fn ascii_field_value(value: BitArray) -> Bool {
-  case value {
-    <<>> -> True
-    <<byte, rest:bits>> ->
-      case byte == 0x09 || { byte >= 0x20 && byte <= 0x7e } {
-        True -> ascii_field_value(rest)
-        False -> False
-      }
-    _ -> False
-  }
 }
 
 fn valid_token(value: String) -> Bool {

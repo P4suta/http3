@@ -1,0 +1,289 @@
+{
+  "schema": 1,
+  "scope": "HTTP(S) constructor WPT cases where the pinned WPT and independent Node agree; disagreement is retained separately, not a passing requirement.",
+  "specification": "https://urlpattern.spec.whatwg.org/commit-snapshots/696b4029d52e5854044bac6b72cdb198cb962ed0/",
+  "wpt_revision": "0c1d19546fd4873bb9f4147f0bbf868e7b4f91b7",
+  "wpt_sha256": "db329f22a3fc666bdf85d20856cf32d1074f4e7f9b30c05ead596463cdb2f734",
+  "license": "BSD-3-Clause",
+  "copyright": "web-platform-tests contributors",
+  "reference": {
+    "name": "Node.js URLPattern",
+    "version": "v26.8.2",
+    "binary_sha256": "8a22a371fd85aecf5411636574309f6380fbc42694aaf0651a089a8ef9c44e52"
+  },
+  "vectors": [
+    {
+      "index": 204,
+      "pattern": "https://example.com?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 205,
+      "pattern": "https://example.com#foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/#foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 206,
+      "pattern": "https://example.com:8080?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com:8080/?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 207,
+      "pattern": "https://example.com:8080#foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com:8080/#foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 208,
+      "pattern": "https://example.com/?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 209,
+      "pattern": "https://example.com/#foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/#foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 210,
+      "pattern": "https://example.com/*?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/?foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 211,
+      "pattern": "https://example.com/*\\?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 212,
+      "pattern": "https://example.com/:name?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/bar?foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 213,
+      "pattern": "https://example.com/:name\\?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/bar?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 216,
+      "pattern": "https://example.com/{bar}?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/bar?foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 217,
+      "pattern": "https://example.com/{bar}\\?foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/bar?foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 218,
+      "pattern": "https://example.com/",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com:8080/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 221,
+      "pattern": "https://{sub.}?example.com/foo",
+      "base": "https://dictionary.invalid/",
+      "input": "https://example.com/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 227,
+      "pattern": "https://{sub{.}}example.com/foo",
+      "base": "https://dictionary.invalid/",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 235,
+      "pattern": "?bar#baz",
+      "base": "https://example.com/foo",
+      "input": "https://example.com/foo?bar#baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 236,
+      "pattern": "?bar",
+      "base": "https://example.com/foo#baz",
+      "input": "https://example.com/foo?bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 237,
+      "pattern": "#baz",
+      "base": "https://example.com/foo?bar",
+      "input": "https://example.com/foo?bar#baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 238,
+      "pattern": "#baz",
+      "base": "https://example.com/foo",
+      "input": "https://example.com/foo#baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 241,
+      "pattern": "https://foo\\:bar@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "https://foo:bar@example.com/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 242,
+      "pattern": "https://foo@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "https://foo@example.com/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 243,
+      "pattern": "https://\\:bar@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "https://:bar@example.com/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 244,
+      "pattern": "https://:user::pass@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "https://foo:bar@example.com/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 247,
+      "pattern": "https://foo{\\:}bar@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "https://foo:bar@example.com/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 248,
+      "pattern": "data{\\:}channel.html",
+      "base": "https://example.com",
+      "input": "https://example.com/data:channel.html",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 249,
+      "pattern": "http://[\\:\\:1]/",
+      "base": "https://dictionary.invalid/",
+      "input": "http://[::1]/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 250,
+      "pattern": "http://[\\:\\:1]:8080/",
+      "base": "https://dictionary.invalid/",
+      "input": "http://[::1]:8080/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 251,
+      "pattern": "http://[\\:\\:a]/",
+      "base": "https://dictionary.invalid/",
+      "input": "http://[::a]/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 252,
+      "pattern": "http://[:address]/",
+      "base": "https://dictionary.invalid/",
+      "input": "http://[::1]/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 253,
+      "pattern": "http://[\\:\\:AB\\::num]/",
+      "base": "https://dictionary.invalid/",
+      "input": "http://[::ab:1]/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 262,
+      "pattern": "https://foo{{@}}example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 263,
+      "pattern": "https://foo{@example.com",
+      "base": "https://dictionary.invalid/",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 335,
+      "pattern": "#foo",
+      "base": "https://example.com/?q=*&v=?&hmm={}&umm=()",
+      "input": "https://example.com/?q=*&v=?&hmm={}&umm=()#foo",
+      "valid": true,
+      "matched": true
+    }
+  ],
+  "correction_specification": "https://urlpattern.spec.whatwg.org/commit-snapshots/aeb2019cf3aa1fb31af134a682c0255302a41297/",
+  "correction_sha256": "f2392c3bad5ccb3b253cfcebdb98f16abb12c4669c578396dd7ab518957a9d87",
+  "reference_disagreements": [
+    {
+      "index": 222,
+      "expected": "constructor_rejected",
+      "observed": "constructor_accepted"
+    }
+  ]
+}

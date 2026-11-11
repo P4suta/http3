@@ -50,6 +50,24 @@ fn start_trace(
 @external(erlang, "http3_idle_wakeup_ffi", "monotonic_millisecond")
 fn monotonic_millisecond() -> Int
 
+// Fixed slots: setup, listener, port, client config, connect, upload, server result,
+// response, quiescence, trace setup, observation, client close, server stop,
+// evidence validation, completion.
+// Each slot retains only elapsed milliseconds.
+@external(erlang, "http3_idle_wakeup_ffi", "mark_phase")
+fn mark_phase(phase: Int) -> Nil
+
+@external(erlang, "http3_idle_wakeup_ffi", "quiescence_progress")
+fn record_quiescence(
+  sample: Int,
+  stable: Int,
+  client_flight: Int,
+  server_flight: Int,
+  client_recovery: Bool,
+  server_recovery: Bool,
+  traffic_changed: Bool,
+) -> Nil
+
 /// Terminate the qualification command with structured failure evidence.
 @external(erlang, "http3_idle_wakeup_ffi", "fail")
 fn fail(reason: reason) -> value
@@ -69,7 +87,20 @@ fn evidence_passed(evidence: IdleEvidence) -> Bool
 @external(erlang, "http3_idle_wakeup_ffi", "write")
 fn write_evidence(evidence: IdleEvidence) -> Nil
 
-pub fn main() -> Nil {
+// A delayed cold client must not consume a server request's operation budget.
+// This setup-only regression is also discovered by the ordinary package suite.
+pub fn delayed_startup_regression() -> Nil {
+  let #(connection, listener, _request) = establish_exchange(1200)
+  case client.close(connection), server.stop(listener) {
+    Ok(client.Closed), Ok(server.Stopped) -> Nil
+    _, _ -> fail("idle delayed startup cleanup failed")
+  }
+}
+
+fn establish_exchange(
+  startup_delay: Int,
+) -> #(client.Connection, server.Listener, server.Request) {
+  mark_phase(0)
   let #(certificate, private_key, ca_certificate) =
     http3_test_support.server_credentials()
   let deadlines =
@@ -82,6 +113,7 @@ pub fn main() -> Nil {
       phase: failure.Idle,
       milliseconds: idle_timeout_milliseconds,
     )
+  mark_phase(1)
   let listener =
     server.new(certificate, private_key)
     |> must
@@ -89,15 +121,20 @@ pub fn main() -> Nil {
     |> server.with_deadlines(deadlines)
     |> server.start
     |> must
+  mark_phase(2)
   let port = server.port(listener) |> must
-  let server_task = http3_test_support.start_task(fn() { serve_once(listener) })
+  http3_test_support.pause_milliseconds(startup_delay)
+  mark_phase(3)
   let client_configuration =
     client.new()
     |> client.with_address_family(config.Ipv4)
+    |> client.with_deadlines(deadlines)
     |> client.with_ca_certificate(ca_certificate)
     |> must
+  mark_phase(4)
   let connection =
     client.connect(client_configuration, "localhost", port) |> must
+  mark_phase(5)
   let outbound =
     request.new()
     |> request.set_host("localhost")
@@ -107,16 +144,27 @@ pub fn main() -> Nil {
     |> request.set_body(Nil)
   let stream = client.open_stream(connection, outbound) |> must
   client.finish(stream) |> must
+  mark_phase(6)
+  // The request has no body, so transport actors can finish receiving it independently.
+  // Begin the finite application accept only after submission;
+  // cold client startup must not consume that operation's deadline.
+  let server_request = serve_once(listener) |> must
+  mark_phase(7)
   receive_empty_response(stream)
-  let server_request = http3_test_support.await_task(server_task) |> must
+  #(connection, listener, server_request)
+}
 
+pub fn main() -> Nil {
+  let #(connection, listener, server_request) = establish_exchange(0)
   // DPLPMTUD, delayed acknowledgements, and recovery are finite setup work.
   // Do not guess their duration: require every public traffic counter to stay
   // unchanged, with no bytes in flight and neither path in recovery, across a
   // bounded sequence of samples. Only then measure periodic idle wakeups.
+  mark_phase(8)
   let quiescence_started = monotonic_millisecond()
   await_quiescence(connection, server_request)
   let quiescence_milliseconds = monotonic_millisecond() - quiescence_started
+  mark_phase(9)
   let trace =
     start_trace(
       quiescence_milliseconds,
@@ -126,16 +174,20 @@ pub fn main() -> Nil {
     )
     |> must_trace
   capture_liveness(connection, server_request)
+  mark_phase(10)
   begin_observation(trace) |> must_trace
   http3_test_support.pause_milliseconds(observation_milliseconds)
   capture_liveness(connection, server_request)
   let evidence = finish_trace(trace, observation_milliseconds) |> must_trace
 
+  mark_phase(11)
   let client_stop = client.close(connection)
+  mark_phase(12)
   let server_stop = server.stop(listener)
+  mark_phase(13)
   write_evidence(evidence)
   case client_stop, server_stop, evidence_passed(evidence) {
-    Ok(client.Closed), Ok(server.Stopped), True -> Nil
+    Ok(client.Closed), Ok(server.Stopped), True -> mark_phase(14)
     Ok(client.AlreadyClosed), _, _ -> fail("idle client closed early")
     _, Ok(server.AlreadyStopped), _ -> fail("idle server stopped early")
     Error(error), _, _ -> fail(#("idle client cleanup failed", error))
@@ -201,6 +253,15 @@ fn await_quiescence_loop(
         True, True -> stable_samples + 1
         _, _ -> 0
       }
+      record_quiescence(
+        quiescence_maximum_attempts - attempts + 1,
+        next_stable,
+        current.client_bytes_in_flight,
+        current.server_bytes_in_flight,
+        current.client_in_recovery,
+        current.server_in_recovery,
+        current != previous,
+      )
       case next_stable >= quiescence_stable_samples {
         True -> Nil
         False ->

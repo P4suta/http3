@@ -1,5 +1,4 @@
-# Public localhost-only Ed25519 fixtures documented in the package fixture
-# READMEs.
+# Public localhost-only Ed25519 fixtures documented in the package fixture READMEs.
 packages/http3/test/fixtures/server-key.pem:private-key:1
 packages/quic_core/test/fixtures/server-key.pem:private-key:1
 
@@ -18,6 +17,17 @@ packages/quic_core/test/fixtures/ecdsa-p384-server-key.pem:private-key:1
 
 # Literal marker used to reject private keys from generated release archives.
 scripts/release_sim.escript:private-key:207
+scripts/release_sources.hrl:private-key:111
+
+# Deliberately weak public RSA credential used to verify rejection.
+packages/quic_core/test/fixtures/weak-rsa1024-server-key.pem:private-key:1
+
+# Fixed non-credential token in the console-watcher parser control.
+scripts/windows_process_visibility_watch.ps1:generic-api-key:281
 
 # Public RFC 6455 Section 1.3 handshake nonce test vector.
-test/websocket_test.gleam:generic-api-key:10
+test/websocket_test.gleam:generic-api-key:11
+
+# Public RFC 6455 erratum 3150 handshake nonce vectors.
+test/websocket_test.gleam:generic-api-key:15
+test/websocket_test.gleam:generic-api-key:17

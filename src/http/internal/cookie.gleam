@@ -4,12 +4,23 @@ import gleam/http.{type Scheme, Https}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
 import gleam/string
+import http/internal/url_pattern/host as url_host
+import http/internal/url_pattern/host_ip
 
 const session_lifetime_milliseconds = 86_400_000
 
 const maximum_lifetime_milliseconds = 63_072_000_000
+
+const maximum_field_bytes = 8192
+
+const maximum_attributes = 64
+
+@external(erlang, "http_cookie_ffi", "parse_cookie_date")
+fn parse_cookie_date(value: String) -> Result(Int, Nil)
+
+@external(erlang, "http_cookie_ffi", "unix_seconds")
+fn unix_seconds() -> Int
 
 /// One validated cookie retained by the private finite policy store.
 pub type Cookie {
@@ -20,16 +31,10 @@ pub type Cookie {
     path: String,
     host_only: Bool,
     secure: Bool,
-    expires_at: Int,
-    /// Whether the set-cookie-string carried an Expires or a Max-Age. RFC 6265
-    /// section 5.3 step 8 clears this flag when neither is present, and section
-    /// 5.3's last paragraph removes every cookie carrying a cleared one when the
-    /// session ends, which for this package is the life of one client.
+    http_only: Bool,
     persistent: Bool,
-    /// The monotonic instant this cookie was first stored, preserved when a
-    /// later Set-Cookie replaces its value, so RFC 6265 section 5.4 can order
-    /// equally specific cookies by age.
-    created_at: Int,
+    creation_milliseconds: Int,
+    expires_at: Int,
     retained_bytes: Int,
   )
 }
@@ -39,8 +44,9 @@ type Attributes {
     domain: Option(String),
     path: Option(String),
     secure: Bool,
+    http_only: Bool,
     maximum_age_seconds: Option(Int),
-    expires_at_unix_milliseconds: Option(Int),
+    expires_unix_seconds: Option(Int),
   )
 }
 
@@ -53,38 +59,79 @@ pub fn parse(
   origin_host: String,
   request_path: String,
   now_milliseconds: Int,
+) -> Option(Cookie) {
+  parse_with_unix_seconds(
+    field_value,
+    origin_scheme,
+    origin_host,
+    request_path,
+    now_milliseconds,
+    unix_seconds(),
+  )
+}
+
+/// Parse using separate monotonic and wall clocks expressed in seconds.
+pub fn parse_with_unix_seconds(
+  field_value: String,
+  origin_scheme: Scheme,
+  origin_host: String,
+  request_path: String,
+  now_milliseconds: Int,
+  now_unix_seconds: Int,
+) -> Option(Cookie) {
+  parse_with_unix_milliseconds(
+    field_value,
+    origin_scheme,
+    origin_host,
+    request_path,
+    now_milliseconds,
+    now_unix_seconds * 1000,
+  )
+}
+
+/// Parse using the caller's separate monotonic and wall clocks.
+pub fn parse_with_unix_milliseconds(
+  field_value: String,
+  origin_scheme: Scheme,
+  origin_host: String,
+  request_path: String,
+  now_milliseconds: Int,
   now_unix_milliseconds: Int,
 ) -> Option(Cookie) {
+  use <- option_guard(string.byte_size(field_value) <= maximum_field_bytes)
+  use host <- option_try(canonical_host(origin_host))
   case string.split(field_value, on: ";") {
     [] -> None
-    [pair, ..raw_attributes] ->
-      case string.split_once(string.trim(pair), on: "=") {
+    [pair, ..raw_attributes] -> {
+      use <- option_guard(list.length(raw_attributes) <= maximum_attributes)
+      case string.split_once(trim_wsp(pair), on: "=") {
         Error(_) -> None
         Ok(#(name, value)) -> {
-          let name = string.trim(name)
-          let value = string.trim(value)
-          let host = string.lowercase(origin_host)
+          let name = trim_wsp(name)
+          let value = trim_wsp(value)
+          let request_default_path = default_path(request_path)
           let attributes =
             parse_attributes(
               raw_attributes,
-              Attributes(None, None, False, None, None),
+              request_default_path,
+              Attributes(None, None, False, False, None, None),
             )
-          let domain = case attributes.domain {
-            Some(domain) -> domain
-            None -> host
-          }
+          use domain <- option_try(case attributes.domain {
+            Some(domain) -> canonical_host(domain)
+            None -> Some(host)
+          })
           let path = case attributes.path {
             Some(path) -> path
-            None -> default_path(request_path)
+            None -> request_default_path
           }
-          let expires_at =
-            expiry_instant(attributes, now_milliseconds, now_unix_milliseconds)
+          let #(expires_at, persistent) =
+            expiry(attributes, now_milliseconds, now_unix_milliseconds)
           let retained_bytes =
             string.byte_size(name)
             + string.byte_size(value)
             + string.byte_size(domain)
             + string.byte_size(path)
-            + 32
+            + 48
           case
             valid_name(name),
             valid_value(value),
@@ -101,16 +148,40 @@ pub fn parse(
                 path:,
                 host_only: attributes.domain == None,
                 secure: attributes.secure,
+                http_only: attributes.http_only,
+                persistent:,
+                creation_milliseconds: now_milliseconds,
                 expires_at:,
-                persistent: attributes.maximum_age_seconds != None
-                  || attributes.expires_at_unix_milliseconds != None,
-                created_at: now_milliseconds,
                 retained_bytes:,
               ))
             _, _, _, _, _, _ -> None
           }
         }
       }
+    }
+  }
+}
+
+fn expiry(
+  attributes: Attributes,
+  now_milliseconds: Int,
+  now_unix_milliseconds: Int,
+) -> #(Int, Bool) {
+  case attributes.maximum_age_seconds, attributes.expires_unix_seconds {
+    Some(seconds), _ if seconds <= 0 -> #(now_milliseconds, True)
+    Some(seconds), _ -> #(
+      now_milliseconds + int.min(seconds * 1000, maximum_lifetime_milliseconds),
+      True,
+    )
+    None, Some(expires_unix_seconds) -> {
+      let remaining =
+        int.max(0, expires_unix_seconds * 1000 - now_unix_milliseconds)
+      #(
+        now_milliseconds + int.min(remaining, maximum_lifetime_milliseconds),
+        True,
+      )
+    }
+    None, None -> #(now_milliseconds + session_lifetime_milliseconds, False)
   }
 }
 
@@ -126,13 +197,13 @@ pub fn from_persisted(
   age_milliseconds: Int,
   now_milliseconds: Int,
 ) -> Option(Cookie) {
-  let domain = string.lowercase(domain)
+  use domain <- option_try(canonical_host(domain))
   let retained_bytes =
     string.byte_size(name)
     + string.byte_size(value)
     + string.byte_size(domain)
     + string.byte_size(path)
-    + 32
+    + 48
   case
     valid_name(name),
     valid_value(value),
@@ -152,15 +223,19 @@ pub fn from_persisted(
         path:,
         host_only:,
         secure:,
-        expires_at: now_milliseconds + expires_in_milliseconds,
-        // Only a persistent cookie is ever handed to an adapter, so only a
-        // persistent one can come back from it.
+        http_only: False,
         persistent: True,
-        created_at: now_milliseconds - age_milliseconds,
+        creation_milliseconds: now_milliseconds - age_milliseconds,
+        expires_at: now_milliseconds + expires_in_milliseconds,
         retained_bytes:,
       ))
     _, _, _, _, _, _ -> None
   }
+}
+
+/// Preserve the original creation time when replacing the same cookie key.
+pub fn with_creation(cookie: Cookie, creation_milliseconds: Int) -> Cookie {
+  Cookie(..cookie, creation_milliseconds:)
 }
 
 fn cookie_domain_allowed(
@@ -175,7 +250,8 @@ fn cookie_domain_allowed(
 }
 
 fn ip_address(host: String) -> Bool {
-  string.contains(host, ":")
+  string.starts_with(host, "[")
+  || host_ip.ends_in_number(host)
   || case string.split(host, on: ".") {
     [first, second, third, fourth] ->
       ipv4_octet(first)
@@ -198,43 +274,44 @@ pub fn key(cookie: Cookie) -> String {
   cookie.domain <> "\u{0000}" <> cookie.path <> "\u{0000}" <> cookie.name
 }
 
-/// Return the unexpired cookies this request carries, in the order RFC 6265
-/// section 5.4 asks for: longer paths before shorter ones, and among equally
-/// long paths the cookie that was created first.
-pub fn matching(
+/// Return the exact cookie store keys accessed while generating one field.
+pub fn request_selection(
   cookies: List(Cookie),
   scheme: Scheme,
   host: String,
   path: String,
   now_milliseconds: Int,
-) -> List(Cookie) {
-  cookies
-  |> list.filter(fn(cookie) {
-    cookie.expires_at > now_milliseconds
-    && case cookie.host_only {
-      True -> string.lowercase(host) == cookie.domain
-      False -> domain_matches(string.lowercase(host), cookie.domain)
+) -> #(Option(String), List(String)) {
+  case canonical_host(host) {
+    None -> #(None, [])
+    Some(host) -> {
+      let path = case string.starts_with(path, "/") {
+        True -> path
+        False -> "/"
+      }
+      let selected =
+        cookies
+        |> list.filter(fn(cookie) {
+          cookie.expires_at > now_milliseconds
+          && case cookie.host_only {
+            True -> host == cookie.domain
+            False -> domain_matches(host, cookie.domain)
+          }
+          && path_matches(path, cookie.path)
+          && { !cookie.secure || scheme == Https }
+        })
+        |> sort_for_request
+      case selected {
+        [] -> #(None, [])
+        _ -> #(
+          selected
+            |> list.map(fn(cookie) { cookie.name <> "=" <> cookie.value })
+            |> string.join(with: "; ")
+            |> Some,
+          list.map(selected, key),
+        )
+      }
     }
-    && path_matches(path, cookie.path)
-    && { !cookie.secure || scheme == Https }
-  })
-  |> list.sort(by: fn(left, right) {
-    case
-      int.compare(string.byte_size(right.path), string.byte_size(left.path))
-    {
-      order.Eq -> int.compare(left.created_at, right.created_at)
-      ordering -> ordering
-    }
-  })
-}
-
-/// Serialize an already matched and ordered cookie list as a Cookie field.
-pub fn field_value(cookies: List(Cookie)) -> Option(String) {
-  let pairs =
-    list.map(cookies, fn(cookie) { cookie.name <> "=" <> cookie.value })
-  case pairs {
-    [] -> None
-    _ -> Some(string.join(pairs, with: "; "))
   }
 }
 
@@ -246,289 +323,133 @@ pub fn request_header(
   path: String,
   now_milliseconds: Int,
 ) -> Option(String) {
-  field_value(matching(cookies, scheme, host, path, now_milliseconds))
+  let #(header, _) =
+    request_selection(cookies, scheme, host, path, now_milliseconds)
+  header
 }
 
-fn parse_attributes(raw: List(String), attributes: Attributes) -> Attributes {
+fn sort_for_request(cookies: List(Cookie)) -> List(Cookie) {
+  list.fold(cookies, [], insert_for_request)
+}
+
+fn insert_for_request(sorted: List(Cookie), cookie: Cookie) -> List(Cookie) {
+  case sorted {
+    [] -> [cookie]
+    [first, ..rest] ->
+      case
+        string.byte_size(cookie.path) > string.byte_size(first.path)
+        || {
+          string.byte_size(cookie.path) == string.byte_size(first.path)
+          && cookie.creation_milliseconds < first.creation_milliseconds
+        }
+      {
+        True -> [cookie, first, ..rest]
+        False -> [first, ..insert_for_request(rest, cookie)]
+      }
+  }
+}
+
+fn parse_attributes(
+  raw: List(String),
+  request_default_path: String,
+  attributes: Attributes,
+) -> Attributes {
   case raw {
     [] -> attributes
     [item, ..rest] -> {
-      let item = string.trim(item)
+      let item = trim_wsp(item)
       let next = case string.split_once(item, on: "=") {
         Error(_) ->
           case string.lowercase(item) {
             "secure" -> Attributes(..attributes, secure: True)
+            "httponly" -> Attributes(..attributes, http_only: True)
             _ -> attributes
           }
         Ok(#(name, value)) ->
-          case string.lowercase(string.trim(name)) {
+          case string.lowercase(trim_wsp(name)) {
             "domain" -> {
-              let domain =
-                strip_leading_dot(string.lowercase(string.trim(value)))
-              Attributes(..attributes, domain: Some(domain))
-            }
-            "path" -> Attributes(..attributes, path: Some(string.trim(value)))
-            "max-age" ->
-              case int.parse(string.trim(value)) {
-                Ok(seconds) ->
-                  Attributes(..attributes, maximum_age_seconds: Some(seconds))
-                Error(_) -> attributes
+              let domain = strip_leading_dot(string.lowercase(trim_wsp(value)))
+              case domain {
+                "" -> attributes
+                _ -> Attributes(..attributes, domain: Some(domain))
               }
-            "expires" ->
-              case cookie_date(value) {
-                Some(instant) ->
-                  Attributes(
-                    ..attributes,
-                    expires_at_unix_milliseconds: Some(instant),
-                  )
-                // Section 5.2.1 ignores an unparsable date rather than the
-                // whole field, which leaves the cookie a session cookie.
+            }
+            "path" -> {
+              let path = trim_wsp(value)
+              Attributes(
+                ..attributes,
+                path: Some(case string.starts_with(path, "/") {
+                  True -> path
+                  False -> request_default_path
+                }),
+              )
+            }
+            "max-age" ->
+              case parse_maximum_age(trim_wsp(value)) {
+                Some(seconds) ->
+                  Attributes(..attributes, maximum_age_seconds: Some(seconds))
                 None -> attributes
               }
+            "expires" ->
+              case parse_cookie_date(trim_wsp(value)) {
+                Ok(seconds) ->
+                  Attributes(..attributes, expires_unix_seconds: Some(seconds))
+                Error(_) -> attributes
+              }
+            "secure" -> Attributes(..attributes, secure: True)
+            "httponly" -> Attributes(..attributes, http_only: True)
             _ -> attributes
           }
       }
-      parse_attributes(rest, next)
+      parse_attributes(rest, request_default_path, next)
     }
   }
 }
 
-/// Decide one cookie's expiry as a monotonic instant.
-///
-/// RFC 6265 section 5.3 gives Max-Age precedence over Expires, and treats a
-/// non-positive Max-Age as already expired. Expires is a wall-clock date, so it
-/// is read as the time remaining from the wall clock at this moment and that
-/// remainder is added to the monotonic instant the store compares against; the
-/// store therefore stays immune to a wall-clock jump after the fact.
-fn expiry_instant(
-  attributes: Attributes,
-  now_milliseconds: Int,
-  now_unix_milliseconds: Int,
-) -> Int {
-  case attributes.maximum_age_seconds, attributes.expires_at_unix_milliseconds {
-    Some(seconds), _ if seconds <= 0 -> now_milliseconds
-    Some(seconds), _ ->
-      now_milliseconds + int.min(seconds * 1000, maximum_lifetime_milliseconds)
-    None, Some(instant) ->
-      case instant - now_unix_milliseconds {
-        remaining if remaining <= 0 -> now_milliseconds
-        remaining ->
-          now_milliseconds + int.min(remaining, maximum_lifetime_milliseconds)
-      }
-    None, None -> now_milliseconds + session_lifetime_milliseconds
-  }
-}
-
-/// Parse an `Expires` value with the RFC 6265 section 5.1.1 algorithm.
-///
-/// The algorithm is deliberately liberal: the value is cut into tokens on a
-/// fixed delimiter set, and each token is offered to the time, day, month, and
-/// year productions in that order until each has been found once. A two-digit
-/// year is corrected the way the section states, and a date that fails any of
-/// its bounds is refused rather than approximated.
-fn cookie_date(value: String) -> Option(Int) {
-  let fields =
-    value
-    |> string.to_graphemes
-    |> split_date_tokens("", [])
-    |> list.fold(DateFields(None, None, None, None), read_date_token)
-  case fields.time, fields.day, fields.month, fields.year {
-    Some(#(hour, minute, second)), Some(day), Some(month), Some(year) -> {
-      let year = case year {
-        value if value >= 70 && value <= 99 -> value + 1900
-        value if value >= 0 && value <= 69 -> value + 2000
-        value -> value
-      }
+fn parse_maximum_age(value: String) -> Option(Int) {
+  case string.to_utf_codepoints(value) {
+    [] -> None
+    [first, ..rest] -> {
+      let first = string.utf_codepoint_to_int(first)
       case
-        day >= 1 && day <= 31,
-        year >= 1601,
-        hour <= 23 && minute <= 59 && second <= 59
+        first == 45
+        && rest != []
+        && ascii_digits(rest)
+        || { first >= 48 && first <= 57 && ascii_digits(rest) }
       {
-        True, True, True ->
-          Some(
-            {
-              civil_days(year, month, day)
-              * 86_400
-              + hour
-              * 3600
-              + minute
-              * 60
-              + second
-            }
-            * 1000,
-          )
-        _, _, _ -> None
-      }
-    }
-    _, _, _, _ -> None
-  }
-}
-
-type DateFields {
-  DateFields(
-    time: Option(#(Int, Int, Int)),
-    day: Option(Int),
-    month: Option(Int),
-    year: Option(Int),
-  )
-}
-
-fn split_date_tokens(
-  remaining: List(String),
-  current: String,
-  tokens: List(String),
-) -> List(String) {
-  case remaining {
-    [] ->
-      list.reverse(case current {
-        "" -> tokens
-        _ -> [current, ..tokens]
-      })
-    [grapheme, ..rest] ->
-      case date_delimiter(grapheme) {
-        False -> split_date_tokens(rest, current <> grapheme, tokens)
+        False -> None
         True ->
-          case current {
-            "" -> split_date_tokens(rest, "", tokens)
-            _ -> split_date_tokens(rest, "", [current, ..tokens])
+          case int.parse(value) {
+            Ok(value) -> Some(value)
+            Error(_) -> None
           }
       }
+    }
   }
 }
 
-/// Section 5.1.1's delimiter set: HTAB, and the punctuation ranges either side
-/// of the digits and letters. A colon is deliberately not one, which is what
-/// keeps a time in a single token.
-fn date_delimiter(grapheme: String) -> Bool {
-  case string.to_utf_codepoints(grapheme) {
-    [codepoint] ->
-      case string.utf_codepoint_to_int(codepoint) {
-        0x09 -> True
-        byte if byte >= 0x20 && byte <= 0x2f -> True
-        byte if byte >= 0x3b && byte <= 0x40 -> True
-        byte if byte >= 0x5b && byte <= 0x60 -> True
-        byte if byte >= 0x7b && byte <= 0x7e -> True
-        _ -> False
-      }
-    _ -> False
-  }
-}
-
-fn read_date_token(fields: DateFields, token: String) -> DateFields {
-  case
-    fields.time,
-    fields.day,
-    fields.month,
-    fields.year,
-    hms_time(token),
-    leading_number(token),
-    month_of(token)
-  {
-    None, _, _, _, Some(time), _, _ -> DateFields(..fields, time: Some(time))
-    _, None, _, _, _, Some(#(day, digits)), _ if digits <= 2 ->
-      DateFields(..fields, day: Some(day))
-    _, _, None, _, _, _, Some(month) -> DateFields(..fields, month: Some(month))
-    _, _, _, None, _, Some(#(year, digits)), _ if digits >= 2 && digits <= 4 ->
-      DateFields(..fields, year: Some(year))
-    _, _, _, _, _, _, _ -> fields
-  }
-}
-
-/// The `hms-time` production: three colon-separated fields of one or two
-/// digits each, with anything after them ignored.
-fn hms_time(token: String) -> Option(#(Int, Int, Int)) {
-  case string.split(token, on: ":") {
-    [hour, minute, rest] ->
-      case leading_number(hour), leading_number(minute), leading_number(rest) {
-        Some(#(hour, first)),
-          Some(#(minute, second_digits)),
-          Some(#(second, third))
-          if first <= 2 && second_digits <= 2 && third <= 2
-        -> Some(#(hour, minute, second))
-        _, _, _ -> None
-      }
-    _ -> None
-  }
-}
-
-/// The leading run of digits in a token, with its length, or nothing when the
-/// token does not start with one.
-fn leading_number(token: String) -> Option(#(Int, Int)) {
-  let digits = leading_digits(string.to_graphemes(token), "")
-  case digits {
-    "" -> None
-    _ ->
-      case int.parse(digits) {
-        Ok(value) -> Some(#(value, string.length(digits)))
-        Error(Nil) -> None
-      }
-  }
-}
-
-fn leading_digits(remaining: List(String), taken: String) -> String {
-  case remaining {
-    [grapheme, ..rest] ->
-      case is_digit(grapheme) {
-        True -> leading_digits(rest, taken <> grapheme)
-        False -> taken
-      }
-    [] -> taken
-  }
-}
-
-fn is_digit(grapheme: String) -> Bool {
-  case grapheme {
-    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
-    _ -> False
-  }
-}
-
-/// The `month` production: the first three characters of the token, matched
-/// without regard to case, with anything after them ignored.
-fn month_of(token: String) -> Option(Int) {
-  case string.lowercase(string.slice(token, at_index: 0, length: 3)) {
-    "jan" -> Some(1)
-    "feb" -> Some(2)
-    "mar" -> Some(3)
-    "apr" -> Some(4)
-    "may" -> Some(5)
-    "jun" -> Some(6)
-    "jul" -> Some(7)
-    "aug" -> Some(8)
-    "sep" -> Some(9)
-    "oct" -> Some(10)
-    "nov" -> Some(11)
-    "dec" -> Some(12)
-    _ -> None
-  }
-}
-
-/// Days from the Unix epoch to one proleptic Gregorian date.
-///
-/// The year is already held at or above 1601 by the caller, so every
-/// intermediate here is nonnegative and the truncating division Gleam performs
-/// is the floor division this needs.
-fn civil_days(year: Int, month: Int, day: Int) -> Int {
-  let year = case month <= 2 {
-    True -> year - 1
-    False -> year
-  }
-  let era = year / 400
-  let year_of_era = year - era * 400
-  let shifted = case month > 2 {
-    True -> month - 3
-    False -> month + 9
-  }
-  let day_of_year = { 153 * shifted + 2 } / 5 + day - 1
-  let day_of_era =
-    year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
-  era * 146_097 + day_of_era - 719_468
+fn ascii_digits(characters: List(UtfCodepoint)) -> Bool {
+  list.all(characters, fn(character) {
+    let value = string.utf_codepoint_to_int(character)
+    value >= 48 && value <= 57
+  })
 }
 
 fn strip_leading_dot(domain: String) -> String {
   case string.starts_with(domain, ".") {
     True -> string.slice(domain, at_index: 1, length: string.length(domain) - 1)
     False -> domain
+  }
+}
+
+fn canonical_host(host: String) -> Option(String) {
+  case url_host.canonicalize(host) {
+    Ok(host) ->
+      case valid_domain(host) {
+        True -> Some(host)
+        False -> None
+      }
+    Error(_) -> None
   }
 }
 
@@ -554,7 +475,10 @@ fn default_path_segments(
 }
 
 fn domain_matches(host: String, domain: String) -> Bool {
-  host == domain || { string.ends_with(host, "." <> domain) && domain != "" }
+  host == domain
+  || {
+    !ip_address(host) && string.ends_with(host, "." <> domain) && domain != ""
+  }
 }
 
 fn path_matches(request_path: String, cookie_path: String) -> Bool {
@@ -587,17 +511,11 @@ fn valid_name(name: String) -> Bool {
 }
 
 fn valid_value(value: String) -> Bool {
-  !string.contains(value, "\r")
-  && !string.contains(value, "\n")
-  && !string.contains(value, "\u{0000}")
-  && !string.contains(value, ";")
+  !has_ascii_control(value) && !string.contains(value, ";")
 }
 
 fn valid_path(path: String) -> Bool {
-  string.starts_with(path, "/")
-  && !string.contains(path, "\r")
-  && !string.contains(path, "\n")
-  && !string.contains(path, "\u{0000}")
+  string.starts_with(path, "/") && !has_ascii_control(path)
 }
 
 fn valid_domain(domain: String) -> Bool {
@@ -611,4 +529,42 @@ fn valid_domain(domain: String) -> Bool {
   && !string.contains(domain, "\n")
   && !string.contains(domain, "\u{0000}")
   && !string.contains(domain, "/")
+}
+
+fn trim_wsp(value: String) -> String {
+  value
+  |> string.to_utf_codepoints
+  |> list.drop_while(is_wsp)
+  |> list.reverse
+  |> list.drop_while(is_wsp)
+  |> list.reverse
+  |> string.from_utf_codepoints
+}
+
+fn is_wsp(character: UtfCodepoint) -> Bool {
+  let value = string.utf_codepoint_to_int(character)
+  value == 9 || value == 32
+}
+
+fn has_ascii_control(value: String) -> Bool {
+  value
+  |> string.to_utf_codepoints
+  |> list.any(fn(character) {
+    let value = string.utf_codepoint_to_int(character)
+    value < 32 || value == 127
+  })
+}
+
+fn option_try(value: Option(a), then: fn(a) -> Option(b)) -> Option(b) {
+  case value {
+    Some(value) -> then(value)
+    None -> None
+  }
+}
+
+fn option_guard(condition: Bool, then: fn() -> Option(a)) -> Option(a) {
+  case condition {
+    True -> then()
+    False -> None
+  }
 }

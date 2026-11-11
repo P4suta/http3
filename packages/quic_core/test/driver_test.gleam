@@ -3,10 +3,13 @@
 //// memory, and one pair over a real loopback UDP socket.
 
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import quic_core
+import quic_core/failure
 import quic_core/frame
 import quic_core/internal/connection_state
 import quic_core/internal/driver
@@ -22,11 +25,15 @@ import quic_core/internal/traffic_keys
 import quic_core/internal/udp
 import quic_core/internal/wire_packet
 import quic_core/packet
+import quic_core/server as public_server
 import quic_core/transport_parameter
 import quic_core/version
 
 @external(erlang, "quic_core_test_ffi", "fixture")
 fn fixture(name: String) -> Result(BitArray, Nil)
+
+@external(erlang, "quic_core_test_ffi", "labelled_pid")
+fn labelled_pid(handle: handle, label: String) -> Result(process.Pid, Nil)
 
 const original_destination_connection_id = <<1, 2, 3, 4, 5, 6, 7, 8>>
 
@@ -130,7 +137,7 @@ pub fn nonempty_grease_parameter_closes_with_transport_parameter_error_test() ->
     driver.receive_datagram(client, driver.prepared_bytes(close), 2)
   assert driver.phase(client) == connection_state.Draining
   let #(_, events) = driver.take_events(client)
-  assert events == [connection_state.PeerClosed(0x08, "")]
+  assert events == [connection_state.PeerTransportClosed(0x08, "")]
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -430,6 +437,63 @@ pub fn keeps_coalesced_handshake_progress_when_one_rtt_arrives_early_test() -> N
     )
   assert driver.phase(client) == connection_state.Established
   assert driver.phase(server) == connection_state.Established
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn authenticated_reserved_bits_close_only_the_addressed_connection_test() -> Nil {
+  let #(_, server_tls_config) = tls_configs()
+  let assert Ok(server_tls) = engine.start_server(server_tls_config)
+  let assert Ok(keys) =
+    traffic_keys.from_secret(version.Version1, hello.Aes128GcmSha256, <<0:256>>)
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.update_connection(server, fn(connection) {
+      connection_state.apply_tls_actions(connection, [
+        engine.InstallReadKeys(engine.OneRtt, keys),
+        engine.InstallWriteKeys(engine.OneRtt, keys),
+        engine.HandshakeComplete,
+      ])
+    })
+  let make_packet = fn(destination) {
+    wire_packet.protect_short_with_reserved_bits(
+      destination,
+      0,
+      None,
+      False,
+      False,
+      <<1, 0, 0, 0>>,
+      wire_packet.TrafficPacketKeys(keys),
+      0x08,
+    )
+  }
+  let assert Ok(packet) = make_packet(original_destination_connection_id)
+  let received = driver.receive_datagram(server, packet, 1)
+  let closed =
+    received
+    |> result.map(fn(state) {
+      connection_state.local_transport_failure_code(driver.connection(state))
+      == Some(0x0a)
+    })
+    |> result.unwrap(False)
+  assert closed
+  let assert Ok(wrong_destination) = make_packet(client_connection_id)
+  assert driver.receive_datagram(server, wrong_destination, 1)
+    == Error(driver.DestinationConnectionIdMismatch)
+  let damaged = <<packet:bits, 0>>
+  let bad_authentication = driver.receive_datagram(server, damaged, 1)
+  let unauthenticated_closed = case bad_authentication {
+    Ok(state) -> driver.phase(state) != connection_state.Established
+    Error(error) -> !driver.discardable_receive_error(error)
+  }
+  assert !unauthenticated_closed
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -1034,6 +1098,433 @@ fn dont_fragment_config(
     ..connection_state.default_config(role),
     path_dont_fragment: True,
   )
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn authenticated_retirement_cannot_name_unissued_or_carrying_id_test() -> Nil {
+  let Peers(client, server, now) = cid_test_peers()
+  list.each([0, 7], fn(sequence) {
+    let assert Ok(#(_, packet)) =
+      connection_state.protect_short_packet(
+        driver.connection(client),
+        original_destination_connection_id,
+        100,
+        False,
+        [frame.RetireConnectionId(sequence)],
+        now,
+      )
+    let received = driver.receive_datagram(server, packet, now)
+    let rejected_with_code =
+      received
+      |> result.map(fn(rejected) {
+        connection_state.local_transport_failure_code(driver.connection(
+          rejected,
+        ))
+        == Some(0x0a)
+      })
+      |> result.unwrap(False)
+    assert rejected_with_code
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn issued_alias_routes_authenticated_packets_and_retirement_removes_only_old_id_test() -> Nil {
+  let Peers(client, server, now) = cid_test_peers()
+  let alias = <<100:64>>
+  let assert Ok(server) =
+    driver.update_connection(server, fn(state) {
+      connection_state.issue_local_connection_id(state, alias, <<100:128>>)
+    })
+  let assert Ok(#(sending, packet)) =
+    connection_state.protect_short_packet(
+      driver.connection(client),
+      alias,
+      100,
+      False,
+      [frame.RetireConnectionId(0)],
+      now,
+    )
+  let assert Ok(server) = driver.receive_datagram(server, packet, now)
+  assert connection_state.accepts_local_connection_id(
+    driver.connection(server),
+    alias,
+  )
+  assert !connection_state.accepts_local_connection_id(
+    driver.connection(server),
+    original_destination_connection_id,
+  )
+  let assert Ok(#(sending, old_packet)) =
+    connection_state.protect_short_packet(
+      sending,
+      original_destination_connection_id,
+      101,
+      False,
+      [frame.Ping],
+      now + 1,
+    )
+  assert driver.receive_datagram(server, old_packet, now + 1)
+    == Error(driver.DestinationConnectionIdMismatch)
+  let assert Ok(#(_, live_packet)) =
+    connection_state.protect_short_packet(
+      sending,
+      alias,
+      102,
+      False,
+      [frame.RetireConnectionId(0), frame.Ping],
+      now + 2,
+    )
+  let assert Ok(server) = driver.receive_datagram(server, live_packet, now + 2)
+  let #(_, events) = driver.take_events(server)
+  assert list.filter(events, fn(event) {
+      case event {
+        connection_state.LocalConnectionIdRetired(_, _) -> True
+        _ -> False
+      }
+    })
+    == [
+      connection_state.LocalConnectionIdRetired(
+        0,
+        original_destination_connection_id,
+      ),
+    ]
+}
+
+fn cid_test_peers() -> Peers {
+  let #(client_config, server_config) = tls_configs()
+  let assert Ok(client_tls) = engine.start_client(client_config)
+  let assert Ok(server_tls) = engine.start_server(server_config)
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      client_tls,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(server) =
+    driver.start_server(
+      connection_state.default_config(connection_state.Server),
+      server_tls,
+      original_destination_connection_id,
+      original_destination_connection_id,
+      client_connection_id,
+      0,
+    )
+  let assert Ok(peers) =
+    drive_handshake(Peers(client, server, 1), maximum_handshake_rounds)
+  peers
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn authenticated_stream_violation_sends_transport_close_and_recovers_loss_test() -> Nil {
+  let Peers(client, server, now) = cid_test_peers()
+  let #(client, _) = driver.take_events(client)
+  let #(server, _) = driver.take_events(server)
+  // Stream 2 is client-initiated unidirectional: the server cannot send on it.
+  // This is authenticated peer misconduct, not an undecipherable datagram.
+  let assert Ok(#(client_connection, invalid)) =
+    connection_state.protect_short_packet(
+      driver.connection(client),
+      driver.peer_connection_id(client),
+      100,
+      False,
+      [frame.StopSending(2, 0x10c), frame.Padding(8)],
+      now + 1,
+    )
+  let client = driver.put_connection(client, client_connection)
+  let received = driver.receive_datagram(server, invalid, now + 1)
+  let closed_on_wire =
+    received
+    |> result.map(fn(server) {
+      driver.phase(server) == connection_state.Closing
+    })
+    |> result.unwrap(False)
+  assert closed_on_wire
+  let assert Ok(server) = received
+  let assert Ok(Some(first_close)) =
+    driver.prepare_datagram(server, 1000, now + 2)
+  let assert Ok(server) = driver.commit_datagram(first_close, now + 2)
+  // Lose the first close, then retransmit the authenticated peer packet.
+  let assert Ok(server) = driver.receive_datagram(server, invalid, now + 3)
+  let assert Ok(Some(repeated_close)) =
+    driver.prepare_datagram(server, 1000, now + 4)
+  let assert Ok(server) = driver.commit_datagram(repeated_close, now + 4)
+  let assert Ok(client) =
+    driver.receive_datagram(
+      client,
+      driver.prepared_bytes(repeated_close),
+      now + 4,
+    )
+  assert driver.phase(client) == connection_state.Draining
+  let #(_, events) = driver.take_events(client)
+  assert events == [connection_state.PeerTransportClosed(0x05, "")]
+  let assert Ok(server) = driver.tick(server, now + 30_000)
+  assert driver.phase(server) == connection_state.Closed
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn runtime_server_preserves_typed_failure_and_retransmits_transport_close_test() -> Nil {
+  let assert Ok(certificate) = fixture("server.pem")
+  let assert Ok(private_key) = fixture("server-key.pem")
+  let assert Ok(configuration) =
+    public_server.new(certificate, private_key, "h3")
+  let assert Ok(listener) =
+    configuration
+    |> public_server.with_address_family(quic_core.Ipv4)
+    |> public_server.start
+  let assert Ok(port) = public_server.port(listener)
+  let assert Ok(address) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(local) = udp.endpoint(address, 0)
+  let assert Ok(socket) = udp.open(local)
+  let assert Ok(destination) = udp.endpoint(address, port)
+  let #(client_config, _) = tls_configs()
+  let assert Ok(tls) = engine.start_client(client_config)
+  let now = udp.monotonic_millisecond()
+  let assert Ok(client) =
+    driver.start_client(
+      connection_state.default_config(connection_state.Client),
+      tls,
+      original_destination_connection_id,
+      client_connection_id,
+      now,
+    )
+  let assert Ok(client) =
+    runtime_client_until(
+      client,
+      socket,
+      destination,
+      connection_state.Established,
+      now + 3000,
+    )
+  // Flush Finished before the public listener publishes its accepted peer.
+  let assert Ok(client) = runtime_client_flush(client, socket, destination)
+  let assert Ok(peer) = public_server.accept(listener)
+  let assert Ok(actor) = labelled_pid(peer, "quic_core.connection")
+  let monitor = process.monitor(actor)
+  let exited =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+  let assert Ok(client) = runtime_client_quiet(client, socket, destination, 32)
+  let now = udp.monotonic_millisecond()
+  let assert Ok(#(inner, invalid)) =
+    connection_state.protect_short_packet(
+      driver.connection(client),
+      driver.peer_connection_id(client),
+      100,
+      False,
+      [frame.StopSending(2, 0x10c), frame.Padding(8)],
+      now,
+    )
+  let client = driver.put_connection(client, inner)
+  let assert Ok(Nil) = udp.send(socket, destination, invalid, ecn.NotEct)
+  // Decode the first close on a disposable immutable copy: no ACK or adoption.
+  let assert Ok(first) =
+    runtime_client_until(
+      client,
+      socket,
+      destination,
+      connection_state.Draining,
+      now + 1000,
+    )
+  let #(_, first_events) = driver.take_events(first)
+  let first_code =
+    list.contains(first_events, connection_state.PeerTransportClosed(0x05, ""))
+  let local_failure = public_server.accept_stream(peer)
+  let assert Ok(Nil) = udp.send(socket, destination, invalid, ecn.NotEct)
+  let repeated =
+    runtime_client_until(
+      client,
+      socket,
+      destination,
+      connection_state.Draining,
+      udp.monotonic_millisecond() + 1000,
+    )
+  let repeated_code =
+    repeated
+    |> result.map(fn(client) {
+      let #(_, events) = driver.take_events(client)
+      list.contains(events, connection_state.PeerTransportClosed(0x05, ""))
+    })
+    |> result.unwrap(False)
+  let assert Ok(#(_, peer_close)) =
+    connection_state.protect_short_packet(
+      driver.connection(client),
+      driver.peer_connection_id(client),
+      101,
+      False,
+      [frame.ConnectionCloseApplication(0x100, "later-private-peer-reason")],
+      udp.monotonic_millisecond(),
+    )
+  let assert Ok(Nil) = udp.send(socket, destination, peer_close, ecn.NotEct)
+  let released = process.selector_receive(exited, within: 1000) == Ok(Nil)
+  process.demonitor_process(monitor)
+  let after_peer_close =
+    public_server.accept_stream(peer)
+    |> result.replace(Nil)
+  let stopped = public_server.stop(listener)
+  let socket_closed = udp.close(socket)
+  assert first_code
+  assert local_failure
+    == Error(public_server.Failure(failure.Quic(failure.Local, Some(0x05))))
+  assert repeated_code
+  assert released
+  assert after_peer_close
+    == Error(public_server.Failure(failure.Quic(failure.Local, Some(0x05))))
+  assert stopped == Ok(public_server.Stopped)
+  assert socket_closed == Ok(Nil)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn public_server_preserves_authenticated_transport_close_kind_and_code_test() -> Nil {
+  list.each([0, 0x05, 4_611_686_018_427_387_903], fn(code) {
+    let assert Ok(certificate) = fixture("server.pem")
+    let assert Ok(private_key) = fixture("server-key.pem")
+    let assert Ok(configuration) =
+      public_server.new(certificate, private_key, "h3")
+    let assert Ok(listener) =
+      configuration
+      |> public_server.with_address_family(quic_core.Ipv4)
+      |> public_server.start
+    let assert Ok(port) = public_server.port(listener)
+    let assert Ok(address) = udp.ipv4(127, 0, 0, 1)
+    let assert Ok(local) = udp.endpoint(address, 0)
+    let assert Ok(socket) = udp.open(local)
+    let assert Ok(destination) = udp.endpoint(address, port)
+    let #(client_config, _) = tls_configs()
+    let assert Ok(tls) = engine.start_client(client_config)
+    let now = udp.monotonic_millisecond()
+    let assert Ok(client) =
+      driver.start_client(
+        connection_state.default_config(connection_state.Client),
+        tls,
+        original_destination_connection_id,
+        client_connection_id,
+        now,
+      )
+    let assert Ok(client) =
+      runtime_client_until(
+        client,
+        socket,
+        destination,
+        connection_state.Established,
+        now + 3000,
+      )
+    let assert Ok(client) = runtime_client_flush(client, socket, destination)
+    let assert Ok(peer) = public_server.accept(listener)
+    let assert Ok(client) =
+      runtime_client_quiet(client, socket, destination, 32)
+    let assert Ok(#(_, close)) =
+      connection_state.protect_short_packet(
+        driver.connection(client),
+        driver.peer_connection_id(client),
+        100,
+        False,
+        [frame.ConnectionCloseTransport(code, 0, "private-close-reason-marker")],
+        udp.monotonic_millisecond(),
+      )
+    let assert Ok(Nil) = udp.send(socket, destination, close, ecn.NotEct)
+    let observed = public_server.accept_stream(peer) |> result.replace(Nil)
+    let stopped = public_server.stop(listener)
+    // stop joins connection actors.
+    // The retained public cause has the original kind/code, with no reason text and no actor lifetime extension.
+    let after_release = public_server.accept_stream(peer) |> result.replace(Nil)
+    let socket_closed = udp.close(socket)
+    let expected =
+      Error(public_server.Failure(failure.Quic(failure.Peer, Some(code))))
+    assert #(observed, after_release) == #(expected, expected)
+    assert stopped == Ok(public_server.Stopped)
+    assert socket_closed == Ok(Nil)
+  })
+}
+
+fn runtime_client_until(
+  client: driver.State,
+  socket: udp.Socket,
+  destination: udp.Endpoint,
+  wanted: connection_state.Phase,
+  deadline: Int,
+) -> Result(driver.State, NetworkError) {
+  case driver.phase(client) == wanted, udp.monotonic_millisecond() >= deadline {
+    True, _ -> Ok(client)
+    False, True -> Error(HandshakeTimeout)
+    False, False -> {
+      use client <- result.try(runtime_client_flush(client, socket, destination))
+      case udp.receive(socket, 10) {
+        Error(udp.Timeout) ->
+          runtime_client_until(client, socket, destination, wanted, deadline)
+        Error(error) -> Error(UdpError(error))
+        Ok(udp.Datagram(_, bytes, marking)) -> {
+          use client <- result.try(
+            driver.receive_datagram_with_ecn(
+              client,
+              bytes,
+              marking,
+              udp.monotonic_millisecond(),
+            )
+            |> map_driver,
+          )
+          runtime_client_until(client, socket, destination, wanted, deadline)
+        }
+      }
+    }
+  }
+}
+
+fn runtime_client_flush(
+  client: driver.State,
+  socket: udp.Socket,
+  destination: udp.Endpoint,
+) -> Result(driver.State, NetworkError) {
+  let now = udp.monotonic_millisecond()
+  use client <- result.try(driver.tick(client, now) |> map_driver)
+  use prepared <- result.try(
+    driver.prepare_datagram(client, 1000, now) |> map_driver,
+  )
+  case prepared {
+    None -> Ok(client)
+    Some(prepared) -> {
+      use Nil <- result.try(
+        udp.send(
+          socket,
+          destination,
+          driver.prepared_bytes(prepared),
+          ecn.NotEct,
+        )
+        |> map_udp,
+      )
+      driver.commit_datagram(prepared, now) |> map_driver
+    }
+  }
+}
+
+fn runtime_client_quiet(
+  client: driver.State,
+  socket: udp.Socket,
+  destination: udp.Endpoint,
+  remaining: Int,
+) -> Result(driver.State, NetworkError) {
+  case remaining {
+    0 -> Error(HandshakeTimeout)
+    _ -> {
+      use client <- result.try(runtime_client_flush(client, socket, destination))
+      case udp.receive(socket, 10) {
+        Error(udp.Timeout) -> Ok(client)
+        Error(error) -> Error(UdpError(error))
+        Ok(udp.Datagram(_, bytes, marking)) -> {
+          use client <- result.try(
+            driver.receive_datagram_with_ecn(
+              client,
+              bytes,
+              marking,
+              udp.monotonic_millisecond(),
+            )
+            |> map_driver,
+          )
+          runtime_client_quiet(client, socket, destination, remaining - 1)
+        }
+      }
+    }
+  }
 }
 
 fn drive_handshake(peers: Peers, rounds: Int) -> Result(Peers, driver.Error) {

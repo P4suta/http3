@@ -1,16 +1,17 @@
 //// Finite Strict-Transport-Security parsing and host matching.
 
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import http/internal/url_pattern/host as url_host
+import http/internal/url_pattern/host_idna
+import http/internal/url_pattern/host_ip
 
-const maximum_age_seconds = 63_072_000
+const maximum_field_bytes = 8192
 
-/// RFC 6797 defines two directives and admits unrecognised ones. Sixteen names
-/// is past anything a conforming host sends and keeps the seen-name list that
-/// enforces the appear-once rule finite against a hostile field.
-const maximum_directives = 16
+const maximum_directives = 64
 
 /// One HSTS policy learned from a verified HTTPS response.
 pub type Entry {
@@ -22,29 +23,26 @@ pub type Entry {
   )
 }
 
-/// Parse one Strict-Transport-Security field with a bounded two-year lifetime.
+/// Parse one Strict-Transport-Security field with bounded syntax work.
 pub fn parse(
   value: String,
   host: String,
   now_milliseconds: Int,
 ) -> Option(Entry) {
-  let directives =
-    value
-    |> string.split(on: ";")
-    |> list.map(string.trim)
-  let host = string.lowercase(host)
-  case named_host(host), parse_directives(directives, None, False, []) {
-    False, _ -> None
-    True, Some(#(seconds, include_subdomains)) -> {
-      let seconds = int.min(seconds, maximum_age_seconds)
+  use host <- option_try(canonical_domain(host))
+  case string.byte_size(value) <= maximum_field_bytes {
+    False -> None
+    True -> {
+      use directives <- option_try(split_directives(value))
+      use parsed <- option_try(parse_directives(directives, None, False, []))
+      let #(seconds, include_subdomains) = parsed
       Some(Entry(
         host:,
         include_subdomains:,
         expires_at: now_milliseconds + seconds * 1000,
-        retained_bytes: string.byte_size(host) + 24,
+        retained_bytes: string.byte_size(host) + string.byte_size(value) + 24,
       ))
     }
-    True, None -> None
   }
 }
 
@@ -54,16 +52,253 @@ pub fn applies(
   host: String,
   now_milliseconds: Int,
 ) -> Bool {
-  let host = string.lowercase(host)
-  list.any(entries, fn(entry) {
-    entry.expires_at > now_milliseconds
-    && {
-      entry.host == host
-      || {
-        entry.include_subdomains && string.ends_with(host, "." <> entry.host)
+  case canonical_domain(host) {
+    None -> False
+    Some(host) ->
+      list.any(entries, fn(entry) {
+        entry.expires_at > now_milliseconds
+        && canonical_domain(entry.host) == Some(entry.host)
+        && {
+          entry.host == host
+          || {
+            entry.include_subdomains
+            && string.ends_with(host, "." <> entry.host)
+          }
+        }
+      })
+  }
+}
+
+/// Apply RFC 6797's explicit-port mapping while preserving port absence.
+pub fn upgrade_port(port: Option(Int)) -> Option(Int) {
+  case port {
+    Some(80) -> Some(443)
+    configured -> configured
+  }
+}
+
+fn option_try(value: Option(a), then: fn(a) -> Option(b)) -> Option(b) {
+  case value {
+    Some(value) -> then(value)
+    None -> None
+  }
+}
+
+fn canonical_domain(host: String) -> Option(String) {
+  case url_host.canonicalize(host) {
+    Error(_) -> None
+    Ok(canonical) -> {
+      let codes =
+        canonical
+        |> string.to_utf_codepoints
+        |> list.map(string.utf_codepoint_to_int)
+      case host_idna.to_ascii(codes) {
+        Error(_) -> None
+        Ok(validated) ->
+          case
+            validated == canonical
+            && string.byte_size(canonical) <= 253
+            && !string.starts_with(canonical, "[")
+            && !host_ip.ends_in_number(canonical)
+            && valid_domain_name(canonical)
+          {
+            True -> Some(canonical)
+            False -> None
+          }
       }
     }
+  }
+}
+
+fn valid_domain_name(host: String) -> Bool {
+  host != "" && list.all(string.split(host, "."), valid_domain_label)
+}
+
+fn valid_domain_label(label: String) -> Bool {
+  let size = string.byte_size(label)
+  size >= 1
+  && size <= 63
+  && !string.starts_with(label, "-")
+  && !string.ends_with(label, "-")
+  && list.all(string.to_utf_codepoints(label), fn(character) {
+    let code = string.utf_codepoint_to_int(character)
+    { code >= 97 && code <= 122 } || { code >= 48 && code <= 57 } || code == 45
   })
+}
+
+fn ascii_digits(value: String) -> Bool {
+  case string.to_utf_codepoints(value) {
+    [] -> False
+    digits ->
+      list.all(digits, fn(digit) {
+        let digit = string.utf_codepoint_to_int(digit)
+        digit >= 48 && digit <= 57
+      })
+  }
+}
+
+fn token(value: String) -> Bool {
+  case string.to_utf_codepoints(value) {
+    [] -> False
+    characters ->
+      list.all(characters, fn(character) {
+        let character = string.utf_codepoint_to_int(character)
+        character > 31
+        && character < 127
+        && !list.contains(
+          [
+            40, 41, 60, 62, 64, 44, 59, 58, 92, 34, 47, 91, 93, 63, 61, 123, 125,
+            32, 9,
+          ],
+          character,
+        )
+      })
+  }
+}
+
+fn unquote(value: String) -> Option(String) {
+  case string.to_utf_codepoints(value) {
+    [] -> None
+    [first, ..rest] ->
+      case string.utf_codepoint_to_int(first) == 34 {
+        True -> unquote_characters(rest, False, [])
+        False -> None
+      }
+  }
+}
+
+fn unquote_characters(
+  characters: List(UtfCodepoint),
+  escaped: Bool,
+  reversed: List(UtfCodepoint),
+) -> Option(String) {
+  case characters, escaped {
+    [], _ -> None
+    [character], False ->
+      case string.utf_codepoint_to_int(character) == 34 {
+        True -> Some(string.from_utf_codepoints(list.reverse(reversed)))
+        False -> None
+      }
+    [character, ..rest], True -> {
+      let code = string.utf_codepoint_to_int(character)
+      case code >= 0 && code <= 127 {
+        True -> unquote_characters(rest, False, [character, ..reversed])
+        False -> None
+      }
+    }
+    [character, ..rest], False -> {
+      let code = string.utf_codepoint_to_int(character)
+      case code {
+        34 -> None
+        92 -> unquote_characters(rest, True, reversed)
+        value if value == 9 || value >= 32 ->
+          unquote_characters(rest, False, [character, ..reversed])
+        _ -> None
+      }
+    }
+  }
+}
+
+fn split_directives(value: String) -> Option(List(String)) {
+  split_directive_characters(
+    string.to_utf_codepoints(value),
+    [],
+    [],
+    1,
+    False,
+    False,
+  )
+}
+
+fn split_directive_characters(
+  characters: List(UtfCodepoint),
+  reversed_directive: List(UtfCodepoint),
+  reversed_directives: List(String),
+  count: Int,
+  quoted: Bool,
+  escaped: Bool,
+) -> Option(List(String)) {
+  case count <= maximum_directives, characters, quoted, escaped {
+    False, _, _, _ -> None
+    True, [], True, _ | True, [], _, True -> None
+    True, [], False, False ->
+      Some(
+        list.reverse([directive_text(reversed_directive), ..reversed_directives]),
+      )
+    True, [character, ..rest], _, True ->
+      split_directive_characters(
+        rest,
+        [character, ..reversed_directive],
+        reversed_directives,
+        count,
+        quoted,
+        False,
+      )
+    True, [character, ..rest], True, False ->
+      case string.utf_codepoint_to_int(character) {
+        34 ->
+          split_directive_characters(
+            rest,
+            [character, ..reversed_directive],
+            reversed_directives,
+            count,
+            False,
+            False,
+          )
+        92 ->
+          split_directive_characters(
+            rest,
+            [character, ..reversed_directive],
+            reversed_directives,
+            count,
+            True,
+            True,
+          )
+        _ ->
+          split_directive_characters(
+            rest,
+            [character, ..reversed_directive],
+            reversed_directives,
+            count,
+            True,
+            False,
+          )
+      }
+    True, [character, ..rest], False, False ->
+      case string.utf_codepoint_to_int(character) {
+        34 ->
+          split_directive_characters(
+            rest,
+            [character, ..reversed_directive],
+            reversed_directives,
+            count,
+            True,
+            False,
+          )
+        59 ->
+          split_directive_characters(
+            rest,
+            [],
+            [directive_text(reversed_directive), ..reversed_directives],
+            count + 1,
+            False,
+            False,
+          )
+        _ ->
+          split_directive_characters(
+            rest,
+            [character, ..reversed_directive],
+            reversed_directives,
+            count,
+            False,
+            False,
+          )
+      }
+  }
+}
+
+fn directive_text(reversed: List(UtfCodepoint)) -> String {
+  reversed |> list.reverse |> string.from_utf_codepoints |> string.trim
 }
 
 /// Rebuild one persisted policy only after enforcing the live HSTS bounds.
@@ -73,74 +308,20 @@ pub fn from_persisted(
   expires_in_milliseconds: Int,
   now_milliseconds: Int,
 ) -> Option(Entry) {
-  let host = string.lowercase(host)
+  let age_bytes = string.byte_size(int.to_string(expires_in_milliseconds))
   case
-    valid_host(host),
-    expires_in_milliseconds > 0
-    && expires_in_milliseconds <= maximum_age_seconds * 1000
+    canonical_domain(host),
+    expires_in_milliseconds > 0 && age_bytes <= maximum_field_bytes
   {
-    True, True ->
+    Some(host), True ->
       Some(Entry(
         host:,
         include_subdomains:,
         expires_at: now_milliseconds + expires_in_milliseconds,
-        retained_bytes: string.byte_size(host) + 24,
+        retained_bytes: string.byte_size(host) + age_bytes + 24,
       ))
     _, _ -> None
   }
-}
-
-/// Whether a policy may be keyed on this host at all.
-///
-/// RFC 6797 section 8.1.1 refuses an IP literal: an address is not a name, so a
-/// policy keyed on one would outlive whatever answers at that address. The
-/// bracketed and bare IPv6 forms are both caught by the colon, and the dotted
-/// form by four decimal labels. A label that merely looks numeric inside a
-/// longer name is left alone.
-///
-/// Section 13 asks a user agent to implement IDNA, and nothing here does, so a
-/// host still carrying a U-label is refused as well. Keying a policy on one
-/// would store it under a name no later request can match, since a request
-/// resolves the A-label form; refusing says so instead of silently keeping a
-/// policy that never applies.
-fn named_host(host: String) -> Bool {
-  !string.starts_with(host, "[")
-  && !string.contains(host, ":")
-  && !dotted_address(host)
-  && ascii_host(host)
-}
-
-fn ascii_host(host: String) -> Bool {
-  string.byte_size(host) == string.length(host)
-}
-
-fn dotted_address(host: String) -> Bool {
-  case string.split(host, on: ".") {
-    [first, second, third, fourth] ->
-      list.all([first, second, third, fourth], decimal_octet)
-    _ -> False
-  }
-}
-
-fn decimal_octet(label: String) -> Bool {
-  case string.length(label) <= 3, int.parse(label) {
-    True, Ok(value) -> value >= 0 && value <= 255
-    _, _ -> False
-  }
-}
-
-fn valid_host(host: String) -> Bool {
-  named_host(host)
-  && host != ""
-  && string.byte_size(host) <= 253
-  && !string.starts_with(host, ".")
-  && !string.ends_with(host, ".")
-  && !string.contains(host, " ")
-  && !string.contains(host, "\t")
-  && !string.contains(host, "\r")
-  && !string.contains(host, "\n")
-  && !string.contains(host, "\u{0000}")
-  && !string.contains(host, "/")
 }
 
 fn parse_directives(
@@ -150,79 +331,57 @@ fn parse_directives(
   seen: List(String),
 ) -> Option(#(Int, Bool)) {
   case directives {
-    [] -> complete(age, include_subdomains)
-    // The grammar makes the directive optional in every position, so an empty
-    // span between two separators is well formed and carries no name that a
-    // later one could repeat.
-    ["", ..rest] -> parse_directives(rest, age, include_subdomains, seen)
-    [directive, ..rest] ->
-      case admissible_name(directive, seen) {
+    [] ->
+      case age {
+        Some(seconds) -> Some(#(seconds, include_subdomains))
         None -> None
-        Some(name) ->
-          case apply_directive(directive, name, age, include_subdomains) {
-            None -> None
-            Some(#(age, include_subdomains)) ->
-              parse_directives(rest, age, include_subdomains, [name, ..seen])
-          }
+      }
+    [directive, ..rest] ->
+      case directive {
+        "" -> parse_directives(rest, age, include_subdomains, seen)
+        _ -> parse_directive(directive, rest, age, include_subdomains, seen)
       }
   }
 }
 
-/// A field carries a policy only once `max-age` has been read.
-fn complete(
-  age: Option(Int),
-  include_subdomains: Bool,
-) -> Option(#(Int, Bool)) {
-  case age {
-    Some(seconds) -> Some(#(seconds, include_subdomains))
-    None -> None
-  }
-}
-
-/// The directive's lowercase name, unless section 6.1's appear-once rule or the
-/// finite ceiling on distinct names refuses the whole field.
-fn admissible_name(directive: String, seen: List(String)) -> Option(String) {
-  let name = string.lowercase(directive_name(directive))
-  case list.contains(seen, name) || list.length(seen) >= maximum_directives {
-    True -> None
-    False -> Some(name)
-  }
-}
-
-/// Fold one directive into the policy read so far, or refuse the whole field.
-///
-/// A recognised name carrying the wrong shape is left to the unrecognised arm:
-/// section 6.1 asks for unrecognised directives to be ignored, and a bare
-/// `max-age` or an `includeSubDomains` with a value conveys nothing either way.
-fn apply_directive(
+fn parse_directive(
   directive: String,
-  name: String,
+  rest: List(String),
   age: Option(Int),
   include_subdomains: Bool,
-) -> Option(#(Option(Int), Bool)) {
-  case name, string.split_once(directive, on: "=") {
-    "max-age", Ok(#(_, value)) -> parse_age(value, include_subdomains)
-    "includesubdomains", Error(Nil) -> Some(#(age, True))
-    _, _ -> Some(#(age, include_subdomains))
+  seen: List(String),
+) -> Option(#(Int, Bool)) {
+  let #(name, value) = case string.split_once(directive, on: "=") {
+    Ok(#(name, value)) -> #(string.trim(name), Some(string.trim(value)))
+    Error(_) -> #(string.trim(directive), None)
+  }
+  let lower_name = string.lowercase(name)
+  use <- bool.guard(
+    when: !token(name) || list.contains(seen, lower_name),
+    return: None,
+  )
+  let seen = [lower_name, ..seen]
+  case lower_name, value, age {
+    "max-age", Some(value), None -> {
+      use value <- option_try(directive_value(value))
+      case ascii_digits(value), int.parse(value) {
+        True, Ok(seconds) ->
+          parse_directives(rest, Some(seconds), include_subdomains, seen)
+        _, _ -> None
+      }
+    }
+    "max-age", _, _ -> None
+    "includesubdomains", None, _ -> parse_directives(rest, age, True, seen)
+    "includesubdomains", Some(_), _ -> None
+    _, None, _ -> parse_directives(rest, age, include_subdomains, seen)
+    _, Some(value), _ -> {
+      use _ <- option_try(directive_value(value))
+      parse_directives(rest, age, include_subdomains, seen)
+    }
   }
 }
 
-/// The `max-age` value is a nonnegative number of seconds and nothing else.
-fn parse_age(
-  value: String,
-  include_subdomains: Bool,
-) -> Option(#(Option(Int), Bool)) {
-  case int.parse(string.trim(value)) {
-    Ok(seconds) if seconds >= 0 -> Some(#(Some(seconds), include_subdomains))
-    _ -> None
-  }
-}
-
-/// The name half of a directive, which is the whole span when it carries no
-/// value.
-fn directive_name(directive: String) -> String {
-  case string.split_once(directive, on: "=") {
-    Ok(#(name, _)) -> string.trim(name)
-    Error(_) -> directive
-  }
+fn directive_value(value: String) -> Option(String) {
+  use <- bool.guard(when: token(value), return: Some(value))
+  unquote(value)
 }

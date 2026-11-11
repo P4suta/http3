@@ -1,0 +1,344 @@
+{
+  "schema": 1,
+  "manifest_kind": "rfc9114_reviewed_evidence_sources",
+  "standard": "RFC9114",
+  "reviewed_requirements_sha256": "76bdca016340f90dc8a75157b5fc4b04951e151eae3ed1cd000000ba0cd7115a",
+  "candidate_sha256": "ee42fef95798249cecf1b333cbf613a7ffa7f7a302cd0d3a7e438bd9efbf1243",
+  "review_sha256": "74cc3dc2db970c4eb3a36e9fd73f11886fbc80dfdc3ab3aa510a5b0b0170fbb9",
+  "implemented_requirements": 31,
+  "citation_references": 110,
+  "unique_citations": 35,
+  "source_files": 27,
+  "source_aggregate_sha256": "2c3e88a2691bf50df602912577baaca88cc45ce6021d8566b73baef4747072f7",
+  "files": [
+    {
+      "path": "packages/http3/src/http3/client.gleam",
+      "bytes": 34268,
+      "sha256": "367a1a23cb16d53d33e9dd7510e308c6c70e92d54c396443f9c1ec6e24891254",
+      "symbols": [
+        {
+          "symbol": "connect_to",
+          "arity": 5
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/config.gleam",
+      "bytes": 7733,
+      "sha256": "b1c8b665ca3f9313ca04674ca572eac4cf0c3e2c339afdf73ec42a906e1d5c8a",
+      "symbols": [
+        {
+          "symbol": "default_limits",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/client_worker.gleam",
+      "bytes": 111644,
+      "sha256": "c8f647780cf07540d3ae169a264949537a0ff1b82e89d89ce3f4cd4a0de80a3f",
+      "symbols": [
+        {
+          "symbol": "handle_cancel",
+          "arity": 4
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/connection_state.gleam",
+      "bytes": 95747,
+      "sha256": "a74676d0522aef3b24296710662a4ce4b28672af4bc4c434770ae9160e5fe5fb",
+      "symbols": [
+        {
+          "symbol": "bootstrap",
+          "arity": 5
+        },
+        {
+          "symbol": "receive_control_frame",
+          "arity": 3
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/control.gleam",
+      "bytes": 6161,
+      "sha256": "9f8b79c1a41e3be77a9ded4a7817a1fc7616c431689e88eea1565d21e34634fa",
+      "symbols": [
+        {
+          "symbol": "receive",
+          "arity": 3
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/error_code.gleam",
+      "bytes": 2422,
+      "sha256": "12c67d9e09ecf0b63f70018f7c1bbdd5253c65d8aeff80e10824af37ce120d2b",
+      "symbols": [
+        {
+          "symbol": "effective",
+          "arity": 1
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/header_semantics.gleam",
+      "bytes": 18243,
+      "sha256": "0ec8e3cc79bb92949dc87eab1e292ef6f9dc68faa87a1094ef8c966a869d2f81",
+      "symbols": [
+        {
+          "symbol": "validate",
+          "arity": 4
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/message_stream.gleam",
+      "bytes": 6042,
+      "sha256": "e8936ed59137b91e1d0314d7be5dce09656f7db364002280c473595622c4dcad",
+      "symbols": [
+        {
+          "symbol": "receive_data",
+          "arity": 4
+        },
+        {
+          "symbol": "receive_headers",
+          "arity": 3
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/protocol.gleam",
+      "bytes": 40300,
+      "sha256": "7660340adfc9a8028f0179203ff346a2fb0aa54a06a62f7e1b48cf86e997021a",
+      "symbols": [
+        {
+          "symbol": "peer_application_error_code",
+          "arity": 1
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/push.gleam",
+      "bytes": 13208,
+      "sha256": "ae7bf292cc36bea43900cce562519bcbf000a4a9db3aaab023006657431750a1",
+      "symbols": [
+        {
+          "symbol": "new",
+          "arity": 3
+        },
+        {
+          "symbol": "open_stream",
+          "arity": 5
+        },
+        {
+          "symbol": "promise",
+          "arity": 5
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/server_worker.gleam",
+      "bytes": 137234,
+      "sha256": "47b4c91724f1dd78d04a0f46a587edeef36603a55ce25adf9dc8a9c23d638056",
+      "symbols": [
+        {
+          "symbol": "handle_cancel_request",
+          "arity": 4
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/src/http3/internal/native/stream_registry.gleam",
+      "bytes": 7393,
+      "sha256": "fe50977e91019bc7554625f57325207f79c75f7b3ced73f467287817468a184e",
+      "symbols": [
+        {
+          "symbol": "open",
+          "arity": 3
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/client_endpoint_test.gleam",
+      "bytes": 10494,
+      "sha256": "244bdea7aaae763963f4ca8e737fbb83c75d62cde33cca48f92a596f65462fce",
+      "symbols": [
+        {
+          "symbol": "explicit_destination_keeps_certificate_identity_verification_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/client_test.gleam",
+      "bytes": 33560,
+      "sha256": "11129f8287546405f620de58d557bd556bfb74c2fe81ae98a494fab2c28efcee",
+      "symbols": [
+        {
+          "symbol": "server_push_limit_is_bounded_and_can_be_disabled_test",
+          "arity": 0
+        },
+        {
+          "symbol": "streaming_client_cancellation_is_idempotent_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_connection_state_test.gleam",
+      "bytes": 45601,
+      "sha256": "d3499273b92b44b826bb7b8dd072e5068cba47a536064621e1bc237586f02568",
+      "symbols": [
+        {
+          "symbol": "bootstraps_unique_critical_streams_with_settings_first_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_control_test.gleam",
+      "bytes": 3481,
+      "sha256": "31d606212850378639c44bb5d692be608760c74f5156c5bc3b5beee6d8d73feb",
+      "symbols": [
+        {
+          "symbol": "requires_and_validates_settings_before_control_frames_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_error_code_test.gleam",
+      "bytes": 544,
+      "sha256": "b06303783e76943fed18e070df78183d19820430fe51cdce5fefa824e5b430f6",
+      "symbols": [
+        {
+          "symbol": "maps_registered_and_unknown_application_errors_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_header_semantics_test.gleam",
+      "bytes": 6795,
+      "sha256": "187a8cd9223220180fce50d814ccb7ffda6a19914fbbd66f7b53bcfeb551515b",
+      "symbols": [
+        {
+          "symbol": "rejects_pseudo_header_order_duplicates_and_missing_values_test",
+          "arity": 0
+        },
+        {
+          "symbol": "rejects_smuggling_prone_regular_fields_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_message_stream_test.gleam",
+      "bytes": 4480,
+      "sha256": "fa3bfac05c7f47881d173640c16f4a457a82d550687b1b02472a46565c180f5e",
+      "symbols": [
+        {
+          "symbol": "sequences_request_body_trailers_and_finish_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_protocol_test.gleam",
+      "bytes": 27728,
+      "sha256": "89902fc2ba03526162239960dd666b7baadfd21ba4bcc4837d25b4834296619c",
+      "symbols": [
+        {
+          "symbol": "rfc9114_control_failures_use_their_specific_peer_codes_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_push_test.gleam",
+      "bytes": 3668,
+      "sha256": "524cb7d71f03db69f84a447ce5e9ce053beaecfb999d5eb6ed651b4a54842df0",
+      "symbols": [
+        {
+          "symbol": "allocates_sequential_safe_promises_and_handles_terminal_states_test",
+          "arity": 0
+        },
+        {
+          "symbol": "coordinates_duplicate_promises_and_reordered_push_streams_test",
+          "arity": 0
+        },
+        {
+          "symbol": "expires_unpromised_streams_and_enforces_push_bounds_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/native/http3_stream_registry_test.gleam",
+      "bytes": 2827,
+      "sha256": "1c8784284ec32685f100e1e79d0d34a26a3394ba7e54a9989bd91e633f47f543",
+      "symbols": [
+        {
+          "symbol": "parses_and_registers_each_unidirectional_stream_type_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/server_test.gleam",
+      "bytes": 55623,
+      "sha256": "7c5fbc6541e77926be76992cc35c9c16d2e24d767bae649867fa8ccb55f9702e",
+      "symbols": [
+        {
+          "symbol": "server_request_cancellation_resets_both_directions_idempotently_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/http3/test/transport_test.gleam",
+      "bytes": 63339,
+      "sha256": "6d32f63448d5c784c48fa1b00b12bd264cbb8cc4e1ca485f856f661bc0727058",
+      "symbols": [
+        {
+          "symbol": "zero_rtt_resumption_is_typed_and_replay_safe_test",
+          "arity": 0
+        }
+      ]
+    },
+    {
+      "path": "packages/quic_core/src/quic_core/internal/tls/anti_replay.gleam",
+      "bytes": 5676,
+      "sha256": "e13e96262bca07ee7513ae52ef301cd6a9d5eaa179d31486cdfba71382d11541",
+      "symbols": [
+        {
+          "symbol": "record_verified",
+          "arity": 4
+        }
+      ]
+    },
+    {
+      "path": "packages/quic_core/src/quic_core/internal/tls/replay_guard.gleam",
+      "bytes": 3011,
+      "sha256": "82a1a71b5a29c6b7d4a265113bf2f457d83c77a2884548e7e6b225c1dcc259d1",
+      "symbols": [
+        {
+          "symbol": "permits",
+          "arity": 4
+        }
+      ]
+    },
+    {
+      "path": "packages/quic_core/test/tls_anti_replay_test.gleam",
+      "bytes": 2668,
+      "sha256": "68f53a2c4a3430e487151c89438777f233bb89195b024ecc3acfa4ce86f57b2a",
+      "symbols": [
+        {
+          "symbol": "rejects_replay_bounds_memory_and_prunes_expired_entries_test",
+          "arity": 0
+        }
+      ]
+    }
+  ]
+}

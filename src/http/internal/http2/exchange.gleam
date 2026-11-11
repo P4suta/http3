@@ -1,16 +1,19 @@
 //// One bounded HTTP/2 client exchange over verified TLS and active-once I/O.
 
 import gleam/bit_array
+import gleam/erlang/process.{type Pid}
 import gleam/http as gleam_http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
 import gleam/int
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http/body
+import http/context
+import http/diagnostics
 import http/error
+import http/internal/client_trace
 import http/internal/http1
 import http/internal/http2/connection
 import http/internal/http2/header_codec
@@ -19,7 +22,10 @@ import http/internal/http2/origin
 import http/internal/http2/response_reader
 import http/internal/http2/settings
 import http/internal/http2/wire
+import http/internal/tcp_reservation
 import http/internal/transport
+import http/internal/upload
+import http/resource
 
 const h2_alpn = <<"h2":utf8>>
 
@@ -47,21 +53,55 @@ pub opaque type Config {
     checkout: fn(String) ->
       Result(Option(#(transport.Socket, wire.State, fn() -> Nil)), error.Error),
     checkin: fn(String, transport.Socket, wire.State, fn() -> Nil) -> Bool,
+    checkout_http1: fn(String) -> Result(Option(transport.Socket), error.Error),
     attach: fn(String, transport.Socket) -> Result(fn() -> Nil, error.Error),
+    adopt: fn(transport.Socket, Pid) -> Result(Nil, error.Error),
     cancelled: fn() -> Bool,
     http1_fallback: Option(
       fn(transport.Socket, Request(body.Body), fn() -> Nil, Int) ->
         Result(Response(body.Body), error.Error),
     ),
     cleanup: fn() -> Nil,
+    reserve: fn(String) -> Result(tcp_reservation.Reservation, error.Error),
+    replace: fn(transport.Socket, transport.Socket) -> Result(Nil, error.Error),
+    trace: Option(client_trace.Trace),
+    connect_trace: Option(client_trace.Trace),
+    connect_observation: Option(#(transport.Diagnostics, ConnectionGuard)),
+    shared_resources: Option(resource.Controller),
+    lifecycle_owner: Option(Pid),
+    source_worker: Option(upload.Upload),
+    connection_guard: Option(ConnectionGuard),
+    selected_protocol: Option(context.Protocol),
+    exchange_started: Bool,
+    request_phase_started: Option(ConnectionGuard),
+    request_phase_finished: Option(ConnectionGuard),
+    response_phase_started: Option(ConnectionGuard),
+    response_phase_finished: Option(ConnectionGuard),
+    release_phase_started: Option(ConnectionGuard),
+    release_phase_finished: Option(ConnectionGuard),
   )
 }
 
-/// ALPN result. HTTP/1.1 is reported before any application bytes are sent.
+/// ALPN result.
+/// HTTP/1.1 is reported before any application bytes are sent.
 pub type Outcome {
   Http2Response(Response(body.Body))
   Http1Response(Response(body.Body))
   Http1Required
+}
+
+/// A verified connection paused before any application request bytes.
+/// This internal value can be transferred to the winner of a connection race.
+pub opaque type Ready {
+  Ready(
+    socket: transport.Socket,
+    selected: BitArray,
+    reused: Option(wire.State),
+    prepared: Prepared,
+    config: Config,
+    deadline: Int,
+    once: ConnectionGuard,
+  )
 }
 
 type Prepared {
@@ -94,8 +134,21 @@ fn mark_connection_released(guard: ConnectionGuard) -> Bool
 fn claim_connection_close(guard: ConnectionGuard) -> Bool
 
 type UploadProgress {
-  UploadComplete(wire.State, response_reader.State)
+  UploadComplete(Sending)
   EarlyResponse(Response(body.Body))
+}
+
+type Sending {
+  Sending(
+    socket: transport.Socket,
+    state: wire.State,
+    reader: response_reader.State,
+    stream_id: Int,
+    received: Int,
+    declared_length: Option(Int),
+    config: Config,
+    deadlines: OperationDeadlines,
+  )
 }
 
 type ResponseBodyState {
@@ -131,10 +184,66 @@ pub fn defaults() -> Config {
     reuse_connections: False,
     checkout: fn(_) { Ok(None) },
     checkin: fn(_, _, _, _) { False },
+    checkout_http1: fn(_) { Ok(None) },
     attach: fn(_, _) { Ok(fn() { Nil }) },
+    adopt: fn(socket, owner) {
+      transport.transfer_owner(socket, owner)
+      |> result.map_error(map_operation_error)
+    },
     cancelled: fn() { False },
     http1_fallback: None,
     cleanup: fn() { Nil },
+    reserve: fn(_) { Ok(tcp_reservation.unmanaged()) },
+    replace: fn(_, _) { Ok(Nil) },
+    trace: None,
+    connect_trace: None,
+    connect_observation: None,
+    shared_resources: None,
+    lifecycle_owner: None,
+    source_worker: None,
+    connection_guard: None,
+    selected_protocol: None,
+    exchange_started: False,
+    request_phase_started: None,
+    request_phase_finished: None,
+    response_phase_started: None,
+    response_phase_finished: None,
+    release_phase_started: None,
+    release_phase_finished: None,
+  )
+}
+
+/// Attach the bounded diagnostic correlation for this request attempt.
+pub fn with_trace(config: Config, trace: Option(client_trace.Trace)) -> Config {
+  Config(..config, trace:)
+}
+
+/// Observe connection candidates independently from the selected exchange.
+pub fn with_connect_trace(
+  config: Config,
+  trace: Option(client_trace.Trace),
+) -> Config {
+  Config(..config, connect_trace: trace)
+}
+
+/// Give only the selected TCP contender authority over attempt completion.
+pub fn with_ready_trace(
+  ready: Ready,
+  trace: Option(client_trace.Trace),
+) -> Ready {
+  Ready(..ready, config: with_trace(ready.config, trace))
+}
+
+/// Share request-worker admission and the reusable client's lifetime.
+pub fn with_supervision(
+  config config: Config,
+  resources resources: resource.Controller,
+  lifecycle_owner lifecycle_owner: Pid,
+) -> Config {
+  Config(
+    ..config,
+    shared_resources: Some(resources),
+    lifecycle_owner: Some(lifecycle_owner),
   )
 }
 
@@ -206,6 +315,15 @@ pub fn with_body_limits(
   Ok(Config(..config, maximum_body_bytes:, maximum_stream_buffer_bytes:))
 }
 
+/// Acquire the shared connection budget before DNS/dial and atomically replace its transport during TLS upgrade without releasing the grant.
+pub fn with_admission(
+  config: Config,
+  reserve: fn(String) -> Result(tcp_reservation.Reservation, error.Error),
+  replace: fn(transport.Socket, transport.Socket) -> Result(Nil, error.Error),
+) -> Config {
+  Config(..config, reserve:, replace:)
+}
+
 /// Attach connection admission, ownership, and cancellation hooks.
 pub fn with_lifecycle(
   config: Config,
@@ -213,6 +331,16 @@ pub fn with_lifecycle(
   cancelled: fn() -> Bool,
 ) -> Config {
   Config(..config, attach:, cancelled:)
+}
+
+/// Transfer a prepared transport and commit its lifecycle ownership together.
+/// This hook is internal to the reusable client and exposes no runtime handle.
+@internal
+pub fn with_owner_adoption(
+  config: Config,
+  adopt: fn(transport.Socket, Pid) -> Result(Nil, error.Error),
+) -> Config {
+  Config(..config, adopt:)
 }
 
 /// Reuse completed HTTP/2 sessions through the caller-owned finite pool.
@@ -225,11 +353,6 @@ pub fn with_pool(
   Config(..config, reuse_connections: True, checkout:, checkin:)
 }
 
-/// Disable connection reuse for one independently supervised attempt.
-pub fn without_pool(config: Config) -> Config {
-  Config(..config, reuse_connections: False)
-}
-
 /// Continue HTTP/1.1 on the same authenticated socket when ALPN selects it.
 /// The callback receives ownership of both the socket and its cleanup hook.
 pub fn with_http1_fallback(
@@ -240,13 +363,43 @@ pub fn with_http1_fallback(
   Config(..config, http1_fallback: Some(fallback))
 }
 
+/// Include previously authenticated HTTP/1.1 sessions when preparing a TCP contender.
+/// Checkout transfers ownership without consuming the request body.
+pub fn with_http1_pool(
+  config: Config,
+  checkout: fn(String) -> Result(Option(transport.Socket), error.Error),
+) -> Config {
+  Config(..config, checkout_http1: checkout)
+}
+
 /// Negotiate and perform one HTTPS request without retaining a connection.
 pub fn run(
   outgoing: Request(body.Body),
   config: Config,
 ) -> Result(Outcome, error.Error) {
+  use ready <- result.try(prepare_connection(outgoing, config))
+  run_ready(ready)
+}
+
+/// Resolve, connect, and authenticate without invoking the outgoing Body.
+pub fn prepare_connection(
+  outgoing: Request(body.Body),
+  config: Config,
+) -> Result(Ready, error.Error) {
   let deadline =
     transport.monotonic_millisecond() + config.total_timeout_milliseconds
+  prepare_connection_before(outgoing, config, deadline)
+}
+
+/// Prepare against an existing absolute deadline owned by a protocol race.
+/// No candidate may create a fresh total-time budget while another candidate or its cleanup is consuming the original exchange budget.
+@internal
+pub fn prepare_connection_before(
+  outgoing: Request(body.Body),
+  config: Config,
+  deadline: Int,
+) -> Result(Ready, error.Error) {
+  use _ <- result.try(remaining_total_timeout(deadline))
   use _ <- result.try(require_active(config))
   use prepared <- result.try(prepare(outgoing))
   let config = Config(..config, origin: prepared.origin)
@@ -256,8 +409,120 @@ pub fn run(
   })
   case pooled {
     Some(#(socket, state, cleanup)) ->
-      run_reused(socket, state, prepared, Config(..config, cleanup:), deadline)
+      case config.attach(prepared.origin, socket) {
+        Error(failure) ->
+          close_with_config(socket, Config(..config, cleanup:), failure)
+        Ok(cleanup) ->
+          Ok(Ready(
+            socket,
+            h2_alpn,
+            Some(state),
+            prepared,
+            Config(..config, cleanup:),
+            deadline,
+            new_connection_guard(),
+          ))
+      }
+    None -> prepare_http1_or_connect(prepared, config, deadline)
+  }
+}
+
+fn prepare_http1_or_connect(
+  prepared: Prepared,
+  config: Config,
+  deadline: Int,
+) -> Result(Ready, error.Error) {
+  use pooled <- result.try(
+    case config.reuse_connections, config.http1_fallback {
+      True, Some(_) -> config.checkout_http1(prepared.origin)
+      _, _ -> Ok(None)
+    },
+  )
+  case pooled {
     None -> connect(prepared, config, deadline)
+    Some(socket) ->
+      case config.attach(prepared.origin, socket) {
+        Error(failure) -> close_with_config(socket, config, failure)
+        Ok(cleanup) ->
+          Ok(Ready(
+            socket,
+            http1_alpn,
+            None,
+            prepared,
+            Config(..config, cleanup:),
+            deadline,
+            new_connection_guard(),
+          ))
+      }
+  }
+}
+
+/// Transfer a prepared socket before its connection contender exits.
+pub fn transfer_ready(ready: Ready, owner: Pid) -> Result(Ready, error.Error) {
+  case ready.config.adopt(ready.socket, owner) {
+    Ok(Nil) -> Ok(ready)
+    Error(failure) -> Error(failure)
+  }
+}
+
+/// Replace a contender's temporary ownership guard after selecting it.
+pub fn with_ready_cleanup(ready: Ready, cleanup: fn() -> Nil) -> Ready {
+  Ready(..ready, config: Config(..ready.config, cleanup:))
+}
+
+/// Commit the selected connection to exactly one application exchange.
+pub fn run_ready(ready: Ready) -> Result(Outcome, error.Error) {
+  use <- require(
+    mark_connection_released(ready.once),
+    error.new(error.Cancelled),
+  )
+  let ready =
+    Ready(
+      ..ready,
+      config: Config(
+        ..ready.config,
+        connection_guard: Some(new_connection_guard()),
+        request_phase_started: Some(new_connection_guard()),
+        request_phase_finished: Some(new_connection_guard()),
+        response_phase_started: Some(new_connection_guard()),
+        response_phase_finished: Some(new_connection_guard()),
+        release_phase_started: Some(new_connection_guard()),
+        release_phase_finished: Some(new_connection_guard()),
+      ),
+    )
+  let active = {
+    use _ <- result.try(require_active(ready.config))
+    remaining_total_timeout(ready.deadline)
+  }
+  use _ <- result.try(case active {
+    Ok(_) -> Ok(Nil)
+    Error(failure) -> close_with_config(ready.socket, ready.config, failure)
+  })
+  case ready.reused {
+    Some(state) ->
+      run_reused(
+        ready.socket,
+        state,
+        ready.prepared,
+        ready.config,
+        ready.deadline,
+      )
+    None ->
+      run_negotiated(
+        ready.socket,
+        ready.selected,
+        ready.prepared,
+        ready.config,
+        ready.deadline,
+      )
+  }
+}
+
+/// Release an unselected connection without consuming the request Body.
+pub fn discard_ready(ready: Ready) -> Nil {
+  case mark_connection_released(ready.once) {
+    True -> discard_connection(ready.socket, ready.config)
+    False -> Nil
   }
 }
 
@@ -265,7 +530,36 @@ fn connect(
   prepared: Prepared,
   config: Config,
   deadline: Int,
-) -> Result(Outcome, error.Error) {
+) -> Result(Ready, error.Error) {
+  let config = observe_connection(config)
+  use #(socket, cancel) <- result.try(
+    tcp_reservation.connect(config.reserve, prepared.origin, fn() {
+      dial(prepared, config, deadline)
+    })
+    |> result.map_error(fn(failure) {
+      publish_connection(config)
+      failure
+    }),
+  )
+  let config = Config(..config, cleanup: cancel)
+  case config.attach(prepared.origin, socket) {
+    Error(failure) ->
+      close_with_config(socket, config, prefer_cancelled(config, failure))
+    Ok(cleanup) -> {
+      let config = Config(..config, cleanup: cleanup)
+      case establish_proxy_tunnel(socket, prepared, config, deadline) {
+        Error(failure) -> close_with_config(socket, config, failure)
+        Ok(socket) -> negotiate(socket, prepared, config, deadline)
+      }
+    }
+  }
+}
+
+fn dial(
+  prepared: Prepared,
+  config: Config,
+  deadline: Int,
+) -> Result(transport.Socket, error.Error) {
   use dns_timeout <- result.try(timeout_for(
     deadline,
     config.dns_timeout_milliseconds,
@@ -281,34 +575,38 @@ fn connect(
     Some(host) -> #(host, config.proxy_port)
     None -> #(prepared.host, prepared.port)
   }
-  use socket <- result.try(
-    transport.connect_with_deadlines(
-      connect_host,
-      connect_port,
-      dns_timeout.milliseconds,
-      connect_timeout.milliseconds,
-      total_timeout,
-      smallest(
-        config.operation_timeout_milliseconds,
+  case config.connect_observation {
+    None ->
+      transport.connect_with_deadlines(
+        connect_host,
+        connect_port,
+        dns_timeout.milliseconds,
         connect_timeout.milliseconds,
-      ),
-    )
-    |> result.map_error(map_connect_error(
-      _,
-      dns_timeout.expiry,
-      connect_timeout.expiry,
-    )),
-  )
-  case config.attach(prepared.origin, socket) {
-    Error(failure) -> close_with(socket, prefer_cancelled(config, failure))
-    Ok(cleanup) -> {
-      let config = Config(..config, cleanup: cleanup)
-      case establish_proxy_tunnel(socket, prepared, config, deadline) {
-        Error(failure) -> close_with_config(socket, config, failure)
-        Ok(socket) -> negotiate(socket, prepared, config, deadline)
-      }
-    }
+        total_timeout,
+        smallest(
+          config.operation_timeout_milliseconds,
+          connect_timeout.milliseconds,
+        ),
+      )
+    Some(#(diagnostics, _)) ->
+      transport.connect_with_diagnostics(
+        connect_host,
+        connect_port,
+        dns_timeout.milliseconds,
+        connect_timeout.milliseconds,
+        total_timeout,
+        smallest(
+          config.operation_timeout_milliseconds,
+          connect_timeout.milliseconds,
+        ),
+        diagnostics,
+      )
   }
+  |> result.map_error(map_connect_error(
+    _,
+    dns_timeout.expiry,
+    connect_timeout.expiry,
+  ))
 }
 
 fn establish_proxy_tunnel(
@@ -456,10 +754,9 @@ fn run_reused(
   config: Config,
   deadline: Int,
 ) -> Result(Outcome, error.Error) {
-  case run_h2_reused(socket, state, prepared, config, deadline) {
-    Ok(outcome) -> Ok(outcome)
-    Error(failure) -> close_with_config(socket, config, failure)
-  }
+  let config = Config(..config, selected_protocol: Some(context.Http2))
+  client_trace.protocol_selected(config.trace, context.Http2)
+  run_h2_reused(socket, state, prepared, config, deadline)
 }
 
 fn prepare(outgoing: Request(body.Body)) -> Result(Prepared, error.Error) {
@@ -509,7 +806,18 @@ fn negotiate(
   prepared: Prepared,
   config: Config,
   deadline: Int,
-) -> Result(Outcome, error.Error) {
+) -> Result(Ready, error.Error) {
+  let outcome = negotiate_transport(socket, prepared, config, deadline)
+  publish_connection(config)
+  outcome
+}
+
+fn negotiate_transport(
+  socket: transport.Socket,
+  prepared: Prepared,
+  config: Config,
+  deadline: Int,
+) -> Result(Ready, error.Error) {
   case
     timeout_for(deadline, config.tls_timeout_milliseconds, error.TlsHandshake)
   {
@@ -530,19 +838,32 @@ fn negotiate(
             config,
             map_tls_error(failure, timeout.expiry),
           )
-        Ok(transport.TlsReady(socket, selected, _)) -> {
+        Ok(transport.TlsReady(secured, selected, _)) -> {
+          use _ <- result.try(case config.replace(socket, secured) {
+            Ok(Nil) -> Ok(Nil)
+            Error(failure) -> close_with_config(secured, config, failure)
+          })
+          let socket = secured
           config.cleanup()
           case config.attach(config.origin, socket) {
             Error(failure) ->
               close_with(socket, prefer_cancelled(config, failure))
-            Ok(cleanup) ->
-              run_negotiated(
-                socket,
-                selected,
-                prepared,
-                Config(..config, cleanup: cleanup),
-                deadline,
-              )
+            Ok(cleanup) -> {
+              let config = Config(..config, cleanup:)
+              case selected == h2_alpn || selected == http1_alpn {
+                False -> close_with_config(socket, config, error.new(error.Tls))
+                True ->
+                  Ok(Ready(
+                    socket,
+                    selected,
+                    None,
+                    prepared,
+                    config,
+                    deadline,
+                    new_connection_guard(),
+                  ))
+              }
+            }
           }
         }
       }
@@ -557,13 +878,16 @@ fn run_negotiated(
   deadline: Int,
 ) -> Result(Outcome, error.Error) {
   case selected {
-    <<"h2":utf8>> ->
-      case run_h2(socket, prepared, config, deadline) {
-        Ok(outcome) -> Ok(outcome)
-        Error(failure) -> close_with_config(socket, config, failure)
-      }
-    <<"http/1.1":utf8>> ->
+    <<"h2":utf8>> -> {
+      let config = Config(..config, selected_protocol: Some(context.Http2))
+      client_trace.protocol_selected(config.trace, context.Http2)
+      run_h2(socket, prepared, config, deadline)
+    }
+    <<"http/1.1":utf8>> -> {
+      let config = Config(..config, selected_protocol: Some(context.Http1))
+      client_trace.protocol_selected(config.trace, context.Http1)
       run_http1_fallback(socket, prepared, config, deadline)
+    }
     _ -> close_with_config(socket, config, error.new(error.Tls))
   }
 }
@@ -591,33 +915,21 @@ fn run_h2(
   config: Config,
   deadline: Int,
 ) -> Result(Outcome, error.Error) {
-  use collected <- result.try(collect_outgoing_body(prepared, config))
-  let #(body_bytes, trailers) = collected
-  let deadlines =
-    OperationDeadlines(
-      total: deadline,
-      operation: transport.monotonic_millisecond()
-        + config.operation_timeout_milliseconds,
-    )
-  use state <- result.try(
+  case
     wire.new(connection.Client, connection_limits(), wire_limits(config))
-    |> result.map_error(map_wire_error),
-  )
-  use started <- result.try(
-    wire.initial_bytes(state, local_settings())
-    |> result.map_error(map_wire_error),
-  )
-  let wire.Started(state, initial) = started
-  use _ <- result.try(send_bytes(socket, initial, deadlines))
-  run_h2_stream(
-    socket,
-    state,
-    prepared,
-    body_bytes,
-    trailers,
-    config,
-    deadlines,
-  )
+    |> result.map_error(map_wire_error)
+  {
+    Error(failure) -> close_with_config(socket, config, failure)
+    Ok(state) ->
+      case
+        wire.initial_bytes(state, local_settings())
+        |> result.map_error(map_wire_error)
+      {
+        Error(failure) -> close_with_config(socket, config, failure)
+        Ok(wire.Started(state, initial)) ->
+          run_supervised(socket, state, initial, prepared, config, deadline)
+      }
+  }
 }
 
 fn run_h2_reused(
@@ -627,66 +939,108 @@ fn run_h2_reused(
   config: Config,
   deadline: Int,
 ) -> Result(Outcome, error.Error) {
-  use collected <- result.try(collect_outgoing_body(prepared, config))
-  let #(body_bytes, trailers) = collected
+  run_supervised(socket, state, <<>>, prepared, config, deadline)
+}
+
+fn run_supervised(
+  socket: transport.Socket,
+  state: wire.State,
+  initial: BitArray,
+  prepared: Prepared,
+  config: Config,
+  deadline: Int,
+) -> Result(Outcome, error.Error) {
   let deadlines =
     OperationDeadlines(
       total: deadline,
       operation: transport.monotonic_millisecond()
         + config.operation_timeout_milliseconds,
     )
-  run_h2_stream(
-    socket,
-    state,
-    prepared,
-    body_bytes,
-    trailers,
-    config,
-    deadlines,
-  )
+  case start_source(socket, prepared, config, deadlines) {
+    Error(failure) -> close_with_config(socket, config, failure)
+    Ok(active) -> {
+      begin_exchange_phases(active, context.Http2)
+      let outcome = {
+        use _ <- result.try(send_bytes(socket, initial, deadlines))
+        run_h2_stream(socket, state, prepared, active, deadlines)
+      }
+      case outcome {
+        Ok(incoming) -> Ok(incoming)
+        Error(failure) -> close_with_config(socket, active, failure)
+      }
+    }
+  }
 }
 
-fn collect_outgoing_body(
+fn start_source(
+  socket: transport.Socket,
   prepared: Prepared,
   config: Config,
-) -> Result(#(BitArray, body.Headers), error.Error) {
-  use collected <- result.try(body.read_all(
-    prepared.outgoing.body,
-    config.maximum_body_bytes,
+  deadlines: OperationDeadlines,
+) -> Result(Config, error.Error) {
+  use timeout <- result.try(operation_timeout(
+    deadlines,
+    config.operation_timeout_milliseconds,
   ))
-  let #(body_bytes, trailers) = collected
-  use _ <- result.try(require_matching_length(
-    prepared.declared_length,
-    bit_array.byte_size(body_bytes),
-  ))
-  use _ <- result.try(
-    message.trailer_headers(trailers)
-    |> result.map_error(fn(_) { protocol_error() }),
+  client_trace.phase_started(config.trace, diagnostics.ResourceAdmission)
+  let active = Config(..config, exchange_started: True)
+  let started =
+    upload.start(
+      source: prepared.outgoing.body,
+      maximum_chunk: config.maximum_stream_buffer_bytes,
+      deadline: transport.monotonic_millisecond() + timeout.milliseconds,
+      expiry: timeout.expiry,
+      total_deadline: deadlines.total,
+      resources: config.shared_resources,
+      lifecycle_owner: config.lifecycle_owner,
+      abandon: fn(failure) {
+        begin_exchange_phases(active, context.Http2)
+        finish_exchange_phases(active, context.Http2, Error(failure))
+        begin_release_phase(active)
+        client_trace.finished(active.trace, Some(context.Http2), Error(failure))
+        case claim_close(active) {
+          True -> {
+            let _closed = transport.close(socket)
+            active.cleanup()
+          }
+          False -> Nil
+        }
+      },
+      released: fn(outcome) {
+        finish_release_phase(active, outcome)
+        client_trace.released(active.trace, Some(context.Http2), outcome)
+      },
+    )
+  client_trace.phase_finished(
+    config.trace,
+    diagnostics.ResourceAdmission,
+    result.map(started, fn(_) { Nil }),
   )
-  Ok(#(body_bytes, trailers))
+  case started {
+    Ok(worker) -> Ok(Config(..active, source_worker: Some(worker)))
+    Error(failure) -> {
+      body.cancel(prepared.outgoing.body)
+      Error(failure)
+    }
+  }
 }
 
 fn run_h2_stream(
   socket: transport.Socket,
   state: wire.State,
   prepared: Prepared,
-  body_bytes: BitArray,
-  trailers: body.Headers,
   config: Config,
   deadlines: OperationDeadlines,
 ) -> Result(Outcome, error.Error) {
+  // The source is non-replayable and potentially blocked.
+  // Commit only headers here; FIN and trailers follow the source's actual terminal event.
   use written <- result.try(
-    wire.send_request_headers(
-      state,
-      prepared.outgoing,
-      end_stream: bit_array.byte_size(body_bytes) == 0
-        && list.is_empty(trailers),
-    )
+    wire.send_request_headers(state, prepared.outgoing, end_stream: False)
     |> result.map_error(map_wire_error),
   )
   let wire.HeadersWritten(state, stream_id, headers) = written
   use _ <- result.try(send_frames(socket, headers, deadlines))
-  use response_state <- result.try(
+  use reader <- result.try(
     response_reader.new(
       stream_id: stream_id,
       maximum_body_bytes: config.maximum_body_bytes,
@@ -694,185 +1048,269 @@ fn run_h2_stream(
     )
     |> result.map_error(map_response_reader_error),
   )
-  use upload <- result.try(send_request_body(
-    socket,
-    state,
-    response_state,
-    stream_id,
-    body_bytes,
-    config,
-    deadlines,
-    end_stream: list.is_empty(trailers),
+  next_source_chunk(Sending(
+    socket:,
+    state:,
+    reader:,
+    stream_id:,
+    received: 0,
+    declared_length: prepared.declared_length,
+    config:,
+    deadlines:,
   ))
-  use upload <- result.try(send_request_trailers(
-    socket,
-    upload,
-    stream_id,
-    trailers,
-    deadlines,
-  ))
-  case upload {
-    EarlyResponse(incoming) -> Ok(Http2Response(incoming))
-    UploadComplete(state, response_state) ->
-      receive_response_headers(
-        socket,
-        state,
-        response_state,
-        stream_id,
-        config,
-        deadlines,
-      )
-      |> result.map(Http2Response)
-  }
+  |> result.map(Http2Response)
 }
 
-fn send_request_body(
-  socket: transport.Socket,
-  state: wire.State,
-  response_state: response_reader.State,
-  stream_id: Int,
-  bytes: BitArray,
-  config: Config,
-  deadlines: OperationDeadlines,
-  end_stream end_stream: Bool,
-) -> Result(UploadProgress, error.Error) {
-  case bit_array.byte_size(bytes) {
-    0 -> Ok(UploadComplete(state, response_state))
-    _ -> {
-      use progress <- result.try(
-        wire.send_data(
-          state,
-          stream_id: stream_id,
-          bytes: bytes,
-          end_stream: end_stream,
-        )
-        |> result.map_error(map_wire_error),
-      )
-      case progress {
-        wire.DataBlocked(state) ->
-          await_upload_progress(
-            socket,
-            state,
-            response_state,
-            stream_id,
-            bytes,
-            end_stream,
-            config,
-            deadlines,
-          )
-        wire.DataWritten(state, frames, remaining, end_stream_sent) -> {
-          use _ <- result.try(send_frames(socket, frames, deadlines))
-          case bit_array.byte_size(remaining), end_stream_sent == end_stream {
-            0, True -> Ok(UploadComplete(state, response_state))
-            _, _ ->
-              await_upload_progress(
-                socket,
-                state,
-                response_state,
-                stream_id,
-                remaining,
-                end_stream,
-                config,
-                deadlines,
-              )
-          }
-        }
-      }
+fn next_source_chunk(
+  sending: Sending,
+) -> Result(Response(body.Body), error.Error) {
+  use _ <- result.try(require_active(sending.config))
+  case sending.config.source_worker {
+    None -> Error(error.new(error.Service))
+    Some(worker) -> {
+      upload.request_next(worker)
+      await_source_chunk(sending, worker)
     }
   }
 }
 
-fn await_upload_progress(
-  socket: transport.Socket,
-  state: wire.State,
-  response_state: response_reader.State,
-  stream_id: Int,
-  remaining: BitArray,
-  end_stream: Bool,
-  config: Config,
-  deadlines: OperationDeadlines,
-) -> Result(UploadProgress, error.Error) {
-  use _ <- result.try(require_active(config))
+fn await_source_chunk(
+  sending: Sending,
+  worker: upload.Upload,
+) -> Result(Response(body.Body), error.Error) {
   use timeout <- result.try(operation_timeout(
-    deadlines,
-    config.idle_timeout_milliseconds,
+    sending.deadlines,
+    sending.config.idle_timeout_milliseconds,
   ))
   case
-    transport.read(
-      socket,
-      config.maximum_stream_buffer_bytes,
+    transport.read_or_message(
+      sending.socket,
+      sending.config.maximum_stream_buffer_bytes,
       timeout.milliseconds,
+      upload.events(worker),
     )
   {
-    Error(failure) -> Error(map_read_error(failure, timeout.expiry))
-    Ok(transport.ReadEnd(_)) -> Error(protocol_error())
-    Ok(transport.ReadData(bytes, socket)) -> {
-      use fed <- result.try(
-        wire.feed(state, bytes)
-        |> result.map_error(map_wire_error),
-      )
-      let wire.Fed(state, actions) = fed
-      use automatic <- result.try(
-        wire.automatic_writes(actions, 16_384)
-        |> result.map_error(map_wire_error),
-      )
-      use _ <- result.try(send_frames(socket, automatic, deadlines))
-      use progress <- result.try(
-        response_reader.accept(response_state, actions)
-        |> result.map_error(map_response_reader_error),
-      )
-      let response_reader.Progress(response_state, head, chunks, completion) =
-        progress
-      case head {
-        Some(head) -> {
-          use incoming <- result.try(streaming_response(
-            socket,
-            state,
-            response_state,
-            stream_id,
-            head,
-            chunks,
-            completion,
-            config,
-            deadlines,
-          ))
-          Ok(EarlyResponse(incoming))
-        }
-        None ->
-          send_request_body(
-            socket,
-            state,
-            response_state,
-            stream_id,
-            remaining,
-            config,
-            deadlines,
-            end_stream: end_stream,
-          )
+    Error(failure) ->
+      Error(prefer_cancelled(
+        sending.config,
+        map_read_error(failure, timeout.expiry),
+      ))
+    Ok(transport.ReadSocket(transport.ReadEnd(_))) -> Error(protocol_error())
+    Ok(transport.ReadSocket(transport.ReadData(bytes, socket))) -> {
+      use progress <- result.try(accept_upload_input(
+        Sending(..sending, socket:),
+        bytes,
+      ))
+      case progress {
+        EarlyResponse(incoming) -> Ok(incoming)
+        UploadComplete(sending) -> await_source_chunk(sending, worker)
       }
     }
+    Ok(transport.ReadMessage(event, socket)) ->
+      accept_source_chunk(Sending(..sending, socket:), event)
   }
 }
 
-fn send_request_trailers(
-  socket: transport.Socket,
-  upload: UploadProgress,
-  stream_id: Int,
+fn accept_source_chunk(
+  sending: Sending,
+  event: upload.Event,
+) -> Result(Response(body.Body), error.Error) {
+  case event {
+    upload.Failed(failure) -> Error(failure)
+    upload.SourceDisposed -> Error(error.new(error.Service))
+    upload.Chunk(bytes) -> {
+      let received = sending.received + bit_array.byte_size(bytes)
+      use <- require(
+        received <= sending.config.maximum_body_bytes,
+        error.new(error.Body(error.TooLarge(sending.config.maximum_body_bytes))),
+      )
+      use <- require(
+        case sending.declared_length {
+          Some(length) -> received <= length
+          None -> True
+        },
+        protocol_error(),
+      )
+      use progress <- result.try(send_request_chunk(
+        Sending(..sending, received:),
+        bytes,
+        False,
+      ))
+      case progress {
+        EarlyResponse(incoming) -> Ok(incoming)
+        UploadComplete(sending) -> next_source_chunk(sending)
+      }
+    }
+    upload.End(trailers) -> finish_upload(sending, trailers)
+  }
+}
+
+fn finish_upload(
+  sending: Sending,
   trailers: body.Headers,
-  deadlines: OperationDeadlines,
-) -> Result(UploadProgress, error.Error) {
-  case upload, trailers {
-    EarlyResponse(_), _ | UploadComplete(_, _), [] -> Ok(upload)
-    UploadComplete(state, response_state), trailers -> {
+) -> Result(Response(body.Body), error.Error) {
+  use _ <- result.try(require_matching_length(
+    sending.declared_length,
+    sending.received,
+  ))
+  use _ <- result.try(
+    message.trailer_headers(trailers)
+    |> result.map_error(fn(_) { protocol_error() }),
+  )
+  use progress <- result.try(case trailers {
+    [] -> send_request_chunk(sending, <<>>, True)
+    _ -> {
       use written <- result.try(
-        wire.send_trailers(state, stream_id, trailers)
+        wire.send_trailers(sending.state, sending.stream_id, trailers)
         |> result.map_error(map_wire_error),
       )
       let wire.HeadersWritten(state, _, frames) = written
-      use _ <- result.try(send_frames(socket, frames, deadlines))
-      Ok(UploadComplete(state, response_state))
+      use _ <- result.try(send_frames(sending.socket, frames, sending.deadlines))
+      Ok(UploadComplete(Sending(..sending, state:)))
+    }
+  })
+  case progress {
+    EarlyResponse(incoming) -> Ok(incoming)
+    UploadComplete(sending) -> {
+      use _ <- result.try(finish_source(sending.config, Ok(Nil)))
+      receive_response_headers(
+        sending.socket,
+        sending.state,
+        sending.reader,
+        sending.stream_id,
+        sending.config,
+        sending.deadlines,
+      )
     }
   }
+}
+
+fn send_request_chunk(
+  sending: Sending,
+  bytes: BitArray,
+  end_stream: Bool,
+) -> Result(UploadProgress, error.Error) {
+  use _ <- result.try(require_active(sending.config))
+  use progress <- result.try(
+    wire.send_data(
+      sending.state,
+      stream_id: sending.stream_id,
+      bytes:,
+      end_stream:,
+    )
+    |> result.map_error(map_wire_error),
+  )
+  case progress {
+    wire.DataBlocked(state) ->
+      await_upload_credit(Sending(..sending, state:), bytes, end_stream)
+    wire.DataWritten(state, frames, remaining, end_stream_sent) -> {
+      use _ <- result.try(send_frames(sending.socket, frames, sending.deadlines))
+      let sending = Sending(..sending, state:)
+      case
+        bit_array.byte_size(remaining) == 0 && end_stream_sent == end_stream
+      {
+        True -> Ok(UploadComplete(sending))
+        False -> await_upload_credit(sending, remaining, end_stream)
+      }
+    }
+  }
+}
+
+fn await_upload_credit(
+  sending: Sending,
+  remaining: BitArray,
+  end_stream: Bool,
+) -> Result(UploadProgress, error.Error) {
+  use _ <- result.try(require_active(sending.config))
+  use timeout <- result.try(operation_timeout(
+    sending.deadlines,
+    sending.config.idle_timeout_milliseconds,
+  ))
+  case
+    transport.read(
+      sending.socket,
+      sending.config.maximum_stream_buffer_bytes,
+      timeout.milliseconds,
+    )
+  {
+    Error(failure) ->
+      Error(prefer_cancelled(
+        sending.config,
+        map_read_error(failure, timeout.expiry),
+      ))
+    Ok(transport.ReadEnd(_)) -> Error(protocol_error())
+    Ok(transport.ReadData(bytes, socket)) -> {
+      use progress <- result.try(accept_upload_input(
+        Sending(..sending, socket:),
+        bytes,
+      ))
+      case progress {
+        EarlyResponse(incoming) -> Ok(EarlyResponse(incoming))
+        UploadComplete(sending) ->
+          send_request_chunk(sending, remaining, end_stream)
+      }
+    }
+  }
+}
+
+fn accept_upload_input(
+  sending: Sending,
+  bytes: BitArray,
+) -> Result(UploadProgress, error.Error) {
+  use fed <- result.try(
+    wire.feed(sending.state, bytes)
+    |> result.map_error(map_wire_error),
+  )
+  let wire.Fed(state, actions) = fed
+  use automatic <- result.try(
+    wire.automatic_writes(actions, 16_384)
+    |> result.map_error(map_wire_error),
+  )
+  use _ <- result.try(send_frames(sending.socket, automatic, sending.deadlines))
+  use progress <- result.try(
+    response_reader.accept(sending.reader, actions)
+    |> result.map_error(map_response_reader_error),
+  )
+  let response_reader.Progress(reader, head, chunks, completion) = progress
+  case head {
+    None -> Ok(UploadComplete(Sending(..sending, state:, reader:)))
+    Some(head) -> {
+      // A final response can arrive before source EOF.
+      // Join its reader before disposing it, and never return this unfinished request to the pool.
+      use _ <- result.try(finish_source(
+        sending.config,
+        Error(error.new(error.Cancelled)),
+      ))
+      streaming_response(
+        sending.socket,
+        state,
+        reader,
+        sending.stream_id,
+        head,
+        chunks,
+        completion,
+        Config(..sending.config, reuse_connections: False),
+        sending.deadlines,
+      )
+      |> result.map(EarlyResponse)
+    }
+  }
+}
+
+fn finish_source(
+  config: Config,
+  outcome: Result(Nil, error.Error),
+) -> Result(Nil, error.Error) {
+  let finished = case config.source_worker {
+    None -> Ok(Nil)
+    Some(worker) -> upload.finish_source(upload: worker, outcome:)
+  }
+  let phase_outcome = case finished {
+    Error(failure) -> Error(failure)
+    Ok(Nil) -> outcome
+  }
+  finish_request_phase(config, context.Http2, phase_outcome)
+  finished
 }
 
 fn receive_response_headers(
@@ -953,15 +1391,18 @@ fn streaming_response(
   deadlines: OperationDeadlines,
 ) -> Result(Response(body.Body), error.Error) {
   let response_reader.Head(incoming, content_length) = head
-  // RFC 8336 removes a 421 response's request origin from this connection's
-  // Origin Set. The pool is intentionally keyed to one authenticated origin,
-  // so evicting the whole idle connection is the conservative equivalent and
-  // cannot accidentally retain other authority learned from peer input.
+  client_trace.headers(config.trace, context.Http2, incoming.status)
+  // RFC 8336 removes a 421 response's request origin from this connection's Origin Set.
+  // The pool is intentionally keyed to one authenticated origin,
+  // so evicting the whole idle connection is the conservative equivalent and cannot accidentally retain other authority learned from peer input.
   let config = case incoming.status == 421 {
     True -> Config(..config, reuse_connections: False)
     False -> config
   }
-  let connection_guard = new_connection_guard()
+  let connection_guard = case config.connection_guard {
+    Some(guard) -> guard
+    None -> new_connection_guard()
+  }
   case pending, completion {
     [], Some(trailers) -> {
       finish_connection(socket, wire_state, config, connection_guard)
@@ -1150,12 +1591,15 @@ fn response_body_failure(
   state: ResponseBodyState,
   failure: error.Error,
 ) -> Result(value, error.Error) {
+  let failure = prefer_cancelled(state.config, failure)
+  finish_exchange_phases(state.config, context.Http2, Error(failure))
+  client_trace.finished(state.config.trace, Some(context.Http2), Error(failure))
   discard_response_connection(
     state.socket,
     state.config,
     state.connection_guard,
   )
-  Error(prefer_cancelled(state.config, failure))
+  Error(failure)
 }
 
 fn send_frames(
@@ -1347,13 +1791,57 @@ fn close_with_config(
   config: Config,
   failure: error.Error,
 ) -> Result(value, error.Error) {
+  let failure = prefer_cancelled(config, failure)
+  finish_exchange_phases(config, context.Http2, Error(failure))
+  case config.source_worker {
+    None -> Nil
+    Some(worker) -> upload.fail_source(upload: worker, failure:)
+  }
+  publish_connection(config)
+  client_trace.finished(config.trace, config.selected_protocol, Error(failure))
   discard_connection(socket, config)
-  Error(prefer_cancelled(config, failure))
+  Error(failure)
 }
 
 fn discard_connection(socket: transport.Socket, config: Config) -> Nil {
-  let _close_result = transport.close(socket)
+  case claim_close(config) {
+    True -> close_owned_connection(socket, config)
+    False ->
+      case config.source_worker {
+        None -> Nil
+        Some(_) -> release_source(config, Ok(Nil))
+      }
+  }
+}
+
+fn claim_close(config: Config) -> Bool {
+  case config.connection_guard {
+    None -> True
+    Some(guard) -> claim_connection_close(guard)
+  }
+}
+
+fn close_owned_connection(socket: transport.Socket, config: Config) -> Nil {
+  let close_result =
+    transport.close(socket) |> result.map_error(map_operation_error)
   config.cleanup()
+  release_source(config, close_result)
+}
+
+fn release_source(config: Config, outcome: Result(Nil, error.Error)) -> Nil {
+  begin_release_phase(config)
+  case config.source_worker {
+    None -> {
+      finish_release_phase(config, outcome)
+      client_trace.released(config.trace, config.selected_protocol, outcome)
+    }
+    Some(worker) -> {
+      // The reaper owns the lease and publishes release after actual DOWN,
+      // including when this caller's bounded acknowledgement wait expires.
+      let _awaited = upload.release(upload: worker, outcome:)
+      Nil
+    }
+  }
 }
 
 fn finish_connection(
@@ -1362,6 +1850,8 @@ fn finish_connection(
   config: Config,
   guard: ConnectionGuard,
 ) -> Nil {
+  finish_exchange_phases(config, context.Http2, Ok(Nil))
+  client_trace.finished(config.trace, Some(context.Http2), Ok(Nil))
   case mark_connection_released(guard) {
     False -> Nil
     True ->
@@ -1371,13 +1861,13 @@ fn finish_connection(
       {
         True ->
           case config.checkin(config.origin, socket, state, config.cleanup) {
-            True -> Nil
-            False -> config.cleanup()
+            True -> release_source(config, Ok(Nil))
+            False -> {
+              config.cleanup()
+              release_source(config, Ok(Nil))
+            }
           }
-        False -> {
-          let _close_result = transport.close(socket)
-          config.cleanup()
-        }
+        False -> close_owned_connection(socket, config)
       }
   }
 }
@@ -1389,7 +1879,113 @@ fn discard_response_connection(
 ) -> Nil {
   case claim_connection_close(guard) {
     False -> Nil
-    True -> discard_connection(socket, config)
+    True -> {
+      let failure = error.new(error.Cancelled)
+      finish_exchange_phases(config, context.Http2, Error(failure))
+      client_trace.finished(config.trace, Some(context.Http2), Error(failure))
+      close_owned_connection(socket, config)
+    }
+  }
+}
+
+fn begin_exchange_phases(config: Config, protocol: context.Protocol) -> Nil {
+  case config.exchange_started {
+    False -> Nil
+    True -> {
+      begin_phase_once(
+        config.trace,
+        config.request_phase_started,
+        diagnostics.RequestTransmission(protocol),
+      )
+      begin_phase_once(
+        config.trace,
+        config.response_phase_started,
+        diagnostics.ResponseReception(protocol),
+      )
+    }
+  }
+}
+
+fn finish_exchange_phases(
+  config: Config,
+  protocol: context.Protocol,
+  outcome: Result(Nil, error.Error),
+) -> Nil {
+  case config.exchange_started {
+    False -> Nil
+    True -> {
+      finish_request_phase(config, protocol, outcome)
+      finish_phase_once(
+        config.trace,
+        config.response_phase_finished,
+        diagnostics.ResponseReception(protocol),
+        outcome,
+      )
+    }
+  }
+}
+
+fn finish_request_phase(
+  config: Config,
+  protocol: context.Protocol,
+  outcome: Result(Nil, error.Error),
+) -> Nil {
+  finish_phase_once(
+    config.trace,
+    config.request_phase_finished,
+    diagnostics.RequestTransmission(protocol),
+    outcome,
+  )
+}
+
+fn begin_release_phase(config: Config) -> Nil {
+  begin_phase_once(
+    config.trace,
+    config.release_phase_started,
+    diagnostics.ResourceRelease,
+  )
+}
+
+fn finish_release_phase(
+  config: Config,
+  outcome: Result(Nil, error.Error),
+) -> Nil {
+  finish_phase_once(
+    config.trace,
+    config.release_phase_finished,
+    diagnostics.ResourceRelease,
+    outcome,
+  )
+}
+
+fn begin_phase_once(
+  trace: Option(client_trace.Trace),
+  guard: Option(ConnectionGuard),
+  phase: diagnostics.ClientPhase,
+) -> Nil {
+  case guard {
+    None -> Nil
+    Some(guard) ->
+      case mark_connection_released(guard) {
+        True -> client_trace.phase_started(trace, phase)
+        False -> Nil
+      }
+  }
+}
+
+fn finish_phase_once(
+  trace: Option(client_trace.Trace),
+  guard: Option(ConnectionGuard),
+  phase: diagnostics.ClientPhase,
+  outcome: Result(Nil, error.Error),
+) -> Nil {
+  case guard {
+    None -> Nil
+    Some(guard) ->
+      case mark_connection_released(guard) {
+        True -> client_trace.phase_finished(trace, phase, outcome)
+        False -> Nil
+      }
   }
 }
 
@@ -1411,7 +2007,15 @@ fn require_active(config: Config) -> Result(Nil, error.Error) {
 fn prefer_cancelled(config: Config, failure: error.Error) -> error.Error {
   case config.cancelled() {
     True -> error.new(error.Cancelled)
-    False -> failure
+    False ->
+      case config.source_worker {
+        None -> failure
+        Some(worker) ->
+          case upload.failure(worker) {
+            None -> failure
+            Some(observed) -> observed
+          }
+      }
   }
 }
 
@@ -1450,5 +2054,34 @@ fn smallest(left: Int, right: Int) -> Int {
   case left <= right {
     True -> left
     False -> right
+  }
+}
+
+fn observe_connection(config: Config) -> Config {
+  case config.connect_trace {
+    None -> config
+    Some(_) ->
+      Config(
+        ..config,
+        connect_observation: Some(#(
+          transport.diagnostics_new(),
+          new_connection_guard(),
+        )),
+      )
+  }
+}
+
+fn publish_connection(config: Config) -> Nil {
+  case config.connect_observation {
+    None -> Nil
+    Some(#(diagnostics, once)) ->
+      case mark_connection_released(once) {
+        False -> Nil
+        True ->
+          client_trace.tcp_snapshot(
+            config.connect_trace,
+            transport.diagnostics_snapshot(diagnostics),
+          )
+      }
   }
 }

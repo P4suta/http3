@@ -104,24 +104,33 @@ run_native_server(
         [{<<"x-interop-peer">>, <<"gleam-native">>}],
         ResponseBody
     ),
-    {ok, DrainResult} = http3@server:graceful_stop(Listener),
-    true = DrainResult =:= drained orelse DrainResult =:= forced,
+    ok = finish_listener(Listener),
     io:format("~s~n", [SuccessMessage]),
     ok.
+
+finish_listener(Listener) ->
+    case http3@server:graceful_stop(Listener) of
+        {ok, drained} -> ok;
+        _ -> erlang:error(native_drain_incomplete)
+    end.
 
 collect(Stream) ->
     collect(Stream, undefined, [], <<>>).
 
 collect(Stream, Status, Headers, Body) ->
+    collect(Stream, Status, Headers, Body, 4096).
+
+collect(_, _, _, _, 0) -> erlang:error(native_interop_event_limit);
+collect(Stream, Status, Headers, Body, Remaining) ->
     case http3@client:next_event(Stream) of
         {ok, {response, NewStatus, NewHeaders}} ->
-            collect(Stream, NewStatus, NewHeaders, Body);
-        {ok, {data, Chunk}} ->
-            collect(Stream, Status, Headers, <<Body/binary, Chunk/binary>>);
+            collect(Stream, NewStatus, NewHeaders, Body, Remaining - 1);
+        {ok, {data, Chunk}} when byte_size(Body) + byte_size(Chunk) =< 131072 ->
+            collect(Stream, Status, Headers, <<Body/binary, Chunk/binary>>, Remaining - 1);
+        {ok, {data, _}} -> erlang:error(native_interop_body_limit);
         {ok, {trailers, _}} ->
-            collect(Stream, Status, Headers, Body);
+            collect(Stream, Status, Headers, Body, Remaining - 1);
         {ok, 'end'} ->
             {Status, Headers, Body};
-        Other ->
-            erlang:error({unexpected_stream_event, Other})
+        _ -> erlang:error(unexpected_stream_event)
     end.

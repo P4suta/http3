@@ -60,6 +60,12 @@ must exercise:
 Every request fixture asserts status, headers, and body rather than accepting a
 successful function return as sufficient.
 
+Orderly-termination probes use two complementary controls.
+The pure close FSM injects monotonic samples and proves the immutable deadline, role-specific GOAWAY identifiers, the immutable second-GOAWAY instant, application/transport barriers, and exact close code.
+A late-arrival probe advances the server's next request stream during that explicit interval and proves that the final GOAWAY samples the later value.
+The live UDP probes read both GOAWAY frames from the peer control stream, then wait on that stream for the typed connection close.
+They use no sleeps or retry polling; the actor's absolute refinement selector and transport delivery are the synchronization points.
+
 ### Generated properties and parser fuzzing
 
 Each package owns the corpus for the decoders it implements, so both tasks run

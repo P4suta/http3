@@ -1,12 +1,13 @@
 //// Opaque, bounded, pull-based HTTP bodies.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import http/error
 
-/// HTTP trailers represented with the same lossless name/value shape used by
-/// `gleam_http` requests and responses.
+/// HTTP trailers represented with the same lossless name/value shape used by `gleam_http` requests and responses.
 pub type Headers =
   List(#(String, String))
 
@@ -16,8 +17,8 @@ pub type PullEvent {
   PullEnd(trailers: Headers)
 }
 
-/// An opaque pull source. Each successful data event supplies the source for
-/// the following pull, keeping cursor state explicit and free of globals.
+/// An opaque pull source.
+/// Each successful data event supplies the source for the following pull, keeping cursor state explicit and free of globals.
 pub opaque type Pull {
   PullSource(next: fn(Int) -> Result(PullEvent, error.Error))
 }
@@ -26,6 +27,14 @@ pub opaque type Pull {
 pub type Read {
   Data(bytes: BitArray, next: Body)
   Done(completed: Body)
+}
+
+/// Shared source cleanup state.
+/// Exhausting a wait does not certify release.
+@internal
+pub type ReleaseState {
+  ReleasePending
+  Released(outcome: Result(Nil, error.Error))
 }
 
 type Source {
@@ -38,8 +47,23 @@ type Source {
 
 type CancelHandle
 
-/// A body cursor. Its source, file path, callbacks, cancellation token, and
-/// replay factory are private.
+type TransferObserver {
+  TransferObserver(
+    read_complete: CancelHandle,
+    terminal: CancelHandle,
+    previous: Option(TransferObserver),
+    on_read_complete: fn() -> Nil,
+    on_transfer_complete: fn(Result(Nil, error.Error)) -> Nil,
+  )
+}
+
+type CleanupCallback {
+  InfallibleCleanup(fn() -> Nil)
+  FallibleCleanup(fn() -> Result(Nil, Int))
+}
+
+/// A body cursor.
+/// Its source, file path, callbacks, cancellation token, and replay factory are private.
 pub opaque type Body {
   BodyState(
     source: Source,
@@ -47,8 +71,10 @@ pub opaque type Body {
     consumed: Int,
     replay_factory: Option(fn() -> Result(Body, error.Error)),
     cancel_handle: CancelHandle,
-    on_cancel: fn() -> Nil,
+    on_cancel: Option(CleanupCallback),
+    on_released: Option(fn(Result(Nil, error.Error)) -> Nil),
     trailers: Option(Headers),
+    observer: Option(TransferObserver),
   )
 }
 
@@ -60,6 +86,26 @@ fn mark_cancelled(handle: CancelHandle) -> Bool
 
 @external(erlang, "http_body_ffi", "is_cancelled")
 fn is_cancelled(handle: CancelHandle) -> Bool
+
+@external(erlang, "http_body_ffi", "cancel_once")
+fn cancel_once(
+  handle: CancelHandle,
+  callback: Option(CleanupCallback),
+  on_released: Option(fn(Result(Nil, Int)) -> Nil),
+  milliseconds: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_body_ffi", "run_cancel_callback")
+fn run_transfer_observer(
+  callback: fn() -> Nil,
+  timeout_milliseconds: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_body_ffi", "await_release")
+fn await_release_state(
+  handle: CancelHandle,
+  milliseconds: Int,
+) -> Option(Result(Nil, Int))
 
 @external(erlang, "http_body_ffi", "file_size")
 fn file_size(path: String) -> Result(Int, Nil)
@@ -79,23 +125,24 @@ pub fn empty() -> Body {
     consumed: 0,
     replay_factory: Some(fn() { Ok(empty()) }),
     cancel_handle: new_cancel_handle(),
-    on_cancel: fn() { Nil },
+    on_cancel: None,
+    on_released: None,
     trailers: Some([]),
+    observer: None,
   )
 }
 
 /// Construct a replayable in-memory body.
 ///
-/// A non-byte-aligned bit array is retained as an invalid source and produces
-/// a typed `InvalidChunk` error when read; it never reaches a protocol writer.
+/// A non-byte-aligned bit array is retained as an invalid source and produces a typed `InvalidChunk` error when read; it never reaches a protocol writer.
 pub fn from_bytes(bytes: BitArray) -> Body {
   from_bytes_with_trailers(bytes, [])
 }
 
 /// Construct a replayable in-memory body with completion trailers.
 ///
-/// Trailers remain unavailable through `trailers` until the body is fully
-/// consumed. A replay preserves both the bytes and the trailers.
+/// Trailers remain unavailable through `trailers` until the body is fully consumed.
+/// A replay preserves both the bytes and the trailers.
 pub fn from_bytes_with_trailers(bytes: BitArray, trailers: Headers) -> Body {
   case bit_array.bit_size(bytes) % 8 {
     0 -> bytes_body(bytes, trailers)
@@ -108,8 +155,10 @@ pub fn from_bytes_with_trailers(bytes: BitArray, trailers: Headers) -> Body {
           Ok(from_bytes_with_trailers(bytes, trailers))
         }),
         cancel_handle: new_cancel_handle(),
-        on_cancel: fn() { Nil },
+        on_cancel: None,
+        on_released: None,
         trailers: None,
+        observer: None,
       )
   }
 }
@@ -119,8 +168,8 @@ pub fn from_text(text: String) -> Body {
   text |> bit_array.from_string |> from_bytes
 }
 
-/// Construct a replayable file body after checking that the file can be
-/// opened and measuring its current size. File paths never appear in errors.
+/// Construct a replayable file body after checking that the file can be opened and measuring its current size.
+/// File paths never appear in errors.
 pub fn from_file(path: String) -> Result(Body, error.Error) {
   case file_size(path) {
     Error(_) -> Error(body_error(error.ReadFailed))
@@ -135,13 +184,48 @@ pub fn pull(next: fn(Int) -> Result(PullEvent, error.Error)) -> Pull {
 
 /// Construct a pull-stream body.
 ///
-/// `known_length` must be non-negative when present. Supplying `replay`
-/// allows redirects, retries, and explicit replay to create a fresh source.
+/// `known_length` must be non-negative when present.
+/// Supplying `replay` allows redirects, retries, and explicit replay to create a fresh source.
 pub fn from_pull(
   source: Pull,
   known_length: Option(Int),
   replay: Option(fn() -> Pull),
   on_cancel: fn() -> Nil,
+) -> Result(Body, error.Error) {
+  from_pull_callback(source, known_length, replay, InfallibleCleanup(on_cancel))
+}
+
+/// Construct a protocol-owned stream with a redacted cleanup result.
+@internal
+pub fn from_pull_with_cleanup(
+  source: Pull,
+  known_length: Option(Int),
+  replay: Option(fn() -> Pull),
+  on_cancel: fn() -> Result(Nil, error.Error),
+) -> Result(Body, error.Error) {
+  from_pull_callback(
+    source,
+    known_length,
+    replay,
+    FallibleCleanup(fn() {
+      on_cancel() |> result.map_error(cleanup_failure_code)
+    }),
+  )
+}
+
+fn cleanup_failure_code(failure: error.Error) -> Int {
+  case error.kind(failure) {
+    error.Timeout(_) -> 2
+    error.Cancelled -> 3
+    _ -> 1
+  }
+}
+
+fn from_pull_callback(
+  source: Pull,
+  known_length: Option(Int),
+  replay: Option(fn() -> Pull),
+  on_cancel: CleanupCallback,
 ) -> Result(Body, error.Error) {
   case known_length {
     Some(length) ->
@@ -156,6 +240,22 @@ pub fn from_pull(
 /// Return the body's declared total byte length, when known.
 pub fn known_length(body: Body) -> Option(Int) {
   body.total_length
+}
+
+/// Whether a protocol writer must leave room for completion trailers.
+/// Known byte length does not rule out trailers.
+/// Advanced sources are treated conservatively without calling their producer or consuming any body data.
+@internal
+pub fn may_have_trailers(body: Body) -> Bool {
+  case body.trailers {
+    Some(fields) -> fields != []
+    None ->
+      case body.source {
+        BytesSource(_, _, fields) -> fields != []
+        AdvancedSource(_) -> True
+        EmptySource | FileSource(_, _) | InvalidSource -> False
+      }
+  }
 }
 
 /// Return whether a fresh body can be generated safely.
@@ -177,11 +277,64 @@ pub fn replay(body: Body) -> Result(Body, error.Error) {
 /// Cancel this body and every cursor already derived from it.
 ///
 /// The source cancellation callback is invoked at most once.
+/// It runs under supervision with a one-second cleanup deadline; callback exceptions and stalls cannot escape into the cancelling application.
 pub fn cancel(body: Body) -> Nil {
-  case mark_cancelled(body.cancel_handle) {
-    True -> body.on_cancel()
-    False -> Nil
+  let _cleanup = cancel_within(body, 1000)
+  Nil
+}
+
+/// Dispose a source under a finite cleanup budget and preserve a redacted cleanup outcome separately from its already-recorded transfer outcome.
+@internal
+pub fn cancel_within(
+  body: Body,
+  milliseconds: Int,
+) -> Result(Nil, error.Error) {
+  transfer_finished(body, Error(error.new(error.Cancelled)))
+  let released = case body.on_released {
+    None -> None
+    Some(observe) -> Some(fn(outcome) { observe(cleanup_outcome(outcome)) })
   }
+  cancel_once(body.cancel_handle, body.on_cancel, released, milliseconds)
+  |> cleanup_outcome
+}
+
+fn cleanup_outcome(outcome: Result(Nil, Int)) -> Result(Nil, error.Error) {
+  case outcome {
+    Ok(Nil) -> Ok(Nil)
+    Error(2) -> Error(error.new(error.Timeout(error.Operation)))
+    Error(3) -> Error(error.new(error.Cancelled))
+    Error(_) -> Error(error.new(error.Service))
+  }
+}
+
+/// Wait for confirmed cleanup without confusing a waiting caller's deadline with a source callback that has already been stopped at its own deadline.
+/// A zero budget is an immediate snapshot and never starts cancellation.
+@internal
+pub fn await_release(body: Body, within_milliseconds: Int) -> ReleaseState {
+  case await_release_state(body.cancel_handle, within_milliseconds) {
+    None -> ReleasePending
+    Some(outcome) -> Released(cleanup_outcome(outcome))
+  }
+}
+
+/// Observe the completed cleanup independently from the transfer result.
+/// Every cursor shares the same cancellation claim and terminal result.
+@internal
+pub fn observe_release(
+  body: Body,
+  on_released: fn(Result(Nil, error.Error)) -> Nil,
+) -> Body {
+  let previous = body.on_released
+  BodyState(
+    ..body,
+    on_released: Some(fn(outcome) {
+      case previous {
+        Some(observe) -> observe(outcome)
+        None -> Nil
+      }
+      on_released(outcome)
+    }),
+  )
 }
 
 /// Return trailers only after the body has completed.
@@ -191,10 +344,96 @@ pub fn trailers(body: Body) -> Option(Headers) {
 
 /// Pull at most `maximum_bytes` from a body.
 pub fn read(body: Body, maximum_bytes: Int) -> Result(Read, error.Error) {
-  case maximum_bytes <= 0, is_cancelled(body.cancel_handle) {
-    True, _ -> Error(body_error(error.InvalidLimit))
-    _, True -> Error(error.new(error.Cancelled))
-    False, False -> read_source(body, maximum_bytes)
+  case maximum_bytes <= 0 {
+    True -> Error(body_error(error.InvalidLimit))
+    False -> read_valid_limit(body, maximum_bytes)
+  }
+}
+
+fn read_valid_limit(
+  body: Body,
+  maximum_bytes: Int,
+) -> Result(Read, error.Error) {
+  let outcome = case is_cancelled(body.cancel_handle) {
+    True -> Error(error.new(error.Cancelled))
+    False -> read_source(body, maximum_bytes)
+  }
+  case outcome {
+    Ok(Done(_)) -> observe_read_completion(body)
+    Error(failure) -> transfer_finished(body, Error(failure))
+    Ok(Data(..)) -> Nil
+  }
+  outcome
+}
+
+/// Attach payload-free transfer observers shared by every derived cursor.
+/// Existing observers retain their own shared notification claims and are attempted before the newly attached callbacks.
+/// Each callback runs in its own bounded guardian, so an exception or stall cannot suppress the next observer in the chain.
+/// Attaching never replays prior events.
+/// Reading EOF does not imply that a protocol's final write succeeded.
+@internal
+pub fn observe_transfer(
+  body: Body,
+  on_read_complete: fn() -> Nil,
+  on_transfer_complete: fn(Result(Nil, error.Error)) -> Nil,
+) -> Body {
+  // Capture only the previous observer, never the source or replay payload.
+  let previous = body.observer
+  BodyState(
+    ..body,
+    observer: Some(TransferObserver(
+      read_complete: new_cancel_handle(),
+      terminal: new_cancel_handle(),
+      previous:,
+      on_read_complete:,
+      on_transfer_complete:,
+    )),
+  )
+}
+
+/// Record the actual protocol outcome exactly once, including failed final writes after EOF.
+/// Adapters call this before disposing a suppressed body.
+@internal
+pub fn transfer_finished(body: Body, outcome: Result(Nil, error.Error)) -> Nil {
+  notify_transfer_completion(body.observer, outcome)
+}
+
+fn notify_transfer_completion(
+  observer: Option(TransferObserver),
+  outcome: Result(Nil, error.Error),
+) -> Nil {
+  case observer {
+    None -> Nil
+    Some(observer) -> {
+      let _previous_notified =
+        notify_transfer_completion(observer.previous, outcome)
+      use <- bool.guard(when: !mark_cancelled(observer.terminal), return: Nil)
+      let _observed =
+        run_transfer_observer(
+          fn() { observer.on_transfer_complete(outcome) },
+          100,
+        )
+      Nil
+    }
+  }
+}
+
+fn observe_read_completion(body: Body) -> Nil {
+  notify_read_completion(body.observer)
+}
+
+fn notify_read_completion(observer: Option(TransferObserver)) -> Nil {
+  case observer {
+    None -> Nil
+    Some(observer) -> {
+      let _previous_notified = notify_read_completion(observer.previous)
+      use <- bool.guard(
+        when: !mark_cancelled(observer.read_complete),
+        return: Nil,
+      )
+      let _observed = run_transfer_observer(observer.on_read_complete, 100)
+      Nil
+    }
   }
 }
 
@@ -224,8 +463,10 @@ fn bytes_body(bytes: BitArray, completion_trailers: Headers) -> Body {
       Ok(from_bytes_with_trailers(bytes, completion_trailers))
     }),
     cancel_handle: new_cancel_handle(),
-    on_cancel: fn() { Nil },
+    on_cancel: None,
     trailers: None,
+    on_released: None,
+    observer: None,
   )
 }
 
@@ -236,8 +477,10 @@ fn file_body(path: String, size: Int) -> Body {
     consumed: 0,
     replay_factory: Some(fn() { from_file(path) }),
     cancel_handle: new_cancel_handle(),
-    on_cancel: fn() { Nil },
+    on_cancel: None,
     trailers: None,
+    on_released: None,
+    observer: None,
   )
 }
 
@@ -245,12 +488,14 @@ fn pull_body(
   source: Pull,
   known_length: Option(Int),
   replay_source: Option(fn() -> Pull),
-  on_cancel: fn() -> Nil,
+  on_cancel: CleanupCallback,
 ) -> Body {
   let replay_factory = case replay_source {
     None -> None
     Some(factory) ->
-      Some(fn() { from_pull(factory(), known_length, replay_source, on_cancel) })
+      Some(fn() {
+        Ok(pull_body(factory(), known_length, replay_source, on_cancel))
+      })
   }
   BodyState(
     source: AdvancedSource(source),
@@ -258,8 +503,10 @@ fn pull_body(
     consumed: 0,
     replay_factory: replay_factory,
     cancel_handle: new_cancel_handle(),
-    on_cancel: on_cancel,
+    on_cancel: Some(on_cancel),
+    on_released: None,
     trailers: None,
+    observer: None,
   )
 }
 

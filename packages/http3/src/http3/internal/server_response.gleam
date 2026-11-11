@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http3/internal/header_name
 
 /// A response validation failure.
 pub type Error {
@@ -112,13 +113,14 @@ fn validate_trailers(
 ) -> Result(List(#(String, String)), Error) {
   case headers {
     [] -> Ok(list.reverse(validated))
-    [#(name, value) as field, ..rest] -> {
+    [#(name, value), ..rest] -> {
+      let name = header_name.ascii_lowercase(name)
       use _ <- result.try(validate_header(name, value))
       use <- bool.guard(
         when: forbidden_trailer(name),
         return: Error(InvalidHeader(name)),
       )
-      validate_trailers(rest, [field, ..validated])
+      validate_trailers(rest, [#(name, value), ..validated])
     }
   }
 }
@@ -144,6 +146,7 @@ fn validate_headers_loop(
   case headers {
     [] -> Ok(list.reverse(validated))
     [#(name, value), ..rest] -> {
+      let name = header_name.ascii_lowercase(name)
       use _ <- result.try(validate_header(name, value))
       case name {
         "content-length" ->

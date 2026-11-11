@@ -3,10 +3,56 @@ import quic_core
 import quic_core/client
 import quic_core/config
 import quic_core/failure
+import quic_core/internal/tls/authentication
 import quic_core/server
 
 @external(erlang, "quic_core_test_ffi", "fixture")
 fn fixture(name: String) -> Result(BitArray, Nil)
+
+@external(erlang, "quic_core_test_ffi", "without_system_roots")
+fn without_system_roots(run: fn() -> value) -> value
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn invalid_origin_is_reported_before_missing_system_roots_test() -> Nil {
+  without_system_roots(fn() {
+    assert client.new("", 443, "h3") == Error(client.InvalidHost)
+    assert client.new("localhost", 0, "h3") == Error(client.InvalidPort(0))
+    assert client.new("localhost", 443, "")
+      == Error(client.InvalidApplicationProtocol)
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn explicit_trust_anchors_do_not_depend_on_system_root_availability_test() -> Nil {
+  let certificate_pem = fixture("ca.pem") |> should.be_ok
+  let certificates =
+    authentication.certificate_chain_from_pem(certificate_pem) |> should.be_ok
+  without_system_roots(fn() {
+    assert client.new("localhost", 443, "h3")
+      == Error(client.TrustStoreUnavailable)
+    let _pem =
+      client.new_with_ca_certificates("localhost", 443, "h3", certificate_pem)
+      |> should.be_ok
+    let _der =
+      client.new_with_ca_certificates_der("localhost", 443, "h3", certificates)
+      |> should.be_ok
+    assert client.new_with_ca_certificates_der("localhost", 443, "h3", [])
+      == Error(client.InvalidCaCertificate)
+    assert client.new_with_ca_certificates("localhost", 443, "h3", <<>>)
+      == Error(client.InvalidCaCertificate)
+  })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn explicit_connect_port_requires_a_remote_udp_port_test() -> Nil {
+  let configured = client.new("localhost", 443, "h3") |> should.be_ok
+  assert client.with_connect_port(configured, 0) |> should.be_error
+    == client.InvalidPort(0)
+  assert client.with_connect_port(configured, 65_536) |> should.be_error
+    == client.InvalidPort(65_536)
+  let _updated = client.with_connect_port(configured, 65_535) |> should.be_ok
+  Nil
+}
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn finite_defaults_and_validated_updates_test() -> Nil {
@@ -125,6 +171,17 @@ pub fn server_configuration_validates_credentials_and_keys_test() -> Nil {
     == Error(server.InvalidOperationalKey)
   assert server.replay_guard(0, fn(_, _) { Ok(True) })
     == Error(server.InvalidReplayGuardTimeout)
+  let oversized_context_bits = 32_776
+  assert server.with_zero_rtt_application_context(configured, <<
+      0:size(oversized_context_bits),
+    >>)
+    == Error(server.InvalidZeroRttApplicationContext)
+  let maximum_context_bits = oversized_context_bits - 8
+  let _contextual =
+    server.with_zero_rtt_application_context(configured, <<
+      0:size(maximum_context_bits),
+    >>)
+    |> should.be_ok
   assert server.client_certificate_authorities(<<"not pem">>)
     == Error(server.InvalidClientCaCertificate)
   assert server.new(client_certificate, private_key, "sample")
@@ -167,6 +224,23 @@ pub fn server_configuration_validates_credentials_and_keys_test() -> Nil {
     |> server.with_congestion_control(quic_core.Cubic)
     |> server.with_external_zero_rtt(guard)
     |> server.with_operational_keys(operational_keys)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_rejects_rsa_certificate_below_2048_bits_test() -> Nil {
+  let weak_certificate = fixture("weak-rsa1024-server.pem") |> should.be_ok
+  let weak_private_key = fixture("weak-rsa1024-server-key.pem") |> should.be_ok
+  let accepted_certificate = fixture("rsa-pss-server.pem") |> should.be_ok
+  let accepted_private_key = fixture("rsa-pss-server-key.pem") |> should.be_ok
+
+  assert server.valid_certificate(weak_certificate)
+  assert server.valid_private_key(weak_private_key)
+  assert server.new(weak_certificate, weak_private_key, "sample")
+    == Error(server.InsufficientKeyStrength)
+  let _accepted =
+    server.new(accepted_certificate, accepted_private_key, "sample")
+    |> should.be_ok
   Nil
 }
 

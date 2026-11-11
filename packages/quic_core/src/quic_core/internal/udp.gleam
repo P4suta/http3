@@ -4,6 +4,7 @@ import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import quic_core/internal/ecn
@@ -34,6 +35,142 @@ pub type Socket
 /// A bounded active-once relay that owns a UDP socket for an endpoint actor.
 pub type Relay
 
+/// A finite establishment supervisor with an independent identity reaper.
+/// It owns at most two resolver callbacks and sixteen candidate callbacks, fans out teardown, and confirms every original process termination before a successful shutdown.
+@internal
+pub type WorkGroup
+
+/// Fixed role of one establishment callback.
+@internal
+pub type WorkKind {
+  EndpointWork
+  ResolverWork
+  CandidateWork
+}
+
+@external(erlang, "quic_core_udp_ffi", "group_start")
+fn raw_start_work_group(owner: Pid) -> Result(WorkGroup, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_start_establishment")
+fn raw_start_establishment_group(owner: Pid) -> Result(WorkGroup, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_quiesce")
+fn raw_quiesce_work_group(group: WorkGroup) -> Result(Nil, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_publish")
+fn raw_publish_work_group(
+  group: WorkGroup,
+  endpoint: Pid,
+  deadline: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_spawn")
+fn raw_spawn_work(
+  group: WorkGroup,
+  role: Int,
+  work: fn() -> Nil,
+) -> Result(Pid, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_stop")
+fn raw_stop_work_group(group: WorkGroup) -> Result(Nil, Int)
+
+@external(erlang, "quic_core_udp_ffi", "group_stop_after_owner_exit")
+fn raw_stop_work_group_after_owner_exit(group: WorkGroup) -> Result(Nil, Int)
+
+/// Observe supervisor death independently of a currently blocked callback.
+@external(erlang, "quic_core_udp_ffi", "group_pid")
+fn raw_work_group_pid(group: WorkGroup) -> Pid
+
+@internal
+pub fn work_group_pid(group: WorkGroup) -> Pid {
+  raw_work_group_pid(group)
+}
+
+/// Admit a bounded supervisor before any resolution or dial callback starts.
+@internal
+pub fn start_work_group(owner: Pid) -> Result(WorkGroup, Error) {
+  raw_start_work_group(owner) |> map_raw_result
+}
+
+/// Admit the bootstrap actor and its eighteen helpers under one supervisor.
+@internal
+pub fn start_establishment_group(owner: Pid) -> Result(WorkGroup, Error) {
+  raw_start_establishment_group(owner) |> map_raw_result
+}
+
+/// A bootstrap actor joins all helpers under one absolute deadline while remaining owned until publication.
+@internal
+pub fn quiesce_work_group(group: WorkGroup) -> Result(Nil, Error) {
+  raw_quiesce_work_group(group) |> map_raw_result
+}
+
+/// The original caller detaches one established actor only after every helper,
+/// the guardian, and the independent reaper have reached their terminal state.
+@internal
+pub fn publish_work_group(
+  group: WorkGroup,
+  endpoint: Pid,
+  deadline: Int,
+) -> Result(Nil, Error) {
+  raw_publish_work_group(group, endpoint, deadline) |> map_raw_result
+}
+
+/// Start one owned callback after its fixed diagnostic role is installed.
+@internal
+pub fn spawn_work(
+  group: WorkGroup,
+  kind: WorkKind,
+  work: fn() -> Nil,
+) -> Result(Pid, Error) {
+  let role = case kind {
+    EndpointWork -> 1
+    ResolverWork -> 4
+    CandidateWork -> 3
+  }
+  raw_spawn_work(group, role, work) |> map_raw_result
+}
+
+/// Stop every helper with one fanout, then join the complete original monitor set concurrently.
+/// The 1500 ms operation lease has one 20 ms controller tail;
+/// callback count never multiplies either bound.
+@internal
+pub fn stop_work_group(group: WorkGroup) -> Result(Nil, Error) {
+  raw_stop_work_group(group) |> map_raw_result
+}
+
+/// Join an establishment group whose monitored public owner already exited.
+/// The guardian, independent reaper, and finite identity ledger must all confirm convergence.
+@internal
+pub fn stop_work_group_after_owner_exit(
+  group: WorkGroup,
+) -> Result(Nil, Error) {
+  raw_stop_work_group_after_owner_exit(group) |> map_raw_result
+}
+
+@external(erlang, "quic_core_udp_ffi", "route_source")
+fn raw_route_source(
+  address: BitArray,
+  port: Int,
+) -> Result(#(BitArray, Int), Int)
+
+/// Ask the local route selector for a source without transmitting a datagram.
+/// A missing prefix length remains explicit; no interface metadata is guessed.
+pub fn route_source(
+  address: Address,
+  port: Int,
+) -> Result(#(Address, Option(Int)), Error) {
+  use #(bytes, prefix) <- result.try(
+    raw_route_source(address_bytes(address), port) |> map_raw_result,
+  )
+  use source <- result.try(address_from_bytes(bytes))
+  Ok(
+    #(source, case prefix {
+      value if value >= 0 -> Some(value)
+      _ -> None
+    }),
+  )
+}
+
 /// One received UDP datagram and its observed IP ECN marking.
 pub type Datagram {
   Datagram(
@@ -58,6 +195,9 @@ pub type Error {
   AddressUnavailable
   EcnUnavailable
   MessageTooLarge
+  /// Asynchronous ICMP feedback without enough packet context to validate the affected QUIC path.
+  /// It does not invalidate received stream data.
+  UnverifiedPathError
   SocketFailure
 }
 
@@ -97,6 +237,7 @@ pub fn classify_send(outcome: Result(Nil, Error)) -> SendOutcome {
     | Error(AddressInUse)
     | Error(AddressUnavailable)
     | Error(EcnUnavailable)
+    | Error(UnverifiedPathError)
     | Error(SocketFailure) -> SocketLost
   }
 }
@@ -158,6 +299,12 @@ fn raw_continue_relay(relay: Relay) -> Result(Nil, Int)
 
 @external(erlang, "quic_core_udp_ffi", "stop_relay")
 fn raw_stop_relay(relay: Relay) -> Result(Nil, Int)
+
+@external(erlang, "quic_core_udp_ffi", "stop_relay_until")
+fn raw_stop_relay_until(
+  relay: Relay,
+  deadline_milliseconds: Int,
+) -> Result(Nil, Int)
 
 @external(erlang, "quic_core_udp_ffi", "supports_ecn")
 fn raw_supports_ecn(socket: Socket) -> Bool
@@ -258,6 +405,12 @@ pub fn resolve(
 }
 
 /// Resolve a DNS name or literal under one finite caller-selected deadline.
+///
+/// The timeout is the total budget. A bounded tail inside it is reserved for
+/// cleanup, and the caller creates the gated resolver and its original monitor
+/// before starting the supervisor. `Ok` is returned only after both original
+/// process monitors have observed termination; a late answer cannot extend the
+/// deadline or be reported as a successful lookup.
 pub fn resolve_with_timeout(
   host host: String,
   family family: AddressFamily,
@@ -431,6 +584,16 @@ pub fn stop_relay(relay: Relay) -> Result(Nil, Error) {
   raw_stop_relay(relay) |> map_raw_result
 }
 
+/// Stop the relay and prove its owning process (and therefore its socket ports) is down inside one caller-owned absolute monotonic deadline.
+/// A forced exit remains `Timeout` even when its DOWN is observed.
+@internal
+pub fn stop_relay_until(
+  relay: Relay,
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  raw_stop_relay_until(relay, deadline_milliseconds) |> map_raw_result
+}
+
 /// Close the socket. Closing an already closed socket is successful.
 pub fn close(socket: Socket) -> Result(Nil, Error) {
   raw_close(socket) |> map_raw_result
@@ -538,6 +701,7 @@ fn map_raw_result(value: Result(value, Int)) -> Result(value, Error) {
     Error(6) -> Error(AddressUnavailable)
     Error(7) -> Error(EcnUnavailable)
     Error(9) -> Error(MessageTooLarge)
+    Error(10) -> Error(UnverifiedPathError)
     Error(_) -> Error(SocketFailure)
   }
 }

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "report_kind": "rfc9114_review_application_invalidation",
+  "status": "Rejected",
+  "shareable": true,
+  "invalidated_tool_sha256": "0a66498d18389e81b4c6c7f84dbb027ab733ffffdeb61ce706a62f1bca97fc5d",
+  "invalidated_red_report_sha256": "09ee3780f4572bf92c15e786113878510fa5f29b5b7115bd674d4c8767d8971b",
+  "failure_classifications": [
+    "pre_review_self_test_reported_ready",
+    "rendered_identity_checked_after_replace",
+    "stale_ready_survived_rejection",
+    "reviewed_sources_not_content_bound",
+    "apply_input_toctou",
+    "citation_path_and_symbol_not_validated",
+    "review_candidate_citations_not_compared",
+    "red_failure_classification_missing",
+    "rerun_command_not_executable_in_audited_environment",
+    "unexpected_failure_could_expose_local_details"
+  ],
+  "replacement_required": "A new Red/StaticReady cycle and independent review must pass before requirements.json may be changed."
+}

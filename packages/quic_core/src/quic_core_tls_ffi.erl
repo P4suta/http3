@@ -6,6 +6,7 @@
     certificate_chain_from_pem/1,
     constant_time_equal/2,
     is_ip_address/1,
+    server_certificate_public_key_secure/1,
     sign/3,
     signing_key_from_pem/1,
     signing_key_matches_certificate/3,
@@ -89,6 +90,28 @@ certificate_chain_from_pem(Pem) when is_binary(Pem) ->
     decode_pem_certificates(Pem);
 certificate_chain_from_pem(_Pem) ->
     {error, 3}.
+
+-spec server_certificate_public_key_secure([binary()]) ->
+    {ok, boolean()} | {error, 1 | 2 | 3}.
+server_certificate_public_key_secure([LeafDer | _CertificateChain])
+        when is_binary(LeafDer) ->
+    case ensure_public_key() of
+        ok ->
+            try public_key:pkix_decode_cert(LeafDer, otp) of
+                #'OTPCertificate'{
+                    tbsCertificate = #'OTPTBSCertificate'{
+                        subjectPublicKeyInfo = PublicKeyInfo
+                    }
+                } ->
+                    {ok, server_public_key_secure(PublicKeyInfo)}
+            catch
+                _Class:_Reason -> {error, 3}
+            end;
+        error ->
+            {error, 2}
+    end;
+server_certificate_public_key_secure(_CertificateChain) ->
+    {error, 1}.
 
 -spec validate_server_certificate([binary()], tuple(), binary()) ->
     {ok, tuple()} | {error, 1 | 2 | 3 | 5 | 6}.
@@ -519,6 +542,26 @@ scheme_matches_key(_Scheme, _Oid, _Parameters) -> false.
 -spec public_key_value(tuple(), term(), term()) -> term().
 public_key_value(?ID_RSA_ENCRYPTION, Key, _Parameters) -> Key;
 public_key_value(_Oid, Key, Parameters) -> {Key, Parameters}.
+
+-spec server_public_key_secure(term()) -> boolean().
+server_public_key_secure(
+    #'OTPSubjectPublicKeyInfo'{
+        algorithm = #'PublicKeyAlgorithm'{algorithm = Oid},
+        subjectPublicKey = PublicKey
+    }
+) when Oid =:= ?ID_RSA_ENCRYPTION; Oid =:= ?ID_RSA_PSS ->
+    rsa_public_key_at_least_2048(PublicKey);
+server_public_key_secure(#'OTPSubjectPublicKeyInfo'{}) ->
+    true;
+server_public_key_secure(_PublicKeyInfo) ->
+    false.
+
+-spec rsa_public_key_at_least_2048(term()) -> boolean().
+rsa_public_key_at_least_2048(#'RSAPublicKey'{modulus = Modulus})
+        when is_integer(Modulus), Modulus > 0 ->
+    Modulus >= (1 bsl 2047);
+rsa_public_key_at_least_2048(_PublicKey) ->
+    false.
 
 -spec ensure_public_key() -> ok | error.
 ensure_public_key() ->

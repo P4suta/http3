@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "firefox": {
+    "version": "155.0.1",
+    "platform": "linux-x86_64",
+    "browser": {
+      "version": "155.0.1",
+      "url": "https://archive.mozilla.org/pub/firefox/releases/155.0.1/linux-x86_64/en-US/firefox-155.0.1.tar.xz",
+      "sha256": "642ab731354a5ca790b894d4556dfb5028c61d0c24eb10d10e10a111a69c89bf",
+      "archive_bytes": 87372544,
+      "executable": "firefox/firefox",
+      "executable_bytes": 5520,
+      "executable_sha256": "2c88c89ffb805b006f77aac7a94f84b524ea8affeeaef3f4c758cc427fc94820",
+      "resource_files": 51,
+      "resource_sha256": "9086f7d47c63b5d17e5c18af0021c0d3fc503a71d26d4ff540c5f8034d6b00ed"
+    },
+    "driver": {
+      "version": "0.37.1",
+      "url": "https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-linux64.tar.gz",
+      "sha256": "e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e",
+      "archive_bytes": 2348355,
+      "executable": "geckodriver",
+      "executable_bytes": 6029440,
+      "executable_sha256": "f831b7e61454804e8a307edd951bf8a5f373efe3f718e75454a6485a51f6e39f",
+      "resource_files": 1,
+      "resource_sha256": "e20dea950d0818023060aed00d22eff08581e09b2393f8878b5f346e7b8ee504"
+    }
+  }
+}

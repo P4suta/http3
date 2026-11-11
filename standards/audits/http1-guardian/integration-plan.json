@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "status": "staged",
+  "mise": {
+    "task": "http1-guardian-audit",
+    "run": "mise exec python@3.12.13 -- python -I -B standards/audits/http1-guardian/launcher.py",
+    "runtime": "python@3.12.13",
+    "replace_fail_fast_commands": true
+  },
+  "ci": {
+    "dedicated_job": "http1-guardian-audit",
+    "command": "mise run http1-guardian-audit",
+    "upload_if": "always()",
+    "artifact_name": "http1-guardian-audit-${{ runner.os }}-otp-${{ matrix.otp }}",
+    "artifact_path": "build/root-validation/http1-handler-guardian-v5",
+    "required_statuses": [
+      "Running",
+      "Ready",
+      "Rejected",
+      "recovery"
+    ]
+  },
+  "activation": {
+    "requires_independent_audit": true,
+    "requires_configuration_hash": true,
+    "requires_root_owned_merge": true
+  }
+}

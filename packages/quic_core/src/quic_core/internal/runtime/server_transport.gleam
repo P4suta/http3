@@ -7,10 +7,12 @@ import gleam/result
 import quic_core/internal/connection_state as transport
 import quic_core/internal/driver
 import quic_core/internal/ecn
+import quic_core/internal/local_connection_id
 import quic_core/internal/packet_space
 import quic_core/internal/runtime/budget
 import quic_core/internal/runtime/connection
 import quic_core/internal/stateless_reset
+import quic_core/internal/stream_state
 import quic_core/internal/tls/anti_replay
 import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
@@ -42,6 +44,7 @@ pub type Config {
     ticket_key: BitArray,
     stateless_reset_key: BitArray,
     allow_zero_rtt: Bool,
+    zero_rtt_application_context: BitArray,
     idle_timeout_milliseconds: Int,
     congestion_control: transport.CongestionAlgorithm,
     bidirectional_stream_limit: Int,
@@ -164,9 +167,43 @@ pub fn local_connection_id(state: State) -> BitArray {
   connection.local_connection_id(state.connection)
 }
 
+/// Additional local routes permitted by both endpoint and peer limits.
+pub fn local_connection_id_capacity(state: State) -> Int {
+  connection.local_connection_id_capacity(state.connection)
+}
+
+/// Consume an unused peer-issued destination before sending to a new path.
+pub fn rotate_peer_connection_id(state: State) -> Result(State, Error) {
+  connection.rotate_peer_connection_id(state.connection)
+  |> result.map(fn(inner) { State(..state, connection: inner) })
+  |> result.map_error(DriverFailure)
+}
+
+/// Local-issuer scalar occupancy without identifiers or reset tokens.
+pub fn local_connection_id_snapshot(
+  state: State,
+) -> local_connection_id.Snapshot {
+  connection.local_connection_id_snapshot(state.connection)
+}
+
+/// Queue an identifier after the listener has registered its receive route.
+pub fn issue_local_connection_id(
+  state: State,
+  identifier: BitArray,
+  token: BitArray,
+) -> Result(State, Error) {
+  connection.issue_local_connection_id(state.connection, identifier, token)
+  |> result.map(fn(inner) { State(..state, connection: inner) })
+  |> result.map_error(DriverFailure)
+}
+
 /// Stable lifecycle phase.
 pub fn phase(state: State) -> transport.Phase {
   connection.phase(state.connection)
+}
+
+pub fn local_transport_failure_code(state: State) -> Option(Int) {
+  connection.local_transport_failure_code(state.connection)
 }
 
 /// Hold this connection's advertised receive credit inside the endpoint memory
@@ -357,6 +394,14 @@ pub fn send_finished(state: State, identifier: Int) -> Result(Bool, Error) {
   |> result.map_error(DriverFailure)
 }
 
+pub fn stream_send_progress(
+  state: State,
+  identifier: Int,
+) -> Result(stream_state.SendProgress, Error) {
+  connection.stream_send_progress(state.connection, identifier)
+  |> result.map_error(DriverFailure)
+}
+
 pub fn read(
   state: State,
   identifier: Int,
@@ -524,12 +569,13 @@ fn maybe_issue_ticket(state: State, now: Int) -> Result(State, Error) {
   {
     True, _ | _, False -> Ok(state)
     False, True ->
-      connection.issue_session_ticket(
+      connection.issue_session_ticket_with_application_context(
         state.connection,
         state.config.ticket_key,
         now,
         session_ticket_lifetime_seconds,
         state.config.allow_zero_rtt,
+        state.config.zero_rtt_application_context,
       )
       |> result.map(fn(connection) {
         State(..state, connection: connection, ticket_issued: True)
@@ -639,6 +685,8 @@ fn validate_initial_inputs(
     && config.application_protocols != []
     && bit_array.byte_size(config.ticket_key) == 32
     && bit_array.byte_size(config.stateless_reset_key) == 32
+    && bit_array.bit_size(config.zero_rtt_application_context) % 8 == 0
+    && bit_array.byte_size(config.zero_rtt_application_context) <= 4096
     && config.bidirectional_stream_limit > 0
     && config.unidirectional_stream_limit > 0
     && config.stream_buffer_limit > 0

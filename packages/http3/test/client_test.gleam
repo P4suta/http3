@@ -3,7 +3,7 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 import http3/address
@@ -298,8 +298,8 @@ pub fn bounded_client_can_dial_an_exact_address_without_changing_tls_identity_te
     let loopback = address.parse("127.0.0.1") |> should.be_ok
     let request =
       request.new()
-      // The certificate is issued to localhost. The explicit address is only
-      // the UDP dial target and must not replace this verified identity.
+      // The certificate is issued to localhost.
+      // The explicit address is only the UDP dial target and must not replace this verified identity.
       |> request.set_host("localhost")
       |> request.set_port(port)
       |> request.set_path("/echo")
@@ -496,7 +496,7 @@ pub fn client_reports_peer_termination_test() -> Nil {
       |> request.set_body(<<>>)
 
     assert client.send(configuration, request)
-      == Error(client.Failure(failure.Closed(failure.Peer, None)))
+      == Error(client.Failure(failure.Closed(failure.Peer, Some(0x10c))))
   })
 }
 
@@ -571,8 +571,8 @@ pub fn streaming_empty_response_emits_no_empty_data_event_test() -> Nil {
       client.Response(204, _) -> True
       _ -> False
     }
-    // `Data` is documented as a non-empty body chunk. A zero-length HTTP/3
-    // DATA frame is legal on the wire but is not an application event.
+    // `Data` is documented as a non-empty body chunk.
+    // A zero-length HTTP/3 DATA frame is legal on the wire but is not an application event.
     assert client.next_event(stream) == Ok(client.End)
     assert client.close(connection) == Ok(client.Closed)
   })
@@ -591,7 +591,9 @@ pub fn streaming_client_observes_early_response_test() -> Nil {
     let assert client.Response(200, _) =
       client.next_event(stream) |> should.be_ok
     assert bit_array.byte_size(receive_stream_body(stream, <<>>)) == 64
-    assert client.cancel(stream) == Ok(client.AlreadyCompleted)
+    // Response FIN does not finish this caller's still-open request direction.
+    assert client.cancel(stream) == Ok(client.Cancelled)
+    assert client.cancel(stream) == Ok(client.AlreadyCancelled)
     assert client.close(connection) == Ok(client.Closed)
   })
 }
@@ -662,9 +664,8 @@ pub fn streaming_client_bounds_slow_consumers_test() -> Nil {
       |> should.be_ok
 
     client.finish(stream) |> should.be_ok
-    // Keep the complete typed outcomes in a failing trace. Piping through
-    // should.be_ok used to erase whether a rare suite-load failure was a
-    // timeout, peer close, local cancellation, or the intended buffer error.
+    // Keep the complete typed outcomes in a failing trace.
+    // Piping through should.be_ok used to erase whether a rare suite-load failure was a timeout, peer close, local cancellation, or the intended buffer error.
     let first = client.next_event(stream)
     // nolint: assert_ok_pattern -- Retain the typed first-event Result above.
     let assert Ok(client.Response(200, _)) = first
@@ -767,7 +768,7 @@ pub fn streaming_client_reports_peer_termination_test() -> Nil {
     client.finish(stream) |> should.be_ok
 
     assert client.next_event(stream)
-      == Error(client.Failure(failure.Closed(failure.Peer, None)))
+      == Error(client.Failure(failure.Closed(failure.Peer, Some(0x10c))))
     let _close_result = client.close(connection)
     Nil
   })
@@ -796,12 +797,10 @@ pub fn streaming_client_times_out_incomplete_response_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn streaming_client_applies_send_backpressure_test() -> Nil {
   http3_test_support.with_ipv4_server_timeout(10_000, fn(port, ca_certificate) {
-    // One API call crosses the peer's initial stream-data window and forces the
-    // worker's bounded internal chunks to resume after ACK/MAX_STREAM_DATA.
+    // One API call crosses the peer's initial stream-data window and forces the worker's bounded internal chunks to resume after ACK/MAX_STREAM_DATA.
     let configuration =
       client.with_timeout(client.new(), 10_000) |> should.be_ok
-    // Backpressure is the subject of this test; Happy Eyeballs and dual-stack
-    // listener behavior have dedicated coverage in the QUIC core suite.
+    // Backpressure is the subject of this test; Happy Eyeballs and dual-stack listener behavior have dedicated coverage in the QUIC core suite.
     let configuration = client.with_address_family(configuration, config.Ipv4)
     let configuration =
       client.with_stream_buffer_limit(configuration, 524_288) |> should.be_ok

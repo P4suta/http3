@@ -24,9 +24,8 @@ open a stream, exchange bytes, and close.
 import quic_core/client
 
 pub fn exchange(ca_pem: BitArray) {
-  let assert Ok(configuration) = client.new("example.com", 443, "sample")
   let assert Ok(configuration) =
-    client.with_ca_certificates(configuration, ca_pem)
+    client.new_with_ca_certificates("example.com", 443, "sample", ca_pem)
   let assert Ok(connection) = client.connect(configuration)
   let assert Ok(stream) = client.open_bidirectional(connection)
   let assert Ok(Nil) = client.send_and_finish(stream, <<"hello":utf8>>)
@@ -42,8 +41,23 @@ pub fn main() -> Nil {
 ```
 
 System trust roots and hostname/IP identity verification are enabled by
-default. There is no certificate-verification bypass. Supplying CA PEM bytes
-replaces the system roots; it does not disable identity checks.
+default. There is no certificate-verification bypass. Use
+`new_with_ca_certificates` for PEM anchors or `new_with_ca_certificates_der`
+for DER anchors when supplying an explicit trust set. These constructors
+work even when the host has no OS certificate bundle and retain mandatory
+identity checks. The default `new` returns `TrustStoreUnavailable` when
+system roots cannot be loaded.
+
+## Certificate service identity
+
+DNS-ID and IP-ID are mandatory to implement for the secure QUIC client.
+SRV-ID and URI-ID are unsupported.
+The constructor hostname and port define the authenticated origin and bind certificate verification and resumption tickets.
+A DNS hostname also supplies TLS SNI; an IP literal is matched as an IP-ID.
+`with_connect_address` and `with_connect_port` change only the UDP connect target and never retarget the reference identity.
+Applications currently supply internationalized origins as canonical ASCII A-labels.
+Presented DNS-ID wildcards must cover exactly one whole left-most label; the dual-provider adversarial qualification remains an open release gate.
+The repository-wide [certificate identity profile](../../docs/CERTIFICATE_IDENTITY.md) records the complete cross-protocol contract and its current qualification limits.
 
 ## Five-minute server
 
@@ -73,6 +87,9 @@ Both sides support bidirectional and unidirectional streams. Reads are pull
 based, writes apply synchronous transport backpressure, and unconsumed queues,
 buffers, streams, connections, handshakes, Datagrams, and telemetry are
 finite. `close` and `stop` are idempotent.
+
+Server credential configuration enforces the RFC 9325 RSA boundary before a listener can start.
+A decoded RSA leaf certificate with a public modulus below 2048 bits returns `server.InsufficientKeyStrength`; malformed PEM and a mismatched private key retain their separate configuration errors.
 
 ## Mutual TLS without handle plumbing
 

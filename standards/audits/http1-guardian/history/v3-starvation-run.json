@@ -1,0 +1,1 @@
+{"schema":1,"status":"Red","expected_exit":1,"observed_exit":1,"started_utc":"2026-09-12T15:07:48.8795228+00:00","ended_utc":"2026-09-12T15:07:49.0880721+00:00","absolute_deadline_milliseconds":30000,"stdout_bytes":957,"stderr_bytes":0,"command":"python -I -B build/root-validation/http1-handler-guardian-contract-check.py"}

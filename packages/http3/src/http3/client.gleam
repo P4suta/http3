@@ -1,9 +1,8 @@
 //// An HTTP/3 client for the Erlang target.
 ////
 //// `send` owns one connection, collects one response within explicit limits,
-//// and closes the connection before returning. `connect` instead creates a
-//// reusable connection whose streams use synchronous request-body
-//// backpressure and pull-based response events with bounded buffering.
+//// and closes the connection before returning.
+//// `connect` instead creates a reusable connection whose streams use synchronous request-body backpressure and pull-based response events with bounded buffering.
 ////
 //// ```gleam
 //// import gleam/http/request
@@ -21,6 +20,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import http3/address
@@ -30,7 +30,9 @@ import http3/failure as runtime_failure
 import http3/internal/client_backend
 import http3/internal/client_request
 import http3/internal/client_stream_backend
+import http3/internal/qlog_admission
 import http3/transport
+import quic_core/diagnostics as core_diagnostics
 
 const default_maximum_pushes = 16
 
@@ -53,7 +55,7 @@ fn resumption_ticket_handle(
   ticket: transport.ResumptionTicket,
 ) -> client_stream_backend.ResumptionTicketHandle
 
-/// Configuration for one-shot HTTP/3 requests.
+/// Configuration for buffered requests and reusable HTTP/3 connections.
 pub opaque type Client {
   Client(
     deadlines: policy.Deadlines,
@@ -66,7 +68,92 @@ pub opaque type Client {
     quic_version: transport.QuicVersion,
     qlog_directory: String,
     resumption_tickets: List(client_stream_backend.ResumptionTicketHandle),
+    connect_address: Option(address.Address),
+    connect_trace: Option(core_diagnostics.ConnectTrace),
+    qlog_admission: qlog_admission.Identity,
   )
+}
+
+/// Fixed-capacity scalar connect observations, readable after failure/close.
+pub opaque type ConnectTrace {
+  ConnectTrace(handle: core_diagnostics.ConnectTrace)
+}
+
+pub type ConnectPhase {
+  NameResolution
+  UdpOpen
+  TlsHandshake
+  OwnershipPublication
+}
+
+pub type ConnectOutcome {
+  Started
+  Succeeded
+  Failed
+  Abandoned
+  Skipped
+}
+
+pub type ConnectEvent {
+  ConnectEvent(
+    sequence: Int,
+    attempt: Int,
+    candidate: Int,
+    phase: ConnectPhase,
+    outcome: ConnectOutcome,
+    elapsed_milliseconds: Int,
+  )
+}
+
+pub type ConnectSnapshot {
+  ConnectSnapshot(consistent: Bool, dropped: Int, events: List(ConnectEvent))
+}
+
+/// Allocate space for at most 64 records.
+/// No process or socket is allocated.
+/// A fresh trace per connection attempt avoids overflow when reusing clients.
+pub fn new_connect_trace() -> ConnectTrace {
+  ConnectTrace(core_diagnostics.new_connect_trace())
+}
+
+/// Read immutable published records without retaining endpoints or secrets.
+pub fn connect_snapshot(trace: ConnectTrace) -> ConnectSnapshot {
+  let snapshot = core_diagnostics.connect_snapshot(trace.handle)
+  ConnectSnapshot(
+    snapshot.consistent,
+    snapshot.dropped,
+    list.map(snapshot.events, fn(event) {
+      ConnectEvent(
+        event.sequence,
+        event.attempt,
+        event.candidate,
+        case event.phase {
+          core_diagnostics.NameResolution -> NameResolution
+          core_diagnostics.UdpOpen -> UdpOpen
+          core_diagnostics.TlsHandshake -> TlsHandshake
+          core_diagnostics.OwnershipPublication -> OwnershipPublication
+        },
+        case event.outcome {
+          core_diagnostics.Started -> Started
+          core_diagnostics.Succeeded -> Succeeded
+          core_diagnostics.Failed -> Failed
+          core_diagnostics.Abandoned -> Abandoned
+          core_diagnostics.Skipped -> Skipped
+        },
+        event.elapsed_milliseconds,
+      )
+    }),
+  )
+}
+
+/// Observe native DNS, socket, verified TLS and actor publication on send,
+/// connect, and connect_to.
+/// Exact destination IPs explicitly skip DNS.
+pub fn with_connect_trace(
+  client client: Client,
+  trace trace: ConnectTrace,
+) -> Client {
+  Client(..client, connect_trace: Some(trace.handle))
 }
 
 /// A reusable secure HTTP/3 connection.
@@ -218,9 +305,9 @@ pub type Error {
 
 /// Construct a client with secure TLS verification and bounded defaults.
 ///
-/// The total timeout is 30 seconds. Buffered request and response bodies are
-/// each limited to 8 MiB. Certificate chains are checked against the operating
-/// system trust store and the request host is verified.
+/// The total timeout is 30 seconds.
+/// Buffered request and response bodies are each limited to 8 MiB.
+/// Certificate chains are checked against the operating system trust store and the request host is verified.
 pub fn new() -> Client {
   Client(
     deadlines: policy.default_deadlines(),
@@ -233,10 +320,12 @@ pub fn new() -> Client {
     quic_version: transport.QuicV1,
     qlog_directory: "",
     resumption_tickets: [],
+    connect_address: None,
+    connect_trace: None,
+    qlog_admission: qlog_admission.new(),
   )
 }
 
-// nolint: unused_exports -- stable public configuration API for downstream users.
 /// Apply one validated set of finite phase deadlines atomically.
 pub fn with_deadlines(
   client client: Client,
@@ -246,6 +335,8 @@ pub fn with_deadlines(
 }
 
 /// Apply one validated set of finite resource limits atomically.
+/// Existing diagnostic reservations are shared by all copies of this client;
+/// changing limits does not reset held bytes or connection slots.
 pub fn with_limits(
   client client: Client,
   limits limits: policy.Limits,
@@ -261,10 +352,20 @@ pub fn with_address_family(
   Client(..client, address_family: address_family)
 }
 
+/// Dial an exact IP address for buffered requests and reusable connections.
+/// DNS is bypassed; origin host, TLS SNI, certificate verification, request authority and resumption identity retain their original values.
+/// Compose with `connect_to` to override the destination port as well.
+pub fn with_connect_address(
+  client client: Client,
+  address address: address.Address,
+) -> Client {
+  Client(..client, connect_address: Some(address))
+}
+
 /// Send periodic QUIC PING frames while waiting or reusing a connection.
 ///
-/// Keepalive is disabled by default. The interval must remain below the
-/// advertised 30-second idle timeout and cannot be shorter than one second.
+/// Keepalive is disabled by default.
+/// The interval must remain below the advertised 30-second idle timeout and cannot be shorter than one second.
 pub fn with_keepalive(
   client client: Client,
   milliseconds milliseconds: Int,
@@ -284,7 +385,8 @@ pub fn with_http_datagrams(client: Client) -> Client {
 
 /// Set the maximum server push promises retained per connection.
 ///
-/// Zero disables server push. The default is 16.
+/// Zero disables server push.
+/// The default is 16.
 pub fn with_push_limit(
   client client: Client,
   pushes pushes: Int,
@@ -308,18 +410,26 @@ pub fn with_quic_version(
 
 /// Enable qlog tracing for every connection created by this client.
 ///
-/// This includes both one-shot requests and reusable connections. Each QUIC
-/// connection receives its own trace file. Trace files can contain sensitive
-/// connection metadata, so qlog remains off unless this function is called
-/// explicitly.
+/// This includes both one-shot requests and reusable connections.
+/// Each QUIC connection receives its own trace file.
+/// Trace files can contain sensitive connection metadata, so qlog remains off unless this function is called explicitly.
+///
+/// Configuration performs no filesystem work.
+/// Before each attempt, this client reserves the public core diagnostic allowance plus 16 KiB of token bookkeeping from `EndpointMemory` and one `Connections` slot.
+/// Copies share these reservations across requests, callers, and origins.
+/// A first successful core close confirms diagnostic cleanup and returns its reservation; it does not wait for QUIC's transport Closing period.
+/// When cleanup finishes later,
+/// the core's bounded registry also releases the linked HTTP/3 scalar charge.
+/// It retains at most 64 tickets per identity for seven seconds each; refusal,
+/// expiry, or cleanup without proof keeps capacity quarantined.
+/// This remains a diagnostic slice rather than a budget for all transport and HTTP/3 memory.
 pub fn with_qlog(client client: Client, qlog qlog: transport.Qlog) -> Client {
   Client(..client, qlog_directory: transport.qlog_directory(qlog))
 }
 
 /// Attach one origin-bound session ticket for an explicit 0-RTT attempt.
 ///
-/// Early requests are restricted to GET, HEAD, and OPTIONS because 0-RTT data
-/// can be replayed by the network.
+/// Early requests are restricted to GET, HEAD, and OPTIONS because 0-RTT data can be replayed by the network.
 pub fn with_resumption_ticket(
   client client: Client,
   ticket ticket: transport.ResumptionTicket,
@@ -373,10 +483,10 @@ pub fn with_stream_buffer_limit(
 
 /// Add a DER-encoded CA certificate without disabling TLS verification.
 ///
-/// Once a certificate is added, the configured certificates form an explicit
-/// trust set in place of the operating system trust store. This is suitable
-/// for private certificate authorities and local test fixtures. Hostname
-/// verification remains enabled.
+/// Once a certificate is added, the configured certificates form an explicit trust set in place of the operating system trust store.
+/// This is suitable for private certificate authorities and local test fixtures.
+/// Hostname verification remains enabled.
+/// Explicit anchors also work when the host has no system trust store; the default system-root path still fails closed.
 pub fn with_ca_certificate(
   client client: Client,
   certificate certificate: BitArray,
@@ -392,21 +502,20 @@ pub fn with_ca_certificate(
 
 /// Send one bounded, buffered HTTP/3 request.
 ///
-/// The request must use HTTPS and an absolute path. CONNECT and HTTP/3-forbidden
-/// connection-specific headers are rejected before a socket is opened. A new
-/// connection is always closed before this function returns.
+/// The request must use HTTPS and an absolute path.
+/// CONNECT and HTTP/3-forbidden connection-specific headers are rejected before a socket is opened.
+/// A new connection is always closed before this function returns.
 pub fn send(
   client client: Client,
   request request: Request(BitArray),
 ) -> Result(Response(BitArray), Error) {
-  send_to_address(client:, request:, connect_address: None)
+  send_to_address(client:, request:, connect_address: client.connect_address)
 }
 
-/// Send one bounded request to an exact IP address while retaining the
-/// request host for TLS SNI, certificate identity, and HTTP authority checks.
+/// Send one bounded request to an exact IP address while retaining the request host for TLS SNI, certificate identity, and HTTP authority checks.
 ///
-/// This is intended for health probes and controlled routing where DNS or a
-/// NAT hairpin must not select the UDP peer. It never weakens TLS validation.
+/// This is intended for health probes and controlled routing where DNS or a NAT hairpin must not select the UDP peer.
+/// It never weakens TLS validation.
 pub fn send_to(
   client client: Client,
   address address: address.Address,
@@ -438,7 +547,15 @@ fn send_prepared(
   request request: client_request.PreparedRequest,
   connect_address connect_address: Option(address.Address),
 ) -> Result(Response(BitArray), Error) {
-  case
+  use reservation <- result.try(
+    qlog_admission.reserve(
+      identity: client.qlog_admission,
+      directory: client.qlog_directory,
+      limits: client.limits,
+    )
+    |> result.map_error(Failure),
+  )
+  let outcome =
     client_backend.send(
       request,
       connect_address,
@@ -456,8 +573,11 @@ fn send_prepared(
       client.quic_version == transport.QuicV2,
       client.keepalive_milliseconds,
       client.qlog_directory,
+      client.connect_trace,
+      reservation,
     )
-  {
+  qlog_admission.release_unused(reservation)
+  case outcome {
     Ok(#(status, headers, body)) -> Ok(response.Response(status, headers, body))
     Error(error) ->
       Error(from_backend_failure(
@@ -470,20 +590,47 @@ fn send_prepared(
 
 /// Establish a reusable HTTP/3 connection with TLS verification enabled.
 ///
-/// All streams opened on the connection must use the same host and port. The
-/// connection is owned by the process that calls this function and is closed
-/// automatically if that process exits.
+/// All streams opened on the connection must use the same host and port.
+/// The connection is owned by the process that calls this function and is closed automatically if that process exits.
 pub fn connect(
   client client: Client,
   host host: String,
   port port: Int,
 ) -> Result(Connection, Error) {
+  connect_to(client:, host:, port:, endpoint_port: port)
+}
+
+/// Establish a reusable connection at a different UDP destination port.
+///
+/// `host` and `port` remain the authenticated origin for TLS SNI, certificate identity, requests and resumption tickets.
+/// Only the UDP destination port changes.
+/// `with_connect_address` can also select an exact destination IP.
+pub fn connect_to(
+  client client: Client,
+  host host: String,
+  port port: Int,
+  endpoint_port endpoint_port: Int,
+) -> Result(Connection, Error) {
+  use <- bool.guard(
+    when: endpoint_port <= 0 || endpoint_port > 65_535,
+    return: Error(InvalidPort(endpoint_port)),
+  )
   case client_request.prepare_origin(host, port) {
-    Ok(_) ->
-      case
+    Ok(_) -> {
+      use reservation <- result.try(
+        qlog_admission.reserve(
+          identity: client.qlog_admission,
+          directory: client.qlog_directory,
+          limits: client.limits,
+        )
+        |> result.map_error(Failure),
+      )
+      let outcome =
         client_stream_backend.connect(
           host,
           port,
+          client.connect_address,
+          endpoint_port,
           client.ca_certificates,
           client.address_family,
           policy.deadline(client.deadlines, runtime_failure.Dns),
@@ -492,6 +639,7 @@ pub fn connect(
           policy.deadline(client.deadlines, runtime_failure.Total),
           policy.deadline(client.deadlines, runtime_failure.Operation),
           policy.deadline(client.deadlines, runtime_failure.Idle),
+          policy.deadline(client.deadlines, runtime_failure.Drain),
           policy.limit(client.limits, runtime_failure.Buffer),
           policy.limit(client.limits, runtime_failure.EndpointMemory),
           policy.limit(client.limits, runtime_failure.Queue),
@@ -508,8 +656,11 @@ pub fn connect(
           client.quic_version == transport.QuicV2,
           client.qlog_directory,
           client.resumption_tickets,
+          client.connect_trace,
+          reservation,
         )
-      {
+      qlog_admission.release_unused(reservation)
+      case outcome {
         Ok(handle) -> Ok(Connection(handle))
         Error(error) ->
           Error(from_backend_failure(
@@ -518,6 +669,7 @@ pub fn connect(
             runtime_failure.Handshake,
           ))
       }
+    }
     Error(error) -> Error(from_preparation_error(error))
   }
 }
@@ -526,6 +678,20 @@ pub fn connect(
 pub fn connection_transport(connection: Connection) -> transport.Connection {
   let Connection(handle) = connection
   make_transport_connection(handle)
+}
+
+/// Return whether this connection can still accept a future request stream.
+///
+/// `Ok(False)` is terminal for reuse because the connection has observed GOAWAY or a known core close.
+/// `Ok(True)` is advisory: GOAWAY or close can still race the next `open_stream`, whose result remains authoritative.
+/// Temporary QUIC stream-credit pressure does not make a connection stale.
+/// Connection managers should retire the connection on `Ok(False)` or on a query error.
+pub fn connection_reusable(connection: Connection) -> Result(Bool, Error) {
+  let Connection(handle) = connection
+  client_stream_backend.connection_reusable(handle)
+  |> result.map_error(fn(error) {
+    from_backend_failure(error, 0, runtime_failure.Operation)
+  })
 }
 
 /// Test-only payload-free snapshot of retained stream and connection state.
@@ -559,9 +725,8 @@ pub fn open_stream(
 
 /// Open an RFC 9220 Extended CONNECT stream.
 ///
-/// The supplied request contributes the HTTPS origin, path, query, and regular
-/// headers. This function emits the CONNECT and `:protocol` pseudo-fields and
-/// is the only stable client surface that authorizes HTTP Datagrams.
+/// The supplied request contributes the HTTPS origin, path, query, and regular headers.
+/// This function emits the CONNECT and `:protocol` pseudo-fields and is the only stable client surface that authorizes HTTP Datagrams.
 pub fn open_extended_connect(
   connection connection: Connection,
   request request: Request(Nil),
@@ -652,8 +817,7 @@ pub fn send_capsule(
 
 /// Send request trailers and finish the request stream atomically.
 ///
-/// Trailer fields that affect framing, routing, authentication, or content
-/// interpretation are rejected before reaching the connection actor.
+/// Trailer fields that affect framing, routing, authentication, or content interpretation are rejected before reaching the connection actor.
 pub fn send_trailers(
   stream stream: Stream,
   trailers trailers: List(#(String, String)),
@@ -679,10 +843,52 @@ pub fn finish(stream: Stream) -> Result(Nil, Error) {
   }
 }
 
+/// Wait for transport acknowledgement of the request FIN.
+///
+/// This internal seam supports protocols such as WebSocket that must send a terminal control frame before reclaiming the peer-to-local direction.
+@internal
+pub fn await_request_completion(stream: Stream) -> Result(Nil, Error) {
+  let Stream(handle) = stream
+  client_stream_backend.await_request_completion(handle)
+  |> result.map_error(fn(error) {
+    from_backend_failure(error, 0, runtime_failure.Operation)
+  })
+}
+
+/// Queue one stable payload-free application diagnostic when qlog is enabled.
+@internal
+pub fn record_application_error(stream stream: Stream, code code: Int) -> Nil {
+  let Stream(handle) = stream
+  client_stream_backend.record_application_error(stream: handle, code: code)
+}
+
+/// Configured per-operation duration; this does not start a read.
+@internal
+pub fn operation_timeout_milliseconds(stream: Stream) -> Int {
+  let Stream(handle) = stream
+  client_stream_backend.operation_timeout_milliseconds(handle)
+}
+
 /// Pull the next response event, waiting up to the configured stream timeout.
 pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
   let Stream(handle) = stream
-  case client_stream_backend.next_event(handle) {
+  map_next_event(client_stream_backend.next_event(handle))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  stream stream: Stream,
+  deadline_milliseconds deadline: Int,
+) -> Result(ResponseEvent, Error) {
+  let Stream(handle) = stream
+  map_next_event(client_stream_backend.next_event_until(handle, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(client_stream_backend.RawEvent, client_backend.Failure),
+) -> Result(ResponseEvent, Error) {
+  case outcome {
     Ok(#(1, status, headers, _)) -> Ok(InformationalResponse(status, headers))
     Ok(#(2, status, headers, _)) -> Ok(Response(status, headers))
     Ok(#(3, _, _, chunk)) -> Ok(Data(chunk))
@@ -734,9 +940,38 @@ pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
 }
 
 /// Close a connection and all of its streams idempotently.
+///
+/// Planned close sends the client-role initial and final GOAWAY frames, ends local application work, and waits within the configured `Drain` deadline for transport acknowledgement before using exact `H3_NO_ERROR`.
+/// Transport,
+/// protocol, and owner failures retain their separate abortive close path.
 pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   let Connection(handle) = connection
   case client_stream_backend.close(handle) {
+    Ok(1) -> Ok(Closed)
+    Ok(2) -> Ok(AlreadyClosed)
+    Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))
+    Error(error) ->
+      Error(from_backend_failure(error, 0, runtime_failure.Operation))
+  }
+}
+
+/// Close within a parent adapter's finite budget without extending its deadline.
+@internal
+pub fn close_within(
+  connection connection: Connection,
+  within_milliseconds within_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  use <- bool.guard(
+    when: within_milliseconds <= 0 || within_milliseconds > 3_600_000,
+    return: Error(Failure(runtime_failure.Timeout(runtime_failure.Operation))),
+  )
+  let Connection(handle) = connection
+  case
+    client_stream_backend.close_within(
+      connection: handle,
+      within_milliseconds: within_milliseconds,
+    )
+  {
     Ok(1) -> Ok(Closed)
     Ok(2) -> Ok(AlreadyClosed)
     Ok(_) -> Error(Failure(runtime_failure.Http3(runtime_failure.Local, None)))

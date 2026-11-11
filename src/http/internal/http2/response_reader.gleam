@@ -187,7 +187,12 @@ fn accept_action(
       accept_data(accumulated, stream_id, bytes, end_stream, controlled)
     connection.StreamReset(stream_id, error_code) -> {
       use _ <- result.try(require_stream(accumulated.state, stream_id))
-      Error(StreamReset(error_code: error_code))
+      // RFC 9113 section 8.1 permits NO_ERROR after a complete response to stop the still-open upload.
+      // The received response remains usable.
+      case accumulated.state.phase, error_code {
+        Finished, 0 -> Ok(accumulated)
+        _, _ -> Error(StreamReset(error_code: error_code))
+      }
     }
     connection.PeerGoAway(last_stream_id, _, _) ->
       case last_stream_id < accumulated.state.stream_id {

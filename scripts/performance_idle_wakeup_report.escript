@@ -3,38 +3,39 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
-%% This reporter deliberately revalidates every value emitted by the live
-%% fixture.  The raw fixture is useful diagnostic data, but it is not
-%% qualification evidence until its configuration, topology, counters, and
-%% source digest have all been checked here.
+%% Only a validated scalar fixture from a completed, bounded current-build VM
+%% can become evidence. "raw.json" is the canonical typed fixture, never VM
+%% stdout. The log artifact is deliberately empty on success and failure.
+-include("evidence_identity.hrl").
+-include("performance_idle_execution.hrl").
+-include("diagnostic_failure.hrl").
+-include("json_evidence.hrl").
 
 -define(PROFILE_PATH, "standards/performance-profile.json").
 -define(OUTPUT_PATH, "build/performance/current/idle-wakeup.json").
 -define(RAW_PATH, "build/performance/current/idle-wakeup.raw.json").
 -define(LOG_PATH, "build/performance/current/idle-wakeup.log").
 -define(MAXIMUM_INPUT_BYTES, 1048576).
--define(MAXIMUM_LOG_BYTES, 16777216).
 
 main(["--self-test"]) ->
     guarded_self_test();
-main([ExitStatus, RawEvidencePath, LogPath]) ->
-    guarded_run(ExitStatus, RawEvidencePath, LogPath);
+main([]) ->
+    guarded_run();
 main(_) ->
-    erlang:error({usage, "[--self-test] | EXIT_STATUS RAW_EVIDENCE LOG"}).
+    erlang:error({usage, "[--self-test]"}).
 
 guarded_self_test() ->
     try self_test() of
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "idle-wakeup reporter self-test failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "idle-wakeup reporter self-test failed: ~s~n",
+                [json:encode(diagnostic_failure_details(Class, Reason, Stacktrace))]),
             halt(1)
     end.
 
-guarded_run(ExitStatusText, RawEvidencePath, LogPath) ->
-    try run(ExitStatusText, RawEvidencePath, LogPath) of
+guarded_run() ->
+    try run() of
         ok -> ok;
         {failed, Violations} ->
             io:format(standard_error,
@@ -42,36 +43,38 @@ guarded_run(ExitStatusText, RawEvidencePath, LogPath) ->
             halt(1)
     catch
         Class:Reason:Stacktrace ->
-            _ = try write_emergency_report(LogPath, Class, Reason) of
+            _ = try write_emergency_report(Class, Reason) of
                 ok -> ok
             catch
                 _:_ -> emergency_report_unavailable
             end,
-            io:format(standard_error,
-                      "idle-wakeup reporter failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "idle-wakeup reporter failed: ~s~n",
+                [json:encode(diagnostic_failure_details(Class, Reason, Stacktrace))]),
             halt(1)
     end.
 
-run(ExitStatusText, RawEvidencePath, LogPath) ->
-    ensure(RawEvidencePath =:= ?RAW_PATH,
-           unexpected_idle_wakeup_raw_evidence_path),
-    ensure(LogPath =:= ?LOG_PATH, unexpected_idle_wakeup_log_path),
-    ExitStatus = parse_nonnegative(ExitStatusText),
+run() ->
+    Identity = evidence_begin(?OUTPUT_PATH),
+    Execution = idw_verify_execution(),
+    ExitStatus = maps:get(<<"exit_status">>, Execution),
+    RawEvidencePath = ?RAW_PATH, LogPath = ?LOG_PATH,
     ProfileBytes = read_bounded(?PROFILE_PATH, ?MAXIMUM_INPUT_BYTES),
     Profile = decode_map(ProfileBytes, invalid_performance_profile),
     EvidenceProfile = maps:get(<<"performance_evidence">>, Profile),
     Idle = validate_profile(Profile, EvidenceProfile),
     RawBytes = read_bounded(RawEvidencePath, ?MAXIMUM_INPUT_BYTES),
     Raw = decode_map(RawBytes, invalid_idle_wakeup_fixture),
-    Log = read_bounded(LogPath, ?MAXIMUM_LOG_BYTES),
+    ensure(idw_fixture_shape(Raw), invalid_idle_fixture_shape),
+    ensure(Raw =:= maps:get(<<"fixture">>, maps:get(<<"child">>, Execution)), mismatched_idle_fixture),
+    Log = read_bounded(LogPath, 0),
+    ensure(Log =:= <<>>, unexpected_idle_log),
     Violations = validate_run(ExitStatus, Raw, Idle),
     Status = case Violations of [] -> <<"Ready">>; _ -> <<"Failed">> end,
     Report =
         #{schema => maps:get(<<"report_schema">>, EvidenceProfile),
           status => Status,
           kind => <<"idle-wakeup">>,
-          shareable => true,
+          shareable => false,
           redacted => true,
           baseline_date => maps:get(<<"baseline_date">>, Profile),
           profile_sha256 => hex(crypto:hash(sha256, ProfileBytes)),
@@ -80,6 +83,7 @@ run(ExitStatusText, RawEvidencePath, LogPath) ->
           system_architecture => list_to_binary(
                                    erlang:system_info(system_architecture)),
           exit_status => ExitStatus,
+          execution => Execution,
           configuration => Idle,
           satisfies => maps:get(<<"satisfies">>, Idle),
           raw_fixture =>
@@ -91,7 +95,7 @@ run(ExitStatusText, RawEvidencePath, LogPath) ->
           log => log_evidence(Log, LogPath),
           evidence => Raw,
           violations => Violations},
-    write_report(Report),
+    write_report(evidence_complete(Report, Identity)),
     case Violations of
         [] ->
             io:format(
@@ -107,7 +111,7 @@ run(ExitStatusText, RawEvidencePath, LogPath) ->
 validate_profile(Profile, Evidence) ->
     ensure(maps:get(<<"baseline_date">>, Profile) =:= <<"2026-08-30">>,
            unexpected_performance_baseline),
-    ensure(maps:get(<<"report_schema">>, Evidence) =:= 3,
+    ensure(maps:get(<<"report_schema">>, Evidence) =:= 4,
            unsupported_performance_report_schema),
     Idle = maps:get(<<"idle_wakeup">>, Evidence),
     ensure(is_map(Idle), invalid_idle_wakeup_profile),
@@ -161,13 +165,18 @@ validate_profile(Profile, Evidence) ->
     Idle.
 
 validate_run(ExitStatus, Raw, Idle) ->
-    problem(ExitStatus =/= 0, <<"workload-exit-status">>,
-            #{expected => 0, observed => ExitStatus})
-    ++ validate_evidence(Raw, Idle).
+    case idw_fixture_shape(Raw) of
+        false -> [violation(<<"fixture-shape">>, #{})];
+        true -> problem(ExitStatus =/= 0, <<"workload-exit-status">>,
+                    #{expected => 0, observed => ExitStatus})
+                ++ validate_evidence(Raw, Idle)
+    end.
 
 validate_evidence(Raw, Idle) when is_map(Raw) ->
     Roles = maps:get(<<"roles">>, Raw, invalid),
     lists:append([
+        problem(not idw_observer_complete(maps:get(<<"observer">>, Raw)),
+            <<"observer-incomplete">>, #{}),
         equal_problem(Raw, <<"schema">>, maps:get(<<"fixture_schema">>, Idle),
                       <<"fixture-schema">>),
         equal_problem(Raw, <<"status">>, <<"Ready">>,
@@ -388,40 +397,11 @@ write_report(Report) ->
     ok = filelib:ensure_dir(?OUTPUT_PATH),
     ok = file:write_file(?OUTPUT_PATH, [json:encode(Report), <<"\n">>]).
 
-write_emergency_report(LogPath, Class, Reason) ->
-    Report =
-        #{schema => 3,
-          status => <<"Failed">>,
-          kind => <<"idle-wakeup">>,
-          shareable => true,
-          redacted => true,
-          log => safe_log_evidence(LogPath),
-          reporter_error =>
-              #{class => safe_atom(Class), reason => reason_tag(Reason),
-                detail_included => false},
-          violations => [violation(<<"reporter-failure">>, #{})]},
-    write_report(Report).
-
-safe_log_evidence(?LOG_PATH = LogPath) ->
-    case filelib:file_size(LogPath) of
-        Size when is_integer(Size), Size >= 0, Size =< ?MAXIMUM_LOG_BYTES ->
-            case file:read_file(LogPath) of
-                {ok, Bytes} -> log_evidence(Bytes, LogPath);
-                {error, Reason} ->
-                    #{path => <<?LOG_PATH>>, content_included => false,
-                      status => <<"Unavailable">>, reason => safe_atom(Reason)}
-            end;
-        Size when is_integer(Size), Size > ?MAXIMUM_LOG_BYTES ->
-            #{path => <<?LOG_PATH>>, bytes => Size, content_included => false,
-              status => <<"TooLarge">>};
-        _ ->
-            #{path => <<?LOG_PATH>>, content_included => false,
-              status => <<"Unavailable">>}
-    end;
-safe_log_evidence(_UnexpectedPath) ->
-    #{path => <<?LOG_PATH>>, content_included => false,
-      status => <<"Unavailable">>, reason => <<"unexpected-path">>}.
-
+write_emergency_report(Class, Reason) ->
+    write_report(#{schema => 4, status => <<"Failed">>, kind => <<"idle-wakeup">>,
+        shareable => false, redacted => true,
+        failure => diagnostic_failure_details(Class, Reason, []),
+        violations => [violation(<<"reporter-failure">>, #{})]}).
 self_test() ->
     ProfileBytes = read_bounded(?PROFILE_PATH, ?MAXIMUM_INPUT_BYTES),
     Profile = decode_map(ProfileBytes, invalid_performance_profile),
@@ -429,6 +409,18 @@ self_test() ->
     Idle = validate_profile(Profile, EvidenceProfile),
     Good = fixture_evidence(Idle),
     [] = validate_run(0, Good, Idle),
+    ensure(validate_run(0, Good#{<<"private">> => <<"idle-private-marker">>}, Idle) =/= [],
+        unknown_idle_fields_accepted),
+    [FirstPrivateRole | PrivateRoles] = maps:get(<<"roles">>, Good),
+    PrivateProblems = validate_run(0, Good#{<<"roles">> :=
+        [FirstPrivateRole#{<<"private">> => <<"idle-private-marker">>} | PrivateRoles]}, Idle),
+    ensure(PrivateProblems =/= [], private_role_field_accepted),
+    nomatch = binary:match(iolist_to_binary(json:encode(PrivateProblems)), <<"idle-private-marker">>),
+    Observer = maps:get(<<"observer">>, Good),
+    expect_violation(validate_run(0, Good#{<<"observer">> :=
+        Observer#{<<"events_received">> := 7}}, Idle), <<"observer-incomplete">>),
+    expect_violation(validate_run(0, Good#{<<"observer">> :=
+        Observer#{<<"events_dropped">> := 1}}, Idle), <<"observer-incomplete">>),
     expect_violation(validate_run(7, Good, Idle),
                      <<"workload-exit-status">>),
     expect_violation(
@@ -499,6 +491,8 @@ fixture_evidence(Idle) ->
       <<"required_actor_liveness">> => true,
       <<"trace_synchronized">> => true,
       <<"trace_primitive">> => maps:get(<<"trace_primitive">>, Idle),
+      <<"observer">> => #{<<"event_limit">> => 4096, <<"events_sent">> => 8,
+          <<"events_received">> => 8, <<"events_dropped">> => 0, <<"invalid_events">> => 0},
       <<"roles">> => Roles}.
 
 fixture_role(Label, LivenessRequired) ->
@@ -539,16 +533,8 @@ expected_liveness_roles() ->
     [<<"http3.client">>, <<"http3.connection">>,
      <<"quic_core.client">>, <<"quic_core.connection">>].
 
-parse_nonnegative(Text) ->
-    try list_to_integer(Text) of
-        Value when Value >= 0 -> Value;
-        _ -> erlang:error({invalid_exit_status, Text})
-    catch
-        error:badarg -> erlang:error({invalid_exit_status, Text})
-    end.
-
 decode_map(Bytes, Error) ->
-    try json:decode(Bytes) of
+    try evidence_json_decode(Bytes) of
         Value when is_map(Value) -> Value;
         _ -> erlang:error(Error)
     catch
@@ -556,10 +542,16 @@ decode_map(Bytes, Error) ->
     end.
 
 read_bounded(Path, MaximumBytes) ->
-    case file:read_file(Path) of
-        {ok, Bytes} when byte_size(Bytes) =< MaximumBytes -> Bytes;
-        {ok, _Bytes} -> erlang:error({input_too_large, Path, MaximumBytes});
-        {error, Reason} -> erlang:error({cannot_read, Path, Reason})
+    case file:open(Path, [read, binary, raw]) of
+        {ok, Handle} ->
+            try
+                Bytes = case file:read(Handle, MaximumBytes + 1) of {ok, Value} -> Value; eof -> <<>> end,
+                true = byte_size(Bytes) =< MaximumBytes,
+                eof = file:read(Handle, 1),
+                Bytes
+            catch _:_ -> erlang:error(invalid_idle_input)
+            after file:close(Handle) end;
+        _ -> erlang:error(invalid_idle_input)
     end.
 
 read(Path) ->
@@ -589,15 +581,6 @@ valid_digest(Value) when is_binary(Value), byte_size(Value) =:= 64 ->
         orelse (Character >= $A andalso Character =< $F)
     end, binary_to_list(Value));
 valid_digest(_Value) -> false.
-
-safe_atom(Value) when is_atom(Value) -> atom_to_binary(Value);
-safe_atom(_Value) -> <<"unknown">>.
-
-reason_tag(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
-reason_tag(Reason) when is_tuple(Reason), tuple_size(Reason) > 0,
-                        is_atom(element(1, Reason)) ->
-    atom_to_binary(element(1, Reason));
-reason_tag(_Reason) -> <<"unclassified">>.
 
 hex(Binary) ->
     iolist_to_binary([io_lib:format("~2.16.0B", [Byte])

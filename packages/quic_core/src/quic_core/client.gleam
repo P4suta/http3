@@ -16,10 +16,14 @@ import quic_core/config.{type Deadlines, type Limits}
 import quic_core/diagnostics
 import quic_core/failure
 import quic_core/internal/connection_state as transport
+import quic_core/internal/local_connection_id
 import quic_core/internal/qlog
 import quic_core/internal/runtime/client_worker
+import quic_core/internal/runtime/connect_trace
 import quic_core/internal/runtime/connection as runtime_connection
+import quic_core/internal/runtime/qlog_admission
 import quic_core/internal/runtime/ticket_store
+import quic_core/internal/stream_completion
 import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
 import quic_core/internal/tls/hello
@@ -42,6 +46,68 @@ pub opaque type Client {
     qlog_directory: String,
     resumption_ticket: Option(client_worker.ResumptionTicket),
     allow_zero_rtt: Bool,
+    connect_port: Int,
+    connect_trace: Option(diagnostics.ConnectTrace),
+    qlog_admission: qlog_admission.Identity,
+    qlog_dependent: Option(qlog_admission.Reservation),
+    qlog_connection_limit: Option(Int),
+  )
+}
+
+/// Stable aggregate admission capability for diagnostics created by related client configurations and higher-level protocol adapters.
+///
+/// Sharing this value makes their fixed writer working sets and unfinished event records compete for one finite `EndpointMemory` limit.
+/// It contains no endpoint, path, payload, socket, process identity or filesystem handle, and its representation remains opaque across the package boundary.
+pub opaque type DiagnosticBudget {
+  DiagnosticBudget(
+    identity: qlog_admission.Identity,
+    dependent: Option(qlog_admission.Reservation),
+    connection_limit: Option(Int),
+  )
+}
+
+/// Opaque ownership token for one higher-layer diagnostic byte reservation.
+///
+/// A protocol adapter must either release it before opening begins or confirm its release after the associated core writer closes.
+/// It contains no path,
+/// endpoint, payload, process identity or I/O handle.
+pub opaque type DiagnosticReservation {
+  DiagnosticReservation(
+    reservation: qlog_admission.Reservation,
+    connection_limit: Int,
+  )
+}
+
+/// Payload-free aggregate diagnostic allocation.
+///
+/// `bytes` is the finite allocation currently charged to the shared ledger;
+/// `connections` counts admitted core writers separately from byte-only reservations owned by a higher-level protocol adapter.
+pub type DiagnosticBudgetAllocation {
+  DiagnosticBudgetAllocation(bytes: Int, connections: Int)
+}
+
+/// Payload-free counters from one shared diagnostic admission identity.
+@internal
+pub type DiagnosticBudgetStats {
+  DiagnosticBudgetStats(
+    reserve_attempts: Int,
+    reserve_grants: Int,
+    reserve_refusals: Int,
+    releases: Int,
+    held_events: Int,
+  )
+}
+
+/// Payload-free counters for bounded late diagnostic cleanup.
+@internal
+pub type DiagnosticReconciliationStats {
+  DiagnosticReconciliationStats(
+    attempts: Int,
+    admitted: Int,
+    refused: Int,
+    recovered: Int,
+    expired: Int,
+    retained: Int,
   )
 }
 
@@ -71,6 +137,16 @@ pub type Read {
   Data(bytes: BitArray, finished: Bool)
   Finished
   Reset(application_error_code: Int)
+}
+
+/// The terminal result of the stream's local send direction.
+/// Acknowledgement proves transport delivery of FIN; it does not imply application processing.
+pub type SendCompletion {
+  SendAcknowledged
+  /// The peer requested that this endpoint stop sending.
+  SendStopped(application_error_code: Int)
+  /// This endpoint reset its own send direction.
+  SendReset(application_error_code: Int)
 }
 
 /// Opaque origin-bound TLS resumption state.
@@ -127,31 +203,263 @@ pub fn new(
   application_protocol application_protocol: String,
 ) -> Result(Client, ConfigurationError) {
   use protocols <- result.try(validate_protocols([application_protocol]))
+  use _ <- result.try(validate_endpoint(hostname, port))
   use trust_store <- result.try(
     authentication.system_trust_store()
     |> result.replace_error(TrustStoreUnavailable),
   )
+  Ok(configured_client(hostname, port, protocols, trust_store))
+}
+
+/// Configure a secure origin using explicit PEM trust anchors.
+/// This constructor never reads OS roots.
+/// Certificate-chain and service-name verification remain mandatory, including on hosts without a system store.
+pub fn new_with_ca_certificates(
+  hostname hostname: String,
+  port port: Int,
+  application_protocol application_protocol: String,
+  certificate_pem certificate_pem: BitArray,
+) -> Result(Client, ConfigurationError) {
+  use protocols <- result.try(validate_protocols([application_protocol]))
+  use _ <- result.try(validate_endpoint(hostname, port))
+  use trust_store <- result.try(
+    authentication.trust_store_from_pem(certificate_pem)
+    |> result.replace_error(InvalidCaCertificate),
+  )
+  Ok(configured_client(hostname, port, protocols, trust_store))
+}
+
+/// Configure a secure origin using a non-empty DER trust-anchor list.
+/// Explicit anchors replace OS roots while retaining mandatory identity checks.
+pub fn new_with_ca_certificates_der(
+  hostname hostname: String,
+  port port: Int,
+  application_protocol application_protocol: String,
+  certificates certificates: List(BitArray),
+) -> Result(Client, ConfigurationError) {
+  use protocols <- result.try(validate_protocols([application_protocol]))
+  use _ <- result.try(validate_endpoint(hostname, port))
+  use trust_store <- result.try(
+    authentication.trust_store_from_der(certificates)
+    |> result.replace_error(InvalidCaCertificate),
+  )
+  Ok(configured_client(hostname, port, protocols, trust_store))
+}
+
+fn validate_endpoint(
+  hostname: String,
+  port: Int,
+) -> Result(Nil, ConfigurationError) {
   case hostname, port {
     "", _ -> Error(InvalidHost)
     _, value if value <= 0 || value > 65_535 -> Error(InvalidPort(value))
-    _, _ ->
-      Ok(Client(
-        hostname,
-        port,
-        protocols,
-        quic_core.DualStack,
-        None,
-        config.default_deadlines(),
-        config.default_limits(),
-        trust_store,
-        None,
-        quic_core.QuicV1,
-        quic_core.NewReno,
-        "",
-        None,
-        False,
-      ))
+    _, _ -> Ok(Nil)
   }
+}
+
+fn configured_client(
+  hostname: String,
+  port: Int,
+  protocols: List(BitArray),
+  trust_store: authentication.TrustStore,
+) -> Client {
+  Client(
+    hostname,
+    port,
+    protocols,
+    quic_core.DualStack,
+    None,
+    config.default_deadlines(),
+    config.default_limits(),
+    trust_store,
+    None,
+    quic_core.QuicV1,
+    quic_core.NewReno,
+    "",
+    None,
+    False,
+    port,
+    None,
+    qlog_admission.new(),
+    None,
+    None,
+  )
+}
+
+/// Create an allocation-only diagnostic budget for protocol orchestration.
+///
+/// This starts no actor, opens no file and schedules no timer.
+/// It is useful to a higher-level protocol client that creates several short-lived core `Client` values but requires one finite qlog memory limit across all of them.
+pub fn new_diagnostic_budget() -> DiagnosticBudget {
+  DiagnosticBudget(qlog_admission.new(), None, None)
+}
+
+/// Make this client use an existing aggregate diagnostic budget.
+///
+/// The budget matters only when qlog is explicitly enabled.
+/// Client copies keep the same opaque identity, including after limits or destination settings change; this call starts no actor and allocates no connection resource.
+pub fn with_diagnostic_budget(
+  client: Client,
+  diagnostic_budget: DiagnosticBudget,
+) -> Client {
+  let DiagnosticBudget(identity, dependent, connection_limit) =
+    diagnostic_budget
+  Client(
+    ..client,
+    qlog_admission: identity,
+    qlog_dependent: dependent,
+    qlog_connection_limit: connection_limit,
+  )
+}
+
+/// Bind one higher-layer reservation to the next core writer admission.
+///
+/// The values must originate from the same shared budget and the reservation must not have begun opening.
+/// Validation and eventual settlement remain in `quic_core`; no diagnostic content or runtime handle crosses this boundary.
+pub fn link_diagnostic_reservation(
+  diagnostic_budget: DiagnosticBudget,
+  reservation: DiagnosticReservation,
+) -> DiagnosticBudget {
+  let DiagnosticBudget(identity, _, _) = diagnostic_budget
+  let DiagnosticReservation(reservation, connection_limit) = reservation
+  DiagnosticBudget(identity, Some(reservation), Some(connection_limit))
+}
+
+/// Snapshot finite qlog event admission counters.
+///
+/// The result contains no output directory, origin, payload, process identity,
+/// socket or exception.
+/// Counters saturate instead of wrapping.
+@internal
+pub fn diagnostic_budget_stats(
+  diagnostic_budget: DiagnosticBudget,
+) -> DiagnosticBudgetStats {
+  let DiagnosticBudget(identity, _, _) = diagnostic_budget
+  let #(attempts, grants, refusals, releases, held) =
+    qlog_admission.event_snapshot(identity)
+  DiagnosticBudgetStats(attempts, grants, refusals, releases, held)
+}
+
+/// Snapshot aggregate diagnostic bytes and writer connection slots.
+///
+/// The values contain no directory, origin, payload, process identity, socket or exception.
+/// Higher-level adapters can use this immutable snapshot as bounded admission and release evidence.
+pub fn diagnostic_budget_allocation(
+  diagnostic_budget: DiagnosticBudget,
+) -> DiagnosticBudgetAllocation {
+  let DiagnosticBudget(identity, _, _) = diagnostic_budget
+  let #(bytes, connections) = qlog_admission.allocation_snapshot(identity)
+  DiagnosticBudgetAllocation(bytes, connections)
+}
+
+/// Snapshot one Client's aggregate diagnostic allocation.
+/// This is a test and adapter observation only; it carries no origin, path, payload or actor.
+@internal
+pub fn client_diagnostic_budget_allocation(
+  client: Client,
+) -> DiagnosticBudgetAllocation {
+  let #(bytes, connections) =
+    qlog_admission.allocation_snapshot(client.qlog_admission)
+  DiagnosticBudgetAllocation(bytes, connections)
+}
+
+/// Snapshot finite late-cleanup counters for a shared diagnostic capability.
+@internal
+pub fn diagnostic_reconciliation_stats(
+  diagnostic_budget: DiagnosticBudget,
+) -> DiagnosticReconciliationStats {
+  let DiagnosticBudget(identity, _, _) = diagnostic_budget
+  reconciliation_stats(identity)
+}
+
+/// Snapshot finite late-cleanup counters for a Client's shared identity.
+@internal
+pub fn client_diagnostic_reconciliation_stats(
+  client: Client,
+) -> DiagnosticReconciliationStats {
+  reconciliation_stats(client.qlog_admission)
+}
+
+fn reconciliation_stats(
+  identity: qlog_admission.Identity,
+) -> DiagnosticReconciliationStats {
+  let qlog_admission.ReconciliationStats(
+    attempts,
+    admitted,
+    refused,
+    recovered,
+    expired,
+    retained,
+  ) = qlog_admission.reconciliation_snapshot(identity)
+  DiagnosticReconciliationStats(
+    attempts,
+    admitted,
+    refused,
+    recovered,
+    expired,
+    retained,
+  )
+}
+
+/// Reserve a higher-layer diagnostic working set in this core ledger.
+///
+/// This byte-only reservation deliberately does not consume a connection slot;
+/// the subsequently created core qlog writer owns that slot exactly once.
+/// `bytes`, `maximum`, and `connections` are finite scalar policy values; the result exposes neither the ledger identity nor any diagnostic content.
+pub fn reserve_diagnostic_memory(
+  diagnostic_budget: DiagnosticBudget,
+  bytes: Int,
+  maximum: Int,
+  connections: Int,
+) -> Result(DiagnosticReservation, Int) {
+  let DiagnosticBudget(identity, _, _) = diagnostic_budget
+  case connections > 0 && connections <= 2_147_483_647 {
+    False -> Error(2)
+    True ->
+      qlog_admission.reserve_auxiliary(identity, bytes, maximum, connections)
+      |> result.map(fn(reservation) {
+        DiagnosticReservation(reservation, connections)
+      })
+  }
+}
+
+/// Mark that a higher-layer diagnostic reservation may now have live work.
+///
+/// This one-way lifecycle transition is bounded and rejects a reservation that was already settled or begun.
+/// No actor or I/O operation is started here.
+pub fn begin_diagnostic_memory(
+  reservation: DiagnosticReservation,
+) -> Result(Nil, Nil) {
+  let DiagnosticReservation(reservation, _) = reservation
+  qlog_admission.begin_open(reservation)
+}
+
+/// Return a reservation only while no higher-layer opening has begun.
+///
+/// Repeated or late release is safe and carries no payload into the core.
+pub fn release_unused_diagnostic_memory(
+  reservation: DiagnosticReservation,
+) -> Nil {
+  let DiagnosticReservation(reservation, _) = reservation
+  qlog_admission.release_unused(reservation)
+}
+
+/// Return a begun reservation after its associated core close was confirmed.
+///
+/// Settlement is idempotent, payload-free, and leaves the shared budget usable by later protocol connections.
+pub fn release_confirmed_diagnostic_memory(
+  reservation: DiagnosticReservation,
+) -> Nil {
+  let DiagnosticReservation(reservation, _) = reservation
+  qlog_admission.release_confirmed(reservation)
+}
+
+/// Return the finite extra wait required to confirm diagnostic close.
+///
+/// A higher-level protocol adapter adds this scalar after its own orderly protocol/drain deadline.
+/// It is sourced from the native qlog call deadline and exposes no diagnostic content, path, endpoint, handle, or identity.
+pub fn close_completion_allowance_milliseconds() -> Int {
+  qlog.close_completion_allowance_milliseconds()
 }
 
 /// Replace the ordered ALPN preference list.
@@ -180,12 +488,34 @@ pub fn with_connect_address(client: Client, address: IpAddress) -> Client {
   Client(..client, connect_address: Some(address))
 }
 
+/// Retain bounded, redacted connect observations across success and failure.
+pub fn with_connect_trace(
+  client: Client,
+  trace: diagnostics.ConnectTrace,
+) -> Client {
+  Client(..client, connect_trace: Some(trace))
+}
+
+/// Dial a different UDP port while retaining the configured TLS identity and resumption origin.
+/// Compose with `with_connect_address` for an exact peer.
+pub fn with_connect_port(
+  client: Client,
+  port: Int,
+) -> Result(Client, ConfigurationError) {
+  case port > 0 && port <= 65_535 {
+    True -> Ok(Client(..client, connect_port: port))
+    False -> Error(InvalidPort(port))
+  }
+}
+
 /// Attach an already validated finite deadline policy atomically.
 pub fn with_deadlines(client: Client, deadlines: Deadlines) -> Client {
   Client(..client, deadlines: deadlines)
 }
 
 /// Attach an already validated finite resource policy atomically.
+/// Derived configurations share diagnostic admission with this configuration;
+/// changing limits never erases its existing live or unconfirmed reservations.
 pub fn with_limits(client: Client, limits: Limits) -> Client {
   Client(..client, limits: limits)
 }
@@ -277,6 +607,13 @@ pub fn with_client_certificate(
 
 /// Enable one bounded asynchronous qlog writer per connection.
 /// An empty path disables qlog.
+/// This checks path syntax only; funded connection startup checks writability.
+/// All configurations derived from one constructor share diagnostic capacity.
+/// Confirmed cleanup returns its charge. For a pending opening, a bounded
+/// reconciler observes at most two native owners and returns the charge after
+/// their confirmed later join. Each identity retains at most 64 tickets for at
+/// most seven seconds; a refused or expired observation remains quarantined.
+/// Disabling qlog or changing its directory does not erase that reservation.
 pub fn with_qlog(
   client: Client,
   directory: String,
@@ -284,7 +621,7 @@ pub fn with_qlog(
   case directory {
     "" -> Ok(Client(..client, qlog_directory: ""))
     value ->
-      qlog.validate_directory(value)
+      qlog.validate_path(value)
       |> result.map(fn(_) { Client(..client, qlog_directory: value) })
       |> result.replace_error(InvalidQlogDirectory)
   }
@@ -338,6 +675,14 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     client.qlog_directory,
     client.resumption_ticket,
     client.allow_zero_rtt,
+    client.connect_port,
+    connect_trace.begin(client.connect_trace),
+    client.qlog_admission,
+    client.qlog_dependent,
+    case client.qlog_connection_limit {
+      Some(maximum) -> maximum
+      None -> config.limit(client.limits, failure.Connections)
+    },
   )
   |> result.map(Connection)
   |> result.map_error(map_error)
@@ -416,6 +761,28 @@ pub fn send_and_finish(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
 pub fn send_finished(stream: Stream) -> Result(Bool, Error) {
   let Stream(handle) = stream
   client_worker.send_finished(handle) |> result.map_error(map_error)
+}
+
+/// Wait for send completion without consuming the stream's receive direction.
+///
+/// The wait uses the smaller of the positive requested duration and this connection's configured operation deadline.
+/// At most one live caller may wait on each stream, and the connection admits at most `min(Queue, 256)` bounded observations.
+/// Caller exit removes its observation immediately.
+/// Recent terminal outcomes are retained in finite connection history.
+pub fn await_send_completion(
+  stream: Stream,
+  within_milliseconds: Int,
+) -> Result(SendCompletion, Error) {
+  let Stream(handle) = stream
+  client_worker.await_send_completion(handle, within_milliseconds)
+  |> result.map(fn(outcome) {
+    case outcome {
+      stream_completion.Acknowledged -> SendAcknowledged
+      stream_completion.Stopped(code) -> SendStopped(code)
+      stream_completion.Reset(code) -> SendReset(code)
+    }
+  })
+  |> result.map_error(map_error)
 }
 
 /// Pull at most `maximum_bytes`; no public receive queue grows without a pull.
@@ -591,6 +958,19 @@ pub fn connection_stats(
   |> result.map_error(map_error)
 }
 
+/// Snapshot local connection-ID occupancy without identifiers or reset tokens.
+pub fn local_connection_id_stats(
+  connection: Connection,
+) -> Result(diagnostics.ConnectionIdStats, Error) {
+  let Connection(handle) = connection
+  client_worker.local_connection_id_stats(handle)
+  |> result.map(fn(value) {
+    let local_connection_id.Snapshot(active, issued, retired, limit) = value
+    diagnostics.ConnectionIdStats(active, issued, retired, limit)
+  })
+  |> result.map_error(map_error)
+}
+
 /// Snapshot current stream-resource pressure without exposing stream IDs.
 pub fn resource_stats(
   connection: Connection,
@@ -602,6 +982,30 @@ pub fn resource_stats(
     diagnostics.ResourceStats(runtime_streams, transport_streams)
   })
   |> result.map_error(map_error)
+}
+
+/// Prove that no application packet or queued stream/control output remains.
+///
+/// Upper-layer protocol adapters use this payload-free barrier after their final control frame.
+/// A `True` result means that every application-space packet which could contain that control frame has been acknowledged and that the actor owns no write which could still enter the transport.
+/// The snapshot carries no frame,
+/// stream identifier, endpoint, socket, process identity, or application data.
+pub fn application_send_settled(connection: Connection) -> Result(Bool, Error) {
+  let Connection(handle) = connection
+  use snapshot <- result.try(
+    client_worker.development_snapshot(handle) |> result.map_error(map_error),
+  )
+  let client_worker.DevelopmentSnapshot(
+    transport: transport.SendProgress(
+      application_outstanding_packets: outstanding,
+      queued_application_frames: queued,
+      active_streams: active,
+      ..,
+    ),
+    actor_pending_sends: pending,
+    ..,
+  ) = snapshot
+  Ok(outstanding == 0 && queued == 0 && active == [] && pending == [])
 }
 
 /// Snapshot bounded asynchronous qlog health without trace contents.
@@ -775,6 +1179,27 @@ pub fn resumption_ticket_allows_zero_rtt(ticket: ResumptionTicket) -> Bool {
   client_worker.ticket_allows_early_data(handle)
 }
 
+/// Return the bounded opaque application compatibility state retained by a ticket.
+/// The QUIC layer authenticates and persists these bytes without interpreting their application-protocol meaning.
+pub fn resumption_ticket_application_context(
+  ticket: ResumptionTicket,
+) -> BitArray {
+  let ResumptionTicket(handle) = ticket
+  client_worker.ticket_application_context(handle)
+}
+
+/// Attach bounded opaque application compatibility state to a ticket before it is offered or persisted.
+/// Existing authenticated origin and transport bindings remain unchanged.
+pub fn with_resumption_ticket_application_context(
+  ticket: ResumptionTicket,
+  context: BitArray,
+) -> Result(ResumptionTicket, Error) {
+  let ResumptionTicket(handle) = ticket
+  client_worker.ticket_with_application_context(handle, context)
+  |> result.map(ResumptionTicket)
+  |> result.replace_error(InvalidStoredTicket)
+}
+
 /// Validate a caller-managed 256-bit persistence key.
 pub fn ticket_storage_key(
   bytes: BitArray,
@@ -875,6 +1300,11 @@ pub fn import_resumption_ticket_at(
 }
 
 /// Close the connection idempotently.
+/// A first close takes the live qlog writer once and waits for its flush and
+/// child cleanup outside the transport actor. The actor command, diagnostic
+/// flush, cleanup join, and result share one finite absolute deadline; QUIC
+/// closing timers continue while the caller joins diagnostics.
+/// Concurrent close cannot report success while diagnostic cleanup is pending.
 pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   let code = quic_core.application_error_code(0)
   case code {
@@ -883,7 +1313,15 @@ pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   }
 }
 
+/// Return the connection-specific transport-actor share of an adapter-owned close deadline.
+/// Add `close_completion_allowance_milliseconds` for the qlog share before passing the resulting absolute boundary to `close_with_code_until`.
+pub fn close_operation_allowance_milliseconds(connection: Connection) -> Int {
+  let Connection(handle) = connection
+  client_worker.close_operation_allowance_milliseconds(handle)
+}
+
 /// Close with a validated application error code and no application payload.
+/// The same diagnostic completion rules as `close` apply.
 pub fn close_with_code(
   connection: Connection,
   application_error_code: quic_core.ApplicationErrorCode,
@@ -893,6 +1331,35 @@ pub fn close_with_code(
     client_worker.close_with_code(
       handle,
       quic_core.application_error_code_value(application_error_code),
+    )
+  {
+    Ok(client_worker.Closed) -> Ok(Closed)
+    Ok(client_worker.AlreadyClosed) -> Ok(AlreadyClosed)
+    Error(client_worker.ConnectionClosed) -> Ok(AlreadyClosed)
+    Error(error) -> Error(map_error(error))
+  }
+}
+
+/// Close under a caller-owned absolute completion deadline.
+///
+/// `deadline_milliseconds` must be a future, non-negative value from `quic_core/diagnostics.monotonic_milliseconds` and no greater than 9,223,372,036,854,775,807.
+/// The transport actor call, qlog flush, cleanup owner join, and final result all consume this same window.
+/// An expired boundary returns `Failure(Timeout(Operation))`; an invalid clock-domain value returns `InvalidOperation`.
+/// A qlog I/O or owner failure remains `Failure(Socket(WriteFile))`.
+///
+/// This is intended for protocol adapters which already own a finite shutdown budget.
+/// Ordinary applications can use `close_with_code`.
+pub fn close_with_code_until(
+  connection: Connection,
+  application_error_code: quic_core.ApplicationErrorCode,
+  deadline_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  let Connection(handle) = connection
+  case
+    client_worker.close_with_code_until(
+      handle,
+      quic_core.application_error_code_value(application_error_code),
+      deadline_milliseconds,
     )
   {
     Ok(client_worker.Closed) -> Ok(Closed)
@@ -987,10 +1454,14 @@ fn map_error(error: client_worker.Error) -> Error {
     client_worker.TlsHandshakeFailed -> Failure(failure.Tls(failure.Peer))
     client_worker.QuicFailure | client_worker.VersionNegotiationFailed ->
       Failure(failure.Quic(failure.Peer, None))
+    client_worker.TransportFailureWithCode(code) ->
+      Failure(failure.Quic(failure.Local, Some(code)))
     client_worker.ConnectionClosed ->
       Failure(failure.Closed(failure.Peer, None))
     client_worker.PeerClosedWithCode(code) ->
       Failure(failure.Closed(failure.Peer, Some(code)))
+    client_worker.PeerTransportFailureWithCode(code) ->
+      Failure(failure.Quic(failure.Peer, Some(code)))
     client_worker.StreamClosed -> StreamFinished
     client_worker.StreamReset(code) -> StreamReset(code)
     client_worker.InvalidDirection -> InvalidDirection
@@ -1015,6 +1486,8 @@ fn map_error(error: client_worker.Error) -> Error {
     client_worker.CongestionLimited -> Failure(failure.Overload(failure.Queue))
     client_worker.EndpointMemoryExceeded(maximum) ->
       Failure(failure.Limit(failure.EndpointMemory, maximum))
+    client_worker.DiagnosticConnectionsExceeded ->
+      Failure(failure.Overload(failure.Connections))
     client_worker.TicketUnavailable -> TicketUnavailable
     client_worker.InvalidStoredTicket -> InvalidStoredTicket
     client_worker.QlogUnavailable -> Failure(failure.Socket(failure.WriteFile))

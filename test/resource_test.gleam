@@ -2,8 +2,15 @@ import gleeunit
 import http/error
 import http/resource
 
+@external(erlang, "http_server_contract_test_ffi", "resource_primitive_failures_are_typed")
+fn resource_primitive_failures_are_typed() -> Bool
+
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+pub fn primitive_failures_refuse_without_losing_capacity_test() -> Nil {
+  assert resource_primitive_failures_are_typed()
 }
 
 pub fn controller_grants_before_growth_and_recovers_every_lease_test() -> Nil {

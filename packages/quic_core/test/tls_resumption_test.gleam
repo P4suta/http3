@@ -116,6 +116,51 @@ pub fn server_policy_can_reject_early_data_without_rejecting_resumption_test() -
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn application_context_mismatch_rejects_only_early_data_test() -> Nil {
+  let context = <<"http3-settings">>
+  let #(_, encoded, decoded) =
+    client_hello_with_prefix_and_context(True, <<>>, context)
+  let assert Ok(cache) = anti_replay.new(10_000, 16)
+  let assert Ok(unbound_policy) =
+    resumption.server_policy(ticket_key, issued_at + 100, 100, cache)
+  let assert Ok(resumption.Resumed(mismatch)) =
+    resumption.select(
+      unbound_policy,
+      encoded,
+      <<>>,
+      decoded,
+      "example.com",
+      <<"h3">>,
+      1,
+      <<1, 2>>,
+    )
+  assert mismatch.early_data_offered
+  assert !mismatch.early_data_accepted
+  assert anti_replay.size(mismatch.replay_cache) == 0
+
+  let assert Ok(bound_policy) =
+    resumption.with_application_context(unbound_policy, context)
+  let assert Ok(resumption.Resumed(matched)) =
+    resumption.select(
+      bound_policy,
+      encoded,
+      <<>>,
+      decoded,
+      "example.com",
+      <<"h3">>,
+      1,
+      <<1, 2>>,
+    )
+  assert matched.early_data_accepted
+  assert anti_replay.size(matched.replay_cache) == 1
+  let oversized_context_bits = 32_776
+  assert resumption.with_application_context(bound_policy, <<
+      0:size(oversized_context_bits),
+    >>)
+    == Error(resumption.InvalidPolicy)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn managed_external_replay_guard_validates_its_deadline_test() -> Nil {
   let check = fn(_fingerprint, _valid_for_milliseconds) { Ok(True) }
   let assert Error(resumption.InvalidPolicy) =
@@ -238,8 +283,20 @@ fn client_hello_with_prefix(
   request_early_data: Bool,
   transcript_prefix: BitArray,
 ) -> #(resumption.ClientOffer, BitArray, hello.ClientHello) {
+  client_hello_with_prefix_and_context(
+    request_early_data,
+    transcript_prefix,
+    <<>>,
+  )
+}
+
+fn client_hello_with_prefix_and_context(
+  request_early_data: Bool,
+  transcript_prefix: BitArray,
+  application_context: BitArray,
+) -> #(resumption.ClientOffer, BitArray, hello.ClientHello) {
   let assert Ok(new_ticket) =
-    session_ticket.issue(
+    session_ticket.issue_with_application_context(
       ticket_key:,
       issued_at_milliseconds: issued_at,
       lifetime_seconds: 3600,
@@ -250,6 +307,7 @@ fn client_hello_with_prefix(
       alpn: <<"h3">>,
       quic_version: 1,
       remembered_transport_parameters: <<1, 2>>,
+      remembered_application_context: application_context,
       permit_early_data: True,
     )
   let assert Ok(ticket) =

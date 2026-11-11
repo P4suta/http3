@@ -9,3 +9,13 @@ pub fn maps_registered_and_unknown_application_errors_test() -> Nil {
   assert unknown == error_code.ReservedOrUnknown(0xdead)
   assert error_code.effective(unknown) == error_code.NoError
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn graceful_close_grease_is_deterministic_and_bounded_test() -> Nil {
+  assert error_code.greased_no_error(0) != 0x100
+  assert error_code.greased_no_error(1) == 0x100
+  assert error_code.greased_no_error(7) == 0x100
+  assert error_code.greased_no_error(8) != 0x100
+  assert error_code.effective(error_code.decode(error_code.greased_no_error(8)))
+    == error_code.NoError
+}

@@ -1,5 +1,7 @@
 //// Registered HTTP/3, QPACK, and HTTP Datagram application error codes.
 
+import http3/internal/native/grease
+
 /// Stable semantic error names used instead of raw integers internally.
 pub type ErrorCode {
   NoError
@@ -52,6 +54,19 @@ pub fn encode(error: ErrorCode) -> Int {
     QpackDecoderStreamError -> 0x202
     ReservedOrUnknown(value) -> value
   }
+}
+
+/// Select the graceful-close wire code from one injected sample.
+/// Most closes retain H3_NO_ERROR; a fixed fraction exercises the mandatory semantics of reserved error codes without making tests depend on timing or randomness.
+pub fn greased_no_error(sample: Int) -> Int {
+  grease.no_error_code(sample)
+}
+
+/// Select a production graceful-close code using an unpredictable sample.
+/// The injected fallback keeps close paths total if the runtime RNG is absent.
+pub fn runtime_greased_no_error(fallback: Int) -> Int {
+  grease.runtime_sample(fallback)
+  |> grease.no_error_code
 }
 
 /// Decode known values. Unregistered values are deliberately treated like

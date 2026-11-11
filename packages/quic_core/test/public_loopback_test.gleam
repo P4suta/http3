@@ -217,11 +217,10 @@ pub fn generic_quic_public_api_round_trip_over_real_udp_test() -> Nil {
   server.send_datagram(peer, <<"server datagram":utf8>>) |> should.be_ok
   assert client.receive_datagram(connection) == Ok(<<"server datagram":utf8>>)
 
-  // This endpoint issues no connection IDs of its own, so a peer connected to
-  // it holds no unused identifier to move to and migrates on the one it has.
-  // RFC 9000 section 9.5 wants a different identifier for a second local
-  // address, and the client takes one whenever the peer supplied it; migration
-  // against a peer which does is covered by the interoperability gate.
+  // Each endpoint advertises bounded spare identifiers.
+  // Migration takes an unused peer identifier; retirement/replenishment is asserted by the live connection-ID lifecycle suite.
+  assert client.local_connection_id_stats(connection)
+    == Ok(diagnostics.ConnectionIdStats(4, 4, 0, 4096))
   assert client.path_validation_in_progress(connection) == Ok(False)
   client.migrate(connection) |> should.be_ok
   assert client.path_validation_in_progress(connection) == Ok(False)
@@ -466,9 +465,8 @@ pub fn acknowledged_stream_data_survives_peer_connection_close_test() -> Nil {
 
   let close_code = quic_core.application_error_code(0x1234) |> should.be_ok
   assert server.close_with_code(peer, close_code) == Ok(server.Closed)
-  // Observe the authenticated connection close first. The stream bytes which
-  // preceded it on the wire were already acknowledged and must not be erased
-  // merely because the application had not pulled them from the core actor.
+  // Observe the authenticated connection close first.
+  // The stream bytes which preceded it on the wire were already acknowledged and must not be erased merely because the application had not pulled them from the core actor.
   assert client.receive_datagram(connection)
     == Error(client.Failure(failure.Closed(failure.Peer, Some(0x1234))))
   assert client.receive(stream, 1024)
@@ -639,9 +637,8 @@ pub fn v1_ticket_and_token_never_start_a_v2_connection_test() -> Nil {
   let _closed = client.close(first_connection)
   let _peer_closed = server.close(first_peer)
 
-  // The caller's preference cannot relabel authenticated v1 resumption state
-  // as v2. The client instead starts the connection on the ticket's bound
-  // version; the paired NEW_TOKEN therefore remains on that same version too.
+  // The caller's preference cannot relabel authenticated v1 resumption state as v2.
+  // The client instead starts the connection on the ticket's bound version; the paired NEW_TOKEN therefore remains on that same version too.
   let resumed_client =
     base_client
     |> client.with_version(quic_core.QuicV2)

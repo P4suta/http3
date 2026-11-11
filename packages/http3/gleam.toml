@@ -40,6 +40,10 @@ avoid_todo = "error"
 unused_exports = "error"
 
 [tools.glinter.ignore]
+# EUnit entrypoints and checked loopback fixture admission for deadline tests.
+"test/read_deadline_test.gleam" = ["assert_ok_pattern", "unused_exports"]
+# EUnit discovers this external regression by its exported _test suffix.
+"test/benchmark_priming_test.gleam" = ["unused_exports"]
 # These new public modules intentionally keep concise positional APIs. Address
 # parsing collapses runtime-specific failures into its documented typed errors,
 # and WebSocket exports are exercised by downstream integrations in this tree.

@@ -40,6 +40,10 @@ const maximum_configured_bytes = 1_073_741_824
 const maximum_header_table_bytes = 16_777_216
 
 /// A protocol-neutral callback installed by `http/server`.
+/// Successful responses are owned by the common executor's admitted guardian.
+/// Transfer and Context cancellation wake that guardian; it joins source
+/// cleanup before returning capacity. This connection actor never runs or
+/// waits for application cleanup while multiplexing other streams.
 pub type Handler =
   fn(Request(body.Body), context.Context) ->
     Result(Response(body.Body), error.Error)
@@ -190,6 +194,7 @@ type ResponsePending {
 }
 
 type ResponseWrite {
+  ResponseRejected(state: wire.State, failure: error.Error)
   ResponseBlocked(
     state: wire.State,
     pending: ResponsePending,
@@ -1838,14 +1843,16 @@ fn handle_handler_completion(
         Some(response) ->
           case response_has_no_body(stream.method, response.status) {
             True -> {
-              body.cancel(response.body)
-              use state <- result.try(send_response_head(
-                runtime.socket,
-                runtime.wire,
-                stream_id,
-                response,
-                True,
-              ))
+              use state <- result.try(
+                send_response_head(
+                  runtime.socket,
+                  runtime.wire,
+                  stream_id,
+                  response,
+                  True,
+                )
+                |> observe_response_write(response.body, True),
+              )
               let stream =
                 StreamEntry(
                   ..stream,
@@ -1862,13 +1869,16 @@ fn handle_handler_completion(
               continue_or_drain(runtime)
             }
             False -> {
-              use state <- result.try(send_response_head(
-                runtime.socket,
-                runtime.wire,
-                stream_id,
-                response,
-                False,
-              ))
+              use state <- result.try(
+                send_response_head(
+                  runtime.socket,
+                  runtime.wire,
+                  stream_id,
+                  response,
+                  False,
+                )
+                |> observe_response_write(response.body, False),
+              )
               let stream =
                 StreamEntry(
                   ..stream,
@@ -1964,6 +1974,7 @@ fn handle_response_read(
         StreamEntry(..stream, response_reading: False, response_timer: None)
       case outcome {
         Error(Nil) -> {
+          observe_stream_failure(stream, service_error())
           use runtime <- result.try(reset_application_stream(
             runtime,
             stream,
@@ -1972,7 +1983,8 @@ fn handle_response_read(
           ))
           continue_or_drain(runtime)
         }
-        Ok(Error(_failure)) -> {
+        Ok(Error(failure)) -> {
+          observe_stream_failure(stream, failure)
           use runtime <- result.try(reset_application_stream(
             runtime,
             stream,
@@ -1985,7 +1997,14 @@ fn handle_response_read(
           let received = stream.response_body_bytes + bit_array.byte_size(bytes)
           case received <= runtime.config.maximum_body_bytes {
             False -> {
-              body.cancel(next)
+              body.transfer_finished(
+                next,
+                Error(
+                  error.new(
+                    error.Body(error.TooLarge(runtime.config.maximum_body_bytes)),
+                  ),
+                ),
+              )
               use runtime <- result.try(reset_application_stream(
                 runtime,
                 stream,
@@ -2011,7 +2030,8 @@ fn handle_response_read(
         }
         Ok(Ok(body.Done(completed))) -> {
           case completed_trailers(completed) {
-            Error(_) -> {
+            Error(failure) -> {
+              body.transfer_finished(completed, Error(failure))
               use runtime <- result.try(reset_application_stream(
                 runtime,
                 stream,
@@ -2024,7 +2044,7 @@ fn handle_response_read(
               let stream =
                 StreamEntry(
                   ..stream,
-                  response_body: None,
+                  response_body: Some(completed),
                   response_pending: Some(ResponsePending(<<>>, trailers, True)),
                 )
               use runtime <- result.try(queue_pending_responses(
@@ -2049,7 +2069,13 @@ fn handle_response_timeout(
     Some(#(stream, rest)) ->
       case stream.response_reading && stream.worker == worker {
         False -> Ok(ConnectionRuntime(..runtime, streams: [stream, ..rest]))
-        True -> reset_application_stream(runtime, stream, rest, 0x2)
+        True -> {
+          observe_stream_failure(
+            stream,
+            error.new(error.Timeout(error.Operation)),
+          )
+          reset_application_stream(runtime, stream, rest, 0x2)
+        }
       }
   }
 }
@@ -2174,14 +2200,35 @@ fn flush_one_scheduled_stream(
               )
             }
             Some(pending) -> {
-              use written <- result.try(write_pending_response(
-                socket,
-                state,
-                stream_id,
-                pending,
-                maximum_frame_bytes,
-              ))
+              use written <- result.try(
+                write_pending_response(
+                  socket,
+                  state,
+                  stream_id,
+                  pending,
+                  maximum_frame_bytes,
+                )
+                |> observe_stream_write(stream),
+              )
               case written {
+                ResponseRejected(state, failure) -> {
+                  // No bytes from the rejected operation reached the peer.
+                  // Retain any earlier successful writes and reset this stream.
+                  observe_stream_failure(stream, failure)
+                  use reset <- result.try(
+                    wire.reset_stream(state, stream_id:, error_code: 0x2)
+                    |> result.map_error(map_wire_error),
+                  )
+                  let wire.ControlWritten(state, frames) = reset
+                  use _ <- result.try(send_frames(socket, frames))
+                  cancel_stream_entry(stream)
+                  Ok(#(
+                    state,
+                    rest,
+                    priority_scheduler.remove(scheduler, stream_id),
+                    True,
+                  ))
+                }
                 ResponseBlocked(state, pending, True) ->
                   Ok(#(
                     state,
@@ -2318,13 +2365,13 @@ fn write_pending_response(
   let ResponsePending(bytes, trailers, closes_stream) = pending
   case bit_array.byte_size(bytes), trailers, closes_stream {
     0, [_, ..], True -> {
-      use written <- result.try(
-        wire.send_trailers(state, stream_id, trailers)
-        |> result.map_error(map_wire_error),
-      )
-      let wire.HeadersWritten(state, _, frames) = written
-      use _ <- result.try(send_frames(socket, frames))
-      Ok(ResponseFinished(state, True))
+      case wire.send_trailers(state, stream_id, trailers) {
+        Error(failure) -> Ok(ResponseRejected(state, map_wire_error(failure)))
+        Ok(wire.HeadersWritten(state, _, frames)) -> {
+          use _ <- result.try(send_frames(socket, frames))
+          Ok(ResponseFinished(state, True))
+        }
+      }
     }
     0, [_, ..], False -> Error(protocol_error())
     _, _, _ -> {
@@ -2334,13 +2381,11 @@ fn write_pending_response(
         closes_stream
         && list.is_empty(trailers)
         && bit_array.byte_size(deferred) == 0
-      use written <- result.try(
-        wire.send_data(state, stream_id:, bytes: sendable, end_stream:)
-        |> result.map_error(map_wire_error),
-      )
-      case written {
-        wire.DataBlocked(state) -> Ok(ResponseBlocked(state, pending, False))
-        wire.DataWritten(state, frames, remaining, end_stream_sent) -> {
+      case wire.send_data(state, stream_id:, bytes: sendable, end_stream:) {
+        Error(failure) -> Ok(ResponseRejected(state, map_wire_error(failure)))
+        Ok(wire.DataBlocked(state)) ->
+          Ok(ResponseBlocked(state, pending, False))
+        Ok(wire.DataWritten(state, frames, remaining, end_stream_sent)) -> {
           use _ <- result.try(send_frames(socket, frames))
           let remaining = <<remaining:bits, deferred:bits>>
           case
@@ -2519,8 +2564,47 @@ fn stop_connection_with_error(
   runtime: ConnectionRuntime,
   failure: error.Error,
 ) -> Result(Nil, error.Error) {
+  list.each(runtime.streams, fn(stream) {
+    observe_stream_failure(stream, failure)
+  })
   let _stopped = stop_connection(runtime)
   Error(failure)
+}
+
+fn observe_response_write(
+  outcome: Result(value, error.Error),
+  outgoing: body.Body,
+  complete: Bool,
+) -> Result(value, error.Error) {
+  case outcome {
+    Error(failure) -> body.transfer_finished(outgoing, Error(failure))
+    Ok(_) if complete -> body.transfer_finished(outgoing, Ok(Nil))
+    Ok(_) -> Nil
+  }
+  outcome
+}
+
+fn observe_stream_write(
+  outcome: Result(ResponseWrite, error.Error),
+  stream: StreamEntry,
+) -> Result(ResponseWrite, error.Error) {
+  case stream.response_body {
+    None -> outcome
+    Some(outgoing) -> {
+      let complete = case outcome {
+        Ok(ResponseFinished(_, True)) -> True
+        _ -> False
+      }
+      observe_response_write(outcome, outgoing, complete)
+    }
+  }
+}
+
+fn observe_stream_failure(stream: StreamEntry, failure: error.Error) -> Nil {
+  case stream.response_body {
+    None -> Nil
+    Some(outgoing) -> body.transfer_finished(outgoing, Error(failure))
+  }
 }
 
 fn cancel_stream(
@@ -2541,16 +2625,14 @@ fn cancel_stream(
 }
 
 fn cancel_stream_entry(stream: StreamEntry) -> Nil {
+  // The common request guardian owns both sources and their cleanup deadline.
+  // Waking it preserves its reservation until cleanup and guardian DOWN;
+  // synchronously cancelling either source here would stall every stream.
   context.cancel(stream.request_context)
-  body.cancel(stream.request_body)
   cancel_timer(stream.handler_timer)
   cancel_timer(stream.response_timer)
   process.kill(stream.worker)
   process.demonitor_process(stream.monitor)
-  case stream.response_body {
-    Some(outgoing) -> body.cancel(outgoing)
-    None -> Nil
-  }
 }
 
 fn cancel_timer(timer: Option(Timer)) -> Nil {

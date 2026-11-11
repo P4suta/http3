@@ -216,7 +216,9 @@ if [ "$(uname -s)" != Linux ]; then
   exit 1
 fi
 mise -C test/interop/curl install conda:curl || exit "$?"
-exec mise -C test/interop/curl exec conda:curl -- bash run.sh
+curl_prefix="$(mise -C test/interop/curl where conda:curl)" || exit "$?"
+export PATH="$curl_prefix/bin:$PATH"
+exec bash test/interop/curl/run.sh
 """
 
 [tasks.interop-http3]
@@ -229,8 +231,7 @@ description = "Install the hash-locked aioquic interoperability peer"
 dir = "{{ config_root }}/packages/http3"
 run = [
   "uv venv --clear --python 3.12.13 build/interop-venv",
-  # Addressing the environment by directory rather than by interpreter path
-  # keeps this working where `uv venv` lays the interpreter out differently;
+  # Addressing the environment by directory rather than by interpreter path keeps this working where `uv venv` lays the interpreter out differently;
   # Windows puts it in Scripts/python.exe rather than bin/python.
   "uv pip sync --python build/interop-venv --require-hashes --strict test/interop/requirements.txt",
 ]
@@ -269,9 +270,8 @@ run = "gitleaks dir . --redact --no-banner"
 
 [tasks.semgrep]
 description = "Run repository-owned FFI and public-boundary security rules"
-# mise runs task commands through cmd.exe on Windows, which answers neither
-# `mkdir -p` nor a POSIX inline environment assignment. The gate already
-# requires bash for the shell scripts it runs and lints.
+# mise runs task commands through cmd.exe on Windows, which answers neither `mkdir -p` nor a POSIX inline environment assignment.
+# The gate already requires bash for the shell scripts it runs and lints.
 shell = "bash -c"
 run = [
   "mkdir -p build/semgrep",

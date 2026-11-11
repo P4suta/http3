@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "audit": "http1_handler_guardian_v5",
+  "status": "Candidate",
+  "ready_allowed": false,
+  "source_anchor": "pending_root_runner_freeze",
+  "blockers": [
+    {
+      "id": "HTTP1-V4-01",
+      "resolution": "closed_static",
+      "controls": [
+        "guardian_current_source",
+        "guardian_mutation::run_before_entry_receive",
+        "guardian_mutation::run_after_entry_receive",
+        "guardian_mutation::immediately_invoked_fun_run_in_first_true",
+        "guardian_mutation::delegated_run_in_first_true",
+        "guardian_mutation::guard_false_safe_entry_clause_wrong_live_clause",
+        "guardian_mutation::impossible_variable_guard_safe_entry_wrong_live_clause",
+        "guardian_mutation::nested_iife_second_run",
+        "guardian_mutation::delegated_second_run"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-02",
+      "resolution": "closed_static",
+      "controls": [
+        "guardian_mutation::matching_traffic_bypasses_terminating_precheck",
+        "guardian_mutation::matching_traffic_bypasses_quarantine_precheck",
+        "guardian_mutation::balanced_decoy_terminating_dispatcher_bypass",
+        "guardian_mutation::balanced_decoy_quarantine_dispatcher_bypass"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-03",
+      "resolution": "closed_static",
+      "controls": [
+        "guardian_mutation::indirect_owner_demonitor_before_publication",
+        "guardian_mutation::indirect_exit_before_terminal_down_finish",
+        "guardian_mutation::indirect_throw_before_terminal_down_finish",
+        "guardian_mutation::allowed_helper_owner_demonitor",
+        "guardian_mutation::allowed_helper_exit_before_finish"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-04",
+      "resolution": "closed_static",
+      "controls": [
+        "guardian_mutation::guard_false_safe_down_clause_missing_live_publication",
+        "guardian_mutation::success_publication_after_finish"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-05",
+      "resolution": "closed_static",
+      "controls": [
+        "control_substitution_rejected",
+        "control_reorder_rejected",
+        "control_duplicate_rejected"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-06",
+      "resolution": "closed_static",
+      "controls": [
+        "runtime_forgery_rejected",
+        "runtime_version_forgery_rejected",
+        "runtime_environment_override_rejected"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-07",
+      "resolution": "closed_static",
+      "controls": [
+        "duplicate_json_key_rejected",
+        "unknown_report_key_rejected",
+        "success_secret_rejected",
+        "failure_secret_rejected",
+        "rejected_phase_controls_fail_closed"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-08",
+      "resolution": "closed_static",
+      "controls": [
+        "unexpected_failure_redacted"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-09",
+      "resolution": "closed_static",
+      "controls": [
+        "snapshot_executes_exact_bytes",
+        "snapshot_path_drift_rejected",
+        "input_restore_race_rejected"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-10",
+      "resolution": "closed_static",
+      "controls": [
+        "hardlink_input_rejected",
+        "reparse_input_rejected",
+        "post_readback_replacement_rejected",
+        "consumer_process_proof_bound",
+        "consumer_process_tamper_rejected",
+        "completed_pointer_missing_process_rejected"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-11",
+      "resolution": "closed_static",
+      "controls": [
+        "tracked_history_exact",
+        "clean_checkout_inventory_exact"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-12",
+      "resolution": "closed_static",
+      "controls": [
+        "tracked_history_exact"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-13",
+      "resolution": "closed_static",
+      "controls": [
+        "running_precedes_bootstrap_failure",
+        "previous_running_recovery_detected",
+        "absolute_process_deadline_reaped",
+        "process_output_limit_reaped"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-14",
+      "resolution": "staged_root_integration",
+      "controls": [
+        "manifest_candidate_blocks_ready"
+      ]
+    },
+    {
+      "id": "HTTP1-V4-15",
+      "resolution": "closed_static",
+      "controls": [
+        "runtime_version_forgery_rejected",
+        "noncanonical_receipt_ready_blocked"
+      ]
+    }
+  ],
+  "required_before_ready": [
+    "independent_v5_audit_green",
+    "root_runner_source_anchor_frozen",
+    "mise_configuration_integrated",
+    "dedicated_ci_always_upload_integrated",
+    "canonical_python_3_12_13_hidden_run_green"
+  ]
+}

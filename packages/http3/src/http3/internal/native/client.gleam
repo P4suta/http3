@@ -8,6 +8,7 @@ import http3/failure as runtime_failure
 import http3/internal/native/bounded_client
 import http3/internal/native/client_connection
 import http3/internal/native/client_worker
+import http3/internal/qlog_admission
 import http3/internal/qpack/header.{type Header, Header}
 import quic_core.{type AddressFamily, DualStack}
 import quic_core/diagnostics
@@ -30,6 +31,8 @@ const default_telemetry_limit = 1024
 const default_bidirectional_stream_limit = 100
 
 const default_unidirectional_stream_limit = 100
+
+const minimum_unidirectional_stream_limit = 3
 
 const default_frame_limit = 65_536
 
@@ -63,6 +66,7 @@ pub opaque type Client {
     timeout_milliseconds: Int,
     operation_timeout_milliseconds: Int,
     idle_timeout_milliseconds: Int,
+    drain_timeout_milliseconds: Int,
     response_body_limit: Int,
     stream_buffer_limit: Int,
     endpoint_memory_limit: Int,
@@ -81,6 +85,9 @@ pub opaque type Client {
     quic_version: QuicVersion,
     qlog_directory: String,
     resumption_ticket: Option(ResumptionTicket),
+    connect_port: Int,
+    connect_trace: Option(diagnostics.ConnectTrace),
+    qlog_reservation: Option(qlog_admission.Reservation),
   )
 }
 
@@ -179,7 +186,8 @@ pub type TelemetryStats {
   )
 }
 
-/// Preferred QUIC wire version. Compatible negotiation remains enabled.
+/// Preferred QUIC wire version.
+/// Compatible negotiation remains enabled.
 pub type QuicVersion {
   QuicV1
   QuicV2
@@ -285,7 +293,8 @@ pub type Error {
   VersionNegotiationFailed
 }
 
-/// Configure one secure origin. Certificate and hostname checks are mandatory.
+/// Configure one secure origin.
+/// Certificate and hostname checks are mandatory.
 pub fn new(
   hostname hostname: String,
   port port: Int,
@@ -302,6 +311,7 @@ pub fn new(
         5000,
         10_000,
         10_000,
+        default_timeout_milliseconds,
         default_timeout_milliseconds,
         default_timeout_milliseconds,
         default_timeout_milliseconds,
@@ -323,8 +333,19 @@ pub fn new(
         QuicV1,
         "",
         None,
+        port,
+        None,
+        None,
       ))
   }
+}
+
+/// Retain the stable parent client's diagnostic reservation.
+pub fn with_qlog_reservation(
+  client: Client,
+  reservation: Option(qlog_admission.Reservation),
+) -> Client {
+  Client(..client, qlog_reservation: reservation)
 }
 
 /// Select IPv4, IPv6, or dual-stack address candidates.
@@ -335,10 +356,28 @@ pub fn with_address_family(
   Client(..client, address_family: address_family)
 }
 
-/// Select one already-validated UDP dial address without changing the TLS
-/// server name. Invalid byte lengths are rejected later by the bounded core.
+/// Select one already-validated UDP dial address without changing the TLS server name.
+/// Invalid byte lengths are rejected later by the bounded core.
 pub fn with_connect_address(client: Client, address: BitArray) -> Client {
   Client(..client, connect_address: Some(address))
+}
+
+pub fn with_connect_trace(
+  client: Client,
+  trace: diagnostics.ConnectTrace,
+) -> Client {
+  Client(..client, connect_trace: Some(trace))
+}
+
+/// Select the UDP destination port without changing origin or TLS identity.
+pub fn with_connect_port(
+  client: Client,
+  port: Int,
+) -> Result(Client, ConfigurationError) {
+  case port > 0 && port <= 65_535 {
+    True -> Ok(Client(..client, connect_port: port))
+    False -> Error(InvalidPort(port))
+  }
 }
 
 /// Set the finite DNS-resolution timeout.
@@ -448,7 +487,7 @@ pub fn with_unidirectional_stream_limit(
   client client: Client,
   maximum maximum: Int,
 ) -> Result(Client, ConfigurationError) {
-  case maximum > 0 {
+  case maximum >= minimum_unidirectional_stream_limit {
     True -> Ok(Client(..client, unidirectional_stream_limit: maximum))
     False -> Error(InvalidUnidirectionalStreamLimit)
   }
@@ -602,6 +641,17 @@ pub fn with_idle_timeout(
   }
 }
 
+/// Set the absolute budget for GOAWAY delivery and transport acknowledgement.
+pub fn with_drain_timeout(
+  client client: Client,
+  milliseconds milliseconds: Int,
+) -> Result(Client, ConfigurationError) {
+  case milliseconds > 0 && milliseconds <= maximum_timeout_milliseconds {
+    True -> Ok(Client(..client, drain_timeout_milliseconds: milliseconds))
+    False -> Error(InvalidTimeout)
+  }
+}
+
 /// Set the maximum buffered response body in bytes.
 pub fn with_response_body_limit(
   client client: Client,
@@ -663,6 +713,9 @@ pub fn send(
       },
       keepalive_milliseconds: client.keepalive_milliseconds,
       qlog_directory: client.qlog_directory,
+      connect_port: client.connect_port,
+      connect_trace: client.connect_trace,
+      qlog_reservation: client.qlog_reservation,
     )
   case bounded_client.send(config, headers, body) {
     Ok(bounded_client.Response(status, headers, body)) ->
@@ -688,6 +741,7 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     client.timeout_milliseconds,
     client.operation_timeout_milliseconds,
     client.idle_timeout_milliseconds,
+    client.drain_timeout_milliseconds,
     client.stream_buffer_limit,
     client.endpoint_memory_limit,
     client.queue_limit,
@@ -708,8 +762,18 @@ pub fn connect(client: Client) -> Result(Connection, Error) {
     },
     client.qlog_directory,
     ticket,
+    client.connect_port,
+    client.connect_trace,
+    client.qlog_reservation,
   )
   |> result.map(Connection)
+  |> result.map_error(map_worker_error)
+}
+
+/// Return whether this connection can still accept a future request stream.
+pub fn connection_reusable(connection: Connection) -> Result(Bool, Error) {
+  let Connection(handle) = connection
+  client_worker.connection_reusable(handle)
   |> result.map_error(map_worker_error)
 }
 
@@ -791,10 +855,48 @@ pub fn finish(stream: Stream) -> Result(Nil, Error) {
   client_worker.finish(handle) |> result.map_error(map_worker_error)
 }
 
+/// Wait for acknowledgement of the request FIN without blocking the connection actor or consuming response events.
+@internal
+pub fn await_request_completion(stream: Stream) -> Result(Nil, Error) {
+  let Stream(handle) = stream
+  client_worker.await_request_completion(handle)
+  |> result.map_error(map_worker_error)
+}
+
+/// Queue one bounded payload-free application diagnostic when qlog is on.
+@internal
+pub fn record_application_error(stream: Stream, code: Int) -> Nil {
+  let Stream(handle) = stream
+  client_worker.record_application_error(handle, code)
+}
+
+/// Configured per-operation duration; this does not start a read.
+@internal
+pub fn operation_timeout_milliseconds(stream: Stream) -> Int {
+  let Stream(handle) = stream
+  client_worker.operation_timeout_milliseconds(handle)
+}
+
 /// Pull the next response event within the configured operation timeout.
 pub fn next_event(stream: Stream) -> Result(ResponseEvent, Error) {
   let Stream(handle) = stream
-  case client_worker.next_event(handle) {
+  map_next_event(client_worker.next_event(handle))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  stream stream: Stream,
+  deadline_milliseconds deadline: Int,
+) -> Result(ResponseEvent, Error) {
+  let Stream(handle) = stream
+  map_next_event(client_worker.next_event_until(handle, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(client_worker.Event, client_worker.Error),
+) -> Result(ResponseEvent, Error) {
+  case outcome {
     Ok(client_worker.Informational(status, headers)) ->
       Ok(InformationalResponse(status, headers))
     Ok(client_worker.Response(status, headers)) ->
@@ -845,6 +947,19 @@ pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
 pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   let Connection(handle) = connection
   case client_worker.close(handle) {
+    Ok(client_worker.Closed) -> Ok(Closed)
+    Ok(client_worker.AlreadyClosed) -> Ok(AlreadyClosed)
+    Error(error) -> Error(map_worker_error(error))
+  }
+}
+
+/// Close within the parent adapter's remaining relative budget.
+pub fn close_within(
+  connection: Connection,
+  within_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  let Connection(handle) = connection
+  case client_worker.close_within(handle, within_milliseconds) {
     Ok(client_worker.Closed) -> Ok(Closed)
     Ok(client_worker.AlreadyClosed) -> Ok(AlreadyClosed)
     Error(error) -> Error(map_worker_error(error))
@@ -1203,6 +1318,7 @@ fn map_error(error: bounded_client.Error) -> Error {
     bounded_client.QuicTransportFailed ->
       Failure(runtime_failure.Quic(runtime_failure.Local, None))
     bounded_client.CoreFailure(failure) -> Failure(map_core_failure(failure))
+    bounded_client.RuntimeFailure(failure) -> Failure(failure)
     bounded_client.Http3ProtocolFailed ->
       Failure(runtime_failure.Http3(runtime_failure.Peer, None))
     bounded_client.Http3OperationFailed ->
@@ -1232,6 +1348,7 @@ fn map_worker_error(error: client_worker.Error) -> Error {
     client_worker.QuicFailure ->
       Failure(runtime_failure.Quic(runtime_failure.Local, None))
     client_worker.CoreFailure(failure) -> Failure(map_core_failure(failure))
+    client_worker.RuntimeFailure(failure) -> Failure(failure)
     client_worker.Http3Failure ->
       Failure(runtime_failure.Http3(runtime_failure.Local, None))
     client_worker.ConcurrentSend ->
