@@ -142,6 +142,22 @@ jobs:
           supervisor_python="$(python -I -B -c 'import os, sys; print(os.path.realpath(sys.executable))')"
           printf 'HTTP_PROCESS_SUPERVISOR_PYTHON=%s\n' "${supervisor_python}" >> "${GITHUB_ENV}"
 
+      - name: Separate Windows Python aliases
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [string] $runtimePath = [System.IO.Path]::GetFullPath($env:HTTP_PROCESS_SUPERVISOR_PYTHON)
+          [string] $pythonAlias = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($runtimePath), "python3.exe")
+          if ($pythonAlias -eq $runtimePath) { throw "Python runtime aliases are ambiguous." }
+          [string] $expectedHash = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
+          # The supervisor rejects interpreters with multiple hard links.
+          if (Test-Path -LiteralPath $pythonAlias) { Remove-Item -LiteralPath $pythonAlias }
+          Copy-Item -LiteralPath $runtimePath -Destination $pythonAlias
+          if ((Get-FileHash -LiteralPath $pythonAlias -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw "Python runtime bytes changed."
+          }
+
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
