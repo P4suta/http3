@@ -84,10 +84,12 @@ Its response decoder and both HPKE/OHTTP directions run normally.
 The relay is a small Go HTTP fixture around the opaque encrypted message; it does not claim a separate relay library implementation.
 `go test -mod=readonly -count=1 -timeout=30s ./...` in `test/interop/ohttpgo` checks both AEADs and deliberately mutated plaintext and size boundaries.
 
-The TypeScript peer executes the published `ohttp-ts` 0.5.1 package, with `bhttp-ts` 0.5.3, `hpke` 1.1.4 and `quicvarint` 0.2.1 pinned by npm's complete integrity lock.
-It requires Node 26.8.2 and npm 11.19.1; setup checks both,
-installs with lifecycle scripts disabled, and copies the bounded JavaScript fixture into an isolated build directory.
-Run `bash test/interop/ohttpts/setup.sh`, then `bash test/interop/ohttpts/run.sh`.
+The TypeScript peer executes the published `ohttp-ts` 0.5.1 package.
+npm's integrity lock pins `bhttp-ts` 0.5.3, `hpke` 1.1.8 and `quicvarint` 0.2.1.
+An override also selects `hpke` 1.1.8 for `ohttp-ts`.
+Setup requires Node.js 26.13.0 and npm 11.20.0.
+Setup checks both versions, disables lifecycle scripts, and copies the bounded JavaScript fixture into an isolated build directory.
+Run `mise x node@26.13.0 -- bash test/interop/ohttpts/setup.sh`, then `mise x node@26.13.0 -- bash test/interop/ohttpts/run.sh`.
 No upstream code is patched.
 Three roles and both AEADs cover the same native public-API OHTTP contract as the Go peer, with the independent TypeScript streaming Binary HTTP encoder/decoder checking indeterminate-length and known-length messages, 66,000-byte bodies, headers, trailers and padding.
 Both directions use verified TLS 1.3 over HTTP/1.1.

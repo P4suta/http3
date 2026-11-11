@@ -364,13 +364,13 @@
         "gateway"
       ],
       "pin": "ohttp-ts@0.5.1",
-      "node_version": "v26.8.2",
+      "node_version": "v26.13.0",
       "identity_kind": "node",
       "build_target": "http",
       "fixture": "test/interop/ohttpts/peer.mjs",
       "installation": "build/interop/ohttpts",
       "lock": "test/interop/ohttpts/package-lock.json",
-      "lock_sha256": "8488a942db57d30b643b2592c77667b1d646a1f7b945b7da0c658672b155b911",
+      "lock_sha256": "bd2cba1ec5ddd7800b6bf40c7315b51ede0374b984ec61ebd841a7ae996199b6",
       "evidence": "test/interop/ohttpts/run.sh",
       "scenarios": [
         {
