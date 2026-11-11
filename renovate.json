@@ -30,6 +30,16 @@
   ],
   "packageRules": [
     {
+      "description": "Look up browser peer build packages in the Ubuntu 24.04 repositories.",
+      "matchFileNames": ["test/interop/browser/Dockerfile", "test/interop/browser/Firefox.Dockerfile"],
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "https://archive.ubuntu.com/ubuntu?suite=noble&components=main&binaryArch=amd64",
+        "https://archive.ubuntu.com/ubuntu?suite=noble-updates&components=main&binaryArch=amd64",
+        "https://security.ubuntu.com/ubuntu?suite=noble-security&components=main&binaryArch=amd64"
+      ]
+    },
+    {
       "description": "Look up native peer build packages in the Debian 12 repositories.",
       "matchFileNames": ["packages/http3/test/interop/ngtcp2/Dockerfile"],
       "matchDatasources": ["deb"],
