@@ -30,6 +30,15 @@
   ],
   "packageRules": [
     {
+      "description": "Look up native peer build packages in the Debian 12 repositories.",
+      "matchFileNames": ["packages/http3/test/interop/ngtcp2/Dockerfile"],
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "https://deb.debian.org/debian?suite=bookworm&components=main&binaryArch=amd64",
+        "https://security.debian.org/debian-security?suite=bookworm-security&components=main&binaryArch=amd64"
+      ]
+    },
+    {
       "description": "Update the curl tool and interoperability profile together.",
       "matchManagers": ["mise", "custom.regex"],
       "matchDatasources": ["conda"],
