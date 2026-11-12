@@ -56,7 +56,7 @@ run_with_evidence() ->
         InfrastructureValid=CompletedValid andalso ChildValidatorSelfTest
             andalso DiagnosticValidatorSelfTest andalso Status=:=ExpectedStatus
             andalso process_status_verified(Status,ExpectedStatus,Output)
-            andalso maps:get(output_bytes,Output,-1)=:=0 andalso DiagnosticValid,
+            andalso process_vm_output_empty(Output) andalso DiagnosticValid,
         Passed=InfrastructureValid andalso TestPassed,
         ExecutionPath=filename:join(Directory,"execution.json"),
         Evidence=#{schema=>1,passed=>Passed,infrastructure_valid=>InfrastructureValid,

@@ -20,6 +20,6 @@ run() ->
     try run_child_evaluation(Root, Paths, Evaluation, 30000) of
         {Status, Output} ->
             process_status_verified(Status, 0, Output) andalso
-                maps:get(output_bytes, Output) =:= 0
+                process_vm_output_empty(Output)
     catch _:_ -> false
     end.

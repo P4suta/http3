@@ -74,6 +74,10 @@ run = [
 description = "Audit the three-package dependency layout"
 run = "escript scripts/package_layout_audit.escript"
 
+[tasks.vm-output-audit]
+description = "Verify owned VM output and console bootstrap boundaries"
+run = "escript scripts/process_runner.escript --vm-output-self-test"
+
 [tasks.status-audit]
 description = "Audit machine-readable qualification truth and generated status"
 run = "escript scripts/status_audit.escript"
@@ -555,6 +559,7 @@ description = "Run deterministic change verification without release campaigns"
 run = [
   "mise run status-audit",
   "mise run package-layout",
+  "mise run vm-output-audit",
   "mise run http-check",
   "mise run http3-check",
   "mise run core-check",

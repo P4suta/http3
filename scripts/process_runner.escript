@@ -33,6 +33,13 @@ main(["--console-self-test"]) ->
         io:format(standard_error, "process console boundary failed: ~p~n",
             [diagnostic_failure_details(Class, Reason, Stack)]), halt(1)
     end;
+main(["--vm-output-self-test"]) ->
+    try vm_output_self_test() of
+        ok -> io:format("VM output controls passed~n")
+    catch Class:Reason:Stack ->
+        io:format(standard_error, "VM output controls failed: ~p~n",
+            [diagnostic_failure_details(Class, Reason, Stack)]), halt(1)
+    end;
 main(["--eof-self-test"]) ->
     case supervisor_parent_eof_control() of
         true -> io:format("supervisor parent EOF self-test ok~n");
@@ -516,6 +523,7 @@ windows_entry_contract_self_test() ->
 
 self_test() ->
     runtime_identity_self_test(),
+    vm_output_self_test(),
     io:format("process_runner_stage=windows_entry_contract~n"),
     windows_entry_contract_self_test(),
     io:format("process_runner_stage=assertion_contract~n"),
@@ -885,6 +893,35 @@ self_test() ->
     io:format("process_runner_stage=supervisor_parent_eof~n"),
     ensure(supervisor_parent_eof_control(), supervisor_parent_eof_left_tree),
     io:format("supervisor_parent_eof_tree_joined=true~n"),
+    ok.
+
+-spec vm_output_self_test() -> ok.
+vm_output_self_test() ->
+    Erl = "c:/runtime/erl.exe",
+    Empty = #{output_bytes => 0, tail => <<>>},
+    Preamble = process_vm_console_preamble(Erl),
+    Console = #{output_bytes => byte_size(Preamble), tail => Preamble},
+    true = process_vm_output_empty_for(Empty, posix, Erl),
+    true = process_vm_output_empty_for(Empty, windows, Erl),
+    true = process_vm_output_empty_for(Console, windows, Erl),
+    false = process_vm_output_empty_for(Console, posix, Erl),
+    false = process_vm_output_empty_for(Console, windows, "c:/other/erl.exe"),
+    false = process_vm_output_empty_for(Console#{output_bytes := 0}, windows, Erl),
+    false = process_vm_output_empty_for(Console#{tail := <<>>}, windows, Erl),
+    false = process_vm_output_empty_for(#{}, windows, Erl),
+    lists:foreach(fun(Bytes) ->
+        false = process_vm_output_empty_for(
+            #{output_bytes => byte_size(Bytes), tail => Bytes}, windows, Erl)
+    end, [<<Preamble/binary, "marker">>, <<"marker", Preamble/binary>>,
+          <<Preamble/binary, "\e[2J">>, <<"marker">>]),
+    Root = filename:absname("."),
+    {SilentStatus, Silent} = run_child_evaluation(Root, [], "halt(0).", 10000),
+    true = process_status_verified(SilentStatus, 0, Silent),
+    true = process_vm_output_empty(Silent),
+    {MarkedStatus, Marked} = run_child_evaluation(Root, [],
+        "io:put_chars(<<109,97,114,107,101,114>>),halt(0).", 10000),
+    true = process_status_verified(MarkedStatus, 0, Marked),
+    false = process_vm_output_empty(Marked),
     ok.
 
 console_boundary_self_test() ->

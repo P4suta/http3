@@ -295,9 +295,7 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   // other's answer. The first answer starts the Resolution Delay of section 8,
   // and a straggler is waited for only until that runs out.
   //
-  // The delays here are far apart on purpose: two seconds against fifty
-  // milliseconds, so the assertions hold with a wide margin on a loaded host
-  // rather than resting on the clock.
+  // The fixture holds late replies until collection finishes and queues ready replies before the collector resumes.
   let trace = http_test_support.family_resolution_trace
 
   // Both answer at once: nothing is delayed, and both are present.
@@ -306,12 +304,11 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   assert four
   assert elapsed < 500
 
-  // The AAAA answer never arrives. Sequential lookups would have cost the whole
-  // two seconds before the A answer was even asked for; here the A answer is
-  // already in and the wait ends with the Resolution Delay.
+  // An unfinished AAAA query cannot hold the ready A reply beyond the Resolution Delay.
   let #(elapsed, six, four) = trace(2000, 0, 0)
   assert !six
   assert four
+  assert elapsed >= 50
   assert elapsed < 500
 
   // The same in the other direction, which is the case that matters least but
@@ -319,9 +316,10 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   let #(elapsed, six, four) = trace(0, 2000, 0)
   assert six
   assert !four
+  assert elapsed >= 50
   assert elapsed < 500
 
-  // A straggler inside the Resolution Delay is still taken.
+  // Both queued replies remain observable regardless of their order.
   let #(_, six, four) = trace(10, 0, 0)
   assert six
   assert four

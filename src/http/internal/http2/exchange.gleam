@@ -122,6 +122,11 @@ type OperationDeadlines {
   OperationDeadlines(total: Int, operation: Int)
 }
 
+type FrameWriteFailure {
+  FrameDeadline(error.Error)
+  FrameTransport(transport.Error)
+}
+
 type ConnectionGuard
 
 @external(erlang, "http_client_ffi", "new_connection_guard")
@@ -1568,11 +1573,27 @@ fn release_response_credit(
         |> close_response_body_on_error(state),
       )
       let wire.ReceiveCreditReleased(wire_state, frames) = released
-      use _ <- result.try(
-        send_frames(state.socket, frames, state.deadlines)
-        |> close_response_body_on_error(state),
-      )
-      Ok(ResponseBodyState(..state, wire: wire_state))
+      case
+        write_frames(state.socket, frames, state.deadlines),
+        state.completion
+      {
+        Ok(Nil), _ -> Ok(ResponseBodyState(..state, wire: wire_state))
+        Error(FrameTransport(transport.Closed)), Some(_) -> {
+          use _ <- result.try(
+            require_active(state.config) |> close_response_body_on_error(state),
+          )
+          let config = Config(..state.config, reuse_connections: False)
+          finish_connection(
+            state.socket,
+            wire_state,
+            config,
+            state.connection_guard,
+          )
+          Ok(ResponseBodyState(..state, wire: wire_state, config:))
+        }
+        Error(failure), _ ->
+          response_body_failure(state, map_frame_write_failure(failure))
+      }
     }
   }
 }
@@ -1607,12 +1628,33 @@ fn send_frames(
   frames: List(BitArray),
   deadlines: OperationDeadlines,
 ) -> Result(Nil, error.Error) {
+  write_frames(socket, frames, deadlines)
+  |> result.map_error(map_frame_write_failure)
+}
+
+fn write_frames(
+  socket: transport.Socket,
+  frames: List(BitArray),
+  deadlines: OperationDeadlines,
+) -> Result(Nil, FrameWriteFailure) {
   case frames {
     [] -> Ok(Nil)
     [bytes, ..rest] -> {
-      use _ <- result.try(send_bytes(socket, bytes, deadlines))
-      send_frames(socket, rest, deadlines)
+      use _ <- result.try(
+        ensure_operation_deadline(deadlines) |> result.map_error(FrameDeadline),
+      )
+      use _ <- result.try(
+        transport.send(socket, bytes) |> result.map_error(FrameTransport),
+      )
+      write_frames(socket, rest, deadlines)
     }
+  }
+}
+
+fn map_frame_write_failure(failure: FrameWriteFailure) -> error.Error {
+  case failure {
+    FrameDeadline(failure) -> failure
+    FrameTransport(failure) -> map_operation_error(failure)
   }
 }
 
@@ -1621,9 +1663,7 @@ fn send_bytes(
   bytes: BitArray,
   deadlines: OperationDeadlines,
 ) -> Result(Nil, error.Error) {
-  use _ <- result.try(ensure_operation_deadline(deadlines))
-  transport.send(socket, bytes)
-  |> result.map_error(map_operation_error)
+  send_frames(socket, [bytes], deadlines)
 }
 
 fn connection_limits() -> connection.Limits {

@@ -50,7 +50,7 @@ child(Phase, Plt, Files, Timeout) ->
     Child = read_child(Path),
     Valid = valid_child(Child, Phase, Nonce, length(Files)),
     Passed = process_status_verified(Exit, 0, Output) andalso
-        maps:get(output_bytes, Output) =:= 0
+        process_vm_output_empty(Output)
         andalso Valid andalso maps:get(<<"passed">>, Child),
     Result = #{schema => 1, nonce => Nonce, phase => Phase, passed => Passed,
         exit_status => Exit, deadline_ms => Timeout, analysis_heap_words => 134217728,

@@ -803,29 +803,114 @@ address_family(Address) ->
         _ -> inet6
     end.
 
-%% Run the concurrent family resolution with each family's answer delayed by the
-%% given number of milliseconds, where a negative delay means the query dies
-%% without answering. Returns how long the whole collection took and which
-%% families were represented in the result.
+%% Control query readiness and reply order around the production resolution delay.
 -spec family_resolution_trace(integer(), integer(), integer()) ->
     {non_neg_integer(), boolean(), boolean()}.
 family_resolution_trace(SixDelay, FourDelay, _Unused) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Controller, Monitor} = spawn_monitor(fun() ->
+        family_resolution_controller(Parent, Tag)
+    end),
     Query = fun(Delay, Answer) ->
         fun() ->
-            case Delay < 0 of
-                true -> exit(resolution_failed);
-                false -> timer:sleep(Delay)
-            end,
-            Answer
+            ControllerMonitor = monitor(process, Controller),
+            Controller ! {Tag, query, self(), Delay},
+            try
+                receive
+                    {Tag, reply} -> Answer;
+                    {Tag, fail} -> exit(resolution_failed);
+                    {'DOWN', ControllerMonitor, process, Controller, _} ->
+                        error(resolution_controller_failed)
+                after 3000 -> error(resolution_query_not_released)
+                end
+            after demonitor(ControllerMonitor, [flush]) end
         end
     end,
     Started = erlang:monotonic_time(millisecond),
-    Answers = http_transport_ffi:resolve_families([
-        {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
-        {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
-    ]),
-    Elapsed = erlang:monotonic_time(millisecond) - Started,
-    {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}.
+    try
+        Answers = http_transport_ffi:resolve_families([
+            {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
+            {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
+        ]),
+        Elapsed = erlang:monotonic_time(millisecond) - Started,
+        {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}
+    after
+        Controller ! {Tag, done},
+        receive
+            {'DOWN', Monitor, process, Controller, normal} -> ok;
+            {'DOWN', Monitor, process, Controller, _} ->
+                error(resolution_controller_failed)
+        after 3000 ->
+            exit(Controller, kill),
+            error(resolution_controller_not_joined)
+        end
+    end.
+
+-type resolution_query() :: {pid(), reference(), integer()}.
+
+-spec family_resolution_controller(pid(), reference()) -> ok.
+family_resolution_controller(Parent, Tag) ->
+    ParentMonitor = monitor(process, Parent),
+    Queries = family_resolution_queries(Tag, 2, []),
+    try
+        case lists:all(fun({_, _, Delay}) -> Delay >= 0 andalso Delay < 50 end,
+                       Queries) of
+            true ->
+                true = erlang:suspend_process(Parent),
+                lists:foreach(fun(Query) -> family_resolution_reply(Query, Tag) end,
+                              lists:keysort(3, Queries)),
+                true = erlang:resume_process(Parent);
+            false ->
+                lists:foreach(fun(Query = {_, _, Delay}) ->
+                    case Delay < 50 of
+                        true -> family_resolution_reply(Query, Tag);
+                        false -> ok
+                    end
+                end, Queries)
+        end,
+        receive
+            {Tag, done} -> ok;
+            {'DOWN', ParentMonitor, process, Parent, _} ->
+                error(resolution_owner_failed)
+        after 3000 -> error(resolution_owner_not_finished)
+        end,
+        lists:foreach(fun(Query = {_, _, Delay}) ->
+            case Delay >= 50 of
+                true -> family_resolution_reply(Query, Tag);
+                false -> ok
+            end
+        end, Queries)
+    after
+        try erlang:resume_process(Parent) of
+            _ -> ok
+        catch error:badarg -> ok end,
+        lists:foreach(fun({Worker, WorkerMonitor, _}) ->
+            exit(Worker, kill),
+            demonitor(WorkerMonitor, [flush])
+        end, Queries),
+        demonitor(ParentMonitor, [flush])
+    end.
+
+-spec family_resolution_queries(reference(), non_neg_integer(), [resolution_query()]) ->
+    [resolution_query()].
+family_resolution_queries(_, 0, Queries) -> Queries;
+family_resolution_queries(Tag, Remaining, Queries) ->
+    receive
+        {Tag, query, Worker, Delay} ->
+            Monitor = monitor(process, Worker),
+            family_resolution_queries(Tag, Remaining - 1,
+                                      [{Worker, Monitor, Delay} | Queries])
+    after 3000 -> error(resolution_queries_not_concurrent)
+    end.
+
+-spec family_resolution_reply(resolution_query(), reference()) -> ok.
+family_resolution_reply({Worker, Monitor, Delay}, Tag) ->
+    Outcome = case Delay < 0 of true -> fail; false -> reply end,
+    Worker ! {Tag, Outcome},
+    receive {'DOWN', Monitor, process, Worker, _} -> ok
+    after 3000 -> error(resolution_query_not_joined)
+    end.
 
 %% Register one name with the given IPv4 and IPv6 addresses in the host file,
 %% resolve it through the production path, and return the resolved order.

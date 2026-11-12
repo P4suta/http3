@@ -77,7 +77,7 @@ execute_run_verified(Mode, Domains, Seed, Count, Path, Identity, Snapshot) ->
     Valid = http_model_valid_child(Child, Mode, Domains, Seed, Count, Nonce),
     Complete = process_status_verified(Status, 0, Output) andalso Valid andalso
                maps:get(<<"status">>, Child, <<>>) =:= <<"Passed">> andalso
-               maps:get(output_bytes, Output) =:= 0,
+               process_vm_output_empty(Output),
     EvidenceStatus = case {Complete, Mode} of
         {true, campaign} -> <<"Ready">>;
         {true, replay} -> <<"DiagnosticPassed">>;

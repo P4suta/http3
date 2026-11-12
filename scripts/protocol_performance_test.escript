@@ -76,7 +76,7 @@ execute_controls(Root,Directory,ChildPath,Nonce,Units,Count)->
     Passed=process_status_verified(Status,0,Output) andalso
         suite_child_valid(Child,Units,Nonce)
         andalso suite_completed_tests(Child)=:=Count andalso maps:get(<<"failure_count">>,Child)=:=0
-        andalso maps:get(output_bytes,Output,-1)=:=0,
+        andalso process_vm_output_empty(Output),
     ok=file:write_file(filename:join(Directory,"execution.json"),json:encode(
         #{schema=>1,passed=>Passed,configured_tests=>Count,child=>Child,exit_status=>Status,
           process=>maps:without([tail,output_sha256],Output)})),

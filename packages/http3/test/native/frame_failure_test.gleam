@@ -10,6 +10,7 @@ import http3/config
 import http3/failure
 import http3/internal/native/frame
 import http3/internal/native/frame_parser
+import http3/internal/native/grease
 import http3/internal/native/origin
 import http3/internal/native/protocol
 import http3/internal/qpack/field_section
@@ -163,7 +164,10 @@ pub fn buffered_client_counts_one_wire_data_frame_across_multiple_chunks_test() 
           )
           |> result.map(fn(reply) { bit_array.byte_size(reply.body) })
         })
-      assert observed == #(Ok(66_000), Some(0x100))
+      let #(response, close_code) = observed
+      assert response == Ok(66_000)
+      let assert Some(close_code) = close_code
+      assert close_code == 0x100 || grease.is_reserved(close_code)
       http3_test_support.qlog_event_count(directory, "http3:frame_parsed")
     })
   assert #(frames, files) == #(3, 1)

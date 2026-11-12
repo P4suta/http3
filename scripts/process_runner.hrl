@@ -7,6 +7,9 @@
     {collect_eunit_with_deadline_stop, 4},
     {collect_before_deadline_with_stop, 4},
     {process_status_verified, 3},
+    {process_vm_output_empty, 1},
+    {process_vm_output_empty_for, 3},
+    {process_vm_console_preamble, 1},
     {process_deadline_verified, 2},
     {process_output_limit_verified, 2},
     {bounded_file_sha256_with_hook, 3},
@@ -921,6 +924,25 @@ process_status_verified(Status, Expected, Output) ->
         andalso not maps:get(output_limit_exceeded, Output, true)
         andalso not maps:get(native_termination_requested, Output, true)
         andalso not maps:get(native_descendant_outlived, Output, true).
+
+-spec process_vm_output_empty(map()) -> boolean().
+process_vm_output_empty(Output) ->
+    Platform = case os:type() of {win32, _} -> windows; _ -> posix end,
+    Erl = filename:join([code:root_dir(), "bin", "erl.exe"]),
+    process_vm_output_empty_for(Output, Platform, Erl).
+
+-spec process_vm_output_empty_for(map(), windows | posix, string()) -> boolean().
+process_vm_output_empty_for(#{output_bytes := 0, tail := <<>>}, _, _) -> true;
+process_vm_output_empty_for(#{output_bytes := Size, tail := Tail}, windows, Erl) ->
+    Expected = process_vm_console_preamble(Erl),
+    Size =:= byte_size(Expected) andalso Tail =:= Expected;
+process_vm_output_empty_for(_, _, _) -> false.
+
+-spec process_vm_console_preamble(string()) -> binary().
+process_vm_console_preamble(Erl) ->
+    Path = unicode:characters_to_binary(Erl),
+    <<"\e[?9001h\e[?1004h\e[?25l\e[?9001l\e[?1004l\e[2J\e[m\e[H\e]0;",
+      Path/binary, 7, "\e[?25h">>.
 
 process_deadline_verified(124, Output) ->
     process_completion_attestation_verified(Output)

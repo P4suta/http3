@@ -21,6 +21,7 @@ import http/internal/http2/header_codec
 import http/internal/http2/message
 import http/internal/http2/preface
 import http/internal/http2/wire
+import http/internal/tcp_reservation
 import http/internal/transport
 import http_test_support
 
@@ -122,6 +123,97 @@ pub fn authenticated_h2_round_trip_uses_incremental_wire_state_test() -> Nil {
   assert received.headers == [#("x-client", "h2")]
   let assert Ok(Nil) = transport.stop(listener)
   Nil
+}
+
+pub fn completed_response_survives_connection_loss_during_credit_return_test() -> Nil {
+  let #(outcome, returned_to_pool, closed_once) =
+    response_after_connection_loss(True)
+  assert outcome == Ok(#(<<"hello">>, []))
+  assert !returned_to_pool
+  assert closed_once
+}
+
+pub fn incomplete_response_fails_after_connection_loss_during_credit_return_test() -> Nil {
+  let #(outcome, returned_to_pool, closed_once) =
+    response_after_connection_loss(False)
+  assert result.is_error(outcome)
+  assert !returned_to_pool
+  assert closed_once
+}
+
+fn response_after_connection_loss(
+  end_stream: Bool,
+) -> #(Result(#(BitArray, body.Headers), error.Error), Bool, Bool) {
+  let #(certificate, private_key, ca) = http_test_support.server_credentials()
+  let captured = process.new_subject()
+  let checkins = process.new_subject()
+  let cleanups = process.new_subject()
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let server =
+    http_test_support.start_task(fn() {
+      let assert Ok(socket) = transport.accept(listener, 1000)
+      let assert Ok(transport.TlsReady(socket, <<"h2">>, _)) =
+        transport.upgrade_server_tls(
+          socket,
+          certificate,
+          private_key,
+          [<<"h2">>],
+          1000,
+        )
+      let assert Ok(state) =
+        wire.new(connection.Server, connection_limits(), wire_limits())
+      let assert Ok(wire.Started(state, initial)) =
+        wire.initial_bytes(state, [])
+      let assert Ok(Nil) = transport.send(socket, initial)
+      let #(socket, state, _) = await_request(socket, state)
+      let assert Ok(wire.HeadersWritten(state, 1, headers)) =
+        wire.send_response_headers(
+          state,
+          1,
+          response.Response(status: 200, headers: [], body: Nil),
+          end_stream: False,
+        )
+      let assert Ok(wire.DataWritten(_, data, <<>>, _)) =
+        wire.send_data(state, stream_id: 1, bytes: <<"hello">>, end_stream:)
+      let assert Ok(Nil) =
+        transport.send(socket, bit_array.concat(list.append(headers, data)))
+      let socket = drain_until_end(socket)
+      let _closed = transport.close(socket)
+      Nil
+    })
+  let config =
+    exchange.defaults()
+    |> exchange.with_ca_certificates([ca])
+    |> exchange.with_admission(
+      fn(_) { Ok(tcp_reservation.unmanaged()) },
+      fn(_, socket) {
+        process.send(captured, socket)
+        Ok(Nil)
+      },
+    )
+    |> exchange.with_lifecycle(
+      fn(_, _) { Ok(fn() { process.send(cleanups, Nil) }) },
+      fn() { False },
+    )
+    |> exchange.with_pool(fn(_) { Ok(None) }, fn(_, _, _, _) {
+      process.send(checkins, Nil)
+      True
+    })
+  let assert Ok(exchange.Http2Response(incoming)) =
+    exchange.run(get_request(port), config)
+  assert process.receive(cleanups, within: 1000) == Ok(Nil)
+  assert process.receive(cleanups, within: 0) == Error(Nil)
+  let assert Ok(socket) = process.receive(captured, within: 1000)
+  let assert Ok(Nil) = transport.close(socket)
+  http_test_support.await_task(server)
+  let outcome = body.read_all(incoming.body, 16)
+  let returned_to_pool = process.receive(checkins, within: 0) == Ok(Nil)
+  let closed_once =
+    process.receive(cleanups, within: 1000) == Ok(Nil)
+    && process.receive(cleanups, within: 0) == Error(Nil)
+  let assert Ok(Nil) = transport.stop(listener)
+  #(outcome, returned_to_pool, closed_once)
 }
 
 pub fn authenticated_reset_before_response_keeps_http2_diagnostic_protocol_test() -> Nil {
