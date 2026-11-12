@@ -19,7 +19,9 @@
 run(Http1Port, Http2Port) ->
     {ok, Certificate} = file:read_file(filename:join(?FIXTURES, "server.pem")),
     {ok, PrivateKey} = file:read_file(filename:join(?FIXTURES, "server-key.pem")),
-    {ok, Server} = http@server:start(http@server:defaults(), fun handle/2),
+    Multiplex = spawn_link(fun multiplex_barrier/0),
+    {ok, Server} = http@server:start(http@server:defaults(),
+        fun(Request, Context) -> handle(Request, Context, Multiplex) end),
     {ok, Http1} = http@server:listen_http1_tls(
         Server,
         <<127, 0, 0, 1>>,
@@ -47,7 +49,7 @@ run(Http1Port, Http2Port) ->
     after ?LIFETIME_MILLISECONDS -> ok
     end.
 
-handle(Request, _Context) ->
+handle(Request, Context, Multiplex) ->
     {request, Method, _Headers, Body, _Scheme, _Host, _Port, Path, _Query} =
         Request,
     case {Method, Path} of
@@ -55,7 +57,30 @@ handle(Request, _Context) ->
         {head, <<"/hello">>} -> text(200, <<"curl-interop">>);
         {get, <<"/teapot">>} -> text(418, <<"teapot">>);
         {post, <<"/echo">>} -> echo(Body);
+        {get, <<"/multiplex">>} ->
+            case http@context:protocol(Context) of
+                http2 ->
+                    Multiplex ! {await, self(), http@context:peer_endpoint(Context)},
+                    receive overlap_ready -> text(200, <<"overlap-verified">>)
+                    after 5000 -> text(500, <<"overlap-not-observed">>)
+                    end;
+                _ -> text(400, <<"requires-http2">>)
+            end;
         _ -> text(404, <<"not found">>)
+    end.
+
+%% Both handlers must be live on the same TCP connection before either can
+%% return. Two sequential URLs, or two independent sockets, cannot satisfy it.
+multiplex_barrier() ->
+    receive
+        {await, First, Peer} ->
+            receive
+                {await, Second, Peer} when First =/= Second ->
+                    First ! overlap_ready,
+                    Second ! overlap_ready
+            after 5000 -> ok
+            end
+    after ?LIFETIME_MILLISECONDS -> ok
     end.
 
 echo(Body) ->

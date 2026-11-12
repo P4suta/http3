@@ -62,17 +62,39 @@ pub type ErrorKind {
   Service
 }
 
+/// Private retry evidence carried across protocol adapters without changing the stable public error classification.
+///
+/// A generic protocol or connection failure does not prove whether a peer processed the request.
+/// Only an explicit peer guarantee may set the second variant.
+@internal
+pub type RetryEvidence {
+  NoRetryEvidence
+  PeerGuaranteedUnprocessed
+}
+
 /// A redacted HTTP error.
 ///
 /// Runtime exception text, peer-controlled reason phrases, paths, credentials,
 /// and backend terms are deliberately not retained in this value.
 pub opaque type Error {
-  ErrorValue(kind: ErrorKind)
+  ErrorValue(kind: ErrorKind, retry_evidence: RetryEvidence)
 }
 
 /// Construct a redacted error from its stable classification.
 pub fn new(kind: ErrorKind) -> Error {
-  ErrorValue(kind)
+  ErrorValue(kind, NoRetryEvidence)
+}
+
+/// Construct a protocol failure for which the peer explicitly guarantees that the request was not processed, such as HTTP/3 H3_REQUEST_REJECTED.
+@internal
+pub fn peer_rejected_before_processing(layer: ProtocolLayer) -> Error {
+  ErrorValue(Protocol(layer), PeerGuaranteedUnprocessed)
+}
+
+/// Inspect retry evidence without exposing transport or peer-controlled data.
+@internal
+pub fn retry_evidence(error: Error) -> RetryEvidence {
+  error.retry_evidence
 }
 
 /// Return the stable classification of an error.

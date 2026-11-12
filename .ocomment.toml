@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 the http contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+version = 1
+
+# The generated Erlang fixture embeds the reviewed JSON policy.
+# The profile generator verifies its exact bytes.
+[files]
+exclude = ["test/url_pattern_profile_policy.hrl"]
+
+[policy]
+mode = "none"

@@ -4,15 +4,112 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import http3/internal/native/capsule
 import http3/internal/native/connection_state
+import http3/internal/native/control
 import http3/internal/native/datagram
 import http3/internal/native/drain
 import http3/internal/native/frame
+import http3/internal/native/header_semantics
 import http3/internal/native/message_stream
 import http3/internal/native/origin
 import http3/internal/native/priority
+import http3/internal/native/push
+import http3/internal/native/settings_memory
+import http3/internal/qpack/encoder
 import http3/internal/qpack/header.{type Header, Header}
 import http3/internal/qpack/instruction
 import http3/internal/varint
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn asymmetric_datagram_advertisement_preserves_http_and_send_limits_test() -> Nil {
+  let assert Ok(server) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Server),
+      False,
+    )
+  let assert Ok(#(server, _)) = connection_state.bootstrap(server, 3, 7, 11)
+  let assert Ok(#(server, [connection_state.PeerSettings(settings)])) =
+    connection_state.receive_control_frame(
+      server,
+      frame.Settings([frame.Setting(0x33, 1)]),
+    )
+  assert settings.h3_datagram
+  assert !connection_state.datagrams_available(server)
+  assert connection_state.receive_datagram(server, <<0, "forbidden">>)
+    == Error(connection_state.DatagramFailure(
+      datagram.UnreliableDatagramNotNegotiated,
+    ))
+  let #(client, _) = ready_pair()
+  let assert Ok(#(_, bytes)) =
+    connection_state.open_request(client, 0, get_headers(), False)
+  let assert Ok(#(_, [connection_state.RequestHeaders(0, _)])) =
+    connection_state.receive_request_frame(server, 0, decode_frame(bytes))
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn grease_before_request_headers_is_ignored_without_admission_test() -> Nil {
+  let #(client, server) = ready_pair()
+  let assert Ok(#(unchanged, [connection_state.ExtensionFrameIgnored(0x21)])) =
+    connection_state.receive_request_frame(server, 0, frame.Unknown(0x21, <<>>))
+  assert unchanged == server
+  let assert Ok(#(_, request_bytes)) =
+    connection_state.open_request(client, 0, get_headers(), False)
+  let assert Ok(#(server, [connection_state.RequestHeaders(0, _)])) =
+    connection_state.receive_request_frame(
+      server,
+      0,
+      decode_frame(request_bytes),
+    )
+  let assert Ok(#(unchanged, [connection_state.ExtensionFrameIgnored(0x40)])) =
+    connection_state.receive_request_frame(
+      server,
+      0,
+      frame.Unknown(0x40, <<"ignored">>),
+    )
+  assert unchanged == server
+  let assert Ok(#(_, [connection_state.StreamFinished(0)])) =
+    connection_state.receive_request_finish(unchanged, 0)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn grease_preserves_known_frame_order_and_stream_role_errors_test() -> Nil {
+  let #(client, server) = ready_pair()
+  assert connection_state.receive_request_frame(server, 0, frame.Data(<<>>))
+    == Error(connection_state.FrameUnexpected)
+  assert connection_state.receive_request_frame(server, 0, frame.Settings([]))
+    == Error(connection_state.FrameUnexpected)
+  let misplaced =
+    priority.to_frame(priority.RequestUpdate(0, priority.default()))
+    |> should.be_ok
+  assert connection_state.receive_request_frame(server, 0, misplaced)
+    == Error(connection_state.FrameUnexpected)
+  assert connection_state.receive_request_frame(
+      server,
+      1,
+      frame.Unknown(0x21, <<>>),
+    )
+    == Error(connection_state.InvalidStreamId(1))
+  assert connection_state.receive_request_frame(
+      client,
+      0,
+      frame.Unknown(0x21, <<>>),
+    )
+    == Error(connection_state.MissingTransaction(0))
+  let assert Ok(fresh) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Server),
+      False,
+    )
+  assert connection_state.receive_control_frame(
+      fresh,
+      frame.Unknown(0x21, <<>>),
+    )
+    == Error(connection_state.ControlFailure(control.MissingSettings))
+  let assert Ok(#(unchanged, [connection_state.ExtensionFrameIgnored(0x21)])) =
+    connection_state.receive_control_frame(server, frame.Unknown(0x21, <<>>))
+  assert unchanged == server
+}
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bootstraps_unique_critical_streams_with_settings_first_test() -> Nil {
@@ -74,12 +171,270 @@ pub fn advertises_configured_qpack_limits_in_settings_test() -> Nil {
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn sender_uses_defaults_before_settings_and_new_field_limit_afterward_test() -> Nil {
+  let defaults = connection_state.default_config(connection_state.Client)
+  let pre_settings_config =
+    connection_state.Config(
+      ..defaults,
+      settings: connection_state.Settings(
+        ..defaults.settings,
+        // This is our decoder's inbound limit.
+        // It must never constrain the encoder before or after the peer advertises its own limit.
+        maximum_field_section_size: 1,
+      ),
+    )
+  let assert Ok(fresh) = connection_state.new(pre_settings_config, False)
+  let assert Ok(#(fresh, _)) = connection_state.bootstrap(fresh, 2, 6, 10)
+  // A request does not wait for peer SETTINGS.
+  // RFC defaults disable dynamic QPACK but leave the maximum field section unlimited.
+  let assert Ok(#(fresh, _)) =
+    connection_state.open_request(fresh, 0, get_headers(), False)
+  assert connection_state.open_request(fresh, 4, connect_headers(), False)
+    == Error(connection_state.HeaderFailure(
+      header_semantics.ExtendedConnectNotEnabled,
+    ))
+  assert !connection_state.datagrams_available(fresh)
+
+  let assert Ok(limited) =
+    connection_state.new(
+      connection_state.default_config(connection_state.Client),
+      False,
+    )
+  let assert Ok(#(limited, _)) = connection_state.bootstrap(limited, 2, 6, 10)
+  let assert Ok(#(limited, [_])) =
+    connection_state.receive_control_frame(
+      limited,
+      frame.Settings([frame.Setting(6, 64)]),
+    )
+  assert connection_state.open_request(limited, 0, get_headers(), False)
+    == Error(
+      connection_state.EncoderFailure(encoder.FieldSectionSizeExceeded(64)),
+    )
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn semantics_changing_extensions_require_explicit_peer_settings_test() -> Nil {
+  let client_defaults = connection_state.default_config(connection_state.Client)
+  let server_defaults = connection_state.default_config(connection_state.Server)
+  let client_config =
+    connection_state.Config(
+      ..client_defaults,
+      settings: connection_state.Settings(
+        ..client_defaults.settings,
+        h3_datagram: True,
+      ),
+    )
+  let server_config =
+    connection_state.Config(
+      ..server_defaults,
+      settings: connection_state.Settings(
+        ..server_defaults.settings,
+        h3_datagram: True,
+      ),
+    )
+
+  let assert Ok(client) = connection_state.new(client_config, True)
+  let assert Ok(server) = connection_state.new(server_config, True)
+  let assert Ok(#(client, _)) = connection_state.bootstrap(client, 2, 6, 10)
+  let assert Ok(#(server, _)) = connection_state.bootstrap(server, 3, 7, 11)
+  let assert Ok(#(client, [_])) =
+    connection_state.receive_control_frame(client, frame.Settings([]))
+  let assert Ok(#(server, [_])) =
+    connection_state.receive_control_frame(server, frame.Settings([]))
+  assert !connection_state.datagrams_available(client)
+  assert !connection_state.datagrams_available(server)
+  assert connection_state.receive_datagram(client, <<0, "before-settings">>)
+    == Error(connection_state.DatagramFailure(
+      datagram.UnreliableDatagramNotNegotiated,
+    ))
+  assert connection_state.receive_datagram(server, <<0, "before-settings">>)
+    == Error(connection_state.DatagramFailure(
+      datagram.UnreliableDatagramNotNegotiated,
+    ))
+  assert connection_state.open_request(client, 0, connect_headers(), False)
+    == Error(connection_state.HeaderFailure(
+      header_semantics.ExtendedConnectNotEnabled,
+    ))
+
+  let assert Ok(client) = connection_state.new(client_config, True)
+  let assert Ok(server) = connection_state.new(server_config, True)
+  let assert Ok(#(client, _)) = connection_state.bootstrap(client, 2, 6, 10)
+  let assert Ok(#(server, _)) = connection_state.bootstrap(server, 3, 7, 11)
+  let negotiated = frame.Settings([frame.Setting(8, 1), frame.Setting(0x33, 1)])
+  let assert Ok(#(client, [_])) =
+    connection_state.receive_control_frame(client, negotiated)
+  let assert Ok(#(server, [_])) =
+    connection_state.receive_control_frame(server, negotiated)
+  assert connection_state.datagrams_available(client)
+  assert connection_state.datagrams_available(server)
+  assert connection_state.receive_datagram(client, <<0, "after-settings">>)
+    == Ok(connection_state.DatagramDropped)
+  assert connection_state.receive_datagram(server, <<0, "after-settings">>)
+    == Ok(connection_state.DatagramDropped)
+  let assert Ok(#(_, encoded)) =
+    connection_state.open_request(client, 0, connect_headers(), False)
+  let assert Ok(#(_, [connection_state.RequestHeaders(0, _)])) =
+    connection_state.receive_request_frame(server, 0, decode_frame(encoded))
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn accepted_zero_rtt_uses_remembered_settings_and_rejects_reduction_test() -> Nil {
+  let assert Ok(remembered) =
+    settings_memory.new(4096, 4096, 16, True, True, [1, 6, 7, 8, 0x33])
+  let defaults = connection_state.default_config(connection_state.Client)
+  let configured =
+    connection_state.Config(
+      ..defaults,
+      settings: connection_state.Settings(
+        ..defaults.settings,
+        h3_datagram: True,
+      ),
+      remembered_peer_settings: Some(remembered),
+      zero_rtt_accepted: True,
+    )
+  let assert Ok(state) = connection_state.new(configured, True)
+  let assert Ok(#(state, _)) = connection_state.bootstrap(state, 2, 6, 10)
+  assert connection_state.datagrams_available(state)
+  // Remembered ENABLE_CONNECT_PROTOCOL applies before the new SETTINGS frame.
+  let assert Ok(#(state, _)) =
+    connection_state.open_request(state, 0, connect_headers(), False)
+
+  assert connection_state.receive_control_frame(
+      state,
+      frame.Settings([
+        frame.Setting(1, 4096),
+        frame.Setting(6, 4095),
+        frame.Setting(7, 16),
+        frame.Setting(8, 1),
+        frame.Setting(0x33, 1),
+      ]),
+    )
+    == Error(connection_state.ZeroRttSettingsIncompatible)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn accepted_zero_rtt_rejects_omitted_remembered_non_default_test() -> Nil {
+  let assert Ok(remembered) =
+    settings_memory.new(0, 4096, 0, True, False, [6, 8])
+  let defaults = connection_state.default_config(connection_state.Client)
+  let configured =
+    connection_state.Config(
+      ..defaults,
+      remembered_peer_settings: Some(remembered),
+      zero_rtt_accepted: True,
+    )
+  let assert Ok(state) = connection_state.new(configured, False)
+  let assert Ok(#(state, _)) = connection_state.bootstrap(state, 2, 6, 10)
+  assert connection_state.receive_control_frame(
+      state,
+      frame.Settings([frame.Setting(6, 8192)]),
+    )
+    == Error(connection_state.ZeroRttSettingsIncompatible)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn compatible_settings_preserve_zero_rtt_qpack_outstanding_state_test() -> Nil {
+  let assert Ok(remembered) =
+    settings_memory.new(4096, 4096, 16, True, False, [1, 6, 7, 8, 0x33])
+  let defaults = connection_state.default_config(connection_state.Client)
+  let configured =
+    connection_state.Config(
+      ..defaults,
+      remembered_peer_settings: Some(remembered),
+      zero_rtt_accepted: True,
+    )
+  let assert Ok(state) = connection_state.new(configured, False)
+  let assert Ok(#(state, _)) = connection_state.bootstrap(state, 2, 6, 10)
+  let indexed = Header(<<"x-resumed">>, <<"yes">>, False)
+  let assert Ok(state) = connection_state.index_field(state, indexed)
+  let fields = list.append(get_headers(), [indexed])
+  let assert Ok(#(state, _)) =
+    connection_state.open_request(state, 0, fields, True)
+
+  // Compatible post-handshake SETTINGS increase limits.
+  // They must not erase the outstanding 0-RTT section that the decoder still needs to acknowledge.
+  let assert Ok(#(state, [_])) =
+    connection_state.receive_control_frame(
+      state,
+      frame.Settings([
+        frame.Setting(1, 8192),
+        frame.Setting(6, 8192),
+        frame.Setting(7, 32),
+        frame.Setting(8, 1),
+        frame.Setting(0x33, 0),
+      ]),
+    )
+  let assert Ok(_) =
+    connection_state.receive_qpack_decoder_instruction(
+      state,
+      instruction.SectionAcknowledgement(0),
+    )
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejected_zero_rtt_can_install_changed_settings_test() -> Nil {
+  let assert Ok(remembered) =
+    settings_memory.new(4096, 4096, 16, True, True, [1, 6, 7, 8, 0x33])
+  let defaults = connection_state.default_config(connection_state.Client)
+  let configured =
+    connection_state.Config(
+      ..defaults,
+      remembered_peer_settings: Some(remembered),
+      zero_rtt_accepted: False,
+    )
+  let assert Ok(state) = connection_state.new(configured, False)
+  let assert Ok(#(state, _)) = connection_state.bootstrap(state, 2, 6, 10)
+  let assert Ok(#(_, [connection_state.PeerSettings(_)])) =
+    connection_state.receive_control_frame(state, frame.Settings([]))
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn client_observes_typed_origin_set_from_server_control_stream_test() -> Nil {
   let #(client, _) = ready_pair()
   let origins = [origin.Origin("https", "example.com", None)]
   let assert Ok(#(_, [connection_state.OriginsReceived(received)])) =
     connection_state.receive_control_frame(client, frame.Origin(origins))
   assert received == origins
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn connection_policy_reaches_request_header_validation_test() -> Nil {
+  let assert Ok(authority_policies) =
+    header_semantics.authority_policies()
+    |> header_semantics.with_custom_scheme_authority_policy(
+      "Repo+Sync",
+      header_semantics.MandatoryAuthority,
+    )
+  let client_config =
+    connection_state.Config(
+      ..connection_state.default_config(connection_state.Client),
+      authority_policies: authority_policies,
+    )
+  let server_config =
+    connection_state.Config(
+      ..connection_state.default_config(connection_state.Server),
+      authority_policies: authority_policies,
+    )
+  let #(client, server) = ready_pair_with_configs(client_config, server_config)
+  let request_fields = [
+    Header(<<":method">>, <<"GET">>, False),
+    Header(<<":scheme">>, <<"REPO+SYNC">>, False),
+    Header(<<":authority">>, <<"store.example">>, False),
+    Header(<<":path">>, <<"resource">>, False),
+  ]
+  let assert Ok(#(_, encoded)) =
+    connection_state.open_request(client, 0, request_fields, False)
+  let assert Ok(#(_, [connection_state.RequestHeaders(0, validated)])) =
+    connection_state.receive_request_frame(server, 0, decode_frame(encoded))
+  let assert header_semantics.Validated(
+    header_semantics.RequestControlData(control),
+    _,
+    _,
+  ) = validated
+  assert control.scheme == Some(<<"repo+sync">>)
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -306,8 +661,7 @@ pub fn qpack_blocked_frame_backlog_is_bounded_without_partial_growth_test() -> N
   assert connection_state.blocked_stream_bytes(server, 0) == retained
   assert connection_state.receive_request_frame(server, 0, frame.Data(<<5>>))
     == Error(connection_state.BlockedStreamBufferExceeded(8))
-  // An admission failure returns no mutated State; callers retain the exact
-  // previously-accounted value.
+  // An admission failure returns no mutated State; callers retain the exact previously-accounted value.
   assert connection_state.blocked_stream_bytes(server, 0) == retained
 
   let assert Ok(#(server, [])) =
@@ -665,6 +1019,14 @@ pub fn server_push_round_trip_uses_a_bounded_unidirectional_stream_test() -> Nil
     )
     == Error(connection_state.FrameUnexpected)
 
+  let assert Ok(#(unchanged, [connection_state.ExtensionFrameIgnored(0x21)])) =
+    connection_state.receive_push_stream_frame(
+      client,
+      15,
+      frame.Unknown(0x21, <<>>),
+    )
+  assert unchanged == client
+
   let assert Ok(#(server, headers_bytes)) =
     connection_state.send_push_response_headers(
       server,
@@ -694,6 +1056,13 @@ pub fn server_push_round_trip_uses_a_bounded_unidirectional_stream_test() -> Nil
       15,
       decode_frame(data_bytes),
     )
+  let assert Ok(#(unchanged, [connection_state.ExtensionFrameIgnored(0x40)])) =
+    connection_state.receive_push_stream_frame(
+      client,
+      15,
+      frame.Unknown(0x40, <<"ignored">>),
+    )
+  assert unchanged == client
   let assert Ok(#(client, [connection_state.PushTrailers(0, 15, _)])) =
     connection_state.receive_push_stream_frame(
       client,
@@ -708,6 +1077,51 @@ pub fn server_push_round_trip_uses_a_bounded_unidirectional_stream_test() -> Nil
       frame.Data(<<>>),
     )
     == Error(connection_state.MissingTransaction(15))
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_push_promise_is_bound_to_the_associated_request_origin_test() -> Nil {
+  let #(client, server) = ready_pair()
+  let assert Ok(#(client, maximum_push_id)) =
+    connection_state.permit_pushes(client, 0)
+  let assert Ok(#(server, [])) =
+    connection_state.receive_control_frame(
+      server,
+      decode_frame(maximum_push_id),
+    )
+  let assert Ok(#(_client, request_bytes)) =
+    connection_state.open_request(client, 0, get_headers(), False)
+  let assert Ok(#(server, _)) =
+    connection_state.receive_request_frame(
+      server,
+      0,
+      decode_frame(request_bytes),
+    )
+
+  let cross_origin = [
+    Header(<<":method">>, <<"GET">>, False),
+    Header(<<":scheme">>, <<"https">>, False),
+    Header(<<":authority">>, <<"private.example">>, False),
+    Header(<<":path">>, <<"/asset">>, False),
+  ]
+  assert connection_state.promise_push(server, 0, cross_origin, False)
+    == Error(
+      connection_state.PushFailure(push.PromisedRequestRejected(
+        push.OriginNotAuthorized,
+      )),
+    )
+
+  // A rejected allocation consumes neither the sequential Push ID nor its finite admission slot.
+  // Host casing and the default TLS port normalize to the same authenticated origin.
+  let same_origin = [
+    Header(<<":method">>, <<"GET">>, False),
+    Header(<<":scheme">>, <<"https">>, False),
+    Header(<<":authority">>, <<"EXAMPLE.TEST:443">>, False),
+    Header(<<":path">>, <<"/asset">>, False),
+  ]
+  let assert Ok(#(_, 0, _)) =
+    connection_state.promise_push(server, 0, same_origin, False)
+  Nil
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -915,9 +1329,8 @@ pub fn rfc9218_priority_updates_reject_unadmitted_request_and_push_ids_test() ->
     connection_state.receive_control_frame(server, accepted_future)
   assert connection_state.pending_priority_count(server) == 1
 
-  // With a two-request admission window, request stream IDs 0 and 4 are the
-  // only future IDs whose priority can be retained. A peer cannot use a
-  // priority update to allocate state for stream 8.
+  // With a two-request admission window, request stream IDs 0 and 4 are the only future IDs whose priority can be retained.
+  // A peer cannot use a priority update to allocate state for stream 8.
   let beyond_stream_limit =
     priority.to_frame(priority.RequestUpdate(8, priority.Priority(1, False)))
     |> should.be_ok
@@ -939,8 +1352,7 @@ pub fn rfc9218_priority_updates_reject_unadmitted_request_and_push_ids_test() ->
   assert connection_state.receive_control_frame(client, forbidden_server_update)
     == Error(connection_state.FrameUnexpected)
 
-  // Opening the prioritized stream consumes the pending value and slides the
-  // finite future window without tying it to absolute stream IDs forever.
+  // Opening the prioritized stream consumes the pending value and slides the finite future window without tying it to absolute stream IDs forever.
   let assert Ok(#(client, first_request)) =
     connection_state.open_request(client, 0, get_headers(), False)
   let assert Ok(#(_client, second_request)) =

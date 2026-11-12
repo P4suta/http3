@@ -7,6 +7,8 @@ import gleam/string
 
 const maximum_age_seconds = 604_800
 
+const default_age_seconds = 86_400
+
 /// One verified HTTP/3 alternative retained by the private finite store.
 pub type Entry {
   Entry(
@@ -18,15 +20,28 @@ pub type Entry {
   )
 }
 
-/// Parse the first bounded same-host `h3` alternative with explicit max-age.
+/// Parse the first bounded same-host `h3` alternative.
 pub fn parse(
   value: String,
   origin_host: String,
   origin_port: Int,
   now_milliseconds: Int,
 ) -> Option(Entry) {
+  parse_with_age(value, origin_host, origin_port, now_milliseconds, 0)
+}
+
+/// Parse an Alt-Svc value after subtracting the response's validated Age.
+///
+/// The integrated client supplies zero when no valid Age field is present.
+pub fn parse_with_age(
+  value: String,
+  origin_host: String,
+  origin_port: Int,
+  now_milliseconds: Int,
+  response_age_seconds: Int,
+) -> Option(Entry) {
   let host = string.lowercase(origin_host)
-  case string.lowercase(string.trim(value)) {
+  case string.trim(value) {
     "clear" if origin_port > 0 && origin_port <= 65_535 ->
       Some(Entry(
         origin_host: host,
@@ -41,13 +56,37 @@ pub fn parse(
         host,
         origin_port,
         now_milliseconds,
+        int.max(0, response_age_seconds),
       )
   }
+}
+
+/// Whether a field value requests invalidation of every alternative.
+///
+/// A response that mixes `clear` with alternatives is invalid but still clears the origin as required by RFC 7838.
+pub fn requests_clear(value: String) -> Bool {
+  value
+  |> string.split(on: ",")
+  |> list.any(fn(member) { string.trim(member) == "clear" })
 }
 
 /// Stable exact-origin replacement key.
 pub fn key(host: String, port: Int) -> String {
   string.lowercase(host) <> ":" <> int.to_string(port)
+}
+
+/// Serialize the selected alternative authority for the Alt-Used field.
+pub fn used_authority(host: String, port: Int) -> String {
+  let host = string.lowercase(host)
+  let host = case
+    string.contains(host, ":"),
+    string.starts_with(host, "["),
+    string.ends_with(host, "]")
+  {
+    True, False, False -> "[" <> host <> "]"
+    _, _, _ -> host
+  }
+  host <> ":" <> int.to_string(port)
 }
 
 /// Construct a validated discovery entry from an authenticated HTTPS record.
@@ -80,8 +119,7 @@ pub fn from_https_record(
 
 /// Return a usable same-port HTTP/3 alternative for this origin.
 ///
-/// Alternate ports remain parsed and bounded but are not selected until the
-/// transport adapter can preserve the original HTTP authority separately.
+/// Alternate ports remain parsed and bounded but are not selected until the transport adapter can preserve the original HTTP authority separately.
 pub fn supports_same_port(
   entries: List(Entry),
   host: String,
@@ -97,18 +135,48 @@ pub fn supports_same_port(
   })
 }
 
+/// Select one unexpired same-host alternative while retaining the original origin separately from the destination's UDP port.
+pub fn alternative_port(
+  entries: List(Entry),
+  host: String,
+  port: Int,
+  now_milliseconds: Int,
+) -> Option(Int) {
+  let host = string.lowercase(host)
+  case
+    list.find(entries, fn(entry) {
+      entry.origin_host == host
+      && entry.origin_port == port
+      && entry.expires_at > now_milliseconds
+    })
+  {
+    Ok(entry) -> Some(entry.alternative_port)
+    Error(Nil) -> None
+  }
+}
+
 fn parse_alternatives(
   alternatives: List(String),
   host: String,
   origin_port: Int,
   now: Int,
+  response_age_seconds: Int,
 ) -> Option(Entry) {
   case alternatives {
     [] -> None
     [alternative, ..rest] ->
-      case parse_alternative(string.trim(alternative), host, origin_port, now) {
+      case
+        parse_alternative(
+          string.trim(alternative),
+          host,
+          origin_port,
+          now,
+          response_age_seconds,
+        )
+      {
         Some(entry) -> Some(entry)
-        None -> parse_alternatives(rest, host, origin_port, now)
+        None ->
+          parse_alternatives(rest, host, origin_port, now, response_age_seconds)
       }
   }
 }
@@ -118,6 +186,7 @@ fn parse_alternative(
   host: String,
   origin_port: Int,
   now: Int,
+  response_age_seconds: Int,
 ) -> Option(Entry) {
   case split_unquoted(alternative, ";") {
     [] -> None
@@ -129,10 +198,15 @@ fn parse_alternative(
             quoted_port(string.trim(authority)),
             maximum_age(parameters)
           {
-            "h3", Some(port), Some(seconds)
-              if port > 0 && port <= 65_535 && seconds >= 0
+            "h3", Some(port), Some(configured_seconds)
+              if port > 0 && port <= 65_535 && configured_seconds >= 0
             -> {
-              let seconds = int.min(seconds, maximum_age_seconds)
+              let seconds =
+                int.max(
+                  0,
+                  int.min(configured_seconds, maximum_age_seconds)
+                    - response_age_seconds,
+                )
               Some(Entry(
                 origin_host: host,
                 origin_port:,
@@ -149,9 +223,8 @@ fn parse_alternative(
 }
 
 fn quoted_port(authority: String) -> Option(Int) {
-  case unquote(authority) {
-    None -> None
-    Some(inner) ->
+  case string.starts_with(authority, "\""), unquote(authority) {
+    True, Some(inner) ->
       case string.starts_with(inner, ":") {
         False -> None
         True ->
@@ -160,16 +233,14 @@ fn quoted_port(authority: String) -> Option(Int) {
           |> int.parse
           |> option_from_result
       }
+    _, _ -> None
   }
 }
 
 /// Split one field value on a delimiter, but only outside a quoted-string.
 ///
-/// RFC 7838 section 3 makes a parameter value a token or a quoted-string, and
-/// RFC 7230 admits both delimiters as `qdtext`, so splitting on every
-/// occurrence ends an alt-value or a parameter in the middle of a value a
-/// server is entitled to send. The walk is one pass and the caller has already
-/// bounded the field.
+/// RFC 7838 section 3 makes a parameter value a token or a quoted-string, and RFC 7230 admits both delimiters as `qdtext`, so splitting on every occurrence ends an alt-value or a parameter in the middle of a value a server is entitled to send.
+/// The walk is one pass and the caller has already bounded the field.
 fn split_unquoted(value: String, delimiter: String) -> List(String) {
   let #(parts, last, _, _) =
     value
@@ -190,9 +261,7 @@ fn split_unquoted(value: String, delimiter: String) -> List(String) {
 
 /// Read a token or a quoted-string as the value it stands for.
 ///
-/// A bare quote before the end, a backslash with nothing after it, and a value
-/// that runs out before its closing quote are all refused; a token is returned
-/// as it was written.
+/// A bare quote before the end, a backslash with nothing after it, and a value that runs out before its closing quote are all refused; a token is returned as it was written.
 fn unquote(raw: String) -> Option(String) {
   case string.to_graphemes(raw) {
     ["\"", ..body] -> unquote_body(body, "")
@@ -216,7 +285,7 @@ fn unquote_body(remaining: List(String), decoded: String) -> Option(String) {
 
 fn maximum_age(parameters: List(String)) -> Option(Int) {
   case parameters {
-    [] -> None
+    [] -> Some(default_age_seconds)
     [parameter, ..rest] ->
       case delta_seconds(parameter) {
         Some(seconds) -> Some(seconds)

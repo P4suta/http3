@@ -109,6 +109,12 @@ pub fn finish(state: State) -> Result(State, Error) {
   }
 }
 
+/// Make a locally abandoned message direction terminal without requiring its declared framing to be complete.
+/// Transport cancellation has already made any later frame impossible, so retaining an open semantic state would let callers encode bytes which can never be delivered.
+pub fn abort(state: State) -> State {
+  State(..state, finished: True)
+}
+
 /// Enter tunnel/capsule data mode after successful CONNECT response handling.
 /// Once established, ordinary HEADERS are prohibited on the stream.
 pub fn establish_connect(state: State) -> Result(State, Error) {

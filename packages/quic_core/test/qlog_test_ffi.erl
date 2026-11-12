@@ -118,7 +118,7 @@ find_device_writer(Admission, Remaining) ->
 
 is_device_writer(Pid) ->
     case process_info(Pid, current_function) of
-        {current_function, {quic_core_qlog_ffi, device_writer_loop, 2}} -> true;
+        {current_function, {quic_core_qlog_ffi, device_writer_loop, _}} -> true;
         _ -> false
     end.
 

@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Installed interoperability peer packages"
+paths = ['''^packages/http3/build/interop-venv/''']
+
+[[allowlists]]
+description = "Generated coverage fixtures copy repository inputs scanned at their original paths"
+paths = ['''^build/coverage-report-tests/[0-9A-F]{32}/work/''']

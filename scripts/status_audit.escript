@@ -421,10 +421,13 @@ audit_findings(Findings, Gates) ->
 
 audit_finding_gates(Findings, Gates) ->
     Mappings = [
+        {<<"PRE-003">>, <<"hostile-peer">>},
+        {<<"PRE-004">>, <<"hostile-peer">>},
         {<<"PRE-005">>, <<"credential-matrix">>},
         {<<"PRE-007">>, <<"qlog-validate">>},
         {<<"PRE-008">>, <<"model">>},
         {<<"PRE-009">>, <<"source-candidate">>},
+        {<<"PRE-010">>, <<"performance-audit">>},
         {<<"PRE-011">>, <<"release-candidate">>}
     ],
     lists:foreach(fun({FindingId, GateName}) ->

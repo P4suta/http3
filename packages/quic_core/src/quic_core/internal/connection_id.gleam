@@ -9,6 +9,10 @@ import quic_core/varint
 
 const maximum_history_entries = 4096
 
+// A conservative retained charge for the maximum 20-byte identifier, 16-byte token, record/Option tuples, sequence integer, and active/history list cells.
+// Sequence zero belongs to the connection's fixed admitted working set.
+const retained_history_entry_bytes = 256
+
 /// One active peer-issued connection ID and stateless reset token.
 pub type ConnectionId {
   ConnectionId(
@@ -25,6 +29,7 @@ pub opaque type Registry {
     retire_prior_to: Int,
     active: List(ConnectionId),
     history: List(ConnectionId),
+    history_bytes: Int,
   )
 }
 
@@ -45,6 +50,7 @@ pub type Error {
   ResetTokenReused
   ActiveLimitExceeded(Int)
   HistoryLimitExceeded(Int)
+  HistoryMemoryExceeded
   NoActiveConnectionId
   ResetCheckFailed
 }
@@ -59,13 +65,14 @@ pub fn new(
     active_limit >= 2
     && active_limit <= varint.maximum
     && valid_initial_connection_id(initial_connection_id)
+    && bit_array.byte_size(initial_connection_id) > 0
     && valid_reset_token(stateless_reset_token)
   {
     False -> Error(InvalidConfiguration)
     True -> {
       let initial =
         ConnectionId(0, initial_connection_id, Some(stateless_reset_token))
-      Ok(Registry(active_limit, 0, [initial], [initial]))
+      Ok(Registry(active_limit, 0, [initial], [initial], 0))
     }
   }
 }
@@ -85,9 +92,15 @@ pub fn new_without_reset_token(
     False -> Error(InvalidConfiguration)
     True -> {
       let initial = ConnectionId(0, initial_connection_id, None)
-      Ok(Registry(active_limit, 0, [initial], [initial]))
+      Ok(Registry(active_limit, 0, [initial], [initial], 0))
     }
   }
+}
+
+/// Retained peer-ID history beyond the initially admitted sequence zero.
+/// Retirement removes routing authority, but must retain conflict detection history and therefore cannot refund its memory charge.
+pub fn retained_bytes(registry: Registry) -> Int {
+  registry.history_bytes
 }
 
 /// Attach the authenticated server transport-parameter token to sequence zero.
@@ -95,9 +108,10 @@ pub fn set_initial_reset_token(
   registry: Registry,
   stateless_reset_token: BitArray,
 ) -> Result(Registry, Error) {
-  case valid_reset_token(stateless_reset_token) {
-    False -> Error(InvalidResetToken)
-    True -> {
+  case zero_length_mode(registry), valid_reset_token(stateless_reset_token) {
+    True, _ -> Error(InvalidConnectionId)
+    False, False -> Error(InvalidResetToken)
+    False, True -> {
       use active <- result.try(
         set_reset_token(registry.active, stateless_reset_token, []),
       )
@@ -117,17 +131,22 @@ pub fn receive(
   connection_id: BitArray,
   stateless_reset_token: BitArray,
 ) -> Result(Update, Error) {
-  use Nil <- result.try(validate_new_entry(
-    sequence,
-    retire_prior_to,
-    connection_id,
-    stateless_reset_token,
-  ))
-  receive_valid(
-    registry,
-    ConnectionId(sequence, connection_id, Some(stateless_reset_token)),
-    retire_prior_to,
-  )
+  case zero_length_mode(registry) {
+    True -> Error(InvalidConnectionId)
+    False -> {
+      use Nil <- result.try(validate_new_entry(
+        sequence,
+        retire_prior_to,
+        connection_id,
+        stateless_reset_token,
+      ))
+      receive_valid(
+        registry,
+        ConnectionId(sequence, connection_id, Some(stateless_reset_token)),
+        retire_prior_to,
+      )
+    }
+  }
 }
 
 /// Return the lowest-sequence active identifier.
@@ -273,6 +292,7 @@ fn insert_distinct(
         Registry(
           ..registry,
           history: insert_sorted(registry.history, incoming, []),
+          history_bytes: registry.history_bytes + retained_history_entry_bytes,
         )
       apply_retirement(registry, incoming, retire_prior_to, True)
     }
@@ -324,6 +344,14 @@ fn find_sequence(entries: List(ConnectionId), sequence: Int) -> SequenceLookup {
         True -> SomeConnectionId(entry)
         False -> find_sequence(rest, sequence)
       }
+  }
+}
+
+// Sequence zero remains in the bounded history after retirement, so it is the durable connection-lifetime marker for RFC 9000 zero-length CID mode.
+fn zero_length_mode(registry: Registry) -> Bool {
+  case registry.history {
+    [ConnectionId(0, value, _), ..] -> bit_array.byte_size(value) == 0
+    _ -> False
   }
 }
 

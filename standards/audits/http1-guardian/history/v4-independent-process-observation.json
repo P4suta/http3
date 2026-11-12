@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "classification": "shareable_safe_observation",
+  "exit_code": 0,
+  "timed_out": false,
+  "absolute_deadline_seconds": 30,
+  "stdout_bytes": 3009,
+  "stderr_bytes": 0,
+  "window_style": "Hidden",
+  "visible_before": 0,
+  "visible_after": 0,
+  "native_before": 0,
+  "native_after": 0,
+  "child_identity": "redacted_owned_pid"
+}

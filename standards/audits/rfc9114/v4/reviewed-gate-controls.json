@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "manifest_kind": "rfc9114_v4_reviewed_gate_controls",
+  "generation": 4,
+  "count": 22,
+  "result_shape": ["name", "observed"],
+  "controls": [
+    {"name": "tracked_anchor", "observed": "accepted"},
+    {"name": "coordinated_tool_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "coordinated_launcher_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "coordinated_gate_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "coordinated_manifest_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "coordinated_mise_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "coordinated_ci_substitution", "observed": "anchor_member_identity_mismatch"},
+    {"name": "tool_early_return", "observed": "anchor_member_identity_mismatch"},
+    {"name": "launcher_early_return", "observed": "anchor_member_identity_mismatch"},
+    {"name": "application_inventory_empty", "observed": "control_inventory_count_mismatch"},
+    {"name": "application_inventory_missing", "observed": "control_inventory_count_mismatch"},
+    {"name": "application_inventory_substitution", "observed": "control_inventory_entry_mismatch"},
+    {"name": "application_inventory_reorder", "observed": "control_inventory_entry_mismatch"},
+    {"name": "gate_inventory_empty", "observed": "gate_control_inventory_count_mismatch"},
+    {"name": "gate_inventory_missing", "observed": "gate_control_inventory_count_mismatch"},
+    {"name": "gate_inventory_substitution", "observed": "gate_control_inventory_entry_mismatch"},
+    {"name": "strict_report_extra_top_level", "observed": "report_schema_mismatch"},
+    {"name": "strict_report_extra_nested", "observed": "report_schema_mismatch"},
+    {"name": "rejected_report_incomplete", "observed": "report_schema_mismatch"},
+    {"name": "mandatory_expected_run_missing", "observed": "expected_run_id_required"},
+    {"name": "stale_expected_run", "observed": "report_run_id_mismatch"},
+    {"name": "gate_input_alias", "observed": "input_alias_rejected"}
+  ]
+}

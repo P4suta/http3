@@ -31,10 +31,11 @@ pub opaque type Deadlines {
 /// endpoint" means, and whether the budget is enforced, differs by role:
 ///
 ///   * server: the whole listener, and it is enforced. Every connection the
-///     listener admits is charged 48 KiB on its first valid Initial packet,
+///     listener admits is charged 64 KiB on its first valid Initial packet,
 ///     before any per-connection state is built: a 16 KiB handshake working
 ///     set, plus the 32 KiB of connection-level receive credit the server
-///     advertises to that peer in the handshake. Charging for the advertised
+///     advertises to that peer in the handshake, plus prepaid terminal history
+///     rounded up to the next 16-KiB quantum. Charging for the advertised
 ///     credit is what makes this a bound rather than an aspiration, because a
 ///     transport parameter cannot be retracted once the peer has read it. A
 ///     connection the budget cannot cover is refused with CONNECTION_REFUSED
@@ -44,18 +45,20 @@ pub opaque type Deadlines {
 ///     send buffers. Growth the budget cannot fund is refused, and a refused
 ///     connection stops raising the credit it advertises instead of growing
 ///     anyway.
-///   * client: one connection, because a client endpoint is one connection.
+///   * client: transport admission applies to one connection. Diagnostics are
+///     the exception: configurations derived from one Client constructor share
+///     their diagnostic byte and Connections-slot reservations across calls.
 ///     Before creating an actor or opening a socket, the budget must fund the
-///     same 48 KiB admission reservation. What bounds later growth on that
+///     same 64 KiB admission reservation. What bounds later growth on that
 ///     connection is the per-connection ceilings: `Buffer` for each stream
 ///     direction, `Queue` for backlogs, and `Datagram` for RFC 9221 queueing.
 ///
 /// Sizing rule for a server. `EndpointMemory` should cover
-/// `Connections * (48 KiB + Buffer)` for the load you actually expect to
+/// `Connections * (64 KiB + Buffer)` for the load you actually expect to
 /// carry at once: the admission charge every connection pays, plus the buffer
 /// a connection whose owner has stopped reading comes to hold. The defaults
 /// deliberately do not satisfy that product -- 1024 connections at a 256 KiB
-/// `Buffer` would want 304 MiB, and the default budget is 64 MiB -- because
+/// `Buffer` would want 320 MiB, and the default budget is 64 MiB -- because
 /// refusing to grow is the intended behaviour beyond it, not a failure of it:
 /// connections past the budget keep the credit they were already advertised
 /// and stop being offered more, and new connections are refused rather than
@@ -66,6 +69,32 @@ pub opaque type Deadlines {
 /// per-stream buffer narrower than the room a connection rests on makes that
 /// stream's own reassembly bound, rather than this budget, the first thing a
 /// flood meets.
+///
+/// Enabling qlog reserves a 1 MiB writer working set before its four process
+/// slots are created. Each accepted but unfinished event then takes one 16 KiB
+/// quantum from the same finite endpoint ledger and returns it after device
+/// completion. A full ledger rejects that diagnostic event immediately and
+/// increments bounded refusal/drop counters; communication remains live. The
+/// server shares these event charges with transport growth. Supervised
+/// protocol adapters can attach one internal diagnostic identity to all core
+/// Client values they derive from the same stable parent.
+/// A failed opening whose filesystem cleanup is unconfirmed keeps both its
+/// working-set charge and one of the configured `Connections` slots; new
+/// diagnostic work cannot reuse it. A confirmed child join returns the static
+/// charge and any remaining dynamic event charge exactly once.
+/// These are admission allowances, not hard limits on all OTP allocator or
+/// mailbox memory. Client admission includes the diagnostic allowance, but its
+/// later aggregate memory growth is still bounded only by the limits above.
+/// Core client configurations derived from the same constructor share their
+/// diagnostic byte and connection-slot reservations, including across callers.
+/// Their normal close and owner shutdown return confirmed diagnostic charges.
+/// An unconfirmed opening or interrupted cleanup keeps its scalar charge while
+/// one bounded reconciler observes at most two cleanup owners. A confirmed
+/// later join returns the charge exactly once. Each identity retains at most 64
+/// cleanup tickets, each for at most seven seconds; refusal or expiry preserves
+/// the quarantine rather than inventing release evidence.
+/// Changing limits or disabling and re-enabling qlog does not reset that shared
+/// identity.
 ///
 /// How tight the bound is. It is exact at admission and soft afterwards, and
 /// the slack has exactly two sources. Credit already advertised is never

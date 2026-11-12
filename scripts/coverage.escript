@@ -3,22 +3,301 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("evidence_identity.hrl").
+-include("fresh_build_identity.hrl").
+-include("process_runner.hrl").
+-include("command_capture.hrl").
+-include("suite_evidence.hrl").
+-include("suite_discovery.hrl").
+-include("json_evidence.hrl").
+-include("coverage_report_evidence_tests.hrl").
+-compile({nowarn_unused_function, [{output_tail, 1}]}).
+
 -define(OUTPUT, "build/coverage").
 -define(POLICY, "coverage-policy.json").
 -define(EVIDENCE, "coverage-evidence.json").
 
 main(Arguments) ->
-    try run(Arguments) of
+    try dispatch(Arguments) of
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error, "coverage gate failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            Details = coverage_failure_details(Class, Reason, Stacktrace),
+            case get(coverage_failure_path) of
+                undefined -> ok;
+                FailurePath -> _ = file:write_file(FailurePath, [json:encode(Details), $\n])
+            end,
+            io:format(standard_error, "qualification failed: ~p~n", [Details]),
             halt(1)
     end.
 
+dispatch([Command | _] = Arguments)
+  when Command =:= "capture"; Command =:= "diagnose" ->
+    case get(coverage_bounded_worker) of
+        true -> run(Arguments);
+        _ -> run_bounded_coverage(Arguments)
+    end;
+dispatch(["report", Mode] = Arguments) when Mode =:= "full"; Mode =:= "changed" ->
+    case get(coverage_bounded_worker) of
+        true -> run(Arguments);
+        _ -> run_bounded_report(Mode, Arguments)
+    end;
+dispatch(Arguments) -> run(Arguments).
+
+coverage_report_deadline() -> 300000.
+
+run_bounded_report(Mode, Arguments) ->
+    Path = filename:join(?OUTPUT, "report-" ++ Mode ++ ".process.json"),
+    Attempt = filename:join(?OUTPUT, "report-" ++ Mode ++ ".attempt.json"),
+    Nonce = hex(crypto:strong_rand_bytes(16)),
+    ok = filelib:ensure_dir(Attempt),
+    ok = file:write_file(Attempt, json:encode(#{schema => 1,
+        mode => list_to_binary(Mode), nonce => Nonce})),
+    FinalReport = filename:join(?OUTPUT, Mode ++ ".json"),
+    %% Invalidate before compilation or child startup: failure before entry
+    %% cannot make an earlier Ready document describe this attempt.
+    delete_if_present(FinalReport),
+    delete_if_present(?EVIDENCE),
+    Identity = evidence_begin(Path),
+    Runner = filename:absname(filename:join([?OUTPUT, "runner", binary_to_list(Nonce)])),
+    ok = filelib:ensure_dir(filename:join(Runner, "placeholder")),
+    {ok, Sections} = escript:extract(escript:script_name(), [compile_source]),
+    {ok, RunnerSource} = file:read_file(escript:script_name()),
+    Binary = proplists:get_value(source, Sections),
+    {ok, {Module, [{exports, Exports}]}} = beam_lib:chunks(Binary, [exports]),
+    true = lists:member({main, 1}, Exports),
+    BeamPath = filename:join(Runner, atom_to_list(Module) ++ ".beam"),
+    FailurePath = filename:join(Runner, "failure.json"),
+    Staging = #{nonce => Nonce, mode => list_to_binary(Mode),
+        report => filename:join(Runner, "report.json"),
+        evidence => filename:join(Runner, "evidence.json"),
+        receipt => filename:join(Runner, "completion.json")},
+    ok = file:write_file(BeamPath, Binary, [exclusive]),
+    Evaluation = lists:flatten(io_lib:format(
+        "put(coverage_bounded_worker,true),put(coverage_failure_path,~0tp),"
+        "put(coverage_report_staging,~0tp),~p:main(~0tp),halt(0).",
+        [FailurePath, Staging, Module, Arguments])),
+    Deadline = coverage_report_deadline(),
+    try
+        {Status, Output} = run_child_evaluation(filename:absname("."), [Runner], Evaluation, Deadline),
+        Documents = coverage_completed_report(Staging, Identity, Status, Output),
+        Complete = Status =:= 0 andalso Documents =/= error,
+        Base = #{schema => 1, scope => <<"CoverageProcess">>, shareable => true,
+            status => case Complete of true -> <<"Ready">>; false -> <<"Failed">> end,
+            command => <<"report">>, package => list_to_binary(Mode),
+            run_nonce => Nonce, runner_source_sha256 => hex(crypto:hash(sha256, RunnerSource)),
+            completion => case Documents of
+                {ok, _, _, Receipt} -> Receipt;
+                error -> null
+            end,
+            deadline_milliseconds => Deadline, child_exit_status => Status,
+            process => maps:without([tail, output_sha256], Output)},
+        WithFailure = case Complete of
+            true -> Base;
+            false -> Base#{failure => safe_coverage_failure(read_coverage_unit_report(FailurePath))}
+        end,
+        {Report, Current} = try
+            {evidence_complete(WithFailure, Identity), true}
+        catch Class:Reason:Stack ->
+            {WithFailure#{status => <<"Failed">>, evidence_identity => Identity,
+                execution_environment => execution_runtime(),
+                failure => coverage_failure_details(Class, Reason, Stack)}, false}
+        end,
+        %% A completed threshold failure still has useful Blocked documents.
+        %% Timeout, output exhaustion, absent/stale receipt or stale source
+        %% never publishes either authoritative document.
+        case {Documents, Current} of
+            {{ok, ReportBytes, EvidenceBytes, _}, true} ->
+                coverage_publish_report(FinalReport, ReportBytes, EvidenceBytes);
+            _ -> ok
+        end,
+        ok = file:write_file(Path, [json:encode(Report), $\n]),
+        io:format("coverage report ~s: ~s; bounded process report ~s~n",
+            [Mode, maps:get(status, Report), Path]),
+        ensure(Complete andalso Current, coverage_child_incomplete)
+    after
+        lists:foreach(fun delete_if_present/1,
+            [BeamPath, FailurePath, maps:get(report, Staging),
+             maps:get(evidence, Staging), maps:get(receipt, Staging)]),
+        _ = file:del_dir(Runner)
+    end.
+
+coverage_completed_report(Staging, Identity, Status, Output) ->
+    try
+        true = Status =:= 0 orelse Status =:= 1,
+        true = process_completion_verified(Output),
+        false = maps:get(timed_out, Output),
+        false = maps:get(output_limit_exceeded, Output),
+        {ok, ReceiptBytes} = coverage_report_bytes(maps:get(receipt, Staging), 4096),
+        Receipt = coverage_decode_json(ReceiptBytes),
+        true = suite_exact_keys(Receipt, [schema, nonce, mode, child_exit_status,
+                                         report_sha256, evidence_sha256]),
+        1 = maps:get(<<"schema">>, Receipt),
+        Status = maps:get(<<"child_exit_status">>, Receipt),
+        Nonce = maps:get(nonce, Staging), Nonce = maps:get(<<"nonce">>, Receipt),
+        Mode = maps:get(mode, Staging), Mode = maps:get(<<"mode">>, Receipt),
+        {ok, ReportBytes} = coverage_report_bytes(maps:get(report, Staging), 16777216),
+        {ok, EvidenceBytes} = coverage_report_bytes(maps:get(evidence, Staging), 16777216),
+        ReportHash = hex(crypto:hash(sha256, ReportBytes)),
+        EvidenceHash = hex(crypto:hash(sha256, EvidenceBytes)),
+        ReportHash = maps:get(<<"report_sha256">>, Receipt),
+        EvidenceHash = maps:get(<<"evidence_sha256">>, Receipt),
+        Report = coverage_decode_json(ReportBytes), Evidence = coverage_decode_json(EvidenceBytes),
+        2 = maps:get(<<"schema">>, Report), 2 = maps:get(<<"schema">>, Evidence),
+        Mode = maps:get(<<"mode">>, Report),
+        Expected = case Status of 0 -> <<"Ready">>; 1 -> <<"Blocked">> end,
+        Expected = maps:get(<<"status">>, Report),
+        Expected = maps:get(Mode, maps:get(<<"statuses">>, Evidence)),
+        Identity = maps:get(<<"evidence_identity">>, Report),
+        Identity = maps:get(<<"evidence_identity">>, Evidence),
+        {ok, ReportBytes, EvidenceBytes, Receipt}
+    catch _:_ -> error end.
+
+coverage_publish_report(Path, Report, Evidence) ->
+    try
+        ok = file:write_file(Path, Report, [exclusive]),
+        ok = file:write_file(?EVIDENCE, Evidence, [exclusive])
+    catch Class:Reason:Stack ->
+        delete_if_present(Path), delete_if_present(?EVIDENCE),
+        erlang:raise(Class, Reason, Stack)
+    end.
+
+coverage_report_path(Mode) ->
+    case get(coverage_report_staging) of
+        #{report := Path} -> Path;
+        _ -> filename:join(?OUTPUT, Mode ++ ".json")
+    end.
+
+coverage_evidence_path() ->
+    case get(coverage_report_staging) of
+        #{evidence := Path} -> Path;
+        _ -> ?EVIDENCE
+    end.
+
+coverage_report_completion(Mode, Result) ->
+    #{nonce := Nonce, receipt := Receipt, report := Report, evidence := Evidence} = get(coverage_report_staging),
+    {ok, ReportBytes} = coverage_report_bytes(Report, 16777216),
+    {ok, EvidenceBytes} = coverage_report_bytes(Evidence, 16777216),
+    Exit = case Result of ok -> 0; {blocked, _} -> 1 end,
+    Record = #{schema => 1, nonce => Nonce, mode => list_to_binary(Mode),
+        child_exit_status => Exit, report_sha256 => hex(crypto:hash(sha256, ReportBytes)),
+        evidence_sha256 => hex(crypto:hash(sha256, EvidenceBytes))},
+    ok = file:write_file(Receipt, json:encode(Record), [exclusive]).
+
+run_bounded_coverage([Command, Name | _] = Arguments) ->
+    ensure(valid_diagnostic_name(Name), invalid_coverage_name),
+    Directory = filename:absname("."),
+    Path = filename:join(?OUTPUT, Command ++ "-" ++ Name ++ ".process.json"),
+    Identity = evidence_begin(Path),
+    delete_if_present(Path),
+    Nonce = binary_to_list(hex(crypto:strong_rand_bytes(16))),
+    Runner = filename:absname(filename:join([?OUTPUT, "runner", Nonce])),
+    ok = filelib:ensure_dir(filename:join(Runner, "placeholder")),
+    {ok, Sections} = escript:extract(escript:script_name(), [compile_source]),
+    Binary = proplists:get_value(source, Sections),
+    {ok, {Module, [{exports, Exports}]}} = beam_lib:chunks(Binary, [exports]),
+    true = lists:member({main, 1}, Exports),
+    BeamPath = filename:join(Runner, atom_to_list(Module) ++ ".beam"),
+    FailurePath = filename:join(Runner, "failure.json"),
+    ok = file:write_file(BeamPath, Binary),
+    Evaluation = lists:flatten(io_lib:format(
+        "put(coverage_bounded_worker,true),put(coverage_failure_path,~0tp),~p:main(~0tp),halt(0).",
+        [FailurePath, Module, Arguments])),
+    %% This bounds the complete repetition history, including instrumentation,
+    %% cleanup and export. Per-test ceilings remain independent and finite.
+    Deadline = 7200000,
+    try
+        {Status, Output} = run_child_evaluation(Directory, [Runner], Evaluation, Deadline),
+        Complete = process_status_verified(Status, 0, Output),
+        BaseReport = #{schema => 1, scope => <<"CoverageProcess">>, shareable => true,
+                   status => case Complete of true -> <<"Ready">>; false -> <<"Failed">> end,
+                   command => list_to_binary(Command), package => list_to_binary(Name),
+                   deadline_milliseconds => Deadline, child_exit_status => Status,
+                   process => maps:without([tail, output_sha256], Output)},
+        Report = case Complete of
+            true -> BaseReport;
+            false -> BaseReport#{failure => safe_coverage_failure(
+                read_coverage_unit_report(FailurePath))}
+        end,
+        CompletedReport = try evidence_complete(Report, Identity)
+        catch Class:Reason:Stack ->
+            Report#{status => <<"Failed">>, evidence_identity => Identity,
+                    execution_environment => execution_runtime(),
+                    failure => coverage_failure_details(Class, Reason, Stack)}
+        end,
+        ok = file:write_file(Path, [json:encode(CompletedReport), $\n]),
+        io:format("coverage ~s ~s: ~s; bounded process report ~s~n",
+                  [Command, Name, maps:get(status, CompletedReport), Path]),
+        ensure(Complete andalso maps:get(status, CompletedReport) =:= <<"Ready">>,
+               coverage_child_incomplete)
+    after
+        delete_if_present(BeamPath),
+        delete_if_present(FailurePath),
+        _ = file:del_dir(Runner)
+    end.
+
+safe_coverage_failure(Value) ->
+    try
+        Keys = [exception_class, exception_reason, stacktrace],
+        Coordinate = maps:get(<<"coordinate">>, Value, undefined),
+        true = suite_exact_keys(Value, case Coordinate of undefined -> Keys; _ -> [coordinate | Keys] end),
+        true = Coordinate =:= undefined orelse coverage_coordinate_valid(Coordinate),
+        true = lists:member(maps:get(<<"exception_class">>, Value),
+                            [<<"error">>, <<"exit">>, <<"throw">>, <<"unknown">>]),
+        Stack = maps:get(<<"stacktrace">>, Value),
+        true = is_binary(Stack) andalso byte_size(Stack) =< 16384,
+        true = suite_failure_schema(#{<<"unit">> => 0,
+            <<"classification">> => maps:get(<<"exception_reason">>, Value),
+            <<"stack">> => coverage_decode_json(Stack)}, 0),
+        Value
+    catch _:_ -> diagnostic_failure_details(error, coverage_child_incomplete, []) end.
+
+coverage_failure_details(Class, Reason, Stack) ->
+    Base = diagnostic_failure_details(Class, Reason, Stack),
+    case coverage_coordinate_detail(Reason) of
+        undefined -> Base;
+        Coordinate -> Base#{coordinate => Coordinate}
+    end.
+
+coverage_coordinate_detail({Kind, Module, Index, #{branch := Branch, observed := Observed,
+                                                 siblings := Siblings}})
+  when Kind =:= unobservable_branch_coordinates; Kind =:= indistinguishable_branch_coordinates ->
+    try
+        Result = #{<<"kind">> => atom_to_binary(Kind), <<"module">> => atom_to_binary(Module),
+            <<"function">> => atom_to_binary(maps:get(function, Branch)),
+            <<"arity">> => maps:get(arity, Branch), <<"index">> => Index,
+            <<"source_first_line">> => maps:get(source_first_line, Branch),
+            <<"source_last_line">> => maps:get(source_last_line, Branch),
+            <<"artifact_lines">> => lists:sublist(maps:get(artifact_lines, Branch), 64),
+            <<"observed_lines">> => lists:sublist(Observed, 64),
+            <<"sibling_lines">> => lists:sublist(Siblings, 64)},
+        true = coverage_coordinate_valid(Result),
+        Result
+    catch _:_ -> undefined end;
+coverage_coordinate_detail(_) -> undefined.
+
+coverage_coordinate_valid(Value) ->
+    try
+        true = suite_exact_keys(Value, [kind, module, function, arity, index,
+            source_first_line, source_last_line, artifact_lines, observed_lines, sibling_lines]),
+        true = lists:member(maps:get(<<"kind">>, Value),
+            [<<"unobservable_branch_coordinates">>, <<"indistinguishable_branch_coordinates">>]),
+        true = suite_safe_identifier(maps:get(<<"module">>, Value)),
+        true = suite_safe_identifier(maps:get(<<"function">>, Value)),
+        true = lists:all(fun suite_count_value/1,
+            [maps:get(Key, Value) || Key <- [<<"arity">>, <<"index">>,
+                <<"source_first_line">>, <<"source_last_line">>]]),
+        true = maps:get(<<"arity">>, Value) =< 255,
+        lists:all(fun(Key) ->
+            Lines = maps:get(Key, Value),
+            is_list(Lines) andalso length(Lines) =< 64 andalso lists:all(fun suite_count_value/1, Lines)
+        end, [<<"artifact_lines">>, <<"observed_lines">>, <<"sibling_lines">>])
+    catch _:_ -> false end.
+
 run(["reset"]) -> reset_output();
 run(["--self-test"]) -> self_test();
+run(["--self-test-selection"]) -> selection_json_self_test();
+run(["--self-test-report-runner"]) -> coverage_report_runner_self_test();
 run(["capture", Name, SourceRoot, Ebin, Export]) ->
     capture(Name, SourceRoot, Ebin, Export);
 run(["diagnose", Name, SourceRoot, Ebin, Module, Test, Repetitions]) ->
@@ -45,7 +324,14 @@ reset_output() ->
     end.
 
 capture(Name, SourceRoot, Ebin0, Export0) ->
-    add_all_code_paths(),
+    put(coverage_instrumentation_path,
+        filename:absname(filename:join(?OUTPUT, "instrumentation-" ++ Name ++ ".json"))),
+    Identity = evidence_begin(capture_metadata_path(filename:absname(Export0))),
+    put(coverage_capture_identity, Identity),
+    delete_if_present(coverage_progress_path(Name)),
+    delete_if_present(package_gaps_path(Name)),
+    fresh_verify_many([case Name of "quic_core" -> "core"; _ -> Name end]),
+    add_package_code_paths(Ebin0),
     Ebin = filename:absname(Ebin0),
     Export = filename:absname(Export0),
     delete_capture_artifacts(Export),
@@ -60,18 +346,18 @@ capture(Name, SourceRoot, Ebin0, Export0) ->
                  )} || {Module, Path} <- Modules
     ]),
     {ok, _} = cover:start(),
-    try capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap)
+    try capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap, Identity)
     after
         cover:stop()
     end.
 
-capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap) ->
+capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap, Identity) ->
     ok = cover_compile_modules(Modules, Ebin),
+    ok = load_coverage_listener(),
     TestModules = test_modules(Ebin, SourceRoot),
     ensure(TestModules =/= [], {no_eunit_modules, Name}),
-    TestEntrypoints = lists:sum([
-        length(eunit_test_exports(Ebin, Module)) || Module <- TestModules
-    ]),
+    Units = lists:append([suite_beam_units(Ebin, atom_to_binary(Module)) || Module <- TestModules]),
+    TestEntrypoints = length(Units),
     ensure(TestEntrypoints > 0, {no_eunit_test_entrypoints, Name}),
     InitialCoverage = coverage_snapshot(Modules, CoverageMap),
     CoordinateModelDigest = coverage_coordinate_digest(
@@ -82,7 +368,7 @@ capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap) ->
         1,
         Name,
         filename:absname(SourceRoot),
-        TestModules,
+        Units,
         Modules,
         CoverageMap,
         InitialCoverage,
@@ -134,6 +420,8 @@ capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap) ->
                  test_module_names =>
                      [atom_to_binary(Module) || Module <- TestModules],
                  test_entrypoints => TestEntrypoints,
+                 configured_units => Units,
+                 instrumentation => get(coverage_instrumentation_evidence),
                  minimum_repetitions =>
                      maps:get(minimum_repetitions, CapturePolicy),
                  maximum_repetitions =>
@@ -156,7 +444,10 @@ capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap) ->
                  growth => Growth,
                  runtime_convergence => RuntimeConvergence},
     MetadataPath = capture_metadata_path(Export),
-    ok = file:write_file(MetadataPath, [json:encode(Metadata), <<"\n">>]),
+    CompletedMetadata = evidence_complete(Metadata, Identity),
+    ok = file:write_file(MetadataPath,
+        [json:encode(CompletedMetadata), <<"\n">>]),
+    ok = write_package_gaps(Name, Modules, CoverageMap, CompletedMetadata, MetadataPath),
     io:format(
         "captured ~s coverage: ~B modules, ~B test modules/~B entrypoints, "
         "~B repetitions; "
@@ -178,7 +469,7 @@ capture_started(Name, SourceRoot, Ebin, Export, Modules, CoverageMap) ->
     ok.
 
 audit_coordinates(Name, SourceRoot, Ebin0) ->
-    add_all_code_paths(),
+    add_package_code_paths(Ebin0),
     Ebin = filename:absname(Ebin0),
     true = code:add_patha(Ebin),
     Sources = production_sources(SourceRoot),
@@ -210,23 +501,87 @@ audit_coordinates(Name, SourceRoot, Ebin0) ->
     end.
 
 cover_compile_modules(Modules, Ebin) ->
-    lists:foreach(fun({Module, Path}) ->
+    Watcher = spawn(fun() -> instrumentation_watch(
+        #{gc_samples => 0, peak_gc_heap_block_words => 0,
+          peak_gc_live_heap_words => 0, attempted_modules => 0,
+          compiled_modules => 0}) end),
+    Monitor = monitor(process, Watcher),
+    PreviousMonitor = erlang:system_monitor(Watcher, [{large_heap, 1000000}]),
+    PreviousHeap = erlang:system_flag(max_heap_size,
+        #{size => 134217728, kill => true, error_logger => false, include_shared_binaries => true}),
+    Outcome = try
+        lists:foreach(fun({Module, Path}) ->
+            Watcher ! {attempt, Module},
         Beam = filename:join(Ebin, atom_to_list(Module) ++ ".beam"),
         ensure(filelib:is_regular(Beam), {missing_production_beam, Path, Beam}),
         case cover:compile_beam(Beam) of
-            {ok, Module} -> ok;
+            {ok, Module} -> Watcher ! compiled;
             Error -> erlang:error({cannot_instrument, Path, Error})
         end
-    end, Modules),
-    ok.
+        end, Modules),
+        ok
+    catch Class:Reason:Stack -> {error, Class, Reason, Stack}
+    after
+        %% Compiler allocations cannot enlarge the budget inherited by test
+        %% callbacks, protocol actors, EUnit capture or cleanup descendants.
+        erlang:system_flag(max_heap_size, PreviousHeap),
+        restore_instrumentation_monitor(PreviousMonitor)
+    end,
+    Reference = make_ref(),
+    Watcher ! {finish, self(), Reference},
+    Sample = receive {Reference, Value} -> Value after 1000 ->
+        exit(Watcher, kill), erlang:error(instrumentation_observer_timeout)
+    end,
+    receive {'DOWN', Monitor, process, Watcher, normal} -> ok after 1000 ->
+        exit(Watcher, kill), erlang:error(instrumentation_observer_did_not_stop)
+    end,
+    Evidence = Sample#{schema => 1, observation => <<"sampled_gc">>,
+        status => case Outcome of ok -> <<"Ready">>; _ -> <<"Failed">> end,
+        compiler_heap_words => 134217728,
+        restored_heap_words => maps:get(size, erlang:system_info(max_heap_size)),
+        heap_configuration_restored => PreviousHeap =:= erlang:system_info(max_heap_size)},
+    put(coverage_instrumentation_evidence, Evidence),
+    case get(coverage_instrumentation_path) of
+        undefined -> ok;
+        EvidencePath ->
+            ok = filelib:ensure_dir(EvidencePath),
+            ok = file:write_file(EvidencePath, [json:encode(Evidence), $\n])
+    end,
+    case Outcome of ok -> ok; {error, C, R, S} -> erlang:raise(C, R, S) end.
 
-run_coverage_repetitions(Index, Name, Directory, TestModules, Modules,
+restore_instrumentation_monitor(undefined) -> erlang:system_monitor(undefined);
+restore_instrumentation_monitor({Pid, Options}) -> erlang:system_monitor(Pid, Options).
+
+instrumentation_watch(State) ->
+    receive
+        {monitor, _, large_heap, Info} ->
+            Blocks = proplists:get_value(heap_block_size, Info, 0) +
+                     proplists:get_value(old_heap_block_size, Info, 0) +
+                     proplists:get_value(mbuf_size, Info, 0),
+            Live = proplists:get_value(heap_size, Info, 0) +
+                   proplists:get_value(old_heap_size, Info, 0),
+            instrumentation_watch(State#{
+                gc_samples => erlang:min(2147483647, maps:get(gc_samples, State) + 1),
+                peak_gc_heap_block_words => erlang:max(Blocks, maps:get(peak_gc_heap_block_words, State)),
+                peak_gc_live_heap_words => erlang:max(Live, maps:get(peak_gc_live_heap_words, State))});
+        {attempt, Module} -> instrumentation_watch(State#{
+            attempted_modules => maps:get(attempted_modules, State) + 1,
+            last_module => atom_to_binary(Module)});
+        compiled -> instrumentation_watch(State#{compiled_modules => maps:get(compiled_modules, State) + 1});
+        {finish, Owner, Reference} -> Owner ! {Reference, State}
+    end.
+
+run_coverage_repetitions(Index, Name, Directory, Units, Modules,
                          CoverageMap, Previous, RuntimeBefore,
                          QuiescentRepetitions, Acc) ->
     Started = erlang:monotonic_time(millisecond),
-    case eunit_in_directory(Directory, TestModules) of
-        ok -> ok;
-        Error ->
+    TestEvidence = case eunit_in_directory(Directory, Units) of
+        {ok, Evidence} -> Evidence;
+        {error, FailedTests} = Error ->
+            Partial = preserve_failed_coverage(Name, Index, FailedTests,
+                Modules, CoverageMap, RuntimeBefore, Acc),
+            write_capture_progress(Name, #{phase => <<"Tests">>, status => <<"Failed">>,
+                repetition => Index, tests => FailedTests, partial_coverage => Partial}),
             CapturePolicy = current_capture_policy(),
             erlang:error({coverage_test_failure, Name, Index,
                           maps:get(maximum_repetitions, CapturePolicy), Error})
@@ -248,6 +603,7 @@ run_coverage_repetitions(Index, Name, Directory, TestModules, Modules,
         [PreviousReport | _] -> maps:get(runtime, PreviousReport)
     end,
     Report = BaseReport#{test_duration_ms => Duration,
+                         tests => TestEvidence,
                          settle_duration_ms =>
                              maps:get(elapsed_milliseconds, Settlement),
                          runtime_immediate => RuntimeImmediate,
@@ -262,6 +618,10 @@ run_coverage_repetitions(Index, Name, Directory, TestModules, Modules,
         true -> 0;
         false -> QuiescentRepetitions + 1
     end,
+    write_capture_progress(Name, #{phase => <<"RepetitionCompleted">>, status => <<"Running">>,
+        repetition => Index, quiescent_repetitions => NextQuiescent,
+        measurement => maps:with([duration_ms, tests, settle_duration_ms,
+            cumulative, added, runtime, settlement], Report)}),
     case maps:get(converged, Settlement) of
         false ->
             {lists:reverse([Report | Acc]), Current, runtime_not_converged};
@@ -269,7 +629,7 @@ run_coverage_repetitions(Index, Name, Directory, TestModules, Modules,
             case capture_stop_decision(Index, NextQuiescent) of
                 continue ->
                     run_coverage_repetitions(
-                        Index + 1, Name, Directory, TestModules, Modules,
+                        Index + 1, Name, Directory, Units, Modules,
                         CoverageMap, Current, RuntimeBefore, NextQuiescent,
                         [Report | Acc]
                     );
@@ -277,6 +637,81 @@ run_coverage_repetitions(Index, Name, Directory, TestModules, Modules,
                     {lists:reverse([Report | Acc]), Current, StopReason}
             end
     end.
+
+preserve_failed_coverage(Name, Index, Tests, Modules, Models, RuntimeBefore, Previous) ->
+    %% Failure must never discard counters from earlier successful repetitions.
+    %% This export is deliberately outside the qualified capture glob, and its
+    %% explicit non-gating scope cannot satisfy the final capture auditor.
+    try
+        Settlement = settle_runtime(RuntimeBefore, undefined),
+        SourceMap = maps:from_list([{M, relative(P)} || {M, P} <- Modules]),
+        Reports = [module_report(M, SourceMap, #{}, maps:get(M, Models))
+                   || {M, _} <- Modules],
+        Export = filename:join([?OUTPUT, "diagnostic", Name ++ ".cover"]),
+        Path = filename:join([?OUTPUT, "diagnostic", Name ++ ".json"]),
+        ok = filelib:ensure_dir(Export),
+        ok = cover:export(Export),
+        Report = #{schema => 1, scope => <<"PartialCoverageAfterTestFailure">>,
+            satisfies_coverage_gate => false, lower_bound => true,
+            status => <<"MeasuredWithTestFailures">>, package => list_to_binary(Name),
+            initial_source_identity => get(coverage_capture_identity),
+            failed_repetition => Index, completed_repetitions => length(Previous),
+            tests => Tests, settlement => Settlement, runtime_before => RuntimeBefore,
+            instrumentation => get(coverage_instrumentation_evidence),
+            metrics => metric_json(#{lines => sum_metric(Reports, full_lines),
+                branches => sum_metric(Reports, full_branches)}),
+            modules => Reports, cover_sha256 => file_digest(Export)},
+        ok = file:write_file(Path, [json:encode(Report), $\n]),
+        #{status => <<"Retained">>, report => list_to_binary(Path)}
+    catch _:_ ->
+        %% A secondary diagnostic failure cannot replace the original test
+        %% failure or publish an arbitrary exception payload.
+        #{status => <<"Unavailable">>}
+    end.
+
+coverage_progress_path(Name) ->
+    filename:join(?OUTPUT, "capture-progress-" ++ Name ++ ".json").
+
+package_gaps_path(Name) ->
+    filename:join([?OUTPUT, "diagnostic", Name ++ ".gaps.json"]).
+
+write_package_gaps(Name, Modules, Models, Metadata, CapturePath) ->
+    %% This reads this package's actual counters while its instrumented VM is
+    %% still alive. It is deliberately outside the capture glob: diagnostics
+    %% cannot replace the three-package, current-source qualification audit.
+    SourceMap = maps:from_list([{M, relative(P)} || {M, P} <- Modules]),
+    Reports = [module_report(M, SourceMap, #{}, maps:get(M, Models))
+               || {M, _} <- Modules],
+    Report = #{schema => 1, scope => <<"PackageCoverageGaps">>,
+        status => <<"Measured">>, satisfies_coverage_gate => false,
+        package => list_to_binary(Name),
+        capture_status => maps:get(status, Metadata),
+        capture_sha256 => file_digest(CapturePath),
+        source_sha256 => maps:get(source_sha256, Metadata),
+        coordinate_model_sha256 => maps:get(coordinate_model_sha256, Metadata),
+        cover_sha256 => maps:get(cover_sha256, Metadata),
+        completed_repetitions => maps:get(repetition_count, Metadata),
+        stop_reason => maps:get(stop_reason, Metadata),
+        evidence_identity => maps:get(evidence_identity, Metadata),
+        execution_environment => maps:get(execution_environment, Metadata),
+        metrics => metric_json(#{lines => sum_metric(Reports, full_lines),
+            branches => sum_metric(Reports, full_branches)}),
+        modules => [maps:without([changed_selection, changed_lines, changed_branches,
+            changed_uncovered_lines, changed_uncovered_branches], R) || R <- Reports]},
+    Path = package_gaps_path(Name),
+    ok = filelib:ensure_dir(Path),
+    file:write_file(Path, [json:encode(Report), $\n]).
+
+write_capture_progress(Name, Record) ->
+    %% The bounded child never forwards untrusted stdout. This independently
+    %% readable, typed checkpoint preserves live phase evidence and the last
+    %% successful measurement even before the final capture can be qualified.
+    Report = Record#{schema => 1, scope => <<"CoverageProgress">>,
+        satisfies_coverage_gate => false, package => list_to_binary(Name),
+        initial_source_identity => get(coverage_capture_identity)},
+    Path = coverage_progress_path(Name),
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(Path, [json:encode(Report), $\n]).
 
 print_repetition_summary(Name, Report) ->
     Cumulative = maps:get(cumulative, Report),
@@ -337,8 +772,10 @@ delete_if_present(Path) ->
 %% without allowing a selected test to stand in for complete suite evidence.
 diagnose(Name, SourceRoot, Ebin0, ModuleText, TestText, RepetitionsText) ->
     ensure(valid_diagnostic_name(Name), {invalid_diagnostic_name, Name}),
+    put(coverage_instrumentation_path,
+        filename:absname(filename:join(?OUTPUT, "instrumentation-" ++ Name ++ ".json"))),
     Repetitions = diagnostic_repetitions(RepetitionsText),
-    add_all_code_paths(),
+    add_package_code_paths(Ebin0),
     Ebin = filename:absname(Ebin0),
     true = code:add_patha(Ebin),
     Sources = production_sources(SourceRoot),
@@ -352,19 +789,10 @@ diagnose(Name, SourceRoot, Ebin0, ModuleText, TestText, RepetitionsText) ->
         diagnostic_test_not_found),
     Path = filename:join(?OUTPUT, "diagnostic-" ++ Name ++ ".json"),
     delete_if_present(Path),
+    ok = load_coverage_listener(),
     {ok, _} = cover:start(),
     try
-        lists:foreach(fun({ProductionModule, SourcePath}) ->
-            Beam = filename:join(
-                Ebin, atom_to_list(ProductionModule) ++ ".beam"),
-            ensure(filelib:is_regular(Beam),
-                   {missing_production_beam, SourcePath, Beam}),
-            case cover:compile_beam(Beam) of
-                {ok, ProductionModule} -> ok;
-                Error -> erlang:error(
-                    {cannot_instrument, SourcePath, Error})
-            end
-        end, Modules),
+        ok = cover_compile_modules(Modules, Ebin),
         run_coverage_diagnostic(
             Name, SourceRoot, Ebin, Modules, Module, Test, Repetitions, Path)
     after
@@ -410,6 +838,7 @@ run_coverage_diagnostic(
                    artifact_sha256 => digest_paths(
                        ProductionBeams ++ [TestBeam]),
                    policy_sha256 => file_digest(?POLICY),
+                   instrumentation => get(coverage_instrumentation_evidence),
                    otp_release => unicode:characters_to_binary(
                        erlang:system_info(otp_release)),
                    erts_version => unicode:characters_to_binary(
@@ -431,9 +860,8 @@ run_coverage_diagnostic(
                 [Name, Completed, Repetitions, Path]),
             ok;
         OutputEvidence ->
-            io:put_chars(base64:decode(
-                maps:get(reason_tail_base64, OutputEvidence))),
-            io:put_chars("\n"),
+            io:format("coverage diagnostic failed: ~s~n",
+                      [json:encode(OutputEvidence)]),
             erlang:error({coverage_diagnostic_test_failure, Name,
                           Completed + 1, Path})
     end.
@@ -448,8 +876,9 @@ run_coverage_diagnostic_repetitions(
     io:format("coverage diagnostic ~p: instrumented same VM ~B/~B~n",
               [Test, Index, Repetitions]),
     Started = erlang:monotonic_time(millisecond),
-    Outcome = run_in_directory(
-        Directory, fun() -> apply(Module, Test, []) end, 240000),
+    [Kind] = suite_test_kind(atom_to_binary(Test)),
+    Unit = #{module => atom_to_binary(Module), function => atom_to_binary(Test), kind => Kind},
+    Outcome = eunit_in_directory(Directory, [Unit], 240),
     Duration = erlang:monotonic_time(millisecond) - Started,
     RuntimeImmediate = runtime_snapshot(),
     RuntimeBefore = maps:get(runtime, lists:last(Samples)),
@@ -480,6 +909,7 @@ run_coverage_diagnostic_repetitions(
     end,
     Evidence = #{iteration => Index,
                  outcome => Result,
+                 tests => case Outcome of {ok, Proof} -> Proof; {error, Proof} -> Proof end,
                  duration_ms => Duration,
                  test_duration_ms => Duration,
                  settle_duration_ms =>
@@ -506,12 +936,17 @@ run_coverage_diagnostic_repetitions(
     end.
 
 run_in_directory(Directory, Fun, TimeoutMilliseconds) ->
+    run_in_directory_with_completion(Directory, Fun, TimeoutMilliseconds,
+                                     fun() -> ok end).
+
+run_in_directory_with_completion(Directory, Fun, TimeoutMilliseconds, AfterPublish) ->
     ensure(is_integer(TimeoutMilliseconds) andalso TimeoutMilliseconds > 0,
            {invalid_diagnostic_timeout, TimeoutMilliseconds}),
     {ok, Previous} = file:get_cwd(),
     ok = file:set_cwd(Directory),
     Parent = self(),
     Reference = make_ref(),
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMilliseconds,
     {Pid, Monitor} = spawn_monitor(fun() ->
         Outcome = try Fun() of
             Value -> {ok, Value}
@@ -519,40 +954,59 @@ run_in_directory(Directory, Fun, TimeoutMilliseconds) ->
             Class:Reason:Stacktrace ->
                 {error, {Class, Reason, lists:sublist(Stacktrace, 16)}}
         end,
-        Parent ! {Reference, Outcome}
+        Parent ! {Reference, Outcome},
+        AfterPublish()
     end),
     try
-        receive
-            {Reference, Outcome} ->
-                erlang:demonitor(Monitor, [flush]),
-                Outcome;
-            {'DOWN', Monitor, process, Pid, Reason} ->
-                {error, {test_process_stopped, Reason}}
-        after TimeoutMilliseconds ->
-            exit(Pid, kill),
-            receive
-                {'DOWN', Monitor, process, Pid, _} -> ok
-            after 1000 -> ok
-            end,
-            {error, test_timeout}
-        end
+        await_diagnostic_result(Pid, Monitor, Reference, Deadline)
     after
         ok = file:set_cwd(Previous)
     end.
 
-diagnostic_failure_evidence(Iteration, Failure, Limit) ->
-    Bytes = unicode:characters_to_binary(io_lib:format("~0P", [Failure, 24])),
-    Size = byte_size(Bytes),
-    TailSize = erlang:min(Size, Limit),
-    Start = Size - TailSize,
-    Tail = binary:part(Bytes, Start, TailSize),
-    #{iteration => Iteration,
-      reason_bytes => Size,
-      reason_sha256 => hex(crypto:hash(sha256, Bytes)),
-      reason_tail_bytes => TailSize,
-      reason_tail_base64 => base64:encode(Tail),
-      reason_tail_encoding => <<"base64">>,
-      reason_truncated => Size > Limit}.
+await_diagnostic_result(Pid, Monitor, Reference, Deadline) ->
+    Remaining = erlang:max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {Reference, Outcome} -> await_diagnostic_exit(Pid, Monitor, Deadline, Outcome);
+        {'DOWN', Monitor, process, Pid, Reason} ->
+            {error, {test_process_stopped, Reason}}
+    after Remaining -> stop_diagnostic_process(Pid, Monitor)
+    end.
+
+await_diagnostic_exit(Pid, Monitor, Deadline, Outcome) ->
+    Remaining = erlang:max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {'DOWN', Monitor, process, Pid, normal} -> Outcome;
+        {'DOWN', Monitor, process, Pid, Reason} ->
+            {error, {test_process_stopped, Reason}}
+    after Remaining -> stop_diagnostic_process(Pid, Monitor)
+    end.
+
+stop_diagnostic_process(Pid, Monitor) ->
+    exit(Pid, kill),
+    receive
+        {'DOWN', Monitor, process, Pid, _} -> {error, test_timeout}
+    after 1000 ->
+        demonitor(Monitor, [flush]),
+        {error, diagnostic_process_did_not_stop}
+    end.
+
+diagnostic_failure_evidence(Iteration, Failure, _LegacyLimit) ->
+    %% Redaction precedes serialization and allocation. A bounded raw tail or
+    %% its hash would still retain certificate, endpoint, and exception data.
+    #{iteration => Iteration, failure => diagnostic_failure_summary(Failure)}.
+
+diagnostic_failure_summary({Class, Reason, Stack})
+  when Class =:= error; Class =:= exit; Class =:= throw ->
+    diagnostic_failure_details(Class, Reason, Stack);
+diagnostic_failure_summary(test_timeout) ->
+    diagnostic_failure_details(error, timeout, []);
+diagnostic_failure_summary({test_process_stopped, _Reason}) ->
+    diagnostic_failure_details(exit, test_process_stopped, []);
+diagnostic_failure_summary({runtime_did_not_converge, _Snapshot}) ->
+    (diagnostic_failure_details(error, runtime_did_not_converge, []))#{
+        exception_reason => <<"resources_not_restored">>};
+diagnostic_failure_summary(_Failure) ->
+    diagnostic_failure_details(error, diagnostic_failure, []).
 
 diagnostic_repetitions(Text) ->
     try list_to_integer(Text) of
@@ -611,7 +1065,7 @@ nearest_rank(SortedValues, Percent) ->
     lists:nth(Rank, SortedValues).
 
 valid_diagnostic_name(Name) ->
-    re:run(Name, "^[a-z][a-z0-9-]{0,63}$", [{capture, none}]) =:= match.
+    re:run(Name, "^[a-z][a-z0-9_-]{0,63}$", [{capture, none}]) =:= match.
 
 select_named_atom(Text, [Candidate | Rest], Error) ->
     case atom_to_list(Candidate) of
@@ -693,6 +1147,7 @@ validate_capture_identity(Captures, CurrentSource) ->
     ok.
 
 audit_capture_metadata(Path, Capture, SourceFiles) ->
+    audit_capture_shape(Capture),
     Package = capture_field(Capture, package),
     Stem = filename:basename(Path, ".capture.json"),
     ensure(Package =:= unicode:characters_to_binary(Stem),
@@ -713,6 +1168,7 @@ audit_capture_metadata(Path, Capture, SourceFiles) ->
     ensure(valid_digest(capture_field(Capture, artifact_sha256)),
            {invalid_coverage_artifact_digest, Path}),
     audit_current_capture_artifacts(Path, Capture),
+    audit_capture_process(Capture),
     CoverDigest = capture_field(Capture, cover_sha256),
     ensure(valid_digest(CoverDigest), {invalid_cover_digest, Path}),
     CoverPath = filename:join(filename:dirname(Path), Stem ++ ".cover"),
@@ -764,6 +1220,108 @@ audit_capture_metadata(Path, Capture, SourceFiles) ->
     ),
     ok.
 
+%% Imported capture files can contain arbitrary JSON. Reject extension fields
+%% before publishing either their summaries or a digest of their bytes.
+audit_capture_shape(Capture) ->
+    coverage_keys(Capture, [schema, coordinate_methodology, coordinate_model_sha256,
+        status, package, source_root, source_sha256, source_files, policy_sha256,
+        artifact_sha256, compiled_beams, compiled_beam_names, cover_sha256,
+        otp_release, erts_version, instrumented_modules, instrumented_module_names,
+        test_modules, test_module_names, test_entrypoints, configured_units,
+        instrumentation, minimum_repetitions, maximum_repetitions,
+        required_quiescent_repetitions, runtime_settle_max_milliseconds,
+        runtime_settle_interval_milliseconds, runtime_settle_quiet_samples,
+        repetition_count, paths_saturated, stop_reason, initial_coverage,
+        runtime_before, repetitions, growth, runtime_convergence,
+        evidence_identity, execution_environment]),
+    ensure(capture_field(Capture, execution_environment) =:= execution_runtime(),
+           coverage_execution_runtime_changed),
+    ensure(capture_field(Capture, stop_reason) =:= <<"saturated">>,
+           coverage_capture_not_saturated),
+    lists:foreach(fun(Unit) -> coverage_keys(Unit, [module, function, kind]) end,
+                  capture_field(Capture, configured_units)),
+    coverage_metric_keys(capture_field(Capture, initial_coverage)),
+    coverage_keys(capture_field(Capture, runtime_before), runtime_keys()),
+    lists:foreach(fun coverage_repetition_keys/1, capture_field(Capture, repetitions)),
+    Growth = capture_field(Capture, growth),
+    coverage_keys(Growth, [repetitions, later_growth, last_growth_repetition,
+        final_repetition_grew, quiescent_tail_repetitions, paths_saturated]),
+    coverage_keys(capture_field(Growth, later_growth), [lines, branches]),
+    Convergence = capture_field(Capture, runtime_convergence),
+    coverage_keys(Convergence, [final_resource_counts_converged,
+        all_repetitions_settled, warm_resource_counts_restored, owned_resource_counts_restored,
+        final_delta_from_previous, final_delta_from_start, final_delta_from_warm_reference,
+        warm_runtime_reference, maximum_settle_milliseconds, peaks, observed_peaks]),
+    lists:foreach(fun(Key) -> coverage_keys(capture_field(Convergence, Key), runtime_keys()) end,
+        [final_delta_from_previous, final_delta_from_start, final_delta_from_warm_reference,
+         warm_runtime_reference, peaks, observed_peaks]),
+    Instrumentation = capture_field(Capture, instrumentation),
+    coverage_keys(Instrumentation, [schema, observation, status, compiler_heap_words,
+        restored_heap_words, heap_configuration_restored, gc_samples, peak_gc_heap_block_words,
+        peak_gc_live_heap_words, attempted_modules, compiled_modules, last_module]),
+    ensure(capture_field(Instrumentation, schema) =:= 1 andalso
+               capture_field(Instrumentation, observation) =:= <<"sampled_gc">> andalso
+               lists:member(capture_field(Instrumentation, last_module),
+                            capture_field(Capture, instrumented_module_names)),
+           invalid_coverage_instrumentation_observation),
+    lists:foreach(fun(Key) -> coverage_scalar(capture_field(Instrumentation, Key)) end,
+        [gc_samples, peak_gc_heap_block_words, peak_gc_live_heap_words,
+         attempted_modules, compiled_modules]),
+    ok.
+
+coverage_repetition_keys(Report) ->
+    coverage_keys(Report, [repetition, duration_ms, cumulative, added, newly_covered_lines,
+        newly_covered_branches, test_duration_ms, settle_duration_ms, runtime_immediate,
+        runtime, runtime_delta_from_start, runtime_delta_from_previous, settlement, tests]),
+    coverage_metric_keys(capture_field(Report, cumulative)),
+    coverage_keys(capture_field(Report, added), [lines, branches]),
+    lists:foreach(fun(Key) -> coverage_keys(capture_field(Report, Key), runtime_keys()) end,
+        [runtime_immediate, runtime, runtime_delta_from_start, runtime_delta_from_previous]),
+    coverage_keys(capture_field(Report, tests), [valid, configured_units, completed_tests,
+        report, report_sha256, failures, failures_dropped]),
+    Settlement = capture_field(Report, settlement),
+    coverage_keys(Settlement, [converged, timed_out, elapsed_milliseconds, maximum_milliseconds,
+        interval_milliseconds, required_quiet_samples, final_quiet_samples, sample_count, samples]),
+    lists:foreach(fun(Sample) ->
+        coverage_keys(Sample, [sample, offset_milliseconds, restored, stable, runtime]),
+        coverage_keys(capture_field(Sample, runtime), runtime_keys())
+    end, capture_field(Settlement, samples)),
+    lists:foreach(fun(Row) ->
+        coverage_keys(Row, [module, artifact_line, source_first_line, source_last_line]),
+        coverage_coordinate_fields(Row, [module])
+    end, capture_field(Report, newly_covered_lines)),
+    lists:foreach(fun(Row) ->
+        coverage_keys(Row, [module, function, arity, index, function_alternative_index,
+            function_decision_index, decision_alternative_index, artifact_anchor_line,
+            artifact_lines, source_first_line, source_last_line]),
+        coverage_coordinate_fields(Row, [module, function])
+    end, capture_field(Report, newly_covered_branches)).
+
+coverage_coordinate_fields(Row, Names) ->
+    lists:foreach(fun({Key, Value}) ->
+        case lists:member(Key, Names) orelse lists:member(Key, [atom_to_binary(K) || K <- Names]) of
+            true -> ensure(suite_safe_identifier(Value), invalid_coverage_coordinate_name);
+            false when Key =:= artifact_lines; Key =:= <<"artifact_lines">> ->
+                lists:foreach(fun coverage_scalar/1, Value);
+            false -> coverage_scalar(Value)
+        end
+    end, maps:to_list(Row)).
+
+coverage_metric_keys(Metrics) ->
+    coverage_keys(Metrics, [lines, branches]),
+    lists:foreach(fun(Key) -> coverage_keys(capture_field(Metrics, Key), [covered, total]) end,
+                  [lines, branches]).
+
+coverage_keys(Map, Keys) ->
+    Normalized = maps:from_list([{case Key of K when is_atom(K) -> atom_to_binary(K); K -> K end,
+                                 Value} || {Key, Value} <- maps:to_list(Map)]),
+    ensure(map_size(Map) =:= map_size(Normalized) andalso suite_exact_keys(Normalized, Keys),
+           invalid_coverage_report_schema).
+
+coverage_scalar(Value) ->
+    ensure(is_integer(Value) andalso Value >= 0 andalso Value =< 9223372036854775807,
+           invalid_coverage_scalar).
+
 audit_current_capture_artifacts(Path, Capture) ->
     Package = capture_field(Capture, package),
     SourceRoot = capture_field(Capture, source_root),
@@ -788,6 +1346,80 @@ audit_current_capture_artifacts(Path, Capture) ->
            {coverage_capture_compiled_beam_set, Path}),
     ensure(digest_paths(BeamPaths) =:= capture_field(Capture, artifact_sha256),
            {modified_coverage_compiled_artifacts, Path}),
+    TestModules = test_modules(Ebin, binary_to_list(SourceRoot)),
+    Units = lists:append([suite_beam_units(Ebin, atom_to_binary(Module)) || Module <- TestModules]),
+    ensure([atom_to_binary(Module) || Module <- TestModules] =:=
+               capture_field(Capture, test_module_names), coverage_test_inventory_changed),
+    StoredUnits = capture_field(Capture, configured_units),
+    ensure(is_list(StoredUnits) andalso length(StoredUnits) =< 10000,
+           invalid_coverage_unit_inventory),
+    Normalized = [#{module => capture_field(Unit, module),
+                    function => capture_field(Unit, function),
+                    kind => capture_field(Unit, kind)} || Unit <- StoredUnits],
+    ensure(Normalized =:= Units andalso length(Units) =:= capture_field(Capture, test_entrypoints),
+           coverage_unit_inventory_changed),
+    lists:foreach(fun(Repetition) ->
+        audit_coverage_unit_evidence(Units, capture_field(Repetition, tests))
+    end, capture_field(Capture, repetitions)),
+    Instrumentation = capture_field(Capture, instrumentation),
+    ensure(capture_field(Instrumentation, status) =:= <<"Ready">> andalso
+               capture_field(Instrumentation, compiler_heap_words) =:= 134217728 andalso
+               capture_field(Instrumentation, restored_heap_words) =:= 33554432 andalso
+               capture_field(Instrumentation, heap_configuration_restored) =:= true andalso
+               capture_field(Instrumentation, compiled_modules) =:= capture_field(Capture, instrumented_modules),
+           invalid_coverage_instrumentation_bound),
+    ok.
+
+audit_capture_process(Capture) ->
+    Name = binary_to_list(capture_field(Capture, package)),
+    Path = filename:join(?OUTPUT, "capture-" ++ Name ++ ".process.json"),
+    ProcessReport = read_coverage_unit_report(Path),
+    coverage_keys(ProcessReport, [schema, scope, shareable, status, command, package,
+        deadline_milliseconds, child_exit_status, process, evidence_identity, execution_environment]),
+    ensure(capture_field(ProcessReport, status) =:= <<"Ready">> andalso
+               capture_field(ProcessReport, scope) =:= <<"CoverageProcess">> andalso
+               capture_field(ProcessReport, command) =:= <<"capture">> andalso
+               capture_field(ProcessReport, package) =:= capture_field(Capture, package) andalso
+               capture_field(ProcessReport, child_exit_status) =:= 0 andalso
+               capture_field(ProcessReport, evidence_identity) =:= capture_field(Capture, evidence_identity),
+           invalid_coverage_process_evidence),
+    Process = capture_field(ProcessReport, process),
+    coverage_keys(Process, runtime_matrix_process_keys()),
+    ensure(runtime_matrix_process_valid(Process) andalso
+               capture_field(Process, child_exit_observed) =:= true andalso
+               capture_field(Process, timed_out) =:= false andalso
+               capture_field(Process, output_limit_exceeded) =:= false andalso
+               capture_field(Process, vm_process_heap_words) =:= 33554432 andalso
+               capture_field(Process, vm_heap_includes_shared_binaries) =:= true andalso
+               capture_field(Process, crash_dumps_disabled) =:= true andalso
+               capture_field(Process, output_limit_bytes) =:= 8388608 andalso
+               capture_field(Process, output_digest_complete) =:= true andalso
+               capture_field(Process, output_bytes) =:= capture_field(Process, output_hashed_bytes),
+           coverage_process_not_bounded),
+    ensure(capture_field(ProcessReport, schema) =:= 1 andalso
+               capture_field(ProcessReport, shareable) =:= true andalso
+               capture_field(ProcessReport, deadline_milliseconds) =:= 7200000 andalso
+               capture_field(ProcessReport, execution_environment) =:= execution_runtime(),
+           invalid_coverage_process_configuration),
+    ok.
+
+audit_coverage_unit_evidence(Units, Evidence) ->
+    Path = capture_field(Evidence, report),
+    ensure(is_binary(Path) andalso byte_size(Path) =< 128 andalso
+               re:run(Path, <<"^build/coverage/units-[a-f0-9]{32}\\.json$">>, [{capture, none}]) =:= match,
+           invalid_coverage_unit_report_path),
+    Nonce = binary:part(Path, byte_size(<<"build/coverage/units-">>), 32),
+    {ok, Bytes} = coverage_unit_report_bytes(binary_to_list(Path)),
+    ensure(hex(crypto:hash(sha256, Bytes)) =:= capture_field(Evidence, report_sha256),
+           modified_coverage_unit_report),
+    Child = coverage_decode_json(Bytes),
+    ensure(suite_child_valid(Child, Units, Nonce), incomplete_coverage_unit_report),
+    ensure(capture_field(Evidence, valid) =:= true andalso
+               capture_field(Evidence, configured_units) =:= length(Units) andalso
+               capture_field(Evidence, completed_tests) =:= suite_completed_tests(Child) andalso
+               capture_field(Evidence, failures) =:= [] andalso
+               capture_field(Evidence, failures_dropped) =:= 0,
+           invalid_coverage_unit_summary),
     ok.
 
 audit_capture_repetitions([], _Expected, _PreviousLines, _PreviousBranches,
@@ -1059,11 +1691,11 @@ decoded_repetition_grew(Report) ->
     repetition_added(Report, lines) > 0 orelse
         repetition_added(Report, branches) > 0.
 
-capture_report_summary(Path, Capture) ->
+capture_report_summary(Path, Capture, MetadataDigest) ->
     #{schema => capture_field(Capture, schema),
       package => capture_field(Capture, package),
       metadata => unicode:characters_to_binary(relative(filename:absname(Path))),
-      metadata_sha256 => file_digest(Path),
+      metadata_sha256 => MetadataDigest,
       coordinate_methodology =>
           capture_field(Capture, coordinate_methodology),
       coordinate_model_sha256 =>
@@ -1170,34 +1802,94 @@ valid_digest(_) -> false.
 
 nonempty_binary(Value) -> is_binary(Value) andalso byte_size(Value) > 0.
 
-eunit_in_directory(Directory, TestModules) ->
+load_coverage_listener() ->
+    {ok, qualification_eunit_listener, Binary, []} = compile:file(
+        "scripts/qualification_eunit_listener.erl",
+        [binary, return_errors, return_warnings, {i, "scripts"}]),
+    {module, qualification_eunit_listener} = code:load_binary(
+        qualification_eunit_listener, "qualification_eunit_listener.erl", Binary),
+    ok.
+
+eunit_in_directory(Directory, Units) ->
+    eunit_in_directory(Directory, Units, 120).
+
+eunit_in_directory(Directory, Units, TimeoutSeconds) ->
+    ensure(Units =/= [] andalso length(Units) =< 10000, invalid_coverage_unit_count),
+    Nonce = hex(crypto:strong_rand_bytes(16)),
+    Path = filename:absname(filename:join(?OUTPUT,
+        "units-" ++ binary_to_list(Nonce) ++ ".json")),
+    ok = filelib:ensure_dir(Path),
     {ok, Previous} = file:get_cwd(),
     ok = file:set_cwd(Directory),
-    %% Instrumented protocol actors are substantially slower than normal BEAM
-    %% code. Keep a finite per-group ceiling without inheriting EUnit's 5 s
-    %% default, which would turn cover overhead into a false product failure.
-    try eunit:test({timeout, 120, TestModules}, [{scale_timeouts, 24}])
+    Result = try qualification_eunit_listener:run_same_vm_units(
+        Units, Path, Nonce, TimeoutSeconds)
     after
         ok = file:set_cwd(Previous)
+    end,
+    Child = suite_safe_child(read_coverage_unit_report(Path), Units, Nonce),
+    %% Only a schema-checked record is retained. In particular, a malformed
+    %% imported file cannot leak through its bytes or a published raw digest.
+    Encoded = iolist_to_binary([json:encode(Child), $\n]),
+    ok = file:write_file(Path, Encoded),
+    Valid = Result =:= ok andalso suite_child_valid(Child, Units, Nonce),
+    Evidence = #{valid => Valid, configured_units => length(Units),
+                 completed_tests => suite_completed_tests(Child),
+                 report => list_to_binary(relative(Path)),
+                 report_sha256 => hex(crypto:hash(sha256, Encoded)),
+                 failures => maps:get(<<"failures">>, Child, []),
+                 failures_dropped => maps:get(<<"failures_dropped">>, Child, 0)},
+    case Valid of true -> {ok, Evidence}; false -> {error, Evidence} end.
+
+read_coverage_unit_report(Path) ->
+    case coverage_unit_report_bytes(Path) of
+        {ok, Bytes} -> try coverage_decode_json(Bytes) catch _:_ -> #{invalid => true} end;
+        error -> #{invalid => true}
     end.
+
+coverage_unit_report_bytes(Path) ->
+    coverage_report_bytes(Path, 8388608).
+
+coverage_report_bytes(Path, Limit) ->
+    case file:open(Path, [read, binary, raw]) of
+        {ok, Handle} ->
+            try
+                {ok, Bytes} = file:read(Handle, Limit + 1),
+                true = byte_size(Bytes) =< Limit,
+                eof = file:read(Handle, 1),
+                {ok, Bytes}
+            catch _:_ -> error
+            after file:close(Handle) end;
+        _ -> error
+    end.
+
+coverage_decode_json(Bytes) ->
+    evidence_json_decode(Bytes).
 
 report(Mode) ->
     add_all_code_paths(),
     {ok, CoverPid} = cover:start(),
     QuietIo = start_quiet_io(CoverPid),
-    try report_started(Mode)
+    Result = try report_started(Mode)
     after
         cover:stop(),
         _ = stop_quiet_io(QuietIo)
-    end.
+    end,
+    coverage_report_completion(Mode, Result),
+    case Result of ok -> ok; {blocked, Reason} -> erlang:error(Reason) end.
 
 report_started(Mode) ->
+    Identity = evidence_begin(coverage_report_path(Mode)),
     MetadataPaths = lists:sort(
         filelib:wildcard(filename:join(?OUTPUT, "*.capture.json"))
     ),
     ensure(length(MetadataPaths) =:= 3,
            {missing_coverage_capture_metadata, MetadataPaths}),
-    Captures = [json:decode(read_file(Path)) || Path <- MetadataPaths],
+    MetadataBytes = [begin
+        {ok, Bytes} = coverage_report_bytes(Path, 16777216), Bytes
+    end || Path <- MetadataPaths],
+    Captures = [coverage_decode_json(Bytes) || Bytes <- MetadataBytes],
+    lists:foreach(fun(Capture) -> evidence_require_identity(Capture, Identity) end,
+                  Captures),
     SourcePaths = coverage_source_paths(),
     SourceDigest = digest_paths(SourcePaths),
     ok = validate_capture_identity(Captures, SourceDigest),
@@ -1264,9 +1956,9 @@ report_started(Mode) ->
                    [#{package => capture_field(Capture, package),
                       repetitions => capture_field(Capture, repetition_count)}
                     || Capture <- Captures],
-               captures => [capture_report_summary(Path, Capture)
-                            || {Path, Capture} <-
-                                   lists:zip(MetadataPaths, Captures)],
+               captures => [capture_report_summary(Path, Capture, hex(crypto:hash(sha256, Bytes)))
+                            || {Path, Capture, Bytes} <-
+                                   lists:zip3(MetadataPaths, Captures, MetadataBytes)],
                thresholds_basis_points =>
                    #{lines => LineThreshold, branches => BranchThreshold},
                selected => metric_json(Selected),
@@ -1275,8 +1967,9 @@ report_started(Mode) ->
                changed => metric_json(#{lines => ChangedLines,
                                         branches => ChangedBranches}),
                modules => ModuleReports},
-    Path = filename:join(?OUTPUT, Mode ++ ".json"),
-    ok = file:write_file(Path, [json:encode(Report), <<"\n">>]),
+    Path = coverage_report_path(Mode),
+    ok = file:write_file(Path,
+        [json:encode(evidence_complete(Report, Identity)), <<"\n">>]),
     Evidence = #{schema => 2,
                  coordinate_methodology => current_coordinate_methodology(),
                  source_sha256 => SourceDigest,
@@ -1291,7 +1984,8 @@ report_started(Mode) ->
                  capture_policy => CapturePolicy,
                  capture_repetitions => maps:get(capture_repetitions, Report),
                  captures => maps:get(captures, Report)},
-    ok = file:write_file(?EVIDENCE, [json:encode(Evidence), <<"\n">>]),
+    ok = file:write_file(coverage_evidence_path(),
+        [json:encode(evidence_complete(Evidence, Identity)), <<"\n">>]),
     io:format("~s coverage: generated-artifact lines ~s, "
               "observable compiled clause alternatives ~s~n",
               [Mode, percentage(maps:get(lines, Selected)),
@@ -1299,8 +1993,8 @@ report_started(Mode) ->
     print_gap_summary(Mode, ModuleReports),
     case Passed of
         true -> ok;
-        false -> erlang:error({coverage_threshold_not_met, Mode,
-                               LineBasisPoints, BranchBasisPoints})
+        false -> {blocked, {coverage_threshold_not_met, Mode,
+                           LineBasisPoints, BranchBasisPoints}}
     end.
 
 start_quiet_io(CoverPid) ->
@@ -1397,7 +2091,38 @@ synthetic_branch(Index, ArtifactLines, SourceFirst, SourceLast) ->
       source_first_line => SourceFirst,
       source_last_line => SourceLast}.
 
+coverage_report_runner_self_test() ->
+    Directory = filename:absname(filename:join("build/coverage-report-tests/runner",
+        binary_to_list(hex(crypto:strong_rand_bytes(16))))),
+    ok = filelib:ensure_dir(filename:join(Directory, "placeholder")),
+    {ok, Sections} = escript:extract("scripts/coverage_report_test.escript", [compile_source]),
+    Binary = proplists:get_value(source, Sections),
+    {ok, {Module, _}} = beam_lib:chunks(Binary, [exports]),
+    Path = filename:join(Directory, atom_to_list(Module) ++ ".beam"),
+    ok = file:write_file(Path, Binary, [exclusive]),
+    Evaluation = lists:flatten(io_lib:format("~p:main([]),halt(0).", [Module])),
+    try
+        {Status, Output} = run_child_evaluation(filename:absname("."), [Directory], Evaluation, 300000),
+        Process = maps:without([tail, output_sha256], Output),
+        ok = file:write_file(filename:join(Directory, "process.json"),
+            json:encode(#{schema => 1, child_exit_status => Status, process => Process})),
+        ensure(process_status_verified(Status, 0, Output),
+            coverage_report_runner_controls_failed),
+        io:format("coverage report lifecycle controls passed in joined bounded VM~n")
+    after delete_if_present(Path) end.
+
 self_test() ->
+    ok = coverage_report_process_self_test(),
+    ok = coverage_report_runner_self_test(),
+    ok = selection_json_self_test(),
+    [{1, "src\\sample.gleam", 2}] = generated_file_directives_from_binary(
+        <<"-file(\"src\\\\sample.gleam\", 2).\r\n">>),
+    invalid_evidence_json = caught_error(fun() ->
+        coverage_decode_json(<<"{\"value\":\"private\",\"value\":1}">>)
+    end),
+    invalid_evidence_json = caught_error(fun() ->
+        coverage_decode_json(<<"[{\"key\":1,\"ke\\u0079\":2}]">>)
+    end),
     OriginalLeader = erlang:group_leader(),
     QuietIo = spawn(fun() -> quiet_io_loop(0) end),
     true = erlang:group_leader(QuietIo, self()),
@@ -1489,7 +2214,7 @@ self_test() ->
                  unattributed_ranges := []}} =
         changed_selection(SingleRegionModel, [{3, 4}]),
     {all, #{effective_scope := whole_module,
-            unattributed_ranges := [{1, 1}]}} =
+            unattributed_ranges := [#{first_line := 1, last_line := 1}]}} =
         changed_selection(SingleRegionModel, [{1, 4}]),
     [{1, 1}, {8, 9}] = unattributed_ranges(
         [{1, 9}], [{2, 7}]
@@ -1763,9 +2488,10 @@ self_test() ->
               settlement => LeakedSettlement}
         ]),
     CensusBefore = project_process_label_counts(),
+    ok = common_worker_census_test(),
     CensusParent = self(),
     CensusReference = make_ref(),
-    CensusOwner = spawn(fun() ->
+    {CensusOwner, CensusOwnerMonitor} = spawn_monitor(fun() ->
         Child = spawn(fun() ->
             ok = proc_lib:set_label(<<"quic_core.client">>),
             CensusParent ! {CensusReference, self()},
@@ -1773,7 +2499,6 @@ self_test() ->
         end),
         CensusParent ! {CensusReference, owner, Child}
     end),
-    CensusOwnerMonitor = monitor(process, CensusOwner),
     CensusChild = receive
         {CensusReference, ChildPid} when is_pid(ChildPid) -> ChildPid
     after 1000 -> erlang:error(census_child_start_timeout)
@@ -1807,6 +2532,7 @@ self_test() ->
         {wrong_arity_test, 1}, {ordinary, 0}
     ]),
     true = valid_diagnostic_name("server-push"),
+    true = valid_diagnostic_name("quic_core"),
     false = valid_diagnostic_name("../server-push"),
     1 = diagnostic_repetitions("1"),
     1000 = diagnostic_repetitions("1000"),
@@ -1848,20 +2574,360 @@ self_test() ->
     {error, test_timeout} = run_in_directory(
         DiagnosticDirectory, fun() -> receive after 50 -> diagnostic_late end end,
         1),
+    ok = diagnostic_publication_lifetime_test(DiagnosticDirectory),
     DiagnosticEvidence = diagnostic_failure_evidence(
         3, {diagnostic_marker, binary:copy(<<"x">>, 20000)}, 64),
     3 = maps:get(iteration, DiagnosticEvidence),
-    64 = maps:get(reason_tail_bytes, DiagnosticEvidence),
-    true = maps:get(reason_truncated, DiagnosticEvidence),
+    false = maps:is_key(reason_tail_base64, DiagnosticEvidence),
+    ensure(byte_size(iolist_to_binary(json:encode(DiagnosticEvidence))) < 512,
+           unbounded_diagnostic_failure_evidence),
+    Sensitive = #{endpoint => <<"coverage-private-endpoint.example">>,
+                  owner => self(), reference => make_ref(),
+                  certificate => binary:copy(<<"private-certificate">>, 64)},
+    SensitiveStack = [{http_transport_ffi, connect, [Sensitive],
+                       [{file, "C:/private/workspace/secret.erl"}, {line, 42}]}],
+    SanitizedEvidence = diagnostic_failure_evidence(
+        4, {error, {badmatch, Sensitive}, SensitiveStack}, 16384),
+    ensure(maps:get(failure, SanitizedEvidence, undefined) =:=
+               diagnostic_failure_details(error, {badmatch, Sensitive},
+                                          SensitiveStack),
+           coverage_diagnostic_retains_raw_failure_payload),
+    CoordinateBranch = #{function => fixture, arity => 0, artifact_lines => [10, 11],
+                         source_first_line => 4, source_last_line => 6,
+                         private => Sensitive},
+    CoordinateReason = {unobservable_branch_coordinates, sample, 2,
+        #{branch => CoordinateBranch, observed => [], siblings => [9]}},
+    CoordinateFailure = coverage_failure_details(error, CoordinateReason, []),
+    true = coverage_coordinate_valid(maps:get(coordinate, CoordinateFailure)),
+    CoordinateEncoded = iolist_to_binary(json:encode(CoordinateFailure)),
+    nomatch = binary:match(CoordinateEncoded, <<"coverage-private-endpoint.example">>),
+    CoordinateDecoded = json:decode(CoordinateEncoded),
+    CoordinateDecoded = safe_coverage_failure(CoordinateDecoded),
+    HostileCoordinate = (maps:get(<<"coordinate">>, CoordinateDecoded))#{<<"module">> => <<"../private">>},
+    false = maps:is_key(<<"coordinate">>, safe_coverage_failure(
+        CoordinateDecoded#{<<"coordinate">> => HostileCoordinate})),
+    undefined = coverage_coordinate_detail({unobservable_branch_coordinates, sample, 2,
+        #{branch => CoordinateBranch#{arity => Sensitive}, observed => [], siblings => [9]}}),
     "+0" = signed_integer_text(0),
     "+17" = signed_integer_text(17),
     "-3" = signed_integer_text(-3),
     'native@sample_test' = module_for_tree_source(
         "fixture/test/native/sample_test.gleam", "test"
     ),
+    ok = same_vm_listener_test(),
+    ok = listener_cancellation_test(),
     io:format("coverage self-test ok (quiet cover output, policy-driven "
               "saturation, ranked gaps, bounded instrumented-target "
               "failures, and separated artifact/source diagnostics)~n"),
+    ok.
+
+listener_cancellation_test() ->
+    Unit = #{module => <<"coverage_same_vm_fixture">>, function => <<"accepted_test">>, kind => <<"test">>},
+    State = qualification_eunit_listener:init([{units, [Unit]}]),
+    Private = #{endpoint => <<"coverage-private-endpoint.example">>, owner => self(), reference => make_ref()},
+    Cases = [{timeout, <<"deadline_exceeded">>},
+             {{timeout, #{stacktrace => [{coverage_same_vm_fixture, accepted_test, [Private], [{line, 2}]}]}}, <<"deadline_exceeded">>},
+             {{exit, killed}, <<"worker_killed">>},
+             {{exit, Private}, <<"worker_exit">>},
+             {{blame, Private}, <<"dependency_cancelled">>},
+             {{abort, Private}, <<"execution_aborted">>},
+             {{startup, Private}, <<"startup_failed">>}],
+    lists:foreach(fun({Reason, Expected}) ->
+        Result = qualification_eunit_listener:handle_cancel(test, [{id, [1]}, {reason, Reason}], State),
+        [#{classification := Actual}] = maps:get(failures, Result),
+        ensure(Expected =:= Actual, cancellation_lost_its_typed_cause),
+        Bytes = iolist_to_binary(json:encode(maps:get(failures, Result))),
+        ensure(binary:match(Bytes, <<"coverage-private-endpoint.example">>) =:= nomatch,
+               cancellation_exposed_private_payload)
+    end, Cases),
+    ok.
+
+common_worker_census_test() ->
+    {ok, http_server_ffi, Binary, []} = compile:file("src/http_server_ffi.erl",
+        [binary, return_errors, return_warnings]),
+    {module, http_server_ffi} = code:load_binary(http_server_ffi, "http_server_ffi.erl", Binary),
+    Before = runtime_snapshot(),
+    Owner = self(), Ref = make_ref(),
+    {Worker, Monitor} = http_server_ffi:spawn_monitor(fun() ->
+        Owner ! {Ref, ready},
+        receive {Ref, stop} -> ok end
+    end),
+    receive {Ref, ready} -> ok after 1000 -> erlang:error(common_worker_fixture_start_failed) end,
+    During = runtime_snapshot(),
+    Observed = maps:get(http_worker_processes, During) =:= maps:get(http_worker_processes, Before) + 1,
+    Worker ! {Ref, stop},
+    receive {'DOWN', Monitor, process, Worker, normal} -> ok after 1000 ->
+        erlang:error(common_worker_fixture_stop_failed)
+    end,
+    ensure(Observed, common_http_worker_missing_from_census),
+    ensure(not runtime_owned_resources_restored(Before, During), common_worker_leak_became_warm_baseline),
+    ok.
+
+diagnostic_publication_lifetime_test(Directory) ->
+    Parent = self(),
+    Gate = make_ref(),
+    Completed = make_ref(),
+    {Caller, CallerMonitor} = spawn_monitor(fun() ->
+        Outcome = run_in_directory_with_completion(
+            Directory, fun() -> diagnostic_ok end, 1000,
+            fun() ->
+                Parent ! {Gate, self()},
+                receive {Gate, finish} -> ok end
+            end),
+        Parent ! {Completed, Outcome}
+    end),
+    Worker = receive {Gate, Pid} -> Pid after 1000 ->
+        erlang:error(diagnostic_publication_fixture_timeout)
+    end,
+    WorkerMonitor = monitor(process, Worker),
+    Premature = receive {Completed, _} -> true after 100 -> false end,
+    Worker ! {Gate, finish},
+    receive {'DOWN', WorkerMonitor, process, Worker, _} -> ok after 1000 ->
+        erlang:error(diagnostic_worker_did_not_stop)
+    end,
+    receive {'DOWN', CallerMonitor, process, Caller, _} -> ok after 1000 ->
+        erlang:error(diagnostic_caller_did_not_stop)
+    end,
+    receive {Completed, _} -> ok after 0 -> ok end,
+    ensure(not Premature, diagnostic_result_preceded_worker_exit),
+    ok.
+
+same_vm_listener_test() ->
+    {ok, qualification_eunit_listener, ListenerBeam} = compile:file(
+        "scripts/qualification_eunit_listener.erl", [binary, {i, "scripts"}]),
+    {module, qualification_eunit_listener} = code:load_binary(
+        qualification_eunit_listener, "qualification_eunit_listener.erl", ListenerBeam),
+    ensure(erlang:function_exported(qualification_eunit_listener, run_same_vm, 3),
+           missing_nonhalting_coverage_listener),
+    Directory = filename:join("build", "coverage-listener-self-test"),
+    ok = filelib:ensure_dir(filename:join(Directory, "placeholder")),
+    SourcePath = filename:join(Directory, "coverage_same_vm_fixture.erl"),
+    BeamPath = filename:join(Directory, "coverage_same_vm_fixture.beam"),
+    ok = file:write_file(SourcePath, <<
+        "-module(coverage_same_vm_fixture).\n",
+        "-export([accepted_test/0, secret_failure_test/0, empty_test_/0, two_test_/0]).\n",
+        "accepted_test() -> ok.\n",
+        "secret_failure_test() -> erlang:error({badmatch, #{",
+        "endpoint => <<\"coverage-private-endpoint.example\">>,",
+        "owner => self(), reference => make_ref()}}).\n",
+        "empty_test_() -> [].\n",
+        "two_test_() -> [fun accepted_test/0, fun accepted_test/0].\n"
+    >>),
+    {ok, coverage_same_vm_fixture} = compile:file(SourcePath,
+        [debug_info, {outdir, Directory}]),
+    {ok, _} = cover:start(),
+    try
+        ok = instrumentation_heap_test(Directory, SourcePath),
+        ok = same_vm_listener_case(Directory, <<"accepted_test">>, <<"test">>, ok, 1),
+        ok = same_vm_listener_case(Directory, <<"secret_failure_test">>, <<"test">>, error, 1),
+        ok = same_vm_listener_case(Directory, <<"empty_test_">>, <<"generator">>, error, 0),
+        ok = same_vm_listener_case(Directory, <<"two_test_">>, <<"generator">>, ok, 2),
+        Unit = #{module => <<"coverage_same_vm_fixture">>, function => <<"accepted_test">>, kind => <<"test">>},
+        {ok, #{valid := true, configured_units := 1, completed_tests := 1} = Proof} =
+            eunit_in_directory(filename:absname(Directory), [Unit]),
+        ok = coverage_unit_evidence_test(Unit, Proof),
+        {error, #{valid := false, configured_units := 1, completed_tests := 1,
+                  failures := [#{<<"classification">> := <<"pattern_mismatch">>}]}} =
+            eunit_in_directory(filename:absname(Directory),
+                [Unit#{function => <<"secret_failure_test">>}]),
+        {ok, Calls} = cover:analyse(coverage_same_vm_fixture, calls, function),
+        {{coverage_same_vm_fixture, accepted_test, 0}, 5} =
+            lists:keyfind({coverage_same_vm_fixture, accepted_test, 0}, 1, Calls),
+        ok = failed_repetition_retains_coverage_test(Directory, SourcePath, BeamPath),
+        ok = package_gap_diagnostic_test(SourcePath, BeamPath),
+        ok
+    after
+        cover:stop(),
+        code:purge(coverage_same_vm_fixture),
+        code:delete(coverage_same_vm_fixture),
+        file:delete(SourcePath),
+        file:delete(BeamPath)
+    end.
+
+failed_repetition_retains_coverage_test(Directory, SourcePath, BeamPath) ->
+    Name = "failure-fixture",
+    Partial = filename:join([?OUTPUT, "diagnostic", Name ++ ".json"]),
+    Export = filename:join([?OUTPUT, "diagnostic", Name ++ ".cover"]),
+    delete_if_present(Partial),
+    delete_if_present(Export),
+    Modules = [{coverage_same_vm_fixture, SourcePath}],
+    Models = #{coverage_same_vm_fixture => coverage_model(
+        coverage_same_vm_fixture, SourcePath, BeamPath)},
+    Unit = #{module => <<"coverage_same_vm_fixture">>,
+        function => <<"secret_failure_test">>, kind => <<"test">>},
+    {coverage_test_failure, Name, 1, _, _} = caught_error(fun() ->
+        run_coverage_repetitions(1, Name, filename:absname(Directory), [Unit],
+            Modules, Models, coverage_snapshot(Modules, Models), runtime_snapshot(), 0, [])
+    end),
+    {ok, Bytes} = file:read_file(Partial),
+    #{<<"scope">> := <<"PartialCoverageAfterTestFailure">>,
+      <<"satisfies_coverage_gate">> := false,
+      <<"tests">> := #{<<"valid">> := false, <<"completed_tests">> := 1},
+      <<"cover_sha256">> := Digest} = coverage_decode_json(Bytes),
+    Digest = file_digest(Export),
+    ensure(binary:match(Bytes, <<"coverage-private-endpoint.example">>) =:= nomatch,
+        partial_coverage_exposed_failure_payload),
+    ok = file:delete(Partial),
+    ok = file:delete(Export),
+    delete_if_present(coverage_progress_path(Name)),
+    ok.
+
+package_gap_diagnostic_test(SourcePath, BeamPath) ->
+    %% A successful package still needs actionable gaps if another package
+    %% cannot capture. Exercise actual cover counters without inventing the
+    %% missing packages or accepting this diagnostic as qualification.
+    Name = "package-gap-fixture-" ++ binary_to_list(hex(crypto:strong_rand_bytes(8))),
+    Path = filename:join([?OUTPUT, "diagnostic", Name ++ ".gaps.json"]),
+    CapturePath = filename:join([?OUTPUT, "diagnostic", Name ++ ".capture-fixture.json"]),
+    ok = filelib:ensure_dir(Path),
+    Modules = [{coverage_same_vm_fixture, SourcePath}],
+    Models = #{coverage_same_vm_fixture => coverage_model(
+        coverage_same_vm_fixture, SourcePath, BeamPath)},
+    Before = lists:sort(filelib:wildcard(filename:join(?OUTPUT, "*.capture.json"))),
+    Metadata = #{status => <<"Ready">>, source_sha256 => <<"source-fixture">>,
+        coordinate_model_sha256 => <<"coordinates-fixture">>, cover_sha256 => <<"cover-fixture">>,
+        repetition_count => 10, stop_reason => <<"saturated">>,
+        evidence_identity => #{scope => <<"Synthetic fixture only">>},
+        execution_environment => execution_runtime()},
+    ok = file:write_file(CapturePath, json:encode(Metadata)),
+    try
+        ok = cover:reset(coverage_same_vm_fixture),
+        ok = coverage_same_vm_fixture:accepted_test(),
+        ok = write_package_gaps(Name, Modules, Models, Metadata, CapturePath),
+        {ok, Bytes} = file:read_file(Path),
+        Report = coverage_decode_json(Bytes),
+        false = capture_field(Report, satisfies_coverage_gate),
+        <<"Measured">> = capture_field(Report, status),
+        <<"PackageCoverageGaps">> = capture_field(Report, scope),
+        true = capture_field(Report, capture_sha256) =:= file_digest(CapturePath),
+        [Module] = capture_field(Report, modules),
+        Missing = capture_field(Module, full_uncovered_lines),
+        ensure(Missing =/= [], missing_actual_package_gap),
+        Metric = capture_field(Module, full_lines),
+        ensure(capture_field(Metric, covered) > 0 andalso
+            capture_field(Metric, covered) < capture_field(Metric, total),
+            missing_executed_and_unexecuted_package_paths),
+        ensure(binary:match(Bytes, <<"coverage-private-endpoint.example">>) =:= nomatch,
+            package_gap_exposed_test_payload),
+        ensure(not maps:is_key(<<"changed">>, Report), package_gap_claimed_changed_scope),
+        Before = lists:sort(filelib:wildcard(filename:join(?OUTPUT, "*.capture.json"))),
+        ok
+    after
+        file:delete(Path),
+        file:delete(CapturePath)
+    end.
+
+coverage_unit_evidence_test(Unit, Proof) ->
+    ok = coverage_repetition_schema_test(Proof),
+    ok = audit_coverage_unit_evidence([Unit], Proof),
+    invalid_coverage_unit_summary = caught_error(fun() ->
+        audit_coverage_unit_evidence([Unit], Proof#{completed_tests => 2})
+    end),
+    invalid_coverage_unit_report_path = caught_error(fun() ->
+        audit_coverage_unit_evidence([Unit], Proof#{report => <<"../private.json">>})
+    end),
+    incomplete_coverage_unit_report = caught_error(fun() ->
+        audit_coverage_unit_evidence([Unit#{function => <<"substituted_test">>}], Proof)
+    end),
+    Path = binary_to_list(maps:get(report, Proof)),
+    {ok, Original} = coverage_unit_report_bytes(Path),
+    try
+        Child = json:decode(Original),
+        [Row] = maps:get(<<"units">>, Child),
+        Counts = maps:get(<<"counts">>, Row),
+        Doubled = Counts#{<<"started">> => 2, <<"completed">> => 2, <<"passed">> => 2},
+        Forged = Child#{<<"units">> => [Row#{<<"counts">> => Doubled}]},
+        ForgedBytes = iolist_to_binary([json:encode(Forged), $\n]),
+        ok = file:write_file(Path, ForgedBytes),
+        modified_coverage_unit_report = caught_error(fun() ->
+            audit_coverage_unit_evidence([Unit], Proof)
+        end),
+        ForgedProof = Proof#{report_sha256 => hex(crypto:hash(sha256, ForgedBytes)),
+                             completed_tests => 2},
+        incomplete_coverage_unit_report = caught_error(fun() ->
+            audit_coverage_unit_evidence([Unit], ForgedProof)
+        end),
+        ok = file:write_file(Path, <<0:67108872>>),
+        error = coverage_unit_report_bytes(Path),
+        ok = file:delete(Path),
+        error = coverage_unit_report_bytes(Path)
+    after
+        ok = file:write_file(Path, Original)
+    end,
+    ok = audit_coverage_unit_evidence([Unit], Proof),
+    ok.
+
+coverage_repetition_schema_test(Proof) ->
+    Runtime = maps:from_list([{Key, 0} || Key <- runtime_keys()]),
+    Universe = #{all_lines => [], all_branches => [], covered_lines => [], covered_branches => []},
+    Base = summarize_coverage_repetition(1, Universe, Universe, 0),
+    Sample = #{sample => 1, offset_milliseconds => 0, restored => true, stable => false,
+               runtime => Runtime},
+    Settlement = runtime_settlement(Runtime, undefined, 0, [Sample]),
+    Report = Base#{test_duration_ms => 0, settle_duration_ms => 0, tests => Proof,
+        runtime_immediate => Runtime, runtime => Runtime, settlement => Settlement,
+        runtime_delta_from_start => Runtime, runtime_delta_from_previous => Runtime},
+    ok = coverage_repetition_keys(Report),
+    Secret = <<"private-capture.example">>,
+    Hostile = [Report#{private => Secret},
+        Report#{runtime => Runtime#{private => Secret}},
+        Report#{tests => Proof#{private => Secret}},
+        Report#{settlement => Settlement#{samples => [Sample#{runtime => Runtime#{private => Secret}}]}}],
+    lists:foreach(fun(Value) ->
+        invalid_coverage_report_schema = caught_error(fun() -> coverage_repetition_keys(Value) end)
+    end, Hostile),
+    ok = coverage_repetition_keys(json:decode(iolist_to_binary(json:encode(Report)))),
+    ok.
+
+instrumentation_heap_test(Directory, SourcePath) ->
+    Bound = #{size => 33554432, kill => true, error_logger => false, include_shared_binaries => true},
+    Previous = erlang:system_flag(max_heap_size, Bound),
+    try
+        ok = cover_compile_modules([{coverage_same_vm_fixture, SourcePath}], Directory),
+        #{status := <<"Ready">>, compiled_modules := 1,
+          restored_heap_words := 33554432, heap_configuration_restored := true} =
+            get(coverage_instrumentation_evidence),
+        Missing = caught_error(fun() ->
+            cover_compile_modules([{coverage_missing_fixture, SourcePath}], Directory)
+        end),
+        ensure(element(1, Missing) =:= missing_production_beam,
+               wrong_instrumentation_fixture_failure),
+        #{status := <<"Failed">>, compiled_modules := 0,
+          restored_heap_words := 33554432, heap_configuration_restored := true} =
+            get(coverage_instrumentation_evidence),
+        Owner = self(),
+        Ref = make_ref(),
+        {Worker, Monitor} = spawn_monitor(fun() ->
+            Owner ! {Ref, process_info(self(), max_heap_size)}
+        end),
+        receive {Ref, {max_heap_size, Bound}} -> ok after 1000 ->
+            erlang:error(test_actor_inherited_compiler_heap)
+        end,
+        receive {'DOWN', Monitor, process, Worker, normal} -> ok after 1000 ->
+            erlang:error(heap_fixture_did_not_stop)
+        end
+    after erlang:system_flag(max_heap_size, Previous) end.
+
+same_vm_listener_case(Directory, Function, Kind, Expected, Leaves) ->
+    Path = filename:join(Directory, binary_to_list(Function) ++ ".json"),
+    delete_if_present(Path),
+    Nonce = <<"coverage-listener-self-test">>,
+    Units = [#{module => <<"coverage_same_vm_fixture">>, function => Function, kind => Kind}],
+    Expected = qualification_eunit_listener:run_same_vm(Units, Path, Nonce),
+    {ok, Bytes} = file:read_file(Path),
+    ensure(binary:match(Bytes, <<"coverage-private-endpoint.example">>) =:= nomatch,
+           same_vm_listener_exposed_failure_payload),
+    Report = json:decode(Bytes),
+    [#{<<"counts">> := #{<<"started">> := Leaves, <<"completed">> := Leaves}}] =
+        maps:get(<<"units">>, Report),
+    case Function of
+        <<"accepted_test">> ->
+            %% An exclusive write failure returns locally and cannot reuse a
+            %% stale completion, even when the same nonce is supplied.
+            error = qualification_eunit_listener:run_same_vm(Units, Path, Nonce);
+        _ -> ok
+    end,
+    ok = file:delete(Path),
     ok.
 
 coverage_snapshot(Modules, CoverageMap) ->
@@ -1990,20 +3056,10 @@ observable_branches(Module, Branches, CoverageByLine) ->
         Exclusive = ordsets:subtract(Observable, SiblingLines),
         ensure(Observable =/= [],
                {unobservable_branch_coordinates, Module, Index,
-                #{branch_lines => line_number_binary(BranchLines),
-                  observable_line_count => length(ObservableLines),
-                  observable_first_line => first_line(ObservableLines),
-                  observable_last_line => last_line(ObservableLines)}}),
+                #{branch => Branch, observed => Observable, siblings => SiblingLines}}),
         ensure(Exclusive =/= [],
                {indistinguishable_branch_coordinates, Module, Index,
-                #{function => maps:get(function, Branch),
-                  arity => maps:get(arity, Branch),
-                  function_decision_index =>
-                      maps:get(function_decision_index, Branch),
-                  decision_alternative_index =>
-                      maps:get(decision_alternative_index, Branch),
-                  observable_lines => line_number_binary(Observable),
-                  sibling_lines => line_number_binary(SiblingLines)}}),
+                #{branch => Branch, observed => Observable, siblings => SiblingLines}}),
         Branch#{artifact_witness_lines => Exclusive}
     end, Branches).
 
@@ -2046,12 +3102,6 @@ bounded_term(Value, Limit) ->
         true -> Bytes;
         false -> <<(binary:part(Bytes, 0, Limit))/binary, "...">>
     end.
-
-first_line([]) -> undefined;
-first_line(Lines) -> lists:min(Lines).
-
-last_line([]) -> undefined;
-last_line(Lines) -> lists:max(Lines).
 
 merge_coverage_snapshot(Part, Acc) ->
     maps:map(fun(Key, Values) ->
@@ -2199,7 +3249,33 @@ project_process_label_counts() ->
     end, Initial, processes()).
 
 project_process_labels() ->
-    [{quic_core_client_processes, <<"quic_core.client">>},
+    [{http_worker_processes, <<"http.worker">>},
+     {http_reaper_processes, <<"http.reaper">>},
+     {http_guardian_processes, <<"http.guardian">>},
+     {http_cancel_broker_processes, <<"http.cancel_broker">>},
+     {http_adapter_callback_processes, <<"http.adapter_callback">>},
+     {http_body_guardian_processes, <<"http.body_guardian">>},
+     {http_body_callback_processes, <<"http.body_callback">>},
+     {http_connect_coordinator_processes, <<"http.connect_coordinator">>},
+     {http_dns_resolver_processes, <<"http.dns_resolver">>},
+     {http_connect_candidate_processes, <<"http.connect_candidate">>},
+     {http_policy_callback_processes, <<"http.policy_callback">>},
+     {http_https_resolver_processes, <<"http.https_resolver">>},
+     {http_policy_store_processes, <<"http.policy_store">>},
+     {http_http2_pool_processes, <<"http.http2_pool">>},
+     {http_client_lifecycle_processes, <<"http.client_lifecycle">>},
+     {http_server_executor_processes, <<"http.server_executor">>},
+     {http_request_handler_processes, <<"http.request_handler">>},
+     {http_upload_reader_processes, <<"http.upload_reader">>},
+     {http_diagnostic_guardian_processes, <<"http.diagnostic_guardian">>},
+     {http_diagnostic_sink_processes, <<"http.diagnostic_sink">>},
+     {http_http3_connection_owner_processes, <<"http.http3_connection_owner">>},
+     {http_http3_request_reaper_processes, <<"http.http3_request_reaper">>},
+     {http_http3_request_worker_processes, <<"http.http3_request_worker">>},
+     {http_http3_io_worker_processes, <<"http.http3_io_worker">>},
+     {http_client_race_guardian_processes, <<"http.client_race_guardian">>},
+     {http_client_connection_candidate_processes, <<"http.client_connection_candidate">>},
+     {quic_core_client_processes, <<"quic_core.client">>},
      {quic_core_listener_processes, <<"quic_core.listener">>},
      {quic_core_connection_processes, <<"quic_core.connection">>},
      {quic_core_connect_candidate_processes,
@@ -2474,6 +3550,30 @@ module_report(Module, SourceMap, Changed, Model) ->
       changed_uncovered_branches =>
           uncovered_branch_details(ChangedBranches, CoverageByLine)}.
 
+selection_json_self_test() ->
+    Model = #{regions => [#{source_first_line => 2, source_last_line => 7}]},
+    Cases = [
+        {[], [], [], <<"none">>},
+        {all, <<"all">>, [], <<"whole_module">>},
+        {[{3, 4}], [#{<<"first_line">> => 3, <<"last_line">> => 4}],
+         [], <<"source_spans">>},
+        {[{1, 9}], [#{<<"first_line">> => 1, <<"last_line">> => 9}],
+         [#{<<"first_line">> => 1, <<"last_line">> => 1},
+          #{<<"first_line">> => 8, <<"last_line">> => 9}], <<"whole_module">>}
+    ],
+    lists:foreach(fun({Input, ExpectedInput, ExpectedUnattributed, ExpectedScope}) ->
+        {_, Selection} = changed_selection(Model, Input),
+        %% Exercise the real JSON boundary, not just the in-memory tuples.
+        Decoded = coverage_decode_json(iolist_to_binary(json:encode(Selection))),
+        ensure(maps:get(<<"input_ranges">>, Decoded) =:= ExpectedInput,
+               changed_input_ranges_lost),
+        ensure(maps:get(<<"unattributed_ranges">>, Decoded) =:= ExpectedUnattributed,
+               unattributed_ranges_lost),
+        ensure(maps:get(<<"effective_scope">>, Decoded) =:= ExpectedScope,
+               changed_selection_scope_lost)
+    end, Cases),
+    io:put_chars("coverage selection JSON: 4 cases passed\n").
+
 changed_selection(_Model, []) ->
     {[], #{reason => no_changed_source,
            input_ranges => [],
@@ -2494,15 +3594,18 @@ changed_selection(Model, Ranges) ->
     case Unattributed of
         [] ->
             {Ranges, #{reason => attributed_source_span_overlap,
-                       input_ranges => Ranges,
+                       input_ranges => range_json(Ranges),
                        effective_scope => source_spans,
                        unattributed_ranges => []}};
         _ ->
             {all, #{reason => conservative_unattributed_source_change,
-                    input_ranges => Ranges,
+                    input_ranges => range_json(Ranges),
                     effective_scope => whole_module,
-                    unattributed_ranges => Unattributed}}
+                    unattributed_ranges => range_json(Unattributed)}}
     end.
+
+range_json(Ranges) ->
+    [#{first_line => First, last_line => Last} || {First, Last} <- Ranges].
 
 unattributed_ranges(Ranges, SourceSpans) ->
     lists:sort(lists:append([
@@ -2903,7 +4006,7 @@ coverage_source_regions(Module, SourcePath, ArtifactPath, Forms) ->
                             source_first_line => SourceLine}
                           || {ArtifactLine, Path, SourceLine} <-
                                  AllGleamDirectives,
-                             Path =:= ExpectedSource],
+                             repository_path(Path) =:= repository_path(ExpectedSource)],
             ExpectedAbstractDirectives = expected_abstract_directives(
                 AllGleamDirectives
             ),
@@ -2960,12 +4063,17 @@ generated_file_directives_from_binary(Bytes) ->
     lists:reverse(generated_file_directives(Lines, 1, [])).
 
 generated_file_directives([Line | Rest], Number, Acc) ->
-    Pattern = "^-file\\(\"([^\"]+)\", *([0-9]+)\\)\\.$",
-    Updated = case re:run(Line, Pattern, [{capture, [1, 2], binary}]) of
-        {match, [Path, SourceLine]} ->
-            [{Number, binary_to_list(Path), binary_to_integer(SourceLine)}
-             | Acc];
-        nomatch -> Acc
+    Updated = case Line of
+        <<"-file(", _/binary>> ->
+            %% The compiler emits an Erlang string literal. Reading its raw
+            %% regex capture mistakes Windows' escaped separators for actual
+            %% path bytes and breaks comparison with the BEAM abstract form.
+            {ok, Tokens, _} = erl_scan:string(binary_to_list(Line)),
+            {ok, {attribute, _, file, {Path, SourceLine}}} = erl_parse:parse_form(Tokens),
+            ensure(is_list(Path) andalso is_integer(SourceLine) andalso SourceLine > 0,
+                invalid_generated_source_directive),
+            [{Number, Path, SourceLine} | Acc];
+        _ -> Acc
     end,
     generated_file_directives(Rest, Number + 1, Updated);
 generated_file_directives([], _Number, Acc) -> Acc.
@@ -3218,23 +4326,10 @@ tail_after_tree([_ | Rest], Tree) -> tail_after_tree(Rest, Tree);
 tail_after_tree([], Tree) -> erlang:error({source_outside_tree, Tree}).
 
 test_modules(Ebin, SourceRoot) ->
-    TestRoot = filename:join(SourceRoot, "test"),
-    Sources = filelib:fold_files(
-        TestRoot, ".*\\.(gleam|erl)$", true,
-        fun(Path, Acc) -> [Path | Acc] end, []
-    ),
-    Candidates = lists:usort([
-        case filename:extension(Path) of
-            ".gleam" -> module_for_tree_source(Path, "test");
-            ".erl" -> module_for_source(Path)
-        end
-     || Path <- Sources
-    ]),
-    lists:filter(fun(Module) ->
-        Beam = filename:join(Ebin, atom_to_list(Module) ++ ".beam"),
-        filelib:is_regular(Beam) andalso
-            has_eunit_test_export(beam_exports(Beam, Module))
-    end, Candidates).
+    %% Missing source-discovered beams invalidate coverage; silently filtering
+    %% them would shrink the test inventory into an apparently complete run.
+    Names = suite_source_modules(filename:join(SourceRoot, "test")),
+    [binary_to_atom(Name) || Name <- Names, suite_beam_units(Ebin, Name) =/= []].
 
 eunit_test_exports(Ebin, Module) ->
     Beam = filename:join(Ebin, atom_to_list(Module) ++ ".beam"),
@@ -3262,6 +4357,16 @@ add_all_code_paths() ->
     ])),
     lists:foreach(fun(Path) -> true = code:add_patha(filename:absname(Path)) end,
                   Paths).
+
+add_package_code_paths(Ebin) ->
+    %% Use only the selected package's dependency build. Mixing sibling build
+    %% trees can execute stale dependency BEAMs despite a fresh target stamp.
+    Build = filename:dirname(filename:dirname(filename:absname(Ebin))),
+    Paths = lists:sort(filelib:wildcard(filename:join(Build, "*/ebin"))),
+    ensure(Paths =/= [], missing_coverage_package_dependencies),
+    lists:foreach(fun(Path) -> true = code:add_patha(Path) end, Paths),
+    true = code:add_patha(filename:absname(Ebin)),
+    ok.
 
 changed_lines() ->
     Diff = unicode:characters_to_list(git_output([
@@ -3319,28 +4424,42 @@ repository_path(Path) when is_list(Path) ->
 git_output(Arguments) ->
     Executable = case os:find_executable("git") of
         false -> erlang:error(missing_git_for_coverage_diff);
-        Path -> Path
+        GitExecutable -> GitExecutable
     end,
-    Port = open_port(
-        {spawn_executable, Executable},
-        [binary, exit_status, use_stdio, stderr_to_stdout,
-         {args, Arguments}]
-    ),
-    collect_git_output(Port, Arguments, []).
-
-collect_git_output(Port, Arguments, Acc) ->
-    receive
-        {Port, {data, Bytes}} ->
-            collect_git_output(Port, Arguments, [Bytes | Acc]);
-        {Port, {exit_status, 0}} ->
-            iolist_to_binary(lists:reverse(Acc));
-        {Port, {exit_status, Status}} ->
-            Output = iolist_to_binary(lists:reverse(Acc)),
-            erlang:error({git_coverage_diff_failed, Status, Arguments,
-                          bounded_term(Output, 4096)})
-    after 60000 ->
-        port_close(Port),
-        erlang:error({git_coverage_diff_timeout, Arguments})
+    %% These two read-only commands must not invoke configured pagers, external
+    %% diff/textconv drivers, or filesystem-monitor helpers. Ambient Git path
+    %% overrides must not silently select another repository.
+    {Kind, SafeArguments} = case Arguments of
+        ["-c", "core.quotePath=false", "diff", "HEAD", "--unified=0",
+         "--no-color", "--", "*.gleam", "*.erl"] ->
+            {diff, ["-c", "core.quotePath=false", "diff", "--no-ext-diff",
+                    "--no-textconv", "HEAD", "--unified=0", "--no-color",
+                    "--", "*.gleam", "*.erl"]};
+        ["ls-files", "--others", "--exclude-standard", "-z"] ->
+            {untracked, Arguments};
+        _ -> erlang:error(unsupported_coverage_git_operation)
+    end,
+    Unset = [{hd(string:split(Entry, "=")), false} || Entry <- os:getenv(),
+        lists:prefix("GIT_", Entry),
+        not lists:prefix("GIT_CONFIG_NOSYSTEM=", Entry),
+        not lists:prefix("GIT_CONFIG_GLOBAL=", Entry),
+        not lists:prefix("GIT_TERMINAL_PROMPT=", Entry)],
+    Null = case os:type() of {win32, _} -> "NUL"; _ -> "/dev/null" end,
+    Environment = Unset ++ [{"GIT_CONFIG_NOSYSTEM", "1"},
+        {"GIT_CONFIG_GLOBAL", Null}, {"GIT_TERMINAL_PROMPT", "0"},
+        {"LC_ALL", "C"}],
+    Prefix = ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"],
+    Result = command_capture(Executable, Prefix ++ SafeArguments,
+                             filename:absname("."), 60000, 16777216, Environment),
+    Proof = case Result of {ok, _, P} -> P; {error, P} -> P end,
+    Nonce = hex(crypto:strong_rand_bytes(16)),
+    Path = filename:join(?OUTPUT, "git-" ++ binary_to_list(Nonce) ++ ".process.json"),
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(Path, json:encode(#{schema => 1, nonce => Nonce,
+        operation => Kind, process => Proof}), [exclusive]),
+    case Result of
+        {ok, Bytes, _} -> Bytes;
+        {error, _} -> erlang:error({git_coverage_diff_failed, Proof})
     end.
 
 relative(Path) ->

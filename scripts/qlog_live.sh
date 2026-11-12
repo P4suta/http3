@@ -23,6 +23,9 @@ if [[ -d "$output_directory" ]]; then
 fi
 mkdir -p "$output_directory"
 
+cd -- "$repository_root"
+escript scripts/qlog_validate.escript --begin-capture
+
 cd -- "$repository_root/packages/http3"
 HTTP3_DIAGNOSTIC_QLOG_DIR="$output_directory" \
 	mise exec -- gleam run -m diagnostics/http3_diagnostic -- round-trip
@@ -32,5 +35,8 @@ if [[ "$trace_count" -ne 2 ]]; then
 	echo "live qlog fixture produced an unexpected trace count: $trace_count" >&2
 	exit 1
 fi
+
+cd -- "$repository_root"
+escript scripts/qlog_validate.escript --finish-capture
 
 echo "live public HTTP/3 qlog fixture produced exactly $trace_count bounded traces"

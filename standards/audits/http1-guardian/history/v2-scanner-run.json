@@ -1,0 +1,10 @@
+{
+  "stdout_sha256": "852c0702f9034bbc770ad05e86bf826e39b61b16d7a40e84edbd97172381cb10",
+  "status": "Red",
+  "observed_exit": 1,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "phase": "scanner",
+  "schema": 1,
+  "expected_exit": 1,
+  "revision": "v2"
+}

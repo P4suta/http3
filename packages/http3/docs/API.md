@@ -62,6 +62,31 @@ Unconsumed data and event counts are bounded; request writes synchronously
 preserve transport backpressure. Close a reusable connection explicitly when
 finished. Closing and cancellation are idempotent.
 
+Before returning a long-lived connection to a pool, query its actor-owned GOAWAY and core-close state.
+Keep only `Ok(True)`.
+`Ok(False)` and every typed query failure mean that the pool should retire the connection.
+A later GOAWAY can still race `open_stream`, so callers must handle that operation's result.
+
+<!-- example: package=http3 id=connection_reuse -->
+```gleam
+import http3/client
+
+pub fn keep_for_reuse(connection: client.Connection) -> Bool {
+  case client.connection_reusable(connection) {
+    Ok(True) -> True
+    Ok(False) | Error(_) -> {
+      let _closed = client.close(connection)
+      False
+    }
+  }
+}
+
+pub fn main() -> Nil {
+  let _example = keep_for_reuse
+  Nil
+}
+```
+
 `client.send` and other bounded helpers enforce the configured cumulative
 request/response body limit. A stream opened with `client.open_stream` has no
 cumulative response ceiling: each frame, the unconsumed-data queue, and every
@@ -148,10 +173,11 @@ attach deadlines and limits, then start one owned listener. Use
 set for new handshakes. Existing authenticated connections keep their current
 TLS state.
 
-Use `server.graceful_stop` to send GOAWAY and drain active requests within the
-configured deadline. Use `server.stop` for immediate, idempotent shutdown.
-Operational key and 0-RTT setup is covered in the
-[deployment guide](DEPLOYMENT.md).
+Use `server.graceful_stop` to send two role-correct GOAWAY frames and drain active requests within the configured absolute deadline.
+`server.stop` is the idempotent bounded-stop form: it sends the same two-stage GOAWAY, cancels remaining application work, waits for acknowledgement of application-space output, and then closes with exact `H3_NO_ERROR`.
+`client.close` follows the same acknowledgement barrier with client-role Push IDs.
+A deadline miss or a transport, protocol, or owner failure uses the separately classified abortive path.
+Operational key and 0-RTT setup is covered in the [deployment guide](DEPLOYMENT.md).
 
 Bind to a specific IPv4 or IPv6 literal without DNS resolution through the
 public address API:
@@ -178,6 +204,27 @@ Port zero still requests an ephemeral port. `server.scheme` and
 `server.peer_endpoint` returns only the currently validated QUIC peer path;
 an unvalidated migration candidate is never exposed.
 
+Listeners reject an unconfigured custom URI scheme.
+Configure its RFC 9114 authority rule before starting the listener:
+
+```gleam
+import http3/server
+
+pub fn allow_application_scheme(
+  configuration: server.Configuration,
+) -> Result(server.Configuration, server.ConfigurationError) {
+  configuration
+  |> server.with_custom_scheme_authority_policy(
+    "web+example",
+    server.OptionalAuthority,
+  )
+}
+```
+
+Use `MandatoryAuthority` when every request must carry a nonempty `:authority`, `OptionalAuthority` when the URI scheme permits it to be omitted, and `NoAuthority` when the scheme has no authority component.
+The last policy rejects both `:authority` and `Host`; `server.authority` then returns the empty string.
+`http` and `https` always use the mandatory rule.
+
 A response sent with `server.respond`, or a streaming response declaring
 `Content-Length`, retains the configured cumulative response-body limit. A
 response started with `server.send_response` and no `Content-Length` has no
@@ -197,8 +244,26 @@ or timeout automatically continues the authenticated connection at 1-RTT.
 `http3/websocket` implements RFC 9220 Extended CONNECT and bounded RFC 6455
 framing. The server accepts an already validated request with
 `websocket.accept`; the client opens one on a reusable HTTP/3 connection with
-`websocket.connect`. The handshake status is 200, not the HTTP/1.1 upgrade
-status 101.
+`websocket.connect`. The server sends 200 on acceptance; the client accepts
+successful CONNECT responses throughout the 2xx range. A 204 response remains
+empty under the HTTP/3 framing rules. Informational responses share one
+absolute read deadline and do not complete negotiation.
+
+The client supplies exactly one version 13 header.
+The server refuses an unsupported version with HTTP 400 and `sec-websocket-version: 13`, waits for response acknowledgment, and cancels the unfinished request direction.
+Successful refusal returns `UnsupportedVersion`; transmission failure returns `ServerFailure`.
+
+Offered subprotocols must be distinct, case-sensitive HTTP tokens.
+Response selection is optional; when present, it must be one offered token in one header field.
+All offered values share a 65,536-byte parsing allowance, with one additional byte charged per field.
+The configured HTTP field-section limit applies independently.
+HTTP/1 nonce fields and extensions are rejected by this API profile.
+
+Callers migrating from permissive handshake validation should remove repeated or malformed offers and unsolicited response selections.
+No public function signature changes.
+Cancelling a stream after response FIN still cancels its unfinished request direction; only completion of both directions produces `AlreadyCompleted`.
+The handshake read deadline excludes admission and cancellation, which retain their own configured budgets.
+See the repository's [`WEBSOCKET_HANDSHAKE.md`](../../../docs/WEBSOCKET_HANDSHAKE.md) for the specification boundaries and ordinary regression evidence.
 
 <!-- example: package=http3 id=websocket_echo -->
 ```gleam
@@ -222,6 +287,15 @@ reassembled within the configured message limit, text and close reasons are
 UTF-8 validated, Ping receives Pong automatically, Close is echoed once, and
 `websocket.cancel` aborts the underlying stream. Compression and WebSocket
 extensions are deliberately not negotiated in this initial API.
+
+One `receive` call shares its operation deadline across transport reads and fragment processing.
+Each initial and continuation fragment is checked before retention; a smaller application message limit still permits control payloads up to their separate 125-byte limit, within the configured frame buffer.
+A message observed after the read deadline fails with the existing typed operation timeout.
+Automatic Pong, Close, FIN and cancellation each retain their own finite operation budget; the read deadline does not include those additional operations.
+
+A completed Close exchange finishes the local HTTP/3 send direction.
+Receive failures reset the stream while preserving the original cause.
+Returned closed handles discard fragment and frame-buffer input, and subsequent receives return `AlreadyClosed` without starting another transport read.
 
 ## Diagnostics
 

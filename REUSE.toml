@@ -15,6 +15,7 @@ path = [
   "*.md",
   "coverage-*.json",
   "qualification.json",
+  "renovate.json",
   "*.toml",
   "mix.lock",
   "LICENSE",
@@ -30,3 +31,31 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 the http contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = ["src/http_brotli_tables.hrl", "test/fixtures/brotli-google-synthetic.json"]
+precedence = "override"
+SPDX-FileCopyrightText = [
+  "2009, 2010, 2013-2016 the Brotli Authors",
+  "2015 Google Inc.",
+  "2026 the http contributors",
+]
+SPDX-License-Identifier = "LicenseRef-Brotli-MIT"
+
+[[annotations]]
+path = ["src/http/internal/url_pattern/unicode.gleam"]
+precedence = "override"
+SPDX-FileCopyrightText = ["2024 Unicode®, Inc.", "2026 the http contributors"]
+SPDX-License-Identifier = "Unicode-3.0 AND (MIT OR Apache-2.0)"
+
+[[annotations]]
+path = ["test/fixtures/urlpattern-wpt.json", "test/fixtures/urlpattern-constructor-wpt.json"]
+precedence = "override"
+SPDX-FileCopyrightText = "web-platform-tests contributors"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["src/http/internal/url_pattern/host_data.gleam", "test/fixtures/url-host-reference.json"]
+precedence = "override"
+SPDX-FileCopyrightText = ["2024 Unicode®, Inc.", "2026 the http contributors"]
+SPDX-License-Identifier = "Unicode-3.0 AND (MIT OR Apache-2.0)"

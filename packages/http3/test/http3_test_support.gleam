@@ -6,8 +6,13 @@ import gleam/result
 import gleam/string
 import http3/client
 import http3/config
+import http3/failure
 import http3/server
 import http3/transport
+
+/// Terminate the client actor without a planned stream-cancellation exchange.
+@external(erlang, "http3_test_ffi", "abrupt_connection_close")
+pub fn abrupt_connection_close(connection: client.Connection) -> Bool
 
 /// A monitored test-only asynchronous operation.
 pub type Task(value)
@@ -28,12 +33,9 @@ pub fn fail(reason: reason) -> value
 @external(erlang, "http3_test_ffi", "server_credentials")
 pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
 
-/// Whether the fixture certificate chain validates against the fixture
-/// authority and presents `hostname` as a service identity.
+/// Whether the fixture certificate chain validates against the fixture authority and presents `hostname` as a service identity.
 ///
-/// The handshake performs the same path validation and identity match, so this
-/// keeps the shared fixture honest for the IP-literal case without a test-side
-/// import of the core package's private TLS modules.
+/// The handshake performs the same path validation and identity match, so this keeps the shared fixture honest for the IP-literal case without a test-side import of the core package's private TLS modules.
 @external(erlang, "http3_test_ffi", "certificate_identity_verified")
 pub fn certificate_identity_verified(
   certificate: BitArray,
@@ -80,8 +82,13 @@ pub fn concurrent_accepts(
 @external(erlang, "http3_test_ffi", "server_owner_cleanup")
 pub fn server_owner_cleanup(configuration: server.Configuration) -> Bool
 
-/// Run a callback against the repository-owned server over real UDP.
+/// Run a callback against an IPv4 loopback server.
 pub fn with_server(run: fn(Int, BitArray) -> result) -> result {
+  with_server_configuration(10_000, config.Ipv4, run)
+}
+
+/// Return the callback's result after closing the dual-stack listener.
+pub fn with_dual_stack_server(run: fn(Int, BitArray) -> result) -> result {
   with_server_configuration(10_000, config.DualStack, run)
 }
 
@@ -121,10 +128,8 @@ pub fn with_lossy_server(run: fn(Int, BitArray) -> result) -> result {
   })
 }
 
-/// Route one caller-owned server through a proxy whose loss window is armed
-/// synchronously after the handshake. `arm` drops exactly the next two client
-/// datagrams, which can deterministically cover a delayed response ACK and the
-/// first CONNECTION_CLOSE without making handshake recovery part of the test.
+/// Route one caller-owned server through a proxy whose loss window is armed synchronously after the handshake.
+/// `arm` drops exactly the next two client datagrams, which can deterministically cover a delayed response ACK and the first CONNECTION_CLOSE without making handshake recovery part of the test.
 pub fn with_armed_client_loss_proxy(
   server_port: Int,
   ca_certificate: BitArray,
@@ -166,6 +171,17 @@ pub fn with_reordering_proxy(run: fn(Int, BitArray) -> result) -> result {
   with_server(fn(port, ca_certificate) {
     with_reordering_proxy_ffi(port, ca_certificate, run)
   })
+}
+
+/// Route sequential clients through one stable server-facing UDP endpoint.
+///
+/// This distinguishes physical connection identity from peer endpoint equality without exposing either connection actors or connection IDs.
+pub fn with_shared_endpoint_proxy(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result {
+  with_shared_endpoint_proxy_ffi(server_port, ca_certificate, run)
 }
 
 @external(erlang, "http3_test_ffi", "with_lossy_proxy")
@@ -212,6 +228,13 @@ fn with_mtu_limited_proxy_ffi(
 
 @external(erlang, "http3_test_ffi", "with_reordering_proxy")
 fn with_reordering_proxy_ffi(
+  server_port: Int,
+  ca_certificate: BitArray,
+  run: fn(Int, BitArray) -> result,
+) -> result
+
+@external(erlang, "http3_test_ffi", "with_shared_endpoint_proxy")
+fn with_shared_endpoint_proxy_ffi(
   server_port: Int,
   ca_certificate: BitArray,
   run: fn(Int, BitArray) -> result,
@@ -276,6 +299,7 @@ fn serve(listener: server.Listener) -> Nil {
       let _request_task = start_task(fn() { handle_request(listener, request) })
       serve(listener)
     }
+    Error(server.Failure(failure.Timeout(failure.Operation))) -> serve(listener)
     Error(_) -> Nil
   }
 }
@@ -343,6 +367,7 @@ fn respond_echo(request: server.Request) -> Nil {
         #("content-type", "application/octet-stream"),
         #("x-request-method", http.method_to_string(server.method(request))),
         #("x-request-path", server.path(request)),
+        #("x-request-authority", server.authority(request)),
         #("x-received-test", test_header),
       ]
       let _response = server.respond(request, 200, headers, body)

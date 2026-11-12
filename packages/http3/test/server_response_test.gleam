@@ -1,3 +1,4 @@
+import gleam/option.{None}
 import http3/internal/server_response
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -34,6 +35,19 @@ pub fn server_response_prepares_strict_trailers_test() -> Nil {
 pub fn server_response_rejects_forbidden_header_test() -> Nil {
   assert server_response.prepare_streaming(200, [#("connection", "close")])
     == Error(server_response.InvalidHeader("connection"))
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn outbound_response_fields_are_ascii_lowercased_before_validation_test() -> Nil {
+  assert server_response.prepare_streaming(200, [
+      #("Content-Type", "text/plain"),
+      #("X-Trace-ID", "safe"),
+    ])
+    == Ok(#([#("content-type", "text/plain"), #("x-trace-id", "safe")], None))
+  assert server_response.prepare_streaming(200, [#("Connection", "close")])
+    == Error(server_response.InvalidHeader("connection"))
+  assert server_response.prepare_streaming(200, [#("\u{212A}", "value")])
+    == Error(server_response.InvalidHeader("\u{212A}"))
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

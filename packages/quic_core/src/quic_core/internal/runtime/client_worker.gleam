@@ -11,12 +11,19 @@ import gleam/result
 import quic_core.{type AddressFamily}
 import quic_core/internal/connection_state as transport
 import quic_core/internal/driver
+import quic_core/internal/local_connection_id
 import quic_core/internal/process_label
 import quic_core/internal/qlog
 import quic_core/internal/runtime/budget
+import quic_core/internal/runtime/client_close_deadline
 import quic_core/internal/runtime/client_transport
+import quic_core/internal/runtime/connect_trace
 import quic_core/internal/runtime/connection as runtime_connection
+import quic_core/internal/runtime/qlog_admission
+import quic_core/internal/runtime/qlog_budget
+import quic_core/internal/runtime/send_observation.{type Observation}
 import quic_core/internal/runtime/stream_lifetime
+import quic_core/internal/stream_completion
 import quic_core/internal/stream_state
 import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
@@ -33,9 +40,20 @@ const maximum_send_chunk_bytes = 65_536
 const pmtu_probe_interval_milliseconds = 50
 
 // A NEW_TOKEN commonly follows the TLS ticket in the same handshake flight.
-// Coalesce that bounded race so an opaque ticket returned for 0-RTT also
-// carries the address-validation token needed to avoid a needless Retry.
+// Coalesce that bounded race so an opaque ticket returned for 0-RTT also carries the address-validation token needed to avoid a needless Retry.
 const address_token_coalescing_milliseconds = 100
+
+// One completion waiter per stream, capped again by the public queue limit.
+// The observation owns a single bounded row and rejects delayed publication.
+const maximum_completion_waiters = 256
+
+// A close completion owns affine qlog receipts.
+// Bound duplicate callers while they share that one result and let excess callers reach their own deadline.
+const maximum_close_waiters = 32
+
+// Keep the public absolute deadline as the only logical close budget.
+// The final slice is reserved for forcing and observing the connection actor when its transport closing timer or a native call did not converge on its own.
+const close_force_join_milliseconds = 50
 
 /// Live actor reference with fixed origin and operation policy.
 pub opaque type Connection {
@@ -97,9 +115,8 @@ pub type HandshakeAttempt {
 
 /// Bounded, payload-free state used to explain a stalled client actor.
 ///
-/// This type remains inside the private runtime namespace. It records only
-/// scheduler positions, counters, and deadlines; neither buffered bytes nor
-/// packet/frame contents cross the diagnostic seam.
+/// This type remains inside the private runtime namespace.
+/// It records only scheduler positions, counters, and deadlines; neither buffered bytes nor packet/frame contents cross the diagnostic seam.
 pub type DevelopmentSnapshot {
   DevelopmentSnapshot(
     observed_at_milliseconds: Int,
@@ -121,9 +138,8 @@ pub type DevelopmentSnapshot {
 /// The bounded deadlines considered immediately before the actor last parked.
 ///
 /// `operation_deadline` is the earliest application waiter across open,
-/// accept, stream, Datagram, migration, and ticket operations. Keeping it
-/// separate from QUIC and PMTU timers makes a timeout explain which subsystem
-/// selected the wake without retaining any application value.
+/// accept, stream, Datagram, migration, and ticket operations.
+/// Keeping it separate from QUIC and PMTU timers makes a timeout explain which subsystem selected the wake without retaining any application value.
 pub type ParkProgress {
   ParkProgress(
     observed_at_milliseconds: Int,
@@ -175,9 +191,10 @@ pub type Error {
   TlsHandshakeFailed
   QuicFailure
   ConnectionClosed
-  /// The peer closed during the handshake and named a close code, such as the
-  /// CONNECTION_REFUSED a server sends when it has no room for a connection.
+  /// The peer closed during the handshake and named a close code, such as the CONNECTION_REFUSED a server sends when it has no room for a connection.
   PeerClosedWithCode(Int)
+  PeerTransportFailureWithCode(Int)
+  TransportFailureWithCode(Int)
   StreamClosed
   StreamReset(Int)
   InvalidDirection
@@ -194,6 +211,7 @@ pub type Error {
   MigrationUnavailable
   CongestionLimited
   EndpointMemoryExceeded(Int)
+  DiagnosticConnectionsExceeded
   TicketUnavailable
   InvalidStoredTicket
   QlogUnavailable
@@ -238,8 +256,21 @@ type Command {
     reply: Subject(Result(Nil, Error)),
   )
   SendFinished(stream_id: Int, reply: Subject(Result(Bool, Error)))
+  AwaitSendCompletion(
+    stream_id: Int,
+    owner: Pid,
+    observation: Observation(Result(stream_completion.Outcome, Error)),
+    deadline: Int,
+  )
+  CancelSendCompletion(
+    stream_id: Int,
+    observation: Observation(Result(stream_completion.Outcome, Error)),
+  )
   PathStats(reply: Subject(Result(transport.PathSnapshot, Error)))
   ConnectionStats(reply: Subject(Result(runtime_connection.Stats, Error)))
+  LocalConnectionIdStats(
+    reply: Subject(Result(local_connection_id.Snapshot, Error)),
+  )
   ResourceStats(reply: Subject(Result(#(Int, Int), Error)))
   DevelopmentState(reply: Subject(Result(DevelopmentSnapshot, Error)))
   TelemetryStats(reply: Subject(Result(qlog.Stats, Error)))
@@ -262,13 +293,26 @@ type Command {
       ),
     ),
   )
-  Close(code: Int, reply: Subject(Result(CloseResult, Error)))
+  Close(
+    code: Int,
+    deadline_milliseconds: Int,
+    reply: Subject(Result(CloseResult, Error)),
+  )
 }
 
 type LoopMessage {
   ReceivedCommand(Command)
   ReceivedNetwork(Dynamic)
   OwnerExited
+  CompletionCallerExited(stream_id: Int, monitor: process.Monitor)
+}
+
+type CleanupJoinMessage {
+  CleanupOwnerExited(Pid)
+}
+
+type CloseWorkerJoinMessage {
+  CloseWorkerExited
 }
 
 type ReadWaiter {
@@ -319,6 +363,15 @@ type PendingSend {
   )
 }
 
+type CompletionWaiter {
+  CompletionWaiter(
+    owner: Pid,
+    monitor: process.Monitor,
+    observation: Observation(Result(stream_completion.Outcome, Error)),
+    deadline: Int,
+  )
+}
+
 type Queue(value) {
   Queue(front: List(value), back: List(value), count: Int)
 }
@@ -330,6 +383,14 @@ type StreamState {
     send_finished: Bool,
     receive_finished: Bool,
   )
+}
+
+type CloseCompletionRequest {
+  AwaitCloseCompletion(reply: Subject(Result(CloseResult, Error)))
+}
+
+type ClientCloseCompletion {
+  ClientCloseCompletion(waiters: Subject(CloseCompletionRequest))
 }
 
 type Worker {
@@ -361,11 +422,27 @@ type Worker {
     port: Int,
     congestion_control: transport.CongestionAlgorithm,
     qlog_writer: Option(qlog.Writer),
+    qlog_cleanup: Option(qlog.CleanupTicket),
+    qlog_reservation: Option(qlog_admission.Reservation),
+    close_completion: Option(ClientCloseCompletion),
+    close_completion_waiters: Int,
     next_pmtu_probe_milliseconds: Int,
     terminal_error: Option(Error),
     maximum_pto_backoff: Int,
     previous_park: Option(ParkProgress),
     longest_wait: Option(WaitProgress),
+    application_closed: Bool,
+    completion_waiters: Dict(Int, CompletionWaiter),
+    completions: stream_completion.History,
+  )
+}
+
+type CloseResources {
+  CloseResources(
+    outcome: CloseResult,
+    writer: Option(qlog.Writer),
+    cleanup: Option(qlog.CleanupTicket),
+    reservation: Option(qlog_admission.Reservation),
   )
 }
 
@@ -402,11 +479,37 @@ pub fn connect(
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
   allow_zero_rtt: Bool,
+  connect_port: Int,
+  connect_trace: Option(connect_trace.Context),
+  diagnostic_admission: qlog_admission.Identity,
+  diagnostic_dependent: Option(qlog_admission.Reservation),
+  diagnostic_connections: Int,
 ) -> Result(Connection, Error) {
-  use Nil <- result.try(validate_endpoint_memory(endpoint_memory_limit))
+  use Nil <- result.try(validate_endpoint_memory(
+    endpoint_memory_limit,
+    qlog_directory,
+    telemetry_limit,
+  ))
+  use reservation <- result.try(reserve_qlog(
+    diagnostic_admission,
+    qlog_directory,
+    telemetry_limit,
+    endpoint_memory_limit,
+    diagnostic_connections,
+    diagnostic_dependent,
+  ))
+  let deadline = udp.monotonic_millisecond() + total_timeout_milliseconds
+  let started_group =
+    udp.start_establishment_group(owner)
+    |> result.replace_error(ConnectionClosed)
+  case started_group {
+    Error(_) -> release_unused_qlog(reservation)
+    Ok(_) -> Nil
+  }
+  use group <- result.try(started_group)
   let bootstrap = process.new_subject()
-  let worker =
-    process.spawn_unlinked(fn() {
+  let spawned =
+    udp.spawn_work(group, udp.EndpointWork, fn() {
       process_label.set(process_label.Client)
       initialise(
         owner,
@@ -433,15 +536,77 @@ pub fn connect(
         version,
         congestion_control,
         qlog_directory,
+        reservation,
         resumption_ticket,
         allow_zero_rtt,
+        connect_port,
+        connect_trace,
+        group,
+        deadline,
       )
     })
-  await_bootstrap(worker, bootstrap, total_timeout_milliseconds)
+  let outcome = case spawned {
+    Ok(worker) -> await_bootstrap(worker, bootstrap, group, deadline)
+    Error(_) -> {
+      let _ = udp.stop_work_group(group)
+      Error(ConnectionClosed)
+    }
+  }
+  case outcome {
+    Error(_) -> {
+      release_unused_qlog(reservation)
+      connect_trace.abandon(connect_trace)
+    }
+    Ok(_) -> Nil
+  }
+  outcome
 }
 
-fn validate_endpoint_memory(maximum: Int) -> Result(Nil, Error) {
-  let admission = budget.admission_quanta() * budget.quantum()
+fn reserve_qlog(
+  identity: qlog_admission.Identity,
+  directory: String,
+  _telemetry_limit: Int,
+  maximum: Int,
+  connections: Int,
+  dependent: Option(qlog_admission.Reservation),
+) -> Result(Option(qlog_admission.Reservation), Error) {
+  case directory {
+    "" -> Ok(None)
+    _ ->
+      qlog_admission.reserve_linked(
+        identity,
+        qlog_budget.connection_reservation_bytes(),
+        maximum - budget.admission_quanta() * budget.quantum(),
+        connections,
+        dependent,
+      )
+      |> result.map(Some)
+      |> result.map_error(fn(code) {
+        case code {
+          2 -> DiagnosticConnectionsExceeded
+          _ -> EndpointMemoryExceeded(maximum)
+        }
+      })
+  }
+}
+
+fn release_unused_qlog(reservation: Option(qlog_admission.Reservation)) -> Nil {
+  case reservation {
+    Some(reservation) -> qlog_admission.release_unused(reservation)
+    None -> Nil
+  }
+}
+
+fn validate_endpoint_memory(
+  maximum: Int,
+  qlog_directory: String,
+  _telemetry_limit: Int,
+) -> Result(Nil, Error) {
+  let diagnostics = case qlog_directory {
+    "" -> 0
+    _ -> qlog_budget.connection_reservation_bytes()
+  }
+  let admission = budget.admission_quanta() * budget.quantum() + diagnostics
   case maximum >= admission {
     True -> Ok(Nil)
     False -> Error(EndpointMemoryExceeded(maximum))
@@ -508,6 +673,65 @@ pub fn send_and_finish(stream: Stream, bytes: BitArray) -> Result(Nil, Error) {
 /// Return whether a stream's FIN is acknowledged or its send direction reset.
 pub fn send_finished(stream: Stream) -> Result(Bool, Error) {
   call(stream.connection, fn(reply) { SendFinished(stream.identifier, reply) })
+}
+
+/// Wait for FIN acknowledgement or a terminal send-direction outcome.
+///
+/// The caller waits on a one-shot bounded observation while the connection actor continues to process packets and unrelated streams.
+/// The configured operation timeout remains an upper bound on the requested duration.
+pub fn await_send_completion(
+  stream: Stream,
+  within_milliseconds: Int,
+) -> Result(stream_completion.Outcome, Error) {
+  case within_milliseconds > 0 {
+    False -> Error(InvalidInput)
+    True -> {
+      let connection = stream.connection
+      let deadline =
+        udp.monotonic_millisecond()
+        + int.min(within_milliseconds, connection.timeout_milliseconds)
+      let observation = send_observation.new()
+      case send_observation.available(observation) {
+        False -> Error(EndpointMemoryExceeded(0))
+        True -> {
+          process.send(
+            connection.commands,
+            AwaitSendCompletion(
+              stream.identifier,
+              process.self(),
+              observation,
+              deadline,
+            ),
+          )
+          case
+            send_observation.await(
+              observation,
+              connection.worker,
+              int.max(0, deadline - udp.monotonic_millisecond()),
+            )
+          {
+            send_observation.Replied(result) -> result
+            send_observation.DeadlineExpired(_) -> {
+              process.send(
+                connection.commands,
+                CancelSendCompletion(stream.identifier, observation),
+              )
+              Error(OperationTimeout)
+            }
+            send_observation.WorkerExited -> Error(ConnectionClosed)
+            send_observation.OwnerExited -> Error(ConnectionClosed)
+            send_observation.Unavailable -> {
+              process.send(
+                connection.commands,
+                CancelSendCompletion(stream.identifier, observation),
+              )
+              Error(EndpointMemoryExceeded(0))
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 fn send_with_fin(
@@ -647,8 +871,14 @@ pub fn telemetry_stats(connection: Connection) -> Result(qlog.Stats, Error) {
   call(connection, TelemetryStats)
 }
 
-/// Borrow the connection-owned writer for the restricted public application
-/// diagnostic capability. Writer lifetime remains owned by this actor.
+pub fn local_connection_id_stats(
+  connection: Connection,
+) -> Result(local_connection_id.Snapshot, Error) {
+  call(connection, LocalConnectionIdStats)
+}
+
+/// Borrow the connection-owned writer for the restricted public application diagnostic capability.
+/// Writer lifetime remains owned by this actor.
 pub fn application_diagnostics(
   connection: Connection,
 ) -> Result(Option(qlog.Writer), Error) {
@@ -691,8 +921,7 @@ pub fn resumption_ticket(
 
 /// Wait without a polling deadline for the next origin-bound ticket.
 ///
-/// Once a ticket arrives, its short address-token coalescing window remains a
-/// one-shot deadline; connection close or actor failure releases the caller.
+/// Once a ticket arrives, its short address-token coalescing window remains a one-shot deadline; connection close or actor failure releases the caller.
 pub fn resumption_ticket_next(
   connection: Connection,
 ) -> Result(ResumptionTicket, Error) {
@@ -724,11 +953,43 @@ pub fn close(connection: Connection) -> Result(CloseResult, Error) {
   close_with_code(connection, 0)
 }
 
+/// Fixed actor-call share used when a higher-level adapter constructs the absolute completion deadline passed to `close_with_code_until`.
+pub fn close_operation_allowance_milliseconds(connection: Connection) -> Int {
+  connection.timeout_milliseconds + worker_reply_grace_milliseconds
+}
+
 pub fn close_with_code(
   connection: Connection,
   application_error_code: Int,
 ) -> Result(CloseResult, Error) {
-  call(connection, fn(reply) { Close(application_error_code, reply) })
+  let current = udp.monotonic_millisecond()
+  case
+    client_close_deadline.from_allowances(
+      current,
+      connection.timeout_milliseconds,
+      worker_reply_grace_milliseconds,
+      qlog.close_completion_allowance_milliseconds(),
+    )
+  {
+    Error(_) -> Error(InvalidInput)
+    Ok(deadline_milliseconds) ->
+      close_with_code_until(
+        connection,
+        application_error_code,
+        deadline_milliseconds,
+      )
+  }
+}
+
+/// Close transport and diagnostics under one caller-owned absolute deadline.
+/// The deadline uses `quic_core/diagnostics.monotonic_milliseconds` and is neither recomputed nor extended between the actor, writer, and cleanup join.
+pub fn close_with_code_until(
+  connection: Connection,
+  application_error_code: Int,
+  deadline_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  use _ <- result.try(validate_client_close_deadline(deadline_milliseconds))
+  call_close_until(connection, application_error_code, deadline_milliseconds)
 }
 
 pub fn stream_connection(stream: Stream) -> Connection {
@@ -750,6 +1011,23 @@ pub fn ticket_allows_early_data(ticket: ResumptionTicket) -> Bool {
 
 pub fn ticket_native(ticket: ResumptionTicket) -> session_ticket.ClientTicket {
   ticket.ticket
+}
+
+/// Return bounded opaque application compatibility state retained by TLS.
+pub fn ticket_application_context(ticket: ResumptionTicket) -> BitArray {
+  session_ticket.application_context(ticket.ticket)
+}
+
+/// Attach bounded opaque application compatibility state while preserving the ticket's authenticated origin, lifetime, transport parameters, and token.
+pub fn ticket_with_application_context(
+  ticket: ResumptionTicket,
+  context: BitArray,
+) -> Result(ResumptionTicket, session_ticket.Error) {
+  use native <- result.try(session_ticket.with_application_context(
+    ticket.ticket,
+    context,
+  ))
+  Ok(ResumptionTicket(..ticket, ticket: native))
 }
 
 pub fn ticket_address_token(ticket: ResumptionTicket) -> BitArray {
@@ -790,8 +1068,13 @@ fn initialise(
   version: Version,
   congestion_control: transport.CongestionAlgorithm,
   qlog_directory: String,
+  qlog_reservation: Option(qlog_admission.Reservation),
   resumption_ticket: Option(ResumptionTicket),
   allow_zero_rtt: Bool,
+  connect_port: Int,
+  connect_trace: Option(connect_trace.Context),
+  group: udp.WorkGroup,
+  deadline: Int,
 ) -> Nil {
   let #(native_ticket, address_token) = case resumption_ticket {
     Some(value) -> #(Some(value.ticket), value.address_token)
@@ -830,80 +1113,117 @@ fn initialise(
       unidirectional_stream_limit,
       stream_buffer_limit,
       datagram_limit,
+      connect_port,
+      connect_trace,
     )
-  case client_transport.connect(config) {
+  case client_transport.connect_in(config, group, deadline) {
     Error(error) -> process.send(bootstrap, Error(map_transport_error(error)))
-    Ok(connection) ->
-      case open_qlog(qlog_directory, telemetry_limit) {
+    Ok(connection) -> {
+      let #(opened, cleanup) =
+        open_qlog(qlog_directory, telemetry_limit, qlog_reservation)
+      case opened {
         Error(error) -> {
           client_transport.close(connection, 0, "qlog unavailable")
+          collect_qlog(qlog_reservation, cleanup)
           process.send(bootstrap, Error(error))
         }
         Ok(writer) -> {
-          let now = udp.monotonic_millisecond()
-          case writer {
-            Some(value) -> record_qlog_bootstrap(value, connection, now)
-            None -> Nil
+          case bind_qlog_reservation(writer, qlog_reservation) {
+            Error(Nil) -> {
+              client_transport.close(connection, 0, "qlog unavailable")
+              close_qlog(writer)
+              collect_qlog(qlog_reservation, cleanup)
+              process.send(bootstrap, Error(QlogUnavailable))
+            }
+            Ok(Nil) -> {
+              let now = udp.monotonic_millisecond()
+              case writer {
+                Some(value) -> record_qlog_bootstrap(value, connection, now)
+                None -> Nil
+              }
+              let commands = process.new_subject()
+              let monitor = process.monitor(owner)
+              let selector =
+                process.new_selector()
+                |> process.select_map(commands, ReceivedCommand)
+                |> process.select_specific_monitor(monitor, fn(_) {
+                  OwnerExited
+                })
+                |> process.select_other(ReceivedNetwork)
+              process.send(
+                bootstrap,
+                Ok(Connection(
+                  commands,
+                  process.self(),
+                  operation_timeout_milliseconds,
+                  hostname,
+                  port,
+                )),
+              )
+              client_transport.published(connection)
+              drive_and_loop(Worker(
+                connection,
+                commands,
+                selector,
+                dict.new(),
+                queue_new(),
+                queue_new(),
+                None,
+                queue_new(),
+                0,
+                None,
+                None,
+                None,
+                address_token,
+                None,
+                case early_attempted {
+                  True -> PendingEarlyData
+                  False -> NotAttempted
+                },
+                case native_ticket {
+                  Some(_) -> ResumptionPending
+                  None -> ResumptionNotAttempted
+                },
+                ticket_supplied,
+                allow_zero_rtt,
+                ticket_allows_zero_rtt,
+                operation_timeout_milliseconds,
+                stream_buffer_limit,
+                queue_limit,
+                datagram_limit,
+                hostname,
+                port,
+                congestion_control,
+                writer,
+                cleanup,
+                qlog_reservation,
+                None,
+                0,
+                now + pmtu_probe_interval_milliseconds,
+                None,
+                0,
+                None,
+                None,
+                False,
+                dict.new(),
+                stream_completion.new(queue_limit),
+              ))
+            }
           }
-          let commands = process.new_subject()
-          let monitor = process.monitor(owner)
-          let selector =
-            process.new_selector()
-            |> process.select_map(commands, ReceivedCommand)
-            |> process.select_specific_monitor(monitor, fn(_) { OwnerExited })
-            |> process.select_other(ReceivedNetwork)
-          process.send(
-            bootstrap,
-            Ok(Connection(
-              commands,
-              process.self(),
-              operation_timeout_milliseconds,
-              hostname,
-              port,
-            )),
-          )
-          drive_and_loop(Worker(
-            connection,
-            commands,
-            selector,
-            dict.new(),
-            queue_new(),
-            queue_new(),
-            None,
-            queue_new(),
-            0,
-            None,
-            None,
-            None,
-            address_token,
-            None,
-            case early_attempted {
-              True -> PendingEarlyData
-              False -> NotAttempted
-            },
-            case native_ticket {
-              Some(_) -> ResumptionPending
-              None -> ResumptionNotAttempted
-            },
-            ticket_supplied,
-            allow_zero_rtt,
-            ticket_allows_zero_rtt,
-            operation_timeout_milliseconds,
-            stream_buffer_limit,
-            queue_limit,
-            datagram_limit,
-            hostname,
-            port,
-            congestion_control,
-            writer,
-            now + pmtu_probe_interval_milliseconds,
-            None,
-            0,
-            None,
-            None,
-          ))
         }
       }
+    }
+  }
+}
+
+fn bind_qlog_reservation(
+  writer: Option(qlog.Writer),
+  reservation: Option(qlog_admission.Reservation),
+) -> Result(Nil, Nil) {
+  case writer, reservation {
+    None, None -> Ok(Nil)
+    Some(writer), Some(reservation) -> qlog_admission.bind(writer, reservation)
+    _, _ -> Error(Nil)
   }
 }
 
@@ -916,6 +1236,7 @@ fn loop(worker: Worker) -> Nil {
     None, _ -> {
       let now = udp.monotonic_millisecond()
       let worker = expire_waiters(worker, now)
+      let worker = expire_completion_waiters(worker, now)
       let worker = retry_pending_opens(worker, now)
       let worker = retry_pending_sends(worker)
       case maybe_probe_path_mtu(worker, now) {
@@ -942,12 +1263,11 @@ fn wait_for_work(worker: Worker, now: Int) -> Nil {
       }
       case received {
         Ok(OwnerExited) ->
-          case client_transport.phase(worker.connection) {
+          case worker.application_closed {
             // A public local close already detached application ownership.
-            // Retain the bounded wire tombstone so a lost first close can be
-            // answered without letting the former owner extend its lifetime.
-            transport.Closing | transport.Draining -> drive_and_loop(worker)
-            _ -> shutdown_now(worker, ConnectionClosed)
+            // Retain the bounded wire tombstone so a lost first close can be answered without letting the former owner extend its lifetime.
+            True -> drive_and_loop(worker)
+            False -> shutdown_now(worker, ConnectionClosed)
           }
         Ok(ReceivedCommand(command)) -> {
           let worker = record_wait(worker, progress, CommandWake)
@@ -958,6 +1278,9 @@ fn wait_for_work(worker: Worker, now: Int) -> Nil {
         }
         Ok(ReceivedNetwork(message)) ->
           receive_and_loop(record_wait(worker, progress, NetworkWake), message)
+        Ok(CompletionCallerExited(identifier, monitor)) ->
+          completion_caller_exited(worker, identifier, monitor)
+          |> drive_and_loop
         Error(Nil) -> drive_and_loop(record_wait(worker, progress, TimerWake))
       }
     }
@@ -1000,20 +1323,15 @@ fn receive_and_loop(worker: Worker, message: Dynamic) -> Nil {
         client_transport.stats(connection),
         connection,
       )
-      // Dispatch authenticated terminal events before attempting another
-      // drive. A CONNECTION_CLOSE moves the transport to Draining, where a
-      // drive is unavailable; driving first would collapse its application
-      // code into a generic local ConnectionClosed error.
+      // Dispatch authenticated terminal events before attempting another drive.
+      // A CONNECTION_CLOSE moves the transport to Draining, where a drive is unavailable; driving first would collapse its application code into a generic local ConnectionClosed error.
       let worker =
         Worker(..worker, connection: connection)
         |> dispatch_transport_events
       // An authenticated ACK can release congestion or flow-control credit.
-      // Drive that newly sendable output in this same event turn. Deferring to
-      // `loop` is insufficient: when the pacer says SendNow and every prior
-      // packet was acknowledged there may be no protocol deadline left to
-      // wake the actor, so output would otherwise wait for an unrelated API
-      // command. `drive_and_loop` is bounded by the transport flush cap and
-      // rearms active-once reception before parking.
+      // Drive that newly sendable output in this same event turn.
+      // Deferring to `loop` is insufficient: when the pacer says SendNow and every prior packet was acknowledged there may be no protocol deadline left to wake the actor, so output would otherwise wait for an unrelated API command.
+      // `drive_and_loop` is bounded by the transport flush cap and rearms active-once reception before parking.
       case worker.terminal_error {
         Some(error) -> shutdown_after_peer_close(worker, error)
         None -> drive_and_loop(worker)
@@ -1036,12 +1354,53 @@ fn handle_local_terminal_command(
   command: Command,
 ) -> Result(Worker, Nil) {
   case command {
-    Close(_, reply) -> {
-      process.send(reply, Ok(AlreadyClosed))
-      Ok(worker)
+    Close(_, deadline_milliseconds, reply) -> {
+      case worker.close_completion {
+        Some(completion) -> {
+          case worker.close_completion_waiters >= maximum_close_waiters - 1 {
+            True -> {
+              process.send(reply, Error(OperationTimeout))
+              Ok(worker)
+            }
+            False -> {
+              await_client_close_completion(completion, reply)
+              Ok(
+                Worker(
+                  ..worker,
+                  close_completion_waiters: worker.close_completion_waiters + 1,
+                ),
+              )
+            }
+          }
+        }
+        None -> {
+          let #(worker, resources) = take_qlog_close(worker)
+          case
+            start_client_close_completion(
+              CloseResources(..resources, outcome: AlreadyClosed),
+              process.self(),
+              deadline_milliseconds,
+              reply,
+            )
+          {
+            Ok(completion) ->
+              Ok(Worker(..worker, close_completion: Some(completion)))
+            Error(Nil) -> {
+              client_transport.release(worker.connection)
+              Error(Nil)
+            }
+          }
+        }
+      }
     }
     command -> {
-      reject_terminal_command(command, ConnectionClosed)
+      let error = case
+        client_transport.local_transport_failure_code(worker.connection)
+      {
+        Some(code) -> TransportFailureWithCode(code)
+        None -> ConnectionClosed
+      }
+      reject_terminal_command(command, error)
       Ok(worker)
     }
   }
@@ -1149,6 +1508,21 @@ fn handle_live_command(
         reply,
         client_transport.send_finished(worker.connection, identifier),
       )
+    AwaitSendCompletion(identifier, owner, observation, deadline) ->
+      Ok(register_completion_waiter(
+        worker,
+        identifier,
+        owner,
+        observation,
+        deadline,
+      ))
+    CancelSendCompletion(identifier, observation) -> {
+      case dict.get(worker.completion_waiters, identifier) {
+        Ok(waiter) if waiter.observation == observation ->
+          Ok(remove_completion_waiter(worker, identifier))
+        _ -> Ok(worker)
+      }
+    }
     PathStats(reply) -> {
       process.send(reply, Ok(client_transport.path_stats(worker.connection)))
       Ok(worker)
@@ -1164,6 +1538,13 @@ fn handle_live_command(
           dict.size(worker.streams),
           client_transport.active_stream_count(worker.connection),
         )),
+      )
+      Ok(worker)
+    }
+    LocalConnectionIdStats(reply) -> {
+      process.send(
+        reply,
+        Ok(client_transport.local_connection_id_snapshot(worker.connection)),
       )
       Ok(worker)
     }
@@ -1225,7 +1606,7 @@ fn handle_live_command(
       )
       Ok(worker)
     }
-    Close(code, reply) -> {
+    Close(code, deadline_milliseconds, reply) -> {
       let before = client_transport.stats(worker.connection)
       let closing =
         client_transport.begin_close(
@@ -1234,15 +1615,23 @@ fn handle_live_command(
           "application close",
         )
       let worker =
-        fail_all(Worker(..worker, connection: closing), ConnectionClosed)
+        fail_all(
+          Worker(..worker, connection: closing, application_closed: True),
+          ConnectionClosed,
+        )
       // Emit the first CONNECTION_CLOSE before acknowledging the API call.
-      // The actor then remains detached from its former owner until the
-      // transport's fixed closing deadline.
+      // The actor then remains detached from its former owner until the transport's fixed closing deadline.
       case client_transport.drive(worker.connection) {
         Error(_) -> {
           client_transport.release(worker.connection)
-          close_qlog(worker.qlog_writer)
-          process.send(reply, Ok(Closed))
+          let #(_, resources) = take_qlog_close(worker)
+          let _completion =
+            start_client_close_completion(
+              resources,
+              process.self(),
+              deadline_milliseconds,
+              reply,
+            )
           Error(Nil)
         }
         Ok(connection) -> {
@@ -1252,8 +1641,23 @@ fn handle_live_command(
             client_transport.stats(connection),
             connection,
           )
-          process.send(reply, Ok(Closed))
-          Ok(Worker(..worker, connection: connection))
+          let #(worker, resources) =
+            take_qlog_close(Worker(..worker, connection: connection))
+          case
+            start_client_close_completion(
+              resources,
+              process.self(),
+              deadline_milliseconds,
+              reply,
+            )
+          {
+            Ok(completion) ->
+              Ok(Worker(..worker, close_completion: Some(completion)))
+            Error(Nil) -> {
+              client_transport.release(connection)
+              Error(Nil)
+            }
+          }
         }
       }
     }
@@ -1385,10 +1789,8 @@ fn handle_open(
   }
 }
 
-/// Retry stream opens that lost their 0-RTT keys to authenticated Retry or
-/// early-data rejection. The caller remains bounded by its original operation
-/// deadline and by the endpoint queue limit; no busy loop or unbounded mailbox
-/// growth is introduced while the independently driven handshake completes.
+/// Retry stream opens that lost their 0-RTT keys to authenticated Retry or early-data rejection.
+/// The caller remains bounded by its original operation deadline and by the endpoint queue limit; no busy loop or unbounded mailbox growth is introduced while the independently driven handshake completes.
 fn retry_pending_opens(worker: Worker, now: Int) -> Worker {
   case queue_pop(worker.pending_opens) {
     Error(Nil) -> worker
@@ -1555,15 +1957,9 @@ fn advance_send(
                       )
                     }
                     _ -> {
-                      // Keep filling the already granted, application-bounded
-                      // transport buffer in this actor turn. Waiting for a
-                      // packet or timer after every 64 KiB chunk can deadlock
-                      // a request/response protocol: the caller is waiting for
-                      // `send` to return while the peer is waiting for the
-                      // remainder of that same application write. Recursion
-                      // stops as soon as the configured stream buffer has no
-                      // room, so growth remains bounded and subsequent
-                      // progress still depends on ACK/flow-control credit.
+                      // Keep filling the already granted, application-bounded transport buffer in this actor turn.
+                      // Waiting for a packet or timer after every 64 KiB chunk can deadlock a request/response protocol: the caller is waiting for `send` to return while the peer is waiting for the remainder of that same application write.
+                      // Recursion stops as soon as the configured stream buffer has no room, so growth remains bounded and subsequent progress still depends on ACK/flow-control credit.
                       let pending =
                         PendingSend(
                           rest,
@@ -1795,8 +2191,12 @@ fn ticket_token_deadline(deadline: Option(Int), now: Int) -> Int {
 }
 
 fn dispatch_transport_events(worker: Worker) -> Worker {
-  let #(connection, events) = client_transport.take_events(worker.connection)
-  dispatch_events(Worker(..worker, connection: connection), events)
+  case client_transport.take_events(worker.connection) {
+    Ok(#(connection, events)) ->
+      dispatch_events(Worker(..worker, connection: connection), events)
+    Error(error) ->
+      Worker(..worker, terminal_error: Some(map_transport_error(error)))
+  }
 }
 
 fn dispatch_events(worker: Worker, events: List(transport.Event)) -> Worker {
@@ -1813,6 +2213,8 @@ fn dispatch_event(worker: Worker, event: transport.Event) -> Worker {
       service_read_waiter(worker, identifier)
     transport.StreamWasReset(identifier, _) ->
       service_read_waiter(worker, identifier)
+    transport.StreamSendCompleted(identifier, outcome) ->
+      complete_send(worker, identifier, outcome)
     transport.DatagramReceived(payload) -> enqueue_datagram(worker, payload)
     transport.SessionTicketStored(ticket) -> store_ticket(worker, ticket)
     transport.NewTokenReceived(token) -> store_address_token(worker, token)
@@ -1829,6 +2231,9 @@ fn dispatch_event(worker: Worker, event: transport.Event) -> Worker {
           }
         status -> status
       })
+      |> replenish_local_connection_ids
+    transport.LocalConnectionIdRetired(_, _) ->
+      replenish_local_connection_ids(worker)
     transport.PathValidated -> {
       case worker.qlog_writer {
         Some(writer) -> qlog.path_updated(writer, udp.monotonic_millisecond())
@@ -1868,9 +2273,21 @@ fn dispatch_event(worker: Worker, event: transport.Event) -> Worker {
       let error = PeerClosedWithCode(code)
       Worker(..worker, terminal_error: Some(error))
     }
+    transport.PeerTransportClosed(code, _) ->
+      Worker(..worker, terminal_error: Some(PeerTransportFailureWithCode(code)))
+    transport.LocalTransportFailure(_, code) ->
+      fail_all(worker, TransportFailureWithCode(code))
     transport.StatelessResetReceived ->
       Worker(..worker, terminal_error: Some(ConnectionClosed))
     _ -> worker
+  }
+}
+
+fn replenish_local_connection_ids(worker: Worker) -> Worker {
+  case client_transport.replenish_local_connection_ids(worker.connection) {
+    Ok(connection) -> Worker(..worker, connection: connection)
+    Error(error) ->
+      Worker(..worker, terminal_error: Some(map_transport_error(error)))
   }
 }
 
@@ -2020,6 +2437,208 @@ fn retry_pending_send_entries(
   }
 }
 
+fn register_completion_waiter(
+  worker: Worker,
+  identifier: Int,
+  owner: Pid,
+  observation: Observation(Result(stream_completion.Outcome, Error)),
+  deadline: Int,
+) -> Worker {
+  case udp.monotonic_millisecond() >= deadline {
+    True -> completion_reply(worker, observation, Error(OperationTimeout))
+    False ->
+      case stream_id.can_send(identifier, stream_id.Client) {
+        False -> completion_reply(worker, observation, Error(InvalidDirection))
+        True ->
+          case stream_completion.get(worker.completions, identifier) {
+            Some(outcome) -> completion_reply(worker, observation, Ok(outcome))
+            None ->
+              register_live_completion_waiter(
+                worker,
+                identifier,
+                owner,
+                observation,
+                deadline,
+              )
+          }
+      }
+  }
+}
+
+fn register_live_completion_waiter(
+  worker: Worker,
+  identifier: Int,
+  owner: Pid,
+  observation: Observation(Result(stream_completion.Outcome, Error)),
+  deadline: Int,
+) -> Worker {
+  let worker = case dict.get(worker.completion_waiters, identifier) {
+    Ok(waiter) ->
+      case process.is_alive(waiter.owner) {
+        False -> remove_completion_waiter(worker, identifier)
+        True -> worker
+      }
+    Error(Nil) -> worker
+  }
+  case
+    dict.has_key(worker.completion_waiters, identifier),
+    dict.size(worker.completion_waiters)
+    >= int.min(worker.queue_limit, maximum_completion_waiters)
+  {
+    True, _ -> completion_reply(worker, observation, Error(ConcurrentSend))
+    False, True ->
+      completion_reply(
+        worker,
+        observation,
+        Error(
+          IncomingStreamQueueExceeded(int.min(
+            worker.queue_limit,
+            maximum_completion_waiters,
+          )),
+        ),
+      )
+    False, False ->
+      inspect_completion_stream(
+        worker,
+        identifier,
+        owner,
+        observation,
+        deadline,
+      )
+  }
+}
+
+fn inspect_completion_stream(
+  worker: Worker,
+  identifier: Int,
+  owner: Pid,
+  observation: Observation(Result(stream_completion.Outcome, Error)),
+  deadline: Int,
+) -> Worker {
+  case client_transport.stream_send_progress(worker.connection, identifier) {
+    Error(error) ->
+      completion_reply(worker, observation, Error(map_transport_error(error)))
+    Ok(progress) if progress.fin_acknowledged ->
+      completion_reply(worker, observation, Ok(stream_completion.Acknowledged))
+    Ok(progress) if progress.send_reset ->
+      completion_reply(worker, observation, Error(StreamClosed))
+    Ok(_) ->
+      case process.is_alive(owner) {
+        False -> worker
+        True -> {
+          let monitor = process.monitor(owner)
+          Worker(
+            ..worker,
+            completion_waiters: dict.insert(
+              worker.completion_waiters,
+              identifier,
+              CompletionWaiter(owner, monitor, observation, deadline),
+            ),
+            selector: process.select_specific_monitor(
+              worker.selector,
+              monitor,
+              fn(_) { CompletionCallerExited(identifier, monitor) },
+            ),
+          )
+        }
+      }
+  }
+}
+
+fn completion_reply(
+  worker: Worker,
+  observation: Observation(Result(stream_completion.Outcome, Error)),
+  outcome: Result(stream_completion.Outcome, Error),
+) -> Worker {
+  let _published = send_observation.publish(observation, outcome)
+  worker
+}
+
+fn remove_completion_waiter(worker: Worker, identifier: Int) -> Worker {
+  case dict.get(worker.completion_waiters, identifier) {
+    Error(Nil) -> worker
+    Ok(waiter) -> {
+      process.demonitor_process(waiter.monitor)
+      Worker(
+        ..worker,
+        completion_waiters: dict.delete(worker.completion_waiters, identifier),
+        selector: process.deselect_specific_monitor(
+          worker.selector,
+          waiter.monitor,
+        ),
+      )
+    }
+  }
+}
+
+fn completion_caller_exited(
+  worker: Worker,
+  identifier: Int,
+  monitor: process.Monitor,
+) -> Worker {
+  case dict.get(worker.completion_waiters, identifier) {
+    Ok(waiter) if waiter.monitor == monitor ->
+      remove_completion_waiter(worker, identifier)
+    _ -> worker
+  }
+}
+
+fn complete_send(
+  worker: Worker,
+  identifier: Int,
+  outcome: stream_completion.Outcome,
+) -> Worker {
+  let worker =
+    Worker(
+      ..worker,
+      completions: stream_completion.record(
+        worker.completions,
+        identifier,
+        outcome,
+      ),
+    )
+  case dict.get(worker.completion_waiters, identifier) {
+    Error(Nil) -> worker
+    Ok(waiter) -> {
+      let result = case udp.monotonic_millisecond() >= waiter.deadline {
+        True -> Error(OperationTimeout)
+        False -> Ok(outcome)
+      }
+      completion_reply(worker, waiter.observation, result)
+      |> remove_completion_waiter(identifier)
+    }
+  }
+}
+
+fn expire_completion_waiters(worker: Worker, now: Int) -> Worker {
+  list.fold(dict.to_list(worker.completion_waiters), worker, fn(worker, entry) {
+    let #(identifier, waiter) = entry
+    case now >= waiter.deadline {
+      True ->
+        completion_reply(worker, waiter.observation, Error(OperationTimeout))
+        |> remove_completion_waiter(identifier)
+      False -> worker
+    }
+  })
+}
+
+fn fail_completion_waiters(worker: Worker, error: Error) -> Worker {
+  list.fold(dict.to_list(worker.completion_waiters), worker, fn(worker, entry) {
+    let #(identifier, waiter) = entry
+    completion_reply(worker, waiter.observation, Error(error))
+    |> remove_completion_waiter(identifier)
+  })
+}
+
+fn completion_deadlines(
+  deadline: Option(Int),
+  waiters: List(CompletionWaiter),
+) -> Option(Int) {
+  list.fold(waiters, deadline, fn(deadline, waiter) {
+    earlier_deadline(deadline, Some(waiter.deadline))
+  })
+}
+
 fn expire_waiters(worker: Worker, now: Int) -> Worker {
   let worker = expire_pending_opens(worker, now)
   let worker = case worker.accept_waiter {
@@ -2142,6 +2761,7 @@ fn park_progress(worker: Worker, now: Int) -> Result(ParkProgress, Error) {
     |> earlier_deadline(migration_deadline(worker.migration_waiter))
     |> earlier_deadline(ticket_deadline(worker.ticket_waiter))
     |> stream_deadlines(dict.values(worker.streams))
+    |> completion_deadlines(dict.values(worker.completion_waiters))
   let selected =
     protocol |> earlier_deadline(pmtu) |> earlier_deadline(operation)
   Ok(ParkProgress(
@@ -2260,6 +2880,7 @@ fn send_pmtu_probe(worker: Worker, now: Int) -> Result(Worker, Error) {
 }
 
 fn fail_all(worker: Worker, error: Error) -> Worker {
+  let worker = fail_completion_waiters(worker, error)
   fail_pending_opens(worker.pending_opens, error)
   case worker.accept_waiter {
     Some(AcceptWaiter(reply, _)) -> process.send(reply, Error(error))
@@ -2294,27 +2915,43 @@ fn fail_all(worker: Worker, error: Error) -> Worker {
     datagram_waiter: None,
     migration_waiter: None,
     ticket_waiter: None,
+    streams: dict.map_values(worker.streams, fn(_, stream) {
+      StreamState(..stream, read_waiter: None, pending_send: None)
+    }),
   )
 }
 
-/// A peer close terminates wire input, not bytes which the transport had
-/// already authenticated and acknowledged. Keep those bounded stream receive
-/// buffers behind the existing finite terminal tombstone so a read command
-/// which lost the mailbox race with CONNECTION_CLOSE can still drain them.
-/// All operations capable of creating work fail immediately, and the UDP
-/// socket plus qlog writer are released before entering the tombstone loop.
+/// A peer close terminates wire input, not bytes which the transport had already authenticated and acknowledged.
+/// Keep those bounded stream receive buffers behind the existing finite terminal tombstone so a read command which lost the mailbox race with CONNECTION_CLOSE can still drain them.
+/// All operations capable of creating work fail immediately, and the UDP socket plus qlog writer are released before entering the tombstone loop.
 fn shutdown_after_peer_close(worker: Worker, error: Error) -> Nil {
+  case worker.application_closed {
+    // A local close already relinquished every application stream.
+    // A peer's acknowledgement must not restart a receive-retention window, including when the old owner has already exited during the wire closing period.
+    True -> shutdown_now(worker, error)
+    False -> retain_peer_terminal(worker, error)
+  }
+}
+
+fn retain_peer_terminal(worker: Worker, error: Error) -> Nil {
   let worker = prepare_peer_terminal(worker, error)
   client_transport.close(worker.connection, 0, "peer already closed")
   close_qlog(worker.qlog_writer)
+  collect_qlog(worker.qlog_reservation, worker.qlog_cleanup)
   peer_terminal_loop(
-    Worker(..worker, qlog_writer: None),
+    Worker(
+      ..worker,
+      qlog_writer: None,
+      qlog_cleanup: None,
+      qlog_reservation: None,
+    ),
     error,
     udp.monotonic_millisecond() + worker.operation_timeout_milliseconds,
   )
 }
 
 fn prepare_peer_terminal(worker: Worker, error: Error) -> Worker {
+  let worker = fail_completion_waiters(worker, error)
   fail_pending_opens(worker.pending_opens, error)
   case worker.accept_waiter {
     Some(AcceptWaiter(reply, _)) -> process.send(reply, Error(error))
@@ -2441,39 +3078,40 @@ fn peer_terminal_loop(worker: Worker, error: Error, deadline: Int) -> Nil {
       case process.selector_receive(worker.selector, within: remaining) {
         Error(Nil) | Ok(OwnerExited) -> Nil
         Ok(ReceivedNetwork(_)) -> peer_terminal_loop(worker, error, deadline)
-        Ok(ReceivedCommand(command)) ->
+        Ok(CompletionCallerExited(identifier, monitor)) ->
           peer_terminal_loop(
-            handle_peer_terminal_command(worker, command, error),
+            completion_caller_exited(worker, identifier, monitor),
             error,
             deadline,
           )
+        Ok(ReceivedCommand(Receive(identifier, maximum, reply, _)))
+          if maximum > 0 && maximum <= worker.stream_buffer_limit
+        ->
+          peer_terminal_loop(
+            terminal_read_or_error(
+              worker,
+              identifier,
+              ReadWaiter(maximum, reply, None),
+              error,
+            ),
+            error,
+            deadline,
+          )
+        // Explicit close relinquishes the retained receive buffers.
+        // The wire and qlog resources were already released on entry, so there is no transport closing period left to supervise here.
+        Ok(ReceivedCommand(Close(_, deadline_milliseconds, reply))) -> {
+          start_terminal_close_completion(
+            worker.commands,
+            deadline_milliseconds,
+            reply,
+          )
+          Nil
+        }
+        Ok(ReceivedCommand(command)) -> {
+          reject_terminal_command(command, error)
+          peer_terminal_loop(worker, error, deadline)
+        }
       }
-  }
-}
-
-fn handle_peer_terminal_command(
-  worker: Worker,
-  command: Command,
-  error: Error,
-) -> Worker {
-  case command {
-    Receive(identifier, maximum, reply, _)
-      if maximum > 0 && maximum <= worker.stream_buffer_limit
-    ->
-      terminal_read_or_error(
-        worker,
-        identifier,
-        ReadWaiter(maximum, reply, None),
-        error,
-      )
-    Close(_, reply) -> {
-      process.send(reply, Ok(AlreadyClosed))
-      worker
-    }
-    command -> {
-      reject_terminal_command(command, error)
-      worker
-    }
   }
 }
 
@@ -2486,13 +3124,66 @@ fn shutdown(worker: Worker, error: Error) -> Nil {
   )
 }
 
-/// Release a locally closed connection only after the transport's finite
-/// Closing/Draining deadline reached Closed. No terminal command loop is
-/// needed: the public handle observes the dead actor as idempotently closed.
+/// Release a locally closed connection only after the transport's finite Closing/Draining deadline reached Closed.
+/// No terminal command loop is needed: the public handle observes the dead actor as idempotently closed.
 fn finish_closed_transport(worker: Worker) -> Nil {
   let worker = fail_all(worker, ConnectionClosed)
   client_transport.release(worker.connection)
-  close_qlog(worker.qlog_writer)
+  case worker.close_completion {
+    Some(completion) ->
+      forward_queued_close_waiters(
+        worker.commands,
+        completion,
+        worker.close_completion_waiters,
+        maximum_close_waiters * 2,
+      )
+    None -> {
+      close_qlog(worker.qlog_writer)
+      collect_qlog(worker.qlog_reservation, worker.qlog_cleanup)
+    }
+  }
+}
+
+/// A close completion can still be flushing qlog when the transport reaches Closed.
+/// Forward a finite mailbox prefix before this actor exits.
+/// Every forwarded signal precedes this actor's DOWN at the completion owner, so its final zero-time drain cannot lose an admitted waiter.
+fn forward_queued_close_waiters(
+  commands: Subject(Command),
+  completion: ClientCloseCompletion,
+  accepted_waiters: Int,
+  remaining_scan: Int,
+) -> Nil {
+  case remaining_scan <= 0 {
+    True -> Nil
+    False ->
+      case process.receive(commands, within: 0) {
+        Error(Nil) -> Nil
+        Ok(Close(_, _, reply)) -> {
+          case accepted_waiters >= maximum_close_waiters - 1 {
+            True -> process.send(reply, Error(OperationTimeout))
+            False -> await_client_close_completion(completion, reply)
+          }
+          forward_queued_close_waiters(
+            commands,
+            completion,
+            case accepted_waiters >= maximum_close_waiters - 1 {
+              True -> accepted_waiters
+              False -> accepted_waiters + 1
+            },
+            remaining_scan - 1,
+          )
+        }
+        Ok(command) -> {
+          reject_terminal_command(command, ConnectionClosed)
+          forward_queued_close_waiters(
+            commands,
+            completion,
+            accepted_waiters,
+            remaining_scan - 1,
+          )
+        }
+      }
+  }
 }
 
 fn shutdown_now(worker: Worker, error: Error) -> Nil {
@@ -2502,12 +3193,25 @@ fn shutdown_now(worker: Worker, error: Error) -> Nil {
 fn shutdown_resources(worker: Worker, error: Error) -> Nil {
   let _ = fail_all(worker, error)
   client_transport.close(worker.connection, 0, "worker shutdown")
-  close_qlog(worker.qlog_writer)
+  case worker.close_completion {
+    // The affine qlog receipts already belong to the completion actor.
+    // Forward every admitted/queued Close before this actor exits; its DOWN then forms the completion actor's final ownership barrier.
+    Some(completion) ->
+      forward_queued_close_waiters(
+        worker.commands,
+        completion,
+        worker.close_completion_waiters,
+        maximum_close_waiters * 2,
+      )
+    None -> {
+      close_qlog(worker.qlog_writer)
+      collect_qlog(worker.qlog_reservation, worker.qlog_cleanup)
+    }
+  }
 }
 
-/// Keep the authoritative peer close code observable for one finite public
-/// operation window. Without this tombstone a command sent just after the
-/// close packet races the actor exit and degrades to an untyped local close.
+/// Keep the authoritative peer close code observable for one finite public operation window.
+/// Without this tombstone a command sent just after the close packet races the actor exit and degrades to an untyped local close.
 fn terminal_loop(
   commands: Subject(Command),
   error: Error,
@@ -2519,10 +3223,67 @@ fn terminal_loop(
     False ->
       case process.receive(commands, within: remaining) {
         Error(Nil) -> Nil
-        Ok(Close(_, reply)) -> process.send(reply, Ok(AlreadyClosed))
+        Ok(Close(_, deadline_milliseconds, reply)) -> {
+          start_terminal_close_completion(
+            commands,
+            deadline_milliseconds,
+            reply,
+          )
+          Nil
+        }
         Ok(command) -> {
           reject_terminal_command(command, error)
           terminal_loop(commands, error, deadline)
+        }
+      }
+  }
+}
+
+/// Turn the terminal actor's final Close into one bounded shared completion.
+/// The actor drains a finite prefix before it exits, so every caller admitted before the exit linearization point observes the same typed outcome.
+fn start_terminal_close_completion(
+  commands: Subject(Command),
+  deadline_milliseconds: Int,
+  reply: Subject(Result(CloseResult, Error)),
+) -> Nil {
+  case
+    start_client_close_completion(
+      CloseResources(AlreadyClosed, None, None, None),
+      process.self(),
+      deadline_milliseconds,
+      reply,
+    )
+  {
+    Ok(completion) ->
+      forward_queued_close_waiters(
+        commands,
+        completion,
+        0,
+        maximum_close_waiters * 2,
+      )
+    // The first completion actor still owns and answers `reply`; bootstrap can fail only at the deadline.
+    // Reject a bounded queued prefix explicitly so those callers do not depend on an actor which is about to exit.
+    Error(Nil) ->
+      reject_queued_terminal_close_waiters(commands, maximum_close_waiters * 2)
+  }
+}
+
+fn reject_queued_terminal_close_waiters(
+  commands: Subject(Command),
+  remaining_scan: Int,
+) -> Nil {
+  case remaining_scan <= 0 {
+    True -> Nil
+    False ->
+      case process.receive(commands, within: 0) {
+        Error(Nil) -> Nil
+        Ok(Close(_, _, reply)) -> {
+          process.send(reply, Error(OperationTimeout))
+          reject_queued_terminal_close_waiters(commands, remaining_scan - 1)
+        }
+        Ok(command) -> {
+          reject_terminal_command(command, ConnectionClosed)
+          reject_queued_terminal_close_waiters(commands, remaining_scan - 1)
         }
       }
   }
@@ -2546,8 +3307,14 @@ fn reject_terminal_command(command: Command, error: Error) -> Nil {
     Ping(reply) -> process.send(reply, Error(error))
     SetCongestion(_, reply) -> process.send(reply, Error(error))
     SendFinished(_, reply) -> process.send(reply, Error(error))
+    AwaitSendCompletion(_, _, observation, _) -> {
+      let _published = send_observation.publish(observation, Error(error))
+      Nil
+    }
+    CancelSendCompletion(_, _) -> Nil
     PathStats(reply) -> process.send(reply, Error(error))
     ConnectionStats(reply) -> process.send(reply, Error(error))
+    LocalConnectionIdStats(reply) -> process.send(reply, Error(error))
     ResourceStats(reply) -> process.send(reply, Error(error))
     DevelopmentState(reply) -> process.send(reply, Error(error))
     TelemetryStats(reply) -> process.send(reply, Error(error))
@@ -2558,25 +3325,398 @@ fn reject_terminal_command(command: Command, error: Error) -> Nil {
     Handshake(reply) -> process.send(reply, Error(error))
     Ticket(reply, _) -> process.send(reply, Error(error))
     Protocol(reply) -> process.send(reply, Error(error))
-    Close(_, reply) -> process.send(reply, Ok(AlreadyClosed))
+    Close(_, deadline_milliseconds, reply) -> {
+      let _completion =
+        start_client_close_completion(
+          CloseResources(AlreadyClosed, None, None, None),
+          process.self(),
+          deadline_milliseconds,
+          reply,
+        )
+      Nil
+    }
   }
 }
 
 fn open_qlog(
   directory: String,
   telemetry_limit: Int,
-) -> Result(Option(qlog.Writer), Error) {
+  reservation: Option(qlog_admission.Reservation),
+) -> #(Result(Option(qlog.Writer), Error), Option(qlog.CleanupTicket)) {
+  case reservation {
+    None -> #(Ok(None), None)
+    Some(reservation) ->
+      case qlog_admission.begin_open(reservation) {
+        Error(Nil) -> #(Error(QlogUnavailable), None)
+        Ok(Nil) -> open_started_qlog(directory, telemetry_limit)
+      }
+  }
+}
+
+fn open_started_qlog(
+  directory: String,
+  telemetry_limit: Int,
+) -> #(Result(Option(qlog.Writer), Error), Option(qlog.CleanupTicket)) {
   case directory {
-    "" -> Ok(None)
-    value ->
-      qlog.open(
-        value,
-        qlog.Client,
-        udp.monotonic_millisecond(),
-        telemetry_limit,
+    "" -> #(Ok(None), None)
+    value -> {
+      let #(opened, cleanup) =
+        qlog.open_accounted(
+          value,
+          qlog.Client,
+          udp.monotonic_millisecond(),
+          telemetry_limit,
+        )
+      #(
+        opened |> result.map(Some) |> result.replace_error(QlogUnavailable),
+        Some(cleanup),
       )
-      |> result.map(Some)
-      |> result.replace_error(QlogUnavailable)
+    }
+  }
+}
+
+/// Start one deadline-owned affine completion worker before the connection actor relinquishes its qlog receipts.
+/// It survives caller death, confirms both diagnostics and the connection actor are down, and exits no later than the immutable deadline.
+/// Pending native cleanup is handed to the existing finite admission reconciler before this worker exits.
+fn start_client_close_completion(
+  resources: CloseResources,
+  connection_worker: Pid,
+  deadline_milliseconds: Int,
+  reply: Subject(Result(CloseResult, Error)),
+) -> Result(ClientCloseCompletion, Nil) {
+  let bootstrap = process.new_subject()
+  let _completion_worker =
+    process.spawn_unlinked(fn() {
+      let waiters = process.new_subject()
+      process.send(bootstrap, waiters)
+      complete_client_close(
+        resources,
+        connection_worker,
+        deadline_milliseconds,
+        reply,
+        waiters,
+      )
+    })
+  let bootstrap_wait = case
+    remaining_client_close_milliseconds(deadline_milliseconds)
+  {
+    Ok(remaining) -> int.min(remaining, worker_reply_grace_milliseconds)
+    Error(_) -> 0
+  }
+  case process.receive(bootstrap, within: bootstrap_wait) {
+    Ok(waiters) -> Ok(ClientCloseCompletion(waiters))
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+fn await_client_close_completion(
+  completion: ClientCloseCompletion,
+  reply: Subject(Result(CloseResult, Error)),
+) -> Nil {
+  process.send(completion.waiters, AwaitCloseCompletion(reply))
+  Nil
+}
+
+fn complete_client_close(
+  resources: CloseResources,
+  connection_worker: Pid,
+  deadline_milliseconds: Int,
+  reply: Subject(Result(CloseResult, Error)),
+  waiters: Subject(CloseCompletionRequest),
+) -> Nil {
+  // Install this monitor before qlog can block so an early actor DOWN remains queued as proof rather than being inferred from an is_alive snapshot.
+  let worker_monitor = process.monitor(connection_worker)
+  let diagnostics =
+    complete_qlog_close_until(
+      resources.writer,
+      resources.cleanup,
+      deadline_milliseconds,
+    )
+  collect_qlog(resources.reservation, resources.cleanup)
+  let reservation = case diagnostics {
+    Ok(Nil) -> confirm_qlog_reservation(resources.reservation)
+    Error(_) -> Ok(Nil)
+  }
+  let worker_down =
+    await_close_worker_exit_until(
+      connection_worker,
+      worker_monitor,
+      deadline_milliseconds,
+    )
+  process.demonitor_process(worker_monitor)
+  let outcome =
+    client_close_completion_result(
+      resources.outcome,
+      diagnostics,
+      reservation,
+      worker_down,
+    )
+  let replies =
+    collect_close_completion_waiters(
+      waiters,
+      [reply],
+      maximum_close_waiters - 1,
+    )
+  list.each(replies, fn(waiter) { process.send(waiter, outcome) })
+}
+
+fn collect_close_completion_waiters(
+  waiters: Subject(CloseCompletionRequest),
+  replies: List(Subject(Result(CloseResult, Error))),
+  remaining_capacity: Int,
+) -> List(Subject(Result(CloseResult, Error))) {
+  case remaining_capacity <= 0 {
+    True -> replies
+    False ->
+      case process.receive(waiters, within: 0) {
+        Error(Nil) -> replies
+        Ok(AwaitCloseCompletion(reply)) ->
+          collect_close_completion_waiters(
+            waiters,
+            [reply, ..replies],
+            remaining_capacity - 1,
+          )
+      }
+  }
+}
+
+fn client_close_completion_result(
+  outcome: CloseResult,
+  diagnostics: Result(Nil, Error),
+  reservation: Result(Nil, Error),
+  worker_down: Result(Nil, Error),
+) -> Result(CloseResult, Error) {
+  // Preserve an observed diagnostic failure even when the same attempt also exhausts its actor-join window.
+  // A writer timeout remains a typed operation timeout rather than being relabelled as filesystem failure.
+  case diagnostics, reservation, worker_down {
+    Error(QlogUnavailable), _, _ | _, Error(QlogUnavailable), _ ->
+      Error(QlogUnavailable)
+    Error(error), _, _ | _, Error(error), _ | _, _, Error(error) -> Error(error)
+    Ok(Nil), Ok(Nil), Ok(Nil) -> Ok(outcome)
+  }
+}
+
+fn confirm_qlog_reservation(
+  reservation: Option(qlog_admission.Reservation),
+) -> Result(Nil, Error) {
+  case reservation {
+    None -> Ok(Nil)
+    Some(reservation) ->
+      case qlog_admission.reservation_returned(reservation) {
+        True -> Ok(Nil)
+        False -> Error(QlogUnavailable)
+      }
+  }
+}
+
+fn await_close_worker_exit_until(
+  worker: Pid,
+  worker_monitor: process.Monitor,
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(worker_monitor, fn(_) {
+      CloseWorkerExited
+    })
+  let current = udp.monotonic_millisecond()
+  let force_at_milliseconds = case
+    client_close_deadline.force_join_at(
+      current,
+      deadline_milliseconds,
+      close_force_join_milliseconds,
+    )
+  {
+    Ok(value) -> value
+    // The public/internally bounded constructors already reject this state.
+    // If corruption reaches cleanup, force immediately and converge through the typed timeout path instead of panicking or extending the deadline.
+    Error(_) -> current
+  }
+  case await_close_worker_down(selector, force_at_milliseconds) {
+    Ok(Nil) -> Ok(Nil)
+    Error(_) -> {
+      // `kill` is asynchronous, so keep the monitor and consume only the already-reserved final slice.
+      // Success is impossible until DOWN is observed; at the deadline the completion remains a typed timeout.
+      process.kill(worker)
+      await_close_worker_down(selector, deadline_milliseconds)
+    }
+  }
+}
+
+fn await_close_worker_down(
+  selector: process.Selector(CloseWorkerJoinMessage),
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  let remaining =
+    int.max(0, deadline_milliseconds - udp.monotonic_millisecond())
+  let outcome = process.selector_receive(selector, within: remaining)
+  case outcome, udp.monotonic_millisecond() < deadline_milliseconds {
+    Ok(CloseWorkerExited), True -> Ok(Nil)
+    Ok(CloseWorkerExited), False | Error(Nil), _ -> Error(OperationTimeout)
+  }
+}
+
+/// Remove all affine diagnostics receipts from the connection actor in one state transition.
+/// Only the deadline-owned completion worker receives them.
+fn take_qlog_close(worker: Worker) -> #(Worker, CloseResources) {
+  case worker.qlog_writer {
+    Some(writer) -> qlog.connection_closed(writer, udp.monotonic_millisecond())
+    None -> Nil
+  }
+  #(
+    // Transfer all three affine receipts together.
+    // A later idempotent close must never be able to collect the same admission reservation again,
+    // including when the first caller reports a writer or cleanup failure.
+    Worker(
+      ..worker,
+      qlog_writer: None,
+      qlog_cleanup: None,
+      qlog_reservation: None,
+    ),
+    CloseResources(
+      Closed,
+      worker.qlog_writer,
+      worker.qlog_cleanup,
+      worker.qlog_reservation,
+    ),
+  )
+}
+
+fn complete_qlog_close_until(
+  writer: Option(qlog.Writer),
+  cleanup: Option(qlog.CleanupTicket),
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  let writer_outcome = close_qlog_writer_until(writer, deadline_milliseconds)
+  let cleanup_outcome = await_qlog_cleanup_until(cleanup, deadline_milliseconds)
+  case writer_outcome, cleanup_outcome {
+    Error(QlogUnavailable), _ | _, Error(QlogUnavailable) ->
+      Error(QlogUnavailable)
+    Error(error), _ | _, Error(error) -> Error(error)
+    Ok(Nil), Ok(Nil) -> Ok(Nil)
+  }
+}
+
+fn close_qlog_writer_until(
+  writer: Option(qlog.Writer),
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  case writer {
+    None -> Ok(Nil)
+    Some(writer) -> {
+      use _ <- result.try(remaining_client_close_milliseconds(
+        deadline_milliseconds,
+      ))
+      case qlog.close_confirmed_until(writer, deadline_milliseconds) {
+        Ok(Nil) ->
+          remaining_client_close_milliseconds(deadline_milliseconds)
+          |> result.map(fn(_) { Nil })
+        Error(qlog.WriteFailed(6)) -> Error(OperationTimeout)
+        Error(_) -> Error(QlogUnavailable)
+      }
+    }
+  }
+}
+
+fn await_qlog_cleanup_until(
+  cleanup: Option(qlog.CleanupTicket),
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  use _ <- result.try(remaining_client_close_milliseconds(deadline_milliseconds))
+  case cleanup {
+    None -> Ok(Nil)
+    Some(ticket) -> {
+      let owners = qlog.cleanup_owners(ticket)
+      let #(selector, monitors) = monitor_qlog_cleanup_owners(owners)
+      let outcome =
+        await_qlog_cleanup_owners(selector, ticket, deadline_milliseconds)
+      list.each(monitors, fn(monitor) { process.demonitor_process(monitor) })
+      outcome
+    }
+  }
+}
+
+fn monitor_qlog_cleanup_owners(
+  owners: List(Pid),
+) -> #(process.Selector(CleanupJoinMessage), List(process.Monitor)) {
+  list.fold(owners, #(process.new_selector(), []), fn(state, owner) {
+    let #(selector, monitors) = state
+    let monitor = process.monitor(owner)
+    #(
+      process.select_specific_monitor(selector, monitor, fn(_) {
+        CleanupOwnerExited(owner)
+      }),
+      [monitor, ..monitors],
+    )
+  })
+}
+
+fn await_qlog_cleanup_owners(
+  selector: process.Selector(CleanupJoinMessage),
+  ticket: qlog.CleanupTicket,
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  use remaining <- result.try(remaining_client_close_milliseconds(
+    deadline_milliseconds,
+  ))
+  case qlog.cleanup_state(ticket) {
+    qlog.Released -> Ok(Nil)
+    qlog.Pending -> {
+      let owner_can_still_finish =
+        qlog.cleanup_owners(ticket) |> list.any(process.is_alive)
+      case owner_can_still_finish {
+        False -> Error(QlogUnavailable)
+        True ->
+          case process.selector_receive(selector, within: remaining) {
+            Ok(CleanupOwnerExited(_)) ->
+              await_qlog_cleanup_owners(selector, ticket, deadline_milliseconds)
+            Error(Nil) -> Error(OperationTimeout)
+          }
+      }
+    }
+  }
+}
+
+fn validate_client_close_deadline(
+  deadline_milliseconds: Int,
+) -> Result(Nil, Error) {
+  case
+    client_close_deadline.validate(
+      udp.monotonic_millisecond(),
+      deadline_milliseconds,
+    )
+  {
+    Ok(Nil) -> Ok(Nil)
+    Error(client_close_deadline.DeadlineExpired) -> Error(OperationTimeout)
+    Error(client_close_deadline.InvalidConfiguration)
+    | Error(client_close_deadline.DeadlineOutOfRange) -> Error(InvalidInput)
+  }
+}
+
+fn remaining_client_close_milliseconds(
+  deadline_milliseconds: Int,
+) -> Result(Int, Error) {
+  case
+    client_close_deadline.remaining(
+      udp.monotonic_millisecond(),
+      deadline_milliseconds,
+    )
+  {
+    Ok(remaining) -> Ok(remaining)
+    Error(client_close_deadline.DeadlineExpired) -> Error(OperationTimeout)
+    Error(client_close_deadline.InvalidConfiguration)
+    | Error(client_close_deadline.DeadlineOutOfRange) -> Error(InvalidInput)
+  }
+}
+
+fn collect_qlog(
+  reservation: Option(qlog_admission.Reservation),
+  cleanup: Option(qlog.CleanupTicket),
+) -> Nil {
+  case reservation, cleanup {
+    Some(reservation), Some(cleanup) ->
+      qlog_admission.collect(reservation, cleanup)
+    _, _ -> Nil
   }
 }
 
@@ -2714,9 +3854,8 @@ fn put_stream(worker: Worker, identifier: Int, stream: StreamState) -> Worker {
   Worker(..worker, streams: streams)
 }
 
-/// The actor wrapper owns only live waiters and application-facing direction
-/// state. The transport independently retains retransmission state until FIN
-/// acknowledgement, so a fully consumed wrapper can be forgotten immediately.
+/// The actor wrapper owns only live waiters and application-facing direction state.
+/// The transport independently retains retransmission state until FIN acknowledgement, so a fully consumed wrapper can be forgotten immediately.
 fn stream_runtime_terminal(stream: StreamState) -> Bool {
   stream.send_finished
   && stream.receive_finished
@@ -2757,10 +3896,7 @@ fn queue_pop(queue: Queue(value)) -> Result(#(value, Queue(value)), Nil) {
 
 /// Split off `count` bytes, or return everything when that many are not there.
 ///
-/// The split is a pattern rather than a measured slice: a payload shorter than
-/// `count`, and a negative `count`, simply have no matching clause, so both
-/// become the fallback instead of a comparison guarding two slices that must
-/// not fail.
+/// The split is a pattern rather than a measured slice: a payload shorter than `count`, and a negative `count`, simply have no matching clause, so both become the fallback instead of a comparison guarding two slices that must not fail.
 fn take_bytes(bytes: BitArray, count: Int) -> #(BitArray, BitArray) {
   case bytes {
     <<chunk:bytes-size(count), rest:bits>> -> #(chunk, rest)
@@ -2846,20 +3982,48 @@ fn send_deadline(send: Option(PendingSend)) -> Option(Int) {
 fn await_bootstrap(
   worker: Pid,
   bootstrap: Subject(Result(Connection, Error)),
-  timeout: Int,
+  group: udp.WorkGroup,
+  deadline: Int,
 ) -> Result(Connection, Error) {
   let monitor = process.monitor(worker)
   let outcome =
     process.new_selector()
     |> process.select_map(bootstrap, fn(reply) { CallReply(reply) })
     |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
-    |> process.selector_receive(within: timeout)
+    |> process.selector_receive(within: int.max(
+      0,
+      deadline - udp.monotonic_millisecond(),
+    ))
   process.demonitor_process(monitor)
   case outcome {
-    Ok(CallReply(reply)) -> reply
-    Ok(WorkerExited) -> Error(ConnectionClosed)
+    Ok(CallReply(Ok(connection))) -> {
+      case udp.monotonic_millisecond() < deadline {
+        True -> {
+          case udp.publish_work_group(group, worker, deadline) {
+            Ok(Nil) -> Ok(connection)
+            Error(udp.Timeout) -> Error(TotalTimeout)
+            Error(_) -> {
+              let _ = udp.stop_work_group(group)
+              Error(ConnectionClosed)
+            }
+          }
+        }
+        False -> {
+          let _ = udp.stop_work_group(group)
+          Error(TotalTimeout)
+        }
+      }
+    }
+    Ok(CallReply(Error(error))) -> {
+      let _ = udp.stop_work_group(group)
+      Error(error)
+    }
+    Ok(WorkerExited) -> {
+      let _ = udp.stop_work_group(group)
+      Error(ConnectionClosed)
+    }
     Error(Nil) -> {
-      process.kill(worker)
+      let _ = udp.stop_work_group(group)
       Error(TotalTimeout)
     }
   }
@@ -2888,6 +4052,38 @@ fn call(
         Ok(CallReply(result)) -> result
         Ok(WorkerExited) -> Error(ConnectionClosed)
         Error(Nil) -> Error(OperationTimeout)
+      }
+    }
+  }
+}
+
+fn call_close_until(
+  connection: Connection,
+  application_error_code: Int,
+  deadline_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  use _ <- result.try(remaining_client_close_milliseconds(deadline_milliseconds))
+  case process.is_alive(connection.worker) {
+    False -> Error(ConnectionClosed)
+    True -> {
+      let reply = process.new_subject()
+      process.send(
+        connection.commands,
+        Close(application_error_code, deadline_milliseconds, reply),
+      )
+      case remaining_client_close_milliseconds(deadline_milliseconds) {
+        Error(error) -> Error(error)
+        Ok(remaining) -> {
+          let outcome = process.receive(reply, within: remaining)
+          case remaining_client_close_milliseconds(deadline_milliseconds) {
+            Error(error) -> Error(error)
+            Ok(_) ->
+              case outcome {
+                Ok(result) -> result
+                Error(Nil) -> Error(OperationTimeout)
+              }
+          }
+        }
       }
     }
   }
@@ -2929,7 +4125,10 @@ fn map_transport_error(error: client_transport.Error) -> Error {
     client_transport.TlsHandshakeFailed -> TlsHandshakeFailed
     client_transport.PeerClosed(None) -> ConnectionClosed
     client_transport.PeerClosed(Some(code)) -> PeerClosedWithCode(code)
+    client_transport.PeerTransportClosed(code) ->
+      PeerTransportFailureWithCode(code)
     client_transport.MigrationUnavailable -> MigrationUnavailable
+    client_transport.LocalConnectionIdUnavailable -> QuicFailure
     client_transport.OwnerGone -> ConnectionClosed
     client_transport.VersionNegotiationReceived(_)
     | client_transport.VersionNegotiationFailed -> VersionNegotiationFailed

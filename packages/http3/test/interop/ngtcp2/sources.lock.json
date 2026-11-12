@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "compiler_version": "15.2.0",
+  "build_image": "gcc:15.2-bookworm@sha256:9ca91b05c7b07d2979f16413e8b2cd6ec8a7c80ffca4121ccab0aeba33f90460",
+  "packages": {
+    "cmake": "3.25.1-1",
+    "libgnutls28-dev": "3.7.9-2+deb12u7",
+    "libev-dev": "1:4.33-1",
+    "patchelf": "0.14.3-1+b1"
+  },
+  "sources": [
+    {"name": "ngtcp2", "version": "1.25.0", "url": "https://github.com/ngtcp2/ngtcp2/releases/download/v1.25.0/ngtcp2-1.25.0.tar.xz", "sha256": "2a34d2484ba17847a5d11965704e9dd0fac4c6d8efc75ffe1ec7de66d8c6b6fb"},
+    {"name": "nghttp3", "version": "1.18.0", "url": "https://github.com/ngtcp2/nghttp3/releases/download/v1.18.0/nghttp3-1.18.0.tar.xz", "sha256": "aad782c23d3f01bd4bb52c8bac7a553b631ef8115fd1612703df6183449fef19"},
+    {"name": "curl", "version": "8.22.0", "url": "https://curl.se/download/curl-8.22.0.tar.xz", "sha256": "f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7"}
+  ]
+}

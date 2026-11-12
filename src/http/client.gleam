@@ -15,20 +15,31 @@ import gleam/result
 import gleam/string
 import http/body
 import http/client_store
+import http/context
+import http/diagnostics
 import http/error
 import http/internal/alt_svc
 import http/internal/cache
+import http/internal/client_trace
 import http/internal/cookie
 import http/internal/hsts
 import http/internal/http1/exchange as http1_exchange
 import http/internal/http2/exchange as http2_exchange
 import http/internal/http2/wire as http2_wire
+import http/internal/http3/client as http3_exchange
+import http/internal/process_role
 import http/internal/redirect
+import http/internal/tcp_reservation
 import http/internal/transport
+import http/resource
 import http3/client as h3_client
+import http3/config as h3_config
+import http3/failure as h3_failure
 
-/// Finite client deadlines. DNS lookup has its own budget and is never an
-/// unbounded part of connection establishment.
+const http3_pool_transition_milliseconds = 1000
+
+/// Finite client deadlines.
+/// DNS lookup has its own budget and is never an unbounded part of connection establishment.
 pub type Timeouts {
   Timeouts(
     dns_milliseconds: Int,
@@ -58,8 +69,8 @@ pub type PoolLimits {
   )
 }
 
-/// Security switches. Certificate-chain and hostname verification have no
-/// switch and therefore cannot be disabled.
+/// Security switches.
+/// Certificate-chain and hostname verification have no switch and therefore cannot be disabled.
 pub type Security {
   Security(allow_plain_http: Bool)
 }
@@ -71,8 +82,9 @@ pub type RedirectPolicy {
 
 /// Finite automatic retry policy.
 ///
-/// A retry is considered only when the method is idempotent and the Body can
-/// be regenerated. Response-status retries require an explicit status entry.
+/// A retry is considered only when the method is idempotent, the Body can be regenerated, and the request is proven unstarted or explicitly rejected as unprocessed by the peer.
+/// An unexplained connection loss might have been processed and is never retried.
+/// Response-status retries require an explicit status entry and happen before any response body is exposed to the caller.
 pub type RetryPolicy {
   RetryPolicy(enabled: Bool, maximum: Int, retry_statuses: List(Int))
 }
@@ -82,17 +94,20 @@ pub type StoreLimits {
   StoreLimits(maximum_entries: Int, maximum_bytes: Int)
 }
 
-/// Cookie processing policy. It is disabled by default.
+/// Cookie processing policy.
+/// It is disabled by default.
 pub type CookiePolicy {
   CookiePolicy(enabled: Bool, limits: StoreLimits)
 }
 
-/// Complete-response cache policy. It is disabled by default.
+/// Complete-response cache policy.
+/// It is disabled by default.
 pub type CachePolicy {
   CachePolicy(enabled: Bool, limits: StoreLimits)
 }
 
-/// Strict-Transport-Security policy. Learning is enabled by default.
+/// Strict-Transport-Security policy.
+/// Learning is enabled by default.
 pub type HstsPolicy {
   HstsPolicy(enabled: Bool, limits: StoreLimits)
 }
@@ -121,7 +136,8 @@ pub type Proxy {
   Proxy(host: String, port: Int, authorization: Option(String))
 }
 
-/// Proxy selection policy. The default has no proxy.
+/// Proxy selection policy.
+/// The default has no proxy.
 pub type ProxyPolicy {
   ProxyPolicy(proxy: Option(Proxy))
 }
@@ -176,6 +192,18 @@ pub opaque type Config {
       client_store.Adapter(client_store.AltSvcRecord),
     ),
     ca_certificates: List(BitArray),
+    diagnostics: Option(diagnostics.Reporter),
+    race_join_confirmation: Bool,
+    race_claim_offer_confirmation: Bool,
+    race_claim_commit_confirmation: Bool,
+    http3_release_reuse_probe: Option(fn() -> Result(Bool, Nil)),
+    http3_stream_open_refusal_probe: Option(fn() -> Result(Bool, Nil)),
+    http3_resource_limit_terminal_probe: Option(fn() -> Bool),
+    http3_connect_gate: Option(fn() -> Result(Nil, error.Error)),
+    https_race_candidate_gate: Option(
+      fn(HttpsRaceCandidate, Int) -> Result(Nil, error.Error),
+    ),
+    lifecycle_close_join_confirmation: Bool,
   )
 }
 
@@ -187,50 +215,145 @@ type PolicyStore
 
 type Registration
 
+type Http3DialWait
+
+type Http3DialAdmission {
+  Http3DialLeader(Registration)
+  Http3DialWaiting(Http3DialWait)
+  Http3DialPublished
+}
+
 type TunnelGuard
 
 type RaceCancellation
+
+/// A payload-free synchronization point after transport authentication and before either HTTPS race candidate can be selected for request delivery.
+@internal
+pub type HttpsRaceCandidate {
+  Http3AuthenticatedCandidate
+  TcpAuthenticatedCandidate
+}
 
 type TcpRaceGuard {
   TcpRaceGuard(
     commands: process.Subject(TcpRaceCommand),
     cancellation: RaceCancellation,
     pid: process.Pid,
+    deadline: Int,
+    join_confirmation: Bool,
+    commit_confirmation: Bool,
   )
 }
 
 type TcpRaceCommand {
+  RaceStart(
+    http3: fn() -> Nil,
+    tcp: fn() -> Nil,
+    reply: process.Subject(#(process.Pid, process.Pid)),
+  )
   RaceAttach(
     socket: transport.Socket,
     cleanup: fn() -> Nil,
+    cleanup_before: fn(Int) -> Bool,
     reply: process.Subject(Result(Int, Nil)),
   )
   RaceRelease(identifier: Int)
-  RaceCancel(reply: process.Subject(Nil))
-  RaceStop(reply: process.Subject(Nil))
+  RaceCancel(reply: process.Subject(Bool))
+  RaceSelectHttp3(reply: process.Subject(Bool))
+  RaceClaim(reply: process.Subject(Result(TcpRaceClaimOffer, Bool)))
+  RaceCommit(identifier: Int, reply: process.Subject(Bool))
+}
+
+type TcpRaceClaimOffer {
+  TcpRaceClaimOffer(identifier: Int, cleanup: fn() -> Nil)
+}
+
+type TcpCandidateHandoff {
+  TcpCandidateHandoff(
+    owner: process.Pid,
+    reply: process.Subject(TcpCandidateTransfer),
+  )
+}
+
+type TcpCandidateTransfer {
+  TcpCandidateOffer(
+    ready: http2_exchange.Ready,
+    acknowledge: process.Subject(Nil),
+  )
+  TcpCandidateCommit(Result(Nil, error.Error))
+}
+
+type TcpRaceCandidate {
+  TcpRaceCandidate(
+    ready: http2_exchange.Ready,
+    handoff: process.Subject(TcpCandidateHandoff),
+  )
+}
+
+type TcpRaceRuntime {
+  TcpRaceRuntime(
+    commands: process.Subject(TcpRaceCommand),
+    cancellation: RaceCancellation,
+    guarded: Option(GuardedSocket),
+    next_identifier: Int,
+    requester: process.Monitor,
+    lifecycle: process.Monitor,
+    deadline: Int,
+    candidate: Registration,
+    helpers: List(process.Pid),
+    cleanup_confirmed: Bool,
+    join_confirmation: Bool,
+    claim_offer_confirmation: Bool,
+  )
 }
 
 type GuardedSocket {
-  GuardedSocket(identifier: Int, socket: transport.Socket, cleanup: fn() -> Nil)
+  GuardedSocket(
+    identifier: Int,
+    socket: transport.Socket,
+    cleanup: fn() -> Nil,
+    cleanup_before: fn(Int) -> Bool,
+  )
 }
 
 type RaceEvent {
-  Http3Finished(Result(Exchange, error.Error))
-  TcpFinished(Result(Exchange, error.Error))
+  Http3Ready(Result(Http3Candidate, error.Error))
+  TcpReady(Result(TcpRaceCandidate, error.Error))
   Http3Exited
   TcpExited
 }
 
-/// A reusable client lifecycle owner. Runtime handles are never public.
+type Http3Candidate {
+  Http3Candidate(
+    connection: http3_exchange.Connection,
+    registration: Registration,
+    key: String,
+  )
+}
+
+type Http3Lease
+
+type PooledHttp3 {
+  PooledHttp3(
+    connection: http3_exchange.Connection,
+    lease: Http3Lease,
+    key: String,
+  )
+}
+
+/// A reusable client lifecycle owner.
+/// Runtime handles are never public.
 pub opaque type Client {
   Client(
     config: Config,
     lifecycle: Lifecycle,
     http2_pool: Http2Pool,
+    http3_resources: resource.Controller,
     cookie_store: PolicyStore,
     cache_store: PolicyStore,
     hsts_store: PolicyStore,
     alt_svc_store: PolicyStore,
+    trace: Option(client_trace.Trace),
   )
 }
 
@@ -240,13 +363,14 @@ pub opaque type Exchange {
     response: Response(body.Body),
     selected_protocol: Protocol,
     redirect_history: List(RedirectHop),
+    trace: Option(client_trace.Trace),
   )
 }
 
 /// One established HTTP/1.1 CONNECT or Upgrade byte stream.
 ///
-/// Its socket, lifecycle registration, buffered bytes, and close guard remain
-/// private. Each successful read returns the next cursor.
+/// Its socket, lifecycle registration, buffered bytes, and close guard remain private.
+/// Each successful read returns the next cursor.
 pub opaque type Tunnel {
   Tunnel(
     socket: transport.Socket,
@@ -286,12 +410,14 @@ fn new_http2_pool(
 @external(erlang, "http_client_ffi", "checkout_http2")
 fn raw_checkout_http2(
   pool: Http2Pool,
+  lifecycle: Lifecycle,
   origin: String,
 ) -> Result(#(transport.Socket, http2_wire.State, fn() -> Nil), Int)
 
 @external(erlang, "http_client_ffi", "checkin_http2")
 fn checkin_http2(
   pool: Http2Pool,
+  lifecycle: Lifecycle,
   origin: String,
   socket: transport.Socket,
   state: http2_wire.State,
@@ -348,6 +474,13 @@ fn policy_store_list(
   partition: String,
 ) -> List(cookie.Cookie)
 
+@external(erlang, "http_client_ffi", "policy_store_get")
+fn cookie_store_get(
+  store: PolicyStore,
+  partition: String,
+  key: String,
+) -> Result(cookie.Cookie, Int)
+
 @external(erlang, "http_client_ffi", "policy_store_put")
 fn cache_store_put(
   store: PolicyStore,
@@ -394,12 +527,13 @@ fn alt_svc_store_list(
   partition: String,
 ) -> List(alt_svc.Entry)
 
-@external(erlang, "http_client_ffi", "call_https_resolver")
-fn call_https_resolver(
+@external(erlang, "http_client_ffi", "call_https_resolver_before")
+fn call_https_resolver_before(
   resolver: fn(String, Int, Int) -> Result(List(HttpsRecord), Nil),
   host: String,
   port: Int,
-  timeout_milliseconds: Int,
+  allocated_milliseconds: Int,
+  deadline_milliseconds: Int,
 ) -> Result(List(HttpsRecord), Int)
 
 @external(erlang, "http_client_ffi", "close_policy_store")
@@ -411,8 +545,24 @@ fn lifecycle_state(lifecycle: Lifecycle) -> Int
 @external(erlang, "http_client_ffi", "drain")
 fn lifecycle_drain(lifecycle: Lifecycle) -> Int
 
-@external(erlang, "http_client_ffi", "close")
-fn lifecycle_close(lifecycle: Lifecycle) -> Nil
+@external(erlang, "http_client_ffi", "close_before")
+fn lifecycle_close(
+  lifecycle: Lifecycle,
+  deadline: Int,
+  join_confirmation: Bool,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "lifecycle_owner")
+fn lifecycle_owner(lifecycle: Lifecycle) -> process.Pid
+
+@external(erlang, "http_client_ffi", "lifecycle_snapshot")
+fn raw_lifecycle_snapshot(lifecycle: Lifecycle) -> #(Int, Int, Int, Int)
+
+@external(erlang, "http_client_ffi", "lifecycle_pending_count")
+fn raw_lifecycle_pending_count(lifecycle: Lifecycle) -> Int
+
+@external(erlang, "http_client_ffi", "http3_dial_snapshot")
+fn raw_http3_dial_snapshot(lifecycle: Lifecycle) -> #(Int, Int)
 
 @external(erlang, "http_client_ffi", "is_closed")
 fn lifecycle_is_closed(lifecycle: Lifecycle) -> Bool
@@ -424,8 +574,154 @@ fn register_socket(
   socket: transport.Socket,
 ) -> Result(Registration, Int)
 
+@external(erlang, "http_client_ffi", "register_socket_before")
+fn register_socket_before(
+  lifecycle: Lifecycle,
+  origin: String,
+  socket: transport.Socket,
+  deadline: Int,
+) -> Result(Registration, Int)
+
+@external(erlang, "http_client_ffi", "attach_reserved_socket")
+fn attach_reserved_socket(
+  registration: Registration,
+  socket: transport.Socket,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "attach_reserved_socket_before")
+fn attach_reserved_socket_before(
+  registration: Registration,
+  socket: transport.Socket,
+  deadline: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "replace_socket")
+fn replace_registered_socket(
+  lifecycle: Lifecycle,
+  previous: transport.Socket,
+  socket: transport.Socket,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "replace_socket_before")
+fn replace_registered_socket_before(
+  lifecycle: Lifecycle,
+  previous: transport.Socket,
+  socket: transport.Socket,
+  deadline: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "transfer_and_adopt_socket_owner")
+fn transfer_and_adopt_registered_socket_owner(
+  lifecycle: Lifecycle,
+  socket: transport.Socket,
+  owner: process.Pid,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "transfer_and_adopt_socket_owner_before")
+fn transfer_and_adopt_registered_socket_owner_before(
+  lifecycle: Lifecycle,
+  socket: transport.Socket,
+  owner: process.Pid,
+  deadline: Int,
+) -> Result(Nil, Int)
+
 @external(erlang, "http_client_ffi", "unregister_socket")
 fn unregister_socket(registration: Registration) -> Nil
+
+@external(erlang, "http_client_ffi", "unregister_socket_before")
+fn unregister_socket_before(registration: Registration, deadline: Int) -> Bool
+
+@external(erlang, "http_client_ffi", "reserve_resource")
+fn reserve_resource(
+  lifecycle: Lifecycle,
+  origin: String,
+) -> Result(Registration, Int)
+
+@external(erlang, "http_client_ffi", "reserve_resource_before")
+fn reserve_resource_before(
+  lifecycle: Lifecycle,
+  origin: String,
+  deadline: Int,
+) -> Result(Registration, Int)
+
+@external(erlang, "http_client_ffi", "begin_http3_dial_within")
+fn begin_http3_dial_within(
+  lifecycle: Lifecycle,
+  origin: String,
+  key: String,
+  timeout_milliseconds: Int,
+) -> Result(Http3DialAdmission, Int)
+
+@external(erlang, "http_client_ffi", "begin_http3_dial_before")
+fn begin_http3_dial_before(
+  lifecycle: Lifecycle,
+  origin: String,
+  key: String,
+  deadline: Int,
+) -> Result(Http3DialAdmission, Int)
+
+@external(erlang, "http_client_ffi", "await_http3_dial")
+fn await_http3_dial(wait: Http3DialWait) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "settle_http3_dial_probe_within")
+fn settle_http3_dial_probe_within(
+  registration: Registration,
+  published: Bool,
+  timeout_milliseconds: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "expire_http3_dial_waiters_probe_within")
+fn expire_http3_dial_waiters_probe_within(
+  registration: Registration,
+  advance_milliseconds: Int,
+  timeout_milliseconds: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "attach_http3_resource")
+fn attach_http3_resource(
+  registration: Registration,
+  owner: process.Pid,
+  close_handle: http3_exchange.CloseHandle,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "cancel_resource")
+fn cancel_resource(registration: Registration) -> Nil
+
+@external(erlang, "http_client_ffi", "activate_http3_candidate_before")
+fn activate_http3_candidate_before(
+  registration: Registration,
+  key: String,
+  connection: http3_exchange.Connection,
+  allow_share: Bool,
+  deadline: Int,
+) -> Result(#(http3_exchange.Connection, Http3Lease), Int)
+
+@external(erlang, "http_client_ffi", "checkout_http3_shared_before")
+fn checkout_http3_shared_before(
+  lifecycle: Lifecycle,
+  key: String,
+  deadline: Int,
+) -> Result(#(http3_exchange.Connection, Http3Lease), Int)
+
+@external(erlang, "http_client_ffi", "adopt_http3_lease_before")
+fn adopt_http3_lease_before(
+  lease: Http3Lease,
+  holder: process.Pid,
+  deadline: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "release_http3_lease_before")
+fn release_http3_lease_before(
+  lease: Http3Lease,
+  reusable: Bool,
+  deadline: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "http_client_ffi", "retire_http3_candidate_confirmed_before")
+fn retire_http3_candidate_confirmed_before(
+  registration: Registration,
+  deadline: Int,
+) -> Result(Nil, Int)
 
 @external(erlang, "http_client_ffi", "checkout_socket")
 fn raw_checkout_socket(
@@ -455,11 +751,17 @@ fn mark_race_cancelled(cancellation: RaceCancellation) -> Nil
 @external(erlang, "http_client_ffi", "race_cancelled")
 fn race_is_cancelled(cancellation: RaceCancellation) -> Bool
 
-@external(erlang, "http_client_ffi", "call_policy_adapter")
-fn call_policy_adapter(
+@external(erlang, "http_client_ffi", "call_policy_adapter_before")
+fn call_policy_adapter_before(
   run: fn() -> Result(value, Nil),
-  timeout_milliseconds: Int,
+  deadline_milliseconds: Int,
 ) -> Result(value, Int)
+
+@external(erlang, "http_client_ffi", "call_http3_reuse_before")
+fn call_http3_reuse_before(
+  run: fn() -> Result(Bool, error.Error),
+  deadline: Int,
+) -> Result(Result(Bool, error.Error), Int)
 
 /// Construct the safe, finite product defaults.
 pub fn defaults() -> Config {
@@ -514,6 +816,16 @@ pub fn defaults() -> Config {
     hsts_store_adapter: None,
     alt_svc_store_adapter: None,
     ca_certificates: [],
+    diagnostics: None,
+    race_join_confirmation: True,
+    race_claim_offer_confirmation: True,
+    race_claim_commit_confirmation: True,
+    http3_release_reuse_probe: None,
+    http3_stream_open_refusal_probe: None,
+    http3_resource_limit_terminal_probe: None,
+    http3_connect_gate: None,
+    https_race_candidate_gate: None,
+    lifecycle_close_join_confirmation: True,
   )
 }
 
@@ -530,6 +842,170 @@ pub fn body_limits(config: Config) -> BodyLimits {
 /// Inspect finite connection-pool limits.
 pub fn pool_limits(config: Config) -> PoolLimits {
   config.pool_limits
+}
+
+/// Return finite registered-resource and idle-pool counts for deterministic lifecycle tests.
+/// Runtime handles, owners, origins, and keys stay private.
+@internal
+pub fn lifecycle_pool_counts(client: Client) -> #(Int, Int) {
+  let #(registered, pooled, _, _) = raw_lifecycle_snapshot(client.lifecycle)
+  #(registered, pooled)
+}
+
+/// Finite lifecycle and HTTP/3 resource counts for deterministic fixtures.
+/// No runtime handle, origin, pool key, endpoint, or process identity escapes.
+@internal
+pub type LifecycleCensus {
+  LifecycleCensus(
+    registered_resources: Int,
+    pooled_resources: Int,
+    caller_owned_resources: Int,
+    monitored_resources: Int,
+    pending_resources: Int,
+    active_workers: Int,
+    memory_bytes: Int,
+  )
+}
+
+/// Observe the lifecycle and request-resource ledger at one finite instant.
+@internal
+pub fn lifecycle_census(client: Client) -> LifecycleCensus {
+  let #(registered, pooled, caller_owned, monitored) =
+    raw_lifecycle_snapshot(client.lifecycle)
+  let usage = resource.snapshot(client.http3_resources)
+  LifecycleCensus(
+    registered_resources: registered,
+    pooled_resources: pooled,
+    caller_owned_resources: caller_owned,
+    monitored_resources: monitored,
+    pending_resources: raw_lifecycle_pending_count(client.lifecycle),
+    active_workers: usage.active_workers,
+    memory_bytes: usage.memory_bytes,
+  )
+}
+
+/// Bounded, identity-free view of the HTTP/3 connection-generation broker.
+@internal
+pub type Http3DialCensus {
+  Http3DialCensus(inflight: Int, waiters: Int)
+}
+
+/// Opaque deterministic handle for broker state-machine tests.
+/// Its lifecycle registration, process identity, pool key, and reply capability stay private.
+@internal
+pub opaque type Http3DialProbe {
+  Http3DialProbe(admission: Http3DialAdmission)
+}
+
+/// Safe observation of the role assigned by one atomic broker admission.
+@internal
+pub type Http3DialRole {
+  Http3DialLeaderRole
+  Http3DialWaitingRole
+  Http3DialPublishedRole
+}
+
+/// Enter a fixed private broker partition.
+/// A Waiting result is returned only after the lifecycle actor has installed the caller monitor and deadline.
+@internal
+pub fn http3_dial_probe_begin(
+  client: Client,
+  timeout_milliseconds: Int,
+) -> Result(Http3DialProbe, error.Error) {
+  begin_http3_dial_within(
+    client.lifecycle,
+    "https://http3-dial-probe.invalid:443",
+    "http3-dial-probe",
+    timeout_milliseconds,
+  )
+  |> result.map(Http3DialProbe)
+  |> result.map_error(http3_dial_probe_error)
+}
+
+/// Return the safe role of an opaque broker admission.
+@internal
+pub fn http3_dial_probe_role(probe: Http3DialProbe) -> Http3DialRole {
+  case probe.admission {
+    Http3DialLeader(_) -> Http3DialLeaderRole
+    Http3DialWaiting(_) -> Http3DialWaitingRole
+    Http3DialPublished -> Http3DialPublishedRole
+  }
+}
+
+/// Wait for a follower's original absolute deadline.
+/// Leader probes cannot wait for their own publication because they hold the sole generation right.
+@internal
+pub fn http3_dial_probe_await(
+  probe: Http3DialProbe,
+) -> Result(Nil, error.Error) {
+  case probe.admission {
+    Http3DialWaiting(wait) ->
+      await_http3_dial(wait)
+      |> result.map_error(http3_dial_probe_error)
+    Http3DialPublished -> Ok(Nil)
+    Http3DialLeader(_) -> Error(error.new(error.Service))
+  }
+}
+
+/// Settle a leader through the same waiter publication path as the real actor.
+@internal
+pub fn http3_dial_probe_settle(
+  probe: Http3DialProbe,
+  published: Bool,
+  timeout_milliseconds: Int,
+) -> Result(Nil, error.Error) {
+  case probe.admission {
+    Http3DialLeader(registration) ->
+      settle_http3_dial_probe_within(
+        registration,
+        published,
+        timeout_milliseconds,
+      )
+      |> result.map_error(http3_dial_probe_error)
+    Http3DialWaiting(_) | Http3DialPublished -> Error(error.new(error.Service))
+  }
+}
+
+/// Advance only the lifecycle actor's waiter-deadline view and acknowledge after the corresponding prune.
+/// This leaves the leader and its connection reservation intact, so deadline tests never depend on elapsed wall time.
+@internal
+pub fn http3_dial_probe_expire_waiters(
+  probe: Http3DialProbe,
+  advance_milliseconds: Int,
+  timeout_milliseconds: Int,
+) -> Result(Nil, error.Error) {
+  case probe.admission {
+    Http3DialLeader(registration) ->
+      expire_http3_dial_waiters_probe_within(
+        registration,
+        advance_milliseconds,
+        timeout_milliseconds,
+      )
+      |> result.map_error(http3_dial_probe_error)
+    Http3DialWaiting(_) | Http3DialPublished -> Error(error.new(error.Service))
+  }
+}
+
+/// Observe only finite broker cardinalities.
+@internal
+pub fn http3_dial_census(client: Client) -> Http3DialCensus {
+  let #(inflight, waiters) = raw_http3_dial_snapshot(client.lifecycle)
+  Http3DialCensus(inflight, waiters)
+}
+
+fn http3_dial_probe_error(code: Int) -> error.Error {
+  case code {
+    2 -> error.new(error.Resource(error.Connections))
+    3 -> error.new(error.Service)
+    _ -> error.new(error.Cancelled)
+  }
+}
+
+/// Observe only the resource controller after lifecycle shutdown.
+@internal
+pub fn http3_resource_usage(client: Client) -> #(Int, Int) {
+  let usage = resource.snapshot(client.http3_resources)
+  #(usage.active_workers, usage.memory_bytes)
 }
 
 /// Return whether connection reuse is enabled.
@@ -615,6 +1091,115 @@ pub fn allow_plain_http(config: Config) -> Config {
   Config(..config, security: Security(allow_plain_http: True))
 }
 
+/// Attach a bounded, payload-free Reporter shared with application exporters.
+/// The caller owns the Reporter and stops it after its clients have closed.
+/// Network exchanges correlate retries and redirects; cached fetch results and tunnel operations currently do not create exchange observations.
+pub fn with_diagnostics(
+  config: Config,
+  reporter: diagnostics.Reporter,
+) -> Config {
+  Config(..config, diagnostics: Some(reporter))
+}
+
+/// Inject whether a completed race-helper join may be trusted.
+/// Production configurations always use `True`; deterministic lifecycle tests set this to `False` to verify conservative quarantine after an unconfirmed join.
+@internal
+pub fn with_race_join_confirmation(config: Config, confirmed: Bool) -> Config {
+  Config(..config, race_join_confirmation: confirmed)
+}
+
+/// Inject whether lifecycle owner termination may be trusted by `close`.
+/// Production configurations always use `True`; deterministic lifecycle tests set this to `False` to prove that unconfirmed cleanup cannot report success.
+@internal
+pub fn with_lifecycle_close_join_confirmation(
+  config: Config,
+  confirmed: Bool,
+) -> Config {
+  Config(..config, lifecycle_close_join_confirmation: confirmed)
+}
+
+/// Inject delivery and commit confirmation at the private TCP winner handoff.
+/// Production always confirms both phases; lifecycle tests can deterministically exercise a missing offer or commit without wall-clock races.
+@internal
+pub fn with_race_handoff_confirmation(
+  config: Config,
+  offer_confirmed: Bool,
+  commit_confirmed: Bool,
+) -> Config {
+  Config(
+    ..config,
+    race_claim_offer_confirmation: offer_confirmed,
+    race_claim_commit_confirmation: commit_confirmed,
+  )
+}
+
+/// Inject the release-time reuse decision for deterministic pool lifecycle tests.
+/// Production configurations always query the actor-owned connection.
+@internal
+pub fn with_http3_release_reuse_probe(
+  config: Config,
+  probe: fn() -> Result(Bool, Nil),
+) -> Config {
+  Config(..config, http3_release_reuse_probe: Some(probe))
+}
+
+/// Refuse a native HTTP/3 stream open at its deterministic pre-open test seam.
+/// Production configurations never install this probe.
+@internal
+pub fn with_http3_stream_open_refusal_probe(
+  config config: Config,
+  probe probe: fn() -> Result(Bool, Nil),
+) -> Config {
+  Config(..config, http3_stream_open_refusal_probe: Some(probe))
+}
+
+/// Surface the connection-capacity result before protocol fallback at the deterministic multiplexing fixture boundary.
+/// Production configurations always retain the normal TCP fallback.
+@internal
+pub fn with_http3_resource_limit_terminal_probe(
+  config config: Config,
+  terminal terminal: fn() -> Bool,
+) -> Config {
+  Config(..config, http3_resource_limit_terminal_probe: Some(terminal))
+}
+
+/// Inject a deterministic synchronization or failure point immediately before HTTP/3 connection establishment.
+/// Production configurations never install this gate.
+/// Tests use it to prove the TCP route remains live after a known UDP/QUIC connection failure without relying on relative scheduling.
+@internal
+pub fn with_http3_connect_gate(
+  config config: Config,
+  gate gate: fn() -> Result(Nil, error.Error),
+) -> Config {
+  Config(..config, http3_connect_gate: Some(gate))
+}
+
+/// Inject a deterministic, payload-free barrier after each HTTPS contender is authenticated and before it publishes readiness.
+/// The supplied deadline is the exchange's original absolute monotonic deadline.
+/// Production configurations never install this gate; cancellation kills the contender executing it, so the normal race guardian still owns all connection cleanup.
+@internal
+pub fn with_https_race_candidate_gate(
+  config config: Config,
+  gate gate: fn(HttpsRaceCandidate, Int) -> Result(Nil, error.Error),
+) -> Config {
+  Config(..config, https_race_candidate_gate: Some(gate))
+}
+
+/// Run the TCP fallback for an HTTP/3 resource failure only while the original total deadline still has a positive budget.
+/// `now` is explicit so lifecycle tests can exercise the exact boundary without sleeping.
+@internal
+pub fn run_tcp_fallback_before_total_deadline(
+  deadline: Int,
+  now: Int,
+  start: fn(Int) -> Result(a, error.Error),
+) -> Result(a, error.Error) {
+  let remaining = deadline - now
+  case remaining > 0 {
+    True -> start(remaining)
+    False -> Error(error.new(error.Timeout(error.Total)))
+  }
+}
+
 /// Disable connection reuse for this client.
 pub fn without_pooling(config: Config) -> Config {
   Config(..config, pooling_enabled: False)
@@ -667,9 +1252,9 @@ pub fn with_discovery_policy(
 
 /// Install a typed HTTPS-record resolver behind the configured finite timeout.
 ///
-/// Only authenticated records advertising `h3` are eligible. Callback errors,
-/// exits, malformed records, and timeouts are ignored and planning continues
-/// with the authenticated TCP path.
+/// Only authenticated records advertising `h3` are eligible.
+/// Callback errors,
+/// exits, malformed records, and timeouts are ignored and planning continues with the authenticated TCP path.
 pub fn with_https_record_resolver(
   config: Config,
   resolver: fn(String, Int, Int) -> Result(List(HttpsRecord), Nil),
@@ -702,8 +1287,8 @@ pub fn with_hsts_policy(
 
 /// Replace the finite retry policy.
 ///
-/// Status codes must be error responses (400 through 599). An empty list keeps
-/// status retries disabled while retaining the safe pre-response retry.
+/// Status codes must be error responses (400 through 599).
+/// An empty list keeps status retries disabled while retaining retries backed by explicit evidence that the request was not processed.
 pub fn with_retry_policy(
   config: Config,
   retry_policy: RetryPolicy,
@@ -828,6 +1413,10 @@ pub fn with_timeouts(
 
 /// Allocate one reusable client owner.
 pub fn start(config: Config) -> Result(Client, error.Error) {
+  use http3_limits <- result.try(resource.limits(
+    maximum_workers: http3_request_worker_limit(config.pool_limits),
+    memory_bytes: config.body_limits.endpoint_memory_bytes,
+  ))
   let CookiePolicy(_, cookie_limits) = config.cookie_policy
   let CachePolicy(_, cache_limits) = config.cache_policy
   let HstsPolicy(_, hsts_limits) = config.hsts_policy
@@ -845,6 +1434,7 @@ pub fn start(config: Config) -> Result(Client, error.Error) {
         config.pool_limits.maximum_connections_per_origin,
         config.pool_limits.idle_milliseconds,
       ),
+      http3_resources: resource.start(http3_limits),
       cookie_store: new_grouped_policy_store(
         cookie_limits.maximum_entries,
         cookie_limits.maximum_bytes,
@@ -862,6 +1452,7 @@ pub fn start(config: Config) -> Result(Client, error.Error) {
         alt_svc_limits.maximum_entries,
         alt_svc_limits.maximum_bytes,
       ),
+      trace: None,
     )
   case load_policy_adapters(client) {
     Ok(Nil) -> Ok(client)
@@ -870,6 +1461,14 @@ pub fn start(config: Config) -> Result(Client, error.Error) {
       Error(failure)
     }
   }
+}
+
+/// Finite aggregate HTTP/3 stream budget across every admitted physical connection.
+/// Each physical lifecycle ledger has the matching fixed factor,
+/// so exhausting one ledger still leaves admission for a scale-out candidate.
+@internal
+pub fn http3_request_worker_limit(pool_limits: PoolLimits) -> Int {
+  int.min(2_147_483_647, pool_limits.maximum_connections * 100)
 }
 
 fn load_policy_adapters(client: Client) -> Result(Nil, error.Error) {
@@ -1179,7 +1778,10 @@ fn run_policy_adapter(
   adapter: client_store.Adapter(record),
   operation: fn() -> Result(value, Nil),
 ) -> Result(value, error.Error) {
-  call_policy_adapter(operation, client_store.timeout_milliseconds(adapter))
+  let deadline =
+    transport.monotonic_millisecond()
+    + client_store.timeout_milliseconds(adapter)
+  call_policy_adapter_before(operation, deadline)
   |> result.map_error(fn(_) { security_policy_error() })
 }
 
@@ -1191,8 +1793,8 @@ fn adapter_partition(config: Config) -> client_store.Partition {
 
 /// Execute a buffered request and return a detached, replayable response.
 ///
-/// The response body is collected under `BodyLimits.buffered_bytes`, including
-/// trailers, before this function returns. Use `exchange` for streaming.
+/// The response body is collected under `BodyLimits.buffered_bytes`, including trailers, before this function returns.
+/// Use `exchange` for streaming.
 pub fn fetch(
   client client: Client,
   outgoing outgoing: Request(BitArray),
@@ -1221,13 +1823,12 @@ pub fn fetch(
 }
 
 /// Execute a streaming request and retain typed exchange metadata.
+/// The exchange owns and disposes its request body.
+/// Use `body.replay` or a fresh body before submitting another request with the same source.
 pub fn exchange(
   client client: Client,
   outgoing outgoing: Request(body.Body),
 ) -> Result(Exchange, error.Error) {
-  use _ <- result.try(require_open(client))
-  let outgoing = apply_hsts_policy(client, outgoing)
-  use _ <- result.try(require_scheme(client.config, outgoing.scheme == Http))
   run_exchange(client, outgoing)
 }
 
@@ -1248,8 +1849,8 @@ pub fn redirect_history(exchange: Exchange) -> List(RedirectHop) {
 
 /// Establish a CONNECT or Upgrade tunnel without optimistic application data.
 ///
-/// The request body must be empty. A stream is returned only after a CONNECT
-/// 2xx or Upgrade 101 response; rejected handshakes close their connection.
+/// The request body must be empty.
+/// A stream is returned only after a CONNECT 2xx or Upgrade 101 response; rejected handshakes close their connection.
 pub fn open_tunnel(
   client client: Client,
   outgoing outgoing: Request(BitArray),
@@ -1332,8 +1933,10 @@ pub fn close_tunnel(tunnel: Tunnel) -> Result(Nil, error.Error) {
   outcome
 }
 
-/// Stop admitting new requests. Repeated calls are harmless.
+/// Stop admitting new requests.
+/// Repeated calls are harmless.
 pub fn drain(client: Client) -> Result(Nil, error.Error) {
+  resource.stop(client.http3_resources)
   let _state = lifecycle_drain(client.lifecycle)
   drain_http2_pool(client.http2_pool)
   Ok(Nil)
@@ -1341,29 +1944,145 @@ pub fn drain(client: Client) -> Result(Nil, error.Error) {
 
 /// Close the client idempotently.
 pub fn close(client: Client) -> Result(Nil, error.Error) {
+  let ClosePhaseObservation(_, lifecycle_outcome, _, _, resource_outcome, _, _) =
+    close_observed(client)
+  case lifecycle_outcome, resource_outcome {
+    Error(failure), _ -> Error(failure)
+    _, Error(failure) -> Error(failure)
+    Ok(Nil), Ok(Nil) -> Ok(Nil)
+  }
+}
+
+/// Finite close-phase evidence for deterministic lifecycle diagnostics.
+/// It exposes no process, socket, origin, request, or response value.
+@internal
+pub type ClosePhaseObservation {
+  ClosePhaseObservation(
+    active_workers_before: Int,
+    lifecycle_outcome: Result(Nil, error.Error),
+    lifecycle_milliseconds: Int,
+    active_workers_after_lifecycle: Int,
+    resource_outcome: Result(Nil, error.Error),
+    resource_milliseconds: Int,
+    active_workers_after_resource: Int,
+  )
+}
+
+/// Close the client while retaining only bounded, non-sensitive phase results.
+@internal
+pub fn close_observed(client: Client) -> ClosePhaseObservation {
+  let active_workers_before =
+    resource.snapshot(client.http3_resources).active_workers
+  let close_started = transport.monotonic_millisecond()
+  let lifecycle_deadline = close_started + 5000
+  let resource_deadline = lifecycle_deadline
+  resource.stop(client.http3_resources)
   close_http2_pool(client.http2_pool)
   close_policy_store(client.cookie_store)
   close_policy_store(client.cache_store)
   close_policy_store(client.hsts_store)
   close_policy_store(client.alt_svc_store)
-  lifecycle_close(client.lifecycle)
-  Ok(Nil)
+  let lifecycle_started = transport.monotonic_millisecond()
+  let lifecycle_outcome =
+    lifecycle_close(
+      client.lifecycle,
+      lifecycle_deadline,
+      client.config.lifecycle_close_join_confirmation,
+    )
+    |> result.map_error(fn(_) { error.new(error.Timeout(error.Operation)) })
+  let lifecycle_finished = transport.monotonic_millisecond()
+  let active_workers_after_lifecycle =
+    resource.snapshot(client.http3_resources).active_workers
+  let resource_started = transport.monotonic_millisecond()
+  let resource_outcome = case lifecycle_outcome {
+    Ok(Nil) -> await_http3_release(client.http3_resources, resource_deadline)
+    Error(failure) -> Error(failure)
+  }
+  let resource_finished = transport.monotonic_millisecond()
+  ClosePhaseObservation(
+    active_workers_before:,
+    lifecycle_outcome:,
+    lifecycle_milliseconds: int.max(0, lifecycle_finished - lifecycle_started),
+    active_workers_after_lifecycle:,
+    resource_outcome:,
+    resource_milliseconds: int.max(0, resource_finished - resource_started),
+    active_workers_after_resource: resource.snapshot(client.http3_resources).active_workers,
+  )
+}
+
+fn await_http3_release(
+  resources: resource.Controller,
+  deadline: Int,
+) -> Result(Nil, error.Error) {
+  case resource.snapshot(resources).active_workers {
+    0 -> Ok(Nil)
+    _ -> {
+      use <- require(
+        transport.monotonic_millisecond() < deadline,
+        error.new(error.Timeout(error.Operation)),
+      )
+      process.sleep(1)
+      await_http3_release(resources, deadline)
+    }
+  }
 }
 
 fn run_exchange(
   client: Client,
   outgoing: Request(body.Body),
 ) -> Result(Exchange, error.Error) {
+  let client =
+    Client(..client, trace: client_trace.start(client.config.diagnostics))
   let deadline =
     transport.monotonic_millisecond()
     + client.config.timeouts.total_milliseconds
-  run_exchange_redirects(
-    client: client,
-    outgoing: outgoing,
-    redirects_followed: 0,
-    reversed_history: [],
-    deadline: deadline,
-  )
+  let outcome =
+    run_exchange_redirects(
+      client: client,
+      outgoing: outgoing,
+      redirects_followed: 0,
+      reversed_history: [],
+      deadline: deadline,
+    )
+  case outcome {
+    Error(failure) -> {
+      client_trace.exchange_finished(client.trace, Error(failure))
+      Error(failure)
+    }
+    Ok(Exchange(trace: None, ..) as exchange) -> Ok(exchange)
+    Ok(exchange) -> {
+      let protocol = diagnostic_protocol(exchange.selected_protocol)
+      let source =
+        body.observe_transfer(
+          exchange.response.body,
+          fn() {
+            client_trace.read_finished(exchange.trace, protocol)
+            client_trace.exchange_finished(exchange.trace, Ok(Nil))
+          },
+          fn(result) {
+            case result {
+              Ok(Nil) -> Nil
+              Error(failure) ->
+                client_trace.exchange_finished(exchange.trace, Error(failure))
+            }
+          },
+        )
+      Ok(
+        Exchange(
+          ..exchange,
+          response: response.set_body(exchange.response, source),
+        ),
+      )
+    }
+  }
+}
+
+fn diagnostic_protocol(protocol: Protocol) -> context.Protocol {
+  case protocol {
+    Http1 -> context.Http1
+    Http2 -> context.Http2
+    Http3 -> context.Http3
+  }
 }
 
 fn run_exchange_redirects(
@@ -1373,50 +2092,160 @@ fn run_exchange_redirects(
   reversed_history reversed_history: List(RedirectHop),
   deadline deadline: Int,
 ) -> Result(Exchange, error.Error) {
-  let outgoing = apply_hsts_policy(client, outgoing)
-  let outgoing = apply_cookie_policy(client, outgoing)
-  use _ <- result.try(require_open(client))
-  use _ <- result.try(require_scheme(client.config, outgoing.scheme == Http))
-  let remaining = deadline - transport.monotonic_millisecond()
-  use <- require(remaining > 0, error.new(error.Timeout(error.Total)))
-  use completed <- result.try(run_exchange_attempts(
-    client: client,
-    outgoing: outgoing,
-    deadline: deadline,
-    retries_remaining: client.config.retry_policy.maximum,
-  ))
-  capture_response_policies(client, outgoing, completed.response)
-  case redirect_location(completed.response) {
-    None -> Ok(with_redirect_history(completed, reversed_history))
-    Some(_) if !client.config.redirect_policy.enabled ->
-      Ok(with_redirect_history(completed, reversed_history))
-    Some(_) if redirects_followed >= client.config.redirect_policy.maximum -> {
-      body.cancel(completed.response.body)
-      Error(redirect_policy_error())
-    }
-    Some(location) ->
-      case redirect.follow(outgoing, completed.response.status, location) {
-        Error(failure) -> {
-          body.cancel(completed.response.body)
-          Error(failure)
-        }
-        Ok(next) -> {
-          let hop =
-            RedirectHop(
-              status: completed.response.status,
-              from: request_origin(outgoing),
-              to: request_origin(next),
-              protocol: completed.selected_protocol,
-            )
-          body.cancel(completed.response.body)
-          run_exchange_redirects(
+  case require_open(client) {
+    Error(failure) -> reject_unstarted_attempt(client, outgoing, failure)
+    Ok(Nil) -> {
+      let outgoing = apply_hsts_policy(client, outgoing)
+      let outgoing = apply_cookie_policy(client, outgoing)
+      let remaining = deadline - transport.monotonic_millisecond()
+      let preflight = {
+        use _ <- result.try(require_scheme(
+          client.config,
+          outgoing.scheme == Http,
+        ))
+        use <- require(remaining > 0, error.new(error.Timeout(error.Total)))
+        Ok(Nil)
+      }
+      case preflight {
+        Error(failure) -> reject_unstarted_attempt(client, outgoing, failure)
+        Ok(Nil) -> {
+          use completed <- result.try(run_exchange_attempts(
             client: client,
-            outgoing: next,
-            redirects_followed: redirects_followed + 1,
-            reversed_history: [hop, ..reversed_history],
+            outgoing: outgoing,
             deadline: deadline,
-          )
+            retries_remaining: client.config.retry_policy.maximum,
+          ))
+          capture_response_policies(client, outgoing, completed)
+          case redirect_location(completed.response) {
+            None -> Ok(with_redirect_history(completed, reversed_history))
+            Some(_) if !client.config.redirect_policy.enabled ->
+              Ok(with_redirect_history(completed, reversed_history))
+            Some(_)
+              if redirects_followed >= client.config.redirect_policy.maximum
+            -> {
+              use _ <- result.try(release_response_before(
+                completed.response.body,
+                deadline,
+              ))
+              Error(redirect_policy_error())
+            }
+            Some(location) -> {
+              let remaining = deadline - transport.monotonic_millisecond()
+              case
+                redirect_after_response_release(
+                  outgoing: outgoing,
+                  status: completed.response.status,
+                  location: location,
+                  response_body: completed.response.body,
+                  within_milliseconds: remaining,
+                )
+              {
+                Error(failure) -> {
+                  Error(failure)
+                }
+                Ok(next) -> {
+                  let hop =
+                    RedirectHop(
+                      status: completed.response.status,
+                      from: request_origin(outgoing),
+                      to: request_origin(next),
+                      protocol: completed.selected_protocol,
+                    )
+                  run_exchange_redirects(
+                    client: client,
+                    outgoing: next,
+                    redirects_followed: redirects_followed + 1,
+                    reversed_history: [hop, ..reversed_history],
+                    deadline: deadline,
+                  )
+                }
+              }
+            }
+          }
         }
+      }
+    }
+  }
+}
+
+fn reject_unstarted_attempt(
+  client: Client,
+  outgoing: Request(body.Body),
+  failure: error.Error,
+) -> Result(value, error.Error) {
+  let trace = client_trace.attempt(client.trace)
+  let _claimed =
+    client_trace.claim_finished_if_missing(trace, None, Error(failure))
+  dispose_unowned_request(trace, outgoing.body, failure)
+}
+
+fn dispose_unowned_request(
+  trace: Option(client_trace.Trace),
+  source: body.Body,
+  failure: error.Error,
+) -> Result(value, error.Error) {
+  body.transfer_finished(source, Error(failure))
+  client_trace.phase_started(trace, diagnostics.ResourceRelease)
+  let cleanup = body.cancel_within(source, 1000)
+  client_trace.phase_finished(trace, diagnostics.ResourceRelease, cleanup)
+  client_trace.released_if_missing(trace, None, cleanup)
+  Error(failure)
+}
+
+/// Evidence available when deciding whether one automatic retry is safe.
+///
+/// A response-body failure is included so tests and future adapters cannot accidentally collapse it into a generic pre-response failure.
+/// The unified client never retries after returning response headers to its caller.
+@internal
+pub type RetryTrigger {
+  RequestUnstarted(failure: error.Error)
+  RequestRejected
+  RequestPossiblyProcessed(failure: error.Error)
+  ResponseHeadersReceived(status: Int)
+  ResponseBodyPartiallyReceived(failure: error.Error)
+}
+
+/// Apply the complete bounded automatic-retry policy without consuming a Body.
+/// This pure surface keeps every safety input explicit for model and mutation tests.
+@internal
+pub fn automatic_retry_allowed(
+  policy policy: RetryPolicy,
+  method method: Method,
+  body_replayable body_replayable: Bool,
+  retries_remaining retries_remaining: Int,
+  trigger trigger: RetryTrigger,
+) -> Bool {
+  policy.enabled
+  && policy.maximum >= 0
+  && retries_remaining > 0
+  && retries_remaining <= policy.maximum
+  && idempotent_method(method)
+  && body_replayable
+  && case trigger {
+    RequestUnstarted(failure) -> retryable_unstarted_failure(failure)
+    RequestRejected -> True
+    ResponseHeadersReceived(status) -> retry_status(policy, status)
+    RequestPossiblyProcessed(_) | ResponseBodyPartiallyReceived(_) -> False
+  }
+}
+
+/// Derive retry evidence conservatively from a redacted failure.
+/// DNS,
+/// connection establishment, and TLS failures precede request transmission.
+/// Every untagged operation or protocol failure might have followed a send.
+@internal
+pub fn retry_trigger_for_failure(failure: error.Error) -> RetryTrigger {
+  case error.retry_evidence(failure) {
+    error.PeerGuaranteedUnprocessed -> RequestRejected
+    error.NoRetryEvidence ->
+      case error.kind(failure) {
+        error.Dns
+        | error.ConnectFailed
+        | error.Tls
+        | error.Timeout(error.DnsLookup)
+        | error.Timeout(error.Connect)
+        | error.Timeout(error.TlsHandshake) -> RequestUnstarted(failure)
+        _ -> RequestPossiblyProcessed(failure)
       }
   }
 }
@@ -1428,62 +2257,192 @@ fn run_exchange_attempts(
   retries_remaining retries_remaining: Int,
 ) -> Result(Exchange, error.Error) {
   let remaining = deadline - transport.monotonic_millisecond()
-  use <- require(remaining > 0, error.new(error.Timeout(error.Total)))
-  let replay = retry_request(client.config.retry_policy, outgoing)
-  case
-    run_exchange_once(
-      client: client,
-      outgoing: outgoing,
-      total_milliseconds: remaining,
-    )
-  {
-    Ok(completed) ->
+  case remaining > 0 {
+    False ->
+      reject_unstarted_attempt(
+        client,
+        outgoing,
+        error.new(error.Timeout(error.Total)),
+      )
+    True ->
       case
-        retries_remaining > 0,
-        replay,
-        retry_status(client.config.retry_policy, completed.response.status)
+        run_exchange_once(
+          client: client,
+          outgoing: outgoing,
+          total_milliseconds: remaining,
+        )
       {
-        True, Some(replayed), True -> {
-          body.cancel(completed.response.body)
-          run_exchange_attempts(
-            client: client,
-            outgoing: replayed,
-            deadline: deadline,
-            retries_remaining: retries_remaining - 1,
-          )
+        Ok(completed) -> {
+          let should_retry =
+            automatic_retry_allowed(
+              policy: client.config.retry_policy,
+              method: outgoing.method,
+              body_replayable: body.is_replayable(outgoing.body),
+              retries_remaining: retries_remaining,
+              trigger: ResponseHeadersReceived(completed.response.status),
+            )
+          case should_retry {
+            False -> Ok(completed)
+            True -> {
+              let remaining = deadline - transport.monotonic_millisecond()
+              case
+                status_retry_after_response_release(
+                  policy: client.config.retry_policy,
+                  status: completed.response.status,
+                  outgoing: outgoing,
+                  response_body: completed.response.body,
+                  within_milliseconds: remaining,
+                )
+              {
+                Error(failure) -> Error(failure)
+                Ok(None) -> Ok(completed)
+                Ok(Some(replayed)) ->
+                  run_exchange_attempts(
+                    client: client,
+                    outgoing: replayed,
+                    deadline: deadline,
+                    retries_remaining: retries_remaining - 1,
+                  )
+              }
+            }
+          }
         }
-        _, _, _ -> Ok(completed)
-      }
-    Error(failure) ->
-      case
-        retries_remaining > 0,
-        replay,
-        retryable_pre_response_failure(failure)
-      {
-        True, Some(replayed), True ->
-          run_exchange_attempts(
-            client: client,
-            outgoing: replayed,
-            deadline: deadline,
-            retries_remaining: retries_remaining - 1,
-          )
-        _, _, _ -> Error(failure)
+        Error(failure) -> {
+          // Protocol adapters return an error only after their old admission and connection reservation reaches its terminal release barrier.
+          // Confirm the request source independently before constructing a replay so source cleanup can never overlap the next attempt.
+          let remaining = deadline - transport.monotonic_millisecond()
+          case
+            failed_attempt_retry_after_release(
+              policy: client.config.retry_policy,
+              outgoing: outgoing,
+              retries_remaining: retries_remaining,
+              failure: failure,
+              within_milliseconds: remaining,
+            )
+          {
+            Error(cleanup_failure) -> Error(cleanup_failure)
+            Ok(None) -> Error(failure)
+            Ok(Some(replayed)) ->
+              run_exchange_attempts(
+                client: client,
+                outgoing: replayed,
+                deadline: deadline,
+                retries_remaining: retries_remaining - 1,
+              )
+          }
+        }
       }
   }
 }
 
-fn retry_request(
-  policy: RetryPolicy,
-  outgoing: Request(body.Body),
-) -> Option(Request(body.Body)) {
-  case policy.enabled && idempotent_method(outgoing.method) {
-    False -> None
-    True ->
-      case body.replay(outgoing.body) {
-        Ok(replayed) -> Some(request.set_body(outgoing, replayed))
-        Error(_) -> None
-      }
+/// Confirm failed request-source cleanup before constructing a replay.
+/// `None` leaves an ineligible attempt untouched; its protocol adapter already owns terminal cleanup.
+/// The original attempt failure has been recorded before this function is entered.
+@internal
+pub fn failed_attempt_retry_after_release(
+  policy policy: RetryPolicy,
+  outgoing outgoing: Request(body.Body),
+  retries_remaining retries_remaining: Int,
+  failure failure: error.Error,
+  within_milliseconds within_milliseconds: Int,
+) -> Result(Option(Request(body.Body)), error.Error) {
+  let trigger = retry_trigger_for_failure(failure)
+  case
+    automatic_retry_allowed(
+      policy: policy,
+      method: outgoing.method,
+      body_replayable: body.is_replayable(outgoing.body),
+      retries_remaining: retries_remaining,
+      trigger: trigger,
+    )
+  {
+    False -> Ok(None)
+    True -> {
+      use _ <- result.try(release_body_within(
+        outgoing.body,
+        within_milliseconds,
+      ))
+      body.replay(outgoing.body)
+      |> result.map(fn(replayed) { Some(request.set_body(outgoing, replayed)) })
+    }
   }
+}
+
+/// Confirm response cleanup before constructing a status-retry body.
+/// `None` leaves an ineligible response untouched so callers can return it normally.
+@internal
+pub fn status_retry_after_response_release(
+  policy policy: RetryPolicy,
+  status status: Int,
+  outgoing outgoing: Request(body.Body),
+  response_body response_body: body.Body,
+  within_milliseconds within_milliseconds: Int,
+) -> Result(Option(Request(body.Body)), error.Error) {
+  case can_retry_request(policy, status, outgoing) {
+    False -> Ok(None)
+    True -> {
+      use _ <- result.try(release_body_within(
+        response_body,
+        within_milliseconds,
+      ))
+      body.replay(outgoing.body)
+      |> result.map(fn(replayed) { Some(request.set_body(outgoing, replayed)) })
+    }
+  }
+}
+
+/// Validate a redirect without replaying, confirm cleanup of the previous response, and only then materialise the next request body.
+@internal
+pub fn redirect_after_response_release(
+  outgoing outgoing: Request(body.Body),
+  status status: Int,
+  location location: String,
+  response_body response_body: body.Body,
+  within_milliseconds within_milliseconds: Int,
+) -> Result(Request(body.Body), error.Error) {
+  let planned = redirect.plan(outgoing, status, location)
+  use _ <- result.try(release_body_within(response_body, within_milliseconds))
+  use plan <- result.try(planned)
+  redirect.materialise(outgoing, plan)
+}
+
+fn release_response_before(
+  response_body: body.Body,
+  deadline: Int,
+) -> Result(Nil, error.Error) {
+  release_body_within(
+    response_body,
+    deadline - transport.monotonic_millisecond(),
+  )
+}
+
+fn release_body_within(
+  source: body.Body,
+  within_milliseconds: Int,
+) -> Result(Nil, error.Error) {
+  case within_milliseconds > 0 {
+    True ->
+      body.cancel_within(source, int.min(within_milliseconds, 2_147_482_647))
+    False -> {
+      // Cancellation still starts under a finite cleanup grace after the logical total deadline; no replay or next attempt may use that grace.
+      let _cleanup = body.cancel_within(source, 1)
+      Error(error.new(error.Timeout(error.Total)))
+    }
+  }
+}
+
+fn can_retry_request(
+  policy: RetryPolicy,
+  status: Int,
+  outgoing: Request(body.Body),
+) -> Bool {
+  automatic_retry_allowed(
+    policy: policy,
+    method: outgoing.method,
+    body_replayable: body.is_replayable(outgoing.body),
+    retries_remaining: 1,
+    trigger: ResponseHeadersReceived(status),
+  )
 }
 
 fn idempotent_method(method: Method) -> Bool {
@@ -1497,7 +2456,7 @@ fn retry_status(policy: RetryPolicy, status: Int) -> Bool {
   policy.enabled && list.contains(policy.retry_statuses, status)
 }
 
-fn retryable_pre_response_failure(failure: error.Error) -> Bool {
+fn retryable_unstarted_failure(failure: error.Error) -> Bool {
   case error.kind(failure) {
     error.Dns
     | error.ConnectFailed
@@ -1517,7 +2476,8 @@ fn run_exchange_once(
   outgoing outgoing: Request(body.Body),
   total_milliseconds total_milliseconds: Int,
 ) -> Result(Exchange, error.Error) {
-  case outgoing.scheme {
+  let client = Client(..client, trace: client_trace.attempt(client.trace))
+  let outcome = case outgoing.scheme {
     Http ->
       run_http1_exchange(
         client: client,
@@ -1531,6 +2491,22 @@ fn run_exchange_once(
         total_milliseconds: total_milliseconds,
       )
   }
+  case outcome {
+    Error(failure) -> {
+      case
+        client_trace.claim_finished_if_missing(
+          client.trace,
+          None,
+          Error(failure),
+        )
+      {
+        True -> dispose_unowned_request(client.trace, outgoing.body, failure)
+        False -> Error(failure)
+      }
+    }
+    Ok(Exchange(trace: Some(_), ..) as exchange) -> Ok(exchange)
+    Ok(exchange) -> Ok(Exchange(..exchange, trace: client.trace))
+  }
 }
 
 fn run_http1_exchange(
@@ -1540,9 +2516,12 @@ fn run_http1_exchange(
 ) -> Result(Exchange, error.Error) {
   use config <- result.try(http1_config(client, total_milliseconds))
   use incoming <- result.try(http1_exchange.run(outgoing, config))
-  Ok(
-    Exchange(response: incoming, selected_protocol: Http1, redirect_history: []),
-  )
+  Ok(Exchange(
+    response: incoming,
+    selected_protocol: Http1,
+    redirect_history: [],
+    trace: client.trace,
+  ))
 }
 
 fn run_https_exchange(
@@ -1551,14 +2530,23 @@ fn run_https_exchange(
   total_milliseconds total_milliseconds: Int,
 ) -> Result(Exchange, error.Error) {
   let deadline = transport.monotonic_millisecond() + total_milliseconds
-  refresh_https_records(client, outgoing)
+  refresh_https_records(client, outgoing, deadline)
   case should_attempt_http3(client, outgoing) {
-    False -> run_tcp_https_exchange(client, outgoing, total_milliseconds)
+    False ->
+      case deadline - transport.monotonic_millisecond() {
+        remaining if remaining > 0 ->
+          run_tcp_https_exchange(client, outgoing, remaining)
+        _ -> Error(error.new(error.Timeout(error.Total)))
+      }
     True -> race_https_routes(client, outgoing, deadline)
   }
 }
 
-fn refresh_https_records(client: Client, outgoing: Request(body)) -> Nil {
+fn refresh_https_records(
+  client: Client,
+  outgoing: Request(body),
+  total_deadline: Int,
+) -> Nil {
   let origin = request_origin(outgoing)
   let now = transport.monotonic_millisecond()
   let existing =
@@ -1568,24 +2556,56 @@ fn refresh_https_records(client: Client, outgoing: Request(body)) -> Nil {
     )
   case
     client.config.discovery_policy.enabled,
-    alt_svc.supports_same_port(existing, outgoing.host, origin.port, now),
+    alt_svc.alternative_port(existing, outgoing.host, origin.port, now),
     client.config.https_record_resolver
   {
-    True, False, Some(resolver) ->
-      case
-        call_https_resolver(
-          resolver,
-          outgoing.host,
-          origin.port,
+    True, None, Some(resolver) -> {
+      let resolver_budget =
+        https_record_resolver_budget(
           client.config.discovery_policy.https_record_timeout_milliseconds,
+          total_deadline,
+          now,
         )
-      {
-        Ok(records) ->
-          store_https_records(client, outgoing.host, origin.port, records, now)
-        Error(_) -> Nil
+      case resolver_budget > 0 {
+        False -> Nil
+        True ->
+          case
+            call_https_resolver_before(
+              resolver,
+              outgoing.host,
+              origin.port,
+              resolver_budget,
+              now + resolver_budget,
+            )
+          {
+            Ok(records) ->
+              store_https_records(
+                client,
+                outgoing.host,
+                origin.port,
+                records,
+                now,
+              )
+            Error(_) -> Nil
+          }
       }
+    }
     _, _, _ -> Nil
   }
+}
+
+/// Allocate discovery time without extending the exchange's absolute total deadline.
+/// Keeping this calculation pure makes scheduler-stall and expired boundary regressions directly reproducible.
+@internal
+pub fn https_record_resolver_budget(
+  configured_milliseconds: Int,
+  total_deadline: Int,
+  current_milliseconds: Int,
+) -> Int {
+  int.max(
+    0,
+    int.min(configured_milliseconds, total_deadline - current_milliseconds),
+  )
 }
 
 fn store_https_records(
@@ -1651,21 +2671,19 @@ fn run_configured_tcp_https(
   case http2_exchange.run(outgoing, config) {
     Error(failure) -> Error(failure)
     Ok(http2_exchange.Http2Response(incoming)) ->
-      Ok(
-        Exchange(
-          response: incoming,
-          selected_protocol: Http2,
-          redirect_history: [],
-        ),
-      )
+      Ok(Exchange(
+        response: incoming,
+        selected_protocol: Http2,
+        redirect_history: [],
+        trace: None,
+      ))
     Ok(http2_exchange.Http1Response(incoming)) ->
-      Ok(
-        Exchange(
-          response: incoming,
-          selected_protocol: Http1,
-          redirect_history: [],
-        ),
-      )
+      Ok(Exchange(
+        response: incoming,
+        selected_protocol: Http1,
+        redirect_history: [],
+        trace: None,
+      ))
     Ok(http2_exchange.Http1Required) ->
       Error(error.new(error.Protocol(error.Http1)))
   }
@@ -1676,236 +2694,698 @@ fn race_https_routes(
   outgoing: Request(body.Body),
   deadline: Int,
 ) -> Result(Exchange, error.Error) {
-  use h3_body <- result.try(body.replay(outgoing.body))
-  use tcp_body <- result.try(body.replay(outgoing.body))
-  use guard <- result.try(start_tcp_race_guard())
-  let outcomes = process.new_subject()
-  let h3_outgoing = request.set_body(outgoing, h3_body)
-  let tcp_outgoing = request.set_body(outgoing, tcp_body)
-  let h3_pid =
-    process.spawn_unlinked(fn() {
-      let remaining = deadline - transport.monotonic_millisecond()
-      let outcome = case remaining > 0 {
-        True -> run_http3_exchange(client, h3_outgoing, remaining)
-        False -> Error(error.new(error.Timeout(error.Total)))
+  let origin = request_origin(outgoing)
+  let endpoint_port = http3_endpoint_port(client, outgoing)
+  let key = http3_pool_key(origin, client.config.network_isolation_key)
+  case deadline - transport.monotonic_millisecond() > 0 {
+    False -> Error(error.new(error.Timeout(error.Total)))
+    True -> {
+      let pooled = case client.config.pooling_enabled {
+        True ->
+          checkout_http3_shared_before(client.lifecycle, key, deadline)
+          |> result.map(fn(shared) {
+            let #(connection, lease) = shared
+            PooledHttp3(connection, lease, key)
+          })
+        False -> Error(0)
       }
-      process.send(outcomes, Http3Finished(outcome))
-    })
-  let tcp_pid =
-    process.spawn_unlinked(fn() {
-      let remaining = deadline - transport.monotonic_millisecond()
-      let outcome = case remaining > 0 {
-        True -> run_buffered_tcp_race(client, tcp_outgoing, remaining, guard)
-        False -> Error(error.new(error.Timeout(error.Total)))
+      case pooled {
+        Ok(session) ->
+          run_or_retire_pooled_http3(
+            client,
+            outgoing,
+            session,
+            deadline,
+            origin,
+            endpoint_port,
+            key,
+          )
+        Error(0) ->
+          start_new_https_route(
+            client,
+            outgoing,
+            deadline,
+            origin,
+            endpoint_port,
+            key,
+          )
+        Error(2) -> Error(error.new(error.Resource(error.Connections)))
+        Error(_) ->
+          case deadline - transport.monotonic_millisecond() > 0 {
+            True -> Error(error.new(error.Cancelled))
+            False -> Error(error.new(error.Timeout(error.Total)))
+          }
       }
-      stop_tcp_race_guard(guard)
-      process.send(outcomes, TcpFinished(outcome))
-    })
-  let h3_monitor = process.monitor(h3_pid)
-  let tcp_monitor = process.monitor(tcp_pid)
-  let selector =
-    process.new_selector()
-    |> process.select(outcomes)
-    |> process.select_specific_monitor(h3_monitor, fn(_) { Http3Exited })
-    |> process.select_specific_monitor(tcp_monitor, fn(_) { TcpExited })
-  await_https_race(
-    selector,
-    h3_pid,
-    tcp_pid,
-    h3_monitor,
-    tcp_monitor,
-    guard,
-    deadline,
-    None,
-    None,
-  )
+    }
+  }
 }
 
-fn await_https_race(
-  selector: process.Selector(RaceEvent),
-  h3_pid: process.Pid,
-  tcp_pid: process.Pid,
-  h3_monitor: process.Monitor,
-  tcp_monitor: process.Monitor,
+fn run_or_retire_pooled_http3(
+  client: Client,
+  outgoing: Request(body.Body),
+  session: PooledHttp3,
+  deadline: Int,
+  origin: Origin,
+  endpoint_port: Int,
+  key: String,
+) -> Result(Exchange, error.Error) {
+  case deadline - transport.monotonic_millisecond() > 0 {
+    False -> {
+      let _retirement_enqueued = retire_http3_session_before(session, deadline)
+      Error(error.new(error.Timeout(error.Total)))
+    }
+    True ->
+      case http3_connection_reusable_until(session.connection, deadline) {
+        Ok(True) ->
+          case deadline - transport.monotonic_millisecond() > 0 {
+            True ->
+              run_pooled_http3_session(
+                client,
+                outgoing,
+                session,
+                deadline,
+                origin,
+                key,
+              )
+            False -> {
+              let _retirement_enqueued =
+                retire_http3_session_before(session, deadline)
+              Error(error.new(error.Timeout(error.Total)))
+            }
+          }
+        Ok(False) | Error(_) -> {
+          let retired = case retire_http3_session_before(session, deadline) {
+            Ok(Nil) ->
+              result.is_ok(http3_exchange.await_owner_exit_before(
+                connection: session.connection,
+                deadline: deadline,
+              ))
+            Error(_) -> False
+          }
+          case retired, deadline - transport.monotonic_millisecond() > 0 {
+            True, True ->
+              start_new_https_route(
+                client,
+                outgoing,
+                deadline,
+                origin,
+                endpoint_port,
+                key,
+              )
+            _, False -> Error(error.new(error.Timeout(error.Total)))
+            False, True -> Error(error.new(error.Cancelled))
+          }
+        }
+      }
+  }
+}
+
+fn http3_connection_reusable_until(
+  connection: http3_exchange.Connection,
+  deadline: Int,
+) -> Result(Bool, error.Error) {
+  case
+    call_http3_reuse_before(
+      fn() {
+        process_role.set(process_role.ClientConnectionCandidate)
+        http3_exchange.connection_reusable(connection)
+      },
+      deadline,
+    )
+  {
+    Ok(outcome) -> outcome
+    Error(0) -> Error(error.new(error.Timeout(error.Total)))
+    Error(2) -> Error(error.new(error.Timeout(error.Operation)))
+    Error(_) -> Error(error.new(error.Service))
+  }
+}
+
+fn start_new_https_route(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
+  origin: Origin,
+  endpoint_port: Int,
+  key: String,
+) -> Result(Exchange, error.Error) {
+  case deadline - transport.monotonic_millisecond() > 0 {
+    False -> Error(error.new(error.Timeout(error.Total)))
+    True -> {
+      let origin_identity =
+        "https://" <> origin.host <> ":" <> int.to_string(origin.port)
+      let admission = case client.config.pooling_enabled {
+        True ->
+          begin_http3_dial_before(
+            client.lifecycle,
+            origin_identity,
+            key,
+            deadline,
+          )
+        False ->
+          reserve_resource_before(client.lifecycle, origin_identity, deadline)
+          |> result.map(Http3DialLeader)
+      }
+      case admission {
+        Ok(Http3DialLeader(registration)) ->
+          case deadline - transport.monotonic_millisecond() > 0 {
+            True ->
+              race_new_https_connections(
+                client,
+                outgoing,
+                deadline,
+                endpoint_port,
+                key,
+                registration,
+              )
+            False -> {
+              let _cancellation_enqueued =
+                retire_http3_candidate_confirmed_before(registration, deadline)
+              Error(error.new(error.Timeout(error.Total)))
+            }
+          }
+        Ok(Http3DialWaiting(wait)) ->
+          case await_http3_dial(wait) {
+            Ok(Nil) ->
+              run_after_http3_dial_publication(
+                client,
+                outgoing,
+                deadline,
+                origin,
+                endpoint_port,
+                key,
+              )
+            Error(3) ->
+              run_tcp_fallback_before_total_deadline(
+                deadline,
+                transport.monotonic_millisecond(),
+                fn(remaining) {
+                  run_tcp_https_exchange(client, outgoing, remaining)
+                },
+              )
+            Error(_) ->
+              case deadline - transport.monotonic_millisecond() > 0 {
+                True -> Error(error.new(error.Cancelled))
+                False -> Error(error.new(error.Timeout(error.Total)))
+              }
+          }
+        Ok(Http3DialPublished) ->
+          run_after_http3_dial_publication(
+            client,
+            outgoing,
+            deadline,
+            origin,
+            endpoint_port,
+            key,
+          )
+        Error(2) -> handle_http3_connection_capacity(client, outgoing, deadline)
+        Error(_) ->
+          case deadline - transport.monotonic_millisecond() > 0 {
+            True -> Error(error.new(error.Cancelled))
+            False -> Error(error.new(error.Timeout(error.Total)))
+          }
+      }
+    }
+  }
+}
+
+fn run_after_http3_dial_publication(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
+  origin: Origin,
+  endpoint_port: Int,
+  key: String,
+) -> Result(Exchange, error.Error) {
+  case deadline - transport.monotonic_millisecond() > 0 {
+    False -> Error(error.new(error.Timeout(error.Total)))
+    True ->
+      case checkout_http3_shared_before(client.lifecycle, key, deadline) {
+        Ok(shared) -> {
+          let #(connection, lease) = shared
+          run_or_retire_pooled_http3(
+            client,
+            outgoing,
+            PooledHttp3(connection, lease, key),
+            deadline,
+            origin,
+            endpoint_port,
+            key,
+          )
+        }
+        Error(0) ->
+          start_new_https_route(
+            client,
+            outgoing,
+            deadline,
+            origin,
+            endpoint_port,
+            key,
+          )
+        Error(2) -> handle_http3_connection_capacity(client, outgoing, deadline)
+        Error(_) ->
+          case deadline - transport.monotonic_millisecond() > 0 {
+            True -> Error(error.new(error.Cancelled))
+            False -> Error(error.new(error.Timeout(error.Total)))
+          }
+      }
+  }
+}
+
+fn handle_http3_connection_capacity(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
+) -> Result(Exchange, error.Error) {
+  case client.config.http3_resource_limit_terminal_probe {
+    Some(terminal) ->
+      case terminal() {
+        True -> Error(error.new(error.Resource(error.Connections)))
+        False ->
+          run_tcp_fallback_before_total_deadline(
+            deadline,
+            transport.monotonic_millisecond(),
+            fn(remaining) {
+              run_tcp_https_exchange(client, outgoing, remaining)
+            },
+          )
+      }
+    None ->
+      run_tcp_fallback_before_total_deadline(
+        deadline,
+        transport.monotonic_millisecond(),
+        fn(remaining) { run_tcp_https_exchange(client, outgoing, remaining) },
+      )
+  }
+}
+
+/// Build the authenticated-origin and network-partition identity of an HTTP/3 connection.
+/// The currently selected Alt-Svc endpoint is routing metadata;
+/// changing it does not invalidate an already authenticated connection.
+@internal
+pub fn http3_pool_key(
+  origin: Origin,
+  network_isolation_key: NetworkIsolationKey,
+) -> String {
+  let scheme = case origin.scheme {
+    Http -> "http"
+    Https -> "https"
+  }
+  "h3|"
+  <> pool_key_component(scheme)
+  <> pool_key_component(origin.host)
+  <> pool_key_component(int.to_string(origin.port))
+  <> pool_key_component(network_isolation_key.top_level_site)
+  <> pool_key_component(network_isolation_key.profile)
+}
+
+fn pool_key_component(value: String) -> String {
+  int.to_string(string.byte_size(value)) <> ":" <> value
+}
+
+fn race_new_https_connections(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
+  endpoint_port: Int,
+  key: String,
+  registration: Registration,
+) -> Result(Exchange, error.Error) {
+  let native_trace = case client.trace {
+    None -> None
+    Some(_) -> Some(h3_client.new_connect_trace())
+  }
+  let guarded = start_tcp_race_guard(client, registration, deadline)
+  case guarded {
+    Error(failure) -> {
+      let _cleanup_confirmed = cancel_resource_until(registration, deadline)
+      Error(failure)
+    }
+    Ok(guard) -> {
+      let outcomes = process.new_subject()
+      let http3_work = fn() {
+        let outcome = {
+          use _ <- result.try(case client.config.http3_connect_gate {
+            None -> Ok(Nil)
+            Some(gate) -> gate()
+          })
+          use config <- result.try(http3_config(client, deadline, native_trace))
+          let origin = request_origin(outgoing)
+          use connection <- result.try(
+            http3_exchange.connect_to_managed(
+              config,
+              outgoing.host,
+              origin.port,
+              endpoint_port,
+              fn(owner, close_handle) {
+                case attach_http3_resource(registration, owner, close_handle) {
+                  Ok(Nil) -> Ok(fn() { unregister_socket(registration) })
+                  Error(_) -> Error(error.new(error.Cancelled))
+                }
+              },
+            ),
+          )
+          use _ <- result.try(run_https_race_candidate_gate(
+            client,
+            Http3AuthenticatedCandidate,
+            deadline,
+          ))
+          Ok(Http3Candidate(connection, registration, key))
+        }
+        process.send(outcomes, Http3Ready(outcome))
+      }
+      let tcp_work = fn() {
+        case prepare_tcp_race(client, outgoing, deadline, guard) {
+          Error(failure) -> process.send(outcomes, TcpReady(Error(failure)))
+          Ok(ready) ->
+            case
+              run_https_race_candidate_gate(
+                client,
+                TcpAuthenticatedCandidate,
+                deadline,
+              )
+            {
+              Error(failure) -> {
+                http2_exchange.discard_ready(ready)
+                process.send(outcomes, TcpReady(Error(failure)))
+              }
+              Ok(Nil) -> {
+                let handoff = process.new_subject()
+                process.send(
+                  outcomes,
+                  TcpReady(Ok(TcpRaceCandidate(ready, handoff))),
+                )
+                await_tcp_candidate_handoff(ready, handoff, deadline)
+              }
+            }
+        }
+      }
+      use #(h3_pid, tcp_pid) <- result.try(start_race_contenders(
+        guard,
+        http3_work,
+        tcp_work,
+      ))
+      let h3_monitor = process.monitor(h3_pid)
+      let tcp_monitor = process.monitor(tcp_pid)
+      let h3_join_monitor = process.monitor(h3_pid)
+      let tcp_join_monitor = process.monitor(tcp_pid)
+      let selector =
+        process.new_selector()
+        |> process.select(outcomes)
+        |> process.select_specific_monitor(h3_monitor, fn(_) { Http3Exited })
+        |> process.select_specific_monitor(tcp_monitor, fn(_) { TcpExited })
+      let selected = await_verified_route(selector, deadline, None, None)
+      let completed =
+        complete_verified_route(client, outgoing, deadline, guard, selected)
+      let completed = case completed {
+        Ok(_) -> completed
+        Error(failure) -> {
+          let helpers_confirmed =
+            stop_race_contenders(
+              [h3_pid, tcp_pid],
+              client.config.race_join_confirmation,
+              deadline,
+            )
+          case helpers_confirmed {
+            True -> Error(failure)
+            False -> Error(error.new(error.Timeout(error.Operation)))
+          }
+        }
+      }
+      let route_monitors_confirmed =
+        join_race_contenders(
+          [#(h3_pid, h3_join_monitor), #(tcp_pid, tcp_join_monitor)],
+          client.config.race_join_confirmation,
+          deadline,
+        )
+      process.demonitor_process(h3_monitor)
+      process.demonitor_process(tcp_monitor)
+      let completed = case route_monitors_confirmed, completed {
+        True, _ -> completed
+        False, Ok(exchange) -> {
+          body.cancel(response(exchange).body)
+          Error(error.new(error.Timeout(error.Operation)))
+        }
+        False, Error(_) -> Error(error.new(error.Timeout(error.Operation)))
+      }
+      case native_trace {
+        None -> Nil
+        Some(trace) ->
+          client_trace.http3_snapshot(
+            client.trace,
+            h3_client.connect_snapshot(trace),
+          )
+      }
+      completed
+    }
+  }
+}
+
+fn await_tcp_candidate_handoff(
+  ready: http2_exchange.Ready,
+  handoff: process.Subject(TcpCandidateHandoff),
+  deadline: Int,
+) -> Nil {
+  case
+    process.receive(
+      handoff,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  {
+    Ok(TcpCandidateHandoff(owner, reply)) -> {
+      let acknowledge = process.new_subject()
+      process.send(reply, TcpCandidateOffer(ready, acknowledge))
+      let accepted =
+        process.receive(
+          acknowledge,
+          within: int.max(0, deadline - transport.monotonic_millisecond()),
+        )
+      let outcome = case
+        accepted,
+        deadline > transport.monotonic_millisecond()
+      {
+        Ok(Nil), True ->
+          http2_exchange.transfer_ready(ready, owner)
+          |> result.map(fn(_) { Nil })
+        _, _ -> {
+          http2_exchange.discard_ready(ready)
+          Error(error.new(error.Timeout(error.Total)))
+        }
+      }
+      process.send(reply, TcpCandidateCommit(outcome))
+    }
+    Error(Nil) -> http2_exchange.discard_ready(ready)
+  }
+}
+
+fn receive_tcp_candidate_handoff(
+  transfer: process.Subject(TcpCandidateTransfer),
+  deadline: Int,
+) -> Result(http2_exchange.Ready, Nil) {
+  case
+    process.receive(
+      transfer,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  {
+    Ok(TcpCandidateOffer(ready, acknowledge)) -> {
+      // The selected caller retains this provisional handle before the contender changes the controlling process.
+      // A contender death at the following instruction therefore has an informed closer on both sides.
+      process.send(acknowledge, Nil)
+      case
+        process.receive(
+          transfer,
+          within: int.max(0, deadline - transport.monotonic_millisecond()),
+        )
+      {
+        Ok(TcpCandidateCommit(Ok(Nil))) ->
+          case deadline > transport.monotonic_millisecond() {
+            True -> Ok(ready)
+            False -> {
+              http2_exchange.discard_ready(ready)
+              Error(Nil)
+            }
+          }
+        Ok(TcpCandidateCommit(Error(_))) -> {
+          // The transfer may already have changed the controlling process.
+          // Cleanup therefore runs in the informed recipient, which is the only side guaranteed to be allowed to close both TCP and TLS.
+          http2_exchange.discard_ready(ready)
+          Error(Nil)
+        }
+        Ok(TcpCandidateOffer(_, _)) | Error(Nil) -> {
+          http2_exchange.discard_ready(ready)
+          Error(Nil)
+        }
+      }
+    }
+    Ok(TcpCandidateCommit(_)) | Error(Nil) -> Error(Nil)
+  }
+}
+
+fn run_https_race_candidate_gate(
+  client: Client,
+  candidate: HttpsRaceCandidate,
+  deadline: Int,
+) -> Result(Nil, error.Error) {
+  case client.config.https_race_candidate_gate {
+    None -> Ok(Nil)
+    Some(gate) -> gate(candidate, deadline)
+  }
+}
+
+fn complete_verified_route(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
   guard: TcpRaceGuard,
+  selected: Result(VerifiedRoute, error.Error),
+) -> Result(Exchange, error.Error) {
+  // Ready messages are observations, not cleanup capabilities.
+  // The race guardian owns both candidate registrations and acknowledges selection only after the loser transport and contender DOWN are confirmed.
+  // This keeps correctness independent of an after-0 drain of the outcome mailbox.
+  case selected {
+    Ok(Http3Route(candidate)) -> {
+      case select_http3_race_guard(guard) {
+        True -> {
+          use session <- result.try(activate_http3_candidate(
+            candidate,
+            client.config.pooling_enabled,
+            deadline,
+          ))
+          run_http3_session(client, outgoing, session, deadline)
+        }
+        False -> {
+          discard_http3_candidate(candidate, deadline)
+          Error(error.new(error.Timeout(error.Operation)))
+        }
+      }
+    }
+    Ok(TcpRoute(candidate)) -> {
+      case claim_tcp_race_guard(guard, candidate) {
+        Error(True) -> Error(error.new(error.Cancelled))
+        Error(False) -> Error(error.new(error.Timeout(error.Operation)))
+        Ok(ready) ->
+          run_prepared_tcp(
+            ready
+            |> http2_exchange.with_ready_trace(client.trace),
+          )
+      }
+    }
+    Error(failure) -> {
+      let cleanup_confirmed = cancel_tcp_race_guard(guard)
+      case cleanup_confirmed, error.kind(failure) {
+        False, _ -> Error(error.new(error.Timeout(error.Operation)))
+        True, error.Resource(error.Connections) ->
+          run_tcp_fallback_before_total_deadline(
+            deadline,
+            transport.monotonic_millisecond(),
+            fn(remaining) {
+              run_tcp_https_exchange(client, outgoing, remaining)
+            },
+          )
+        True, _ -> Error(failure)
+      }
+    }
+  }
+}
+
+fn discard_http3_candidate(candidate: Http3Candidate, deadline: Int) -> Nil {
+  let _retired =
+    retire_http3_candidate_confirmed_before(candidate.registration, deadline)
+  Nil
+}
+
+type VerifiedRoute {
+  Http3Route(Http3Candidate)
+  TcpRoute(TcpRaceCandidate)
+}
+
+fn await_verified_route(
+  selector: process.Selector(RaceEvent),
   deadline: Int,
   h3_failure: Option(error.Error),
   tcp_failure: Option(error.Error),
-) -> Result(Exchange, error.Error) {
-  let remaining = deadline - transport.monotonic_millisecond()
-  case remaining > 0 {
-    False ->
-      finish_race_timeout(
-        h3_pid,
-        tcp_pid,
-        h3_monitor,
-        tcp_monitor,
-        guard,
-        h3_failure,
-        tcp_failure,
-      )
-    True ->
+) -> Result(VerifiedRoute, error.Error) {
+  case h3_failure, tcp_failure {
+    Some(_), Some(failure) -> Error(failure)
+    _, _ -> {
+      let remaining = int.max(0, deadline - transport.monotonic_millisecond())
       case process.selector_receive(selector, within: remaining) {
-        Error(Nil) ->
-          finish_race_timeout(
-            h3_pid,
-            tcp_pid,
-            h3_monitor,
-            tcp_monitor,
-            guard,
-            h3_failure,
-            tcp_failure,
-          )
-        Ok(Http3Finished(Ok(completed))) -> {
-          case tcp_failure {
-            None -> {
-              cancel_tcp_race_guard(guard)
-              process.kill(tcp_pid)
-            }
-            Some(_) -> Nil
-          }
-          finish_race_monitors(h3_monitor, tcp_monitor)
-          Ok(completed)
-        }
-        Ok(TcpFinished(Ok(completed))) -> {
-          case h3_failure {
-            None -> process.kill(h3_pid)
-            Some(_) -> Nil
-          }
-          finish_race_monitors(h3_monitor, tcp_monitor)
-          Ok(completed)
-        }
-        Ok(Http3Finished(Error(failure))) ->
-          case tcp_failure {
-            Some(tcp_failure) -> {
-              finish_race_monitors(h3_monitor, tcp_monitor)
-              Error(tcp_failure)
-            }
-            None ->
-              await_https_race(
-                selector,
-                h3_pid,
-                tcp_pid,
-                h3_monitor,
-                tcp_monitor,
-                guard,
-                deadline,
-                Some(failure),
-                None,
-              )
-          }
-        Ok(TcpFinished(Error(failure))) ->
-          case h3_failure {
-            Some(_) -> {
-              finish_race_monitors(h3_monitor, tcp_monitor)
-              Error(failure)
-            }
-            None ->
-              await_https_race(
-                selector,
-                h3_pid,
-                tcp_pid,
-                h3_monitor,
-                tcp_monitor,
-                guard,
-                deadline,
-                None,
-                Some(failure),
-              )
-          }
+        Error(Nil) -> Error(error.new(error.Timeout(error.Total)))
+        Ok(Http3Ready(Ok(session))) -> Ok(Http3Route(session))
+        Ok(TcpReady(Ok(ready))) -> Ok(TcpRoute(ready))
+        Ok(Http3Ready(Error(failure))) ->
+          await_verified_route(selector, deadline, Some(failure), tcp_failure)
+        Ok(TcpReady(Error(failure))) ->
+          await_verified_route(selector, deadline, h3_failure, Some(failure))
         Ok(Http3Exited) ->
-          await_https_race(
+          await_verified_route(
             selector,
-            h3_pid,
-            tcp_pid,
-            h3_monitor,
-            tcp_monitor,
-            guard,
             deadline,
-            Some(error.new(error.Protocol(error.Http3))),
+            case h3_failure {
+              None -> Some(error.new(error.Service))
+              Some(_) -> h3_failure
+            },
             tcp_failure,
           )
-        Ok(TcpExited) -> {
-          cancel_tcp_race_guard(guard)
-          case h3_failure {
-            Some(_) -> {
-              finish_race_monitors(h3_monitor, tcp_monitor)
-              Error(error.new(error.Protocol(error.Http2)))
-            }
-            None ->
-              await_https_race(
-                selector,
-                h3_pid,
-                tcp_pid,
-                h3_monitor,
-                tcp_monitor,
-                guard,
-                deadline,
-                None,
-                Some(error.new(error.Protocol(error.Http2))),
-              )
-          }
-        }
+        Ok(TcpExited) ->
+          await_verified_route(
+            selector,
+            deadline,
+            h3_failure,
+            case tcp_failure {
+              None -> Some(error.new(error.Service))
+              Some(_) -> tcp_failure
+            },
+          )
       }
-  }
-}
-
-fn finish_race_timeout(
-  h3_pid: process.Pid,
-  tcp_pid: process.Pid,
-  h3_monitor: process.Monitor,
-  tcp_monitor: process.Monitor,
-  guard: TcpRaceGuard,
-  h3_failure: Option(error.Error),
-  tcp_failure: Option(error.Error),
-) -> Result(Exchange, error.Error) {
-  case tcp_failure {
-    None -> {
-      cancel_tcp_race_guard(guard)
-      process.kill(tcp_pid)
     }
-    Some(_) -> Nil
   }
-  case h3_failure {
-    None -> process.kill(h3_pid)
-    Some(_) -> Nil
-  }
-  finish_race_monitors(h3_monitor, tcp_monitor)
-  Error(error.new(error.Timeout(error.Total)))
 }
 
-fn finish_race_monitors(
-  h3_monitor: process.Monitor,
-  tcp_monitor: process.Monitor,
-) -> Nil {
-  process.demonitor_process(h3_monitor)
-  process.demonitor_process(tcp_monitor)
+fn join_race_helper_until(
+  _pid: process.Pid,
+  monitor: process.Monitor,
+  deadline: Int,
+  confirmation: Bool,
+) -> Bool {
+  let joined =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(within: int.max(
+      0,
+      deadline - transport.monotonic_millisecond(),
+    ))
+  process.demonitor_process(monitor)
+  joined == Ok(Nil) && confirmation
 }
 
-fn run_buffered_tcp_race(
+fn prepare_tcp_race(
   client: Client,
   outgoing: Request(body.Body),
-  total_milliseconds: Int,
+  deadline: Int,
   guard: TcpRaceGuard,
-) -> Result(Exchange, error.Error) {
-  use http1 <- result.try(http1_config(client, total_milliseconds))
-  let http1 =
-    http1
-    |> http1_exchange.without_proxy
-    |> http1_exchange.without_pool
-    |> http1_exchange.with_lifecycle(
-      fn(origin, socket) {
-        attach_tcp_race_socket(client, guard, origin, socket)
-      },
-      fn() {
-        lifecycle_is_closed(client.lifecycle)
-        || race_is_cancelled(guard.cancellation)
-      },
-    )
-  use http2 <- result.try(http2_config(client, total_milliseconds))
+) -> Result(http2_exchange.Ready, error.Error) {
+  let remaining = deadline - transport.monotonic_millisecond()
+  use <- require(remaining > 0, error.new(error.Timeout(error.Total)))
+  use http1 <- result.try(http1_config(client, remaining))
+  use http2 <- result.try(http2_config(client, remaining))
   let http2 =
     http2
-    |> http2_exchange.without_pool
+    |> http2_exchange.with_trace(None)
+    |> http2_exchange.with_admission(
+      fn(origin) {
+        reserve_tcp_socket_until(client.lifecycle, origin, deadline)
+      },
+      fn(previous, socket) {
+        replace_registered_socket_before(
+          client.lifecycle,
+          previous,
+          socket,
+          deadline,
+        )
+        |> result.map_error(fn(code) { race_lifecycle_failure(code, deadline) })
+      },
+    )
     |> http2_exchange.with_lifecycle(
       fn(origin, socket) {
         attach_tcp_race_socket(client, guard, origin, socket)
@@ -1915,6 +3395,15 @@ fn run_buffered_tcp_race(
         || race_is_cancelled(guard.cancellation)
       },
     )
+    |> http2_exchange.with_owner_adoption(fn(socket, owner) {
+      transfer_and_adopt_registered_socket_owner_before(
+        client.lifecycle,
+        socket,
+        owner,
+        deadline,
+      )
+      |> result.map_error(fn(code) { race_lifecycle_failure(code, deadline) })
+    })
     |> http2_exchange.with_http1_fallback(
       fn(socket, outgoing, cleanup, total_deadline) {
         http1_exchange.run_presecured(
@@ -1926,30 +3415,28 @@ fn run_buffered_tcp_race(
         )
       },
     )
-  use completed <- result.try(run_configured_tcp_https(outgoing, http2))
-  use collected <- result.try(body.read_all(
-    completed.response.body,
-    client.config.body_limits.buffered_bytes,
-  ))
-  let #(bytes, trailers) = collected
-  Ok(
-    Exchange(
-      ..completed,
-      response: response.set_body(
-        completed.response,
-        body.from_bytes_with_trailers(bytes, trailers),
-      ),
-    ),
-  )
+  http2_exchange.prepare_connection_before(outgoing, http2, deadline)
+}
+
+fn run_prepared_tcp(
+  ready: http2_exchange.Ready,
+) -> Result(Exchange, error.Error) {
+  case http2_exchange.run_ready(ready) {
+    Error(failure) -> Error(failure)
+    Ok(http2_exchange.Http2Response(incoming)) ->
+      Ok(Exchange(incoming, Http2, [], None))
+    Ok(http2_exchange.Http1Response(incoming)) ->
+      Ok(Exchange(incoming, Http1, [], None))
+    Ok(http2_exchange.Http1Required) ->
+      Error(error.new(error.Protocol(error.Http1)))
+  }
 }
 
 fn should_attempt_http3(client: Client, outgoing: Request(body.Body)) -> Bool {
   let origin = request_origin(outgoing)
   client.config.discovery_policy.enabled
   && client.config.proxy_policy.proxy == None
-  && idempotent_method(outgoing.method)
-  && body.is_replayable(outgoing.body)
-  && alt_svc.supports_same_port(
+  && alt_svc.alternative_port(
     alt_svc_store_list(
       client.alt_svc_store,
       policy_partition(client.config.network_isolation_key),
@@ -1958,66 +3445,333 @@ fn should_attempt_http3(client: Client, outgoing: Request(body.Body)) -> Bool {
     origin.port,
     transport.monotonic_millisecond(),
   )
+  != None
 }
 
-fn run_http3_exchange(
+fn http3_endpoint_port(client: Client, outgoing: Request(body.Body)) -> Int {
+  let origin = request_origin(outgoing)
+  case
+    alt_svc.alternative_port(
+      alt_svc_store_list(
+        client.alt_svc_store,
+        policy_partition(client.config.network_isolation_key),
+      ),
+      outgoing.host,
+      origin.port,
+      transport.monotonic_millisecond(),
+    )
+  {
+    Some(port) -> port
+    None -> origin.port
+  }
+}
+
+fn activate_http3_candidate(
+  candidate: Http3Candidate,
+  allow_share: Bool,
+  deadline: Int,
+) -> Result(PooledHttp3, error.Error) {
+  let remaining = deadline - transport.monotonic_millisecond()
+  case remaining > 0 {
+    False -> {
+      discard_http3_candidate(candidate, deadline)
+      Error(error.new(error.Timeout(error.Total)))
+    }
+    True ->
+      case
+        activate_http3_candidate_before(
+          candidate.registration,
+          candidate.key,
+          candidate.connection,
+          allow_share,
+          deadline,
+        )
+      {
+        Ok(shared) -> {
+          let #(connection, lease) = shared
+          Ok(PooledHttp3(connection, lease, candidate.key))
+        }
+        Error(code) -> {
+          discard_http3_candidate(candidate, deadline)
+          case code, deadline - transport.monotonic_millisecond() > 0 {
+            2, _ -> Error(error.new(error.Resource(error.Connections)))
+            _, True -> Error(error.new(error.Cancelled))
+            _, False -> Error(error.new(error.Timeout(error.Total)))
+          }
+        }
+      }
+  }
+}
+
+fn adopt_http3_session(
+  session: PooledHttp3,
+  holder: process.Pid,
+  deadline: Int,
+) -> Result(Nil, error.Error) {
+  case adopt_http3_lease_before(session.lease, holder, deadline) {
+    Ok(Nil) -> Ok(Nil)
+    Error(_) ->
+      case deadline - transport.monotonic_millisecond() > 0 {
+        True -> Error(error.new(error.Cancelled))
+        False -> Error(error.new(error.Timeout(error.Total)))
+      }
+  }
+}
+
+fn run_http3_session(
   client: Client,
   outgoing: Request(body.Body),
-  total_milliseconds: Int,
+  session: PooledHttp3,
+  deadline: Int,
 ) -> Result(Exchange, error.Error) {
-  use replayed <- result.try(body.replay(outgoing.body))
-  use collected <- result.try(body.read_all(
-    replayed,
-    client.config.body_limits.endpoint_memory_bytes,
-  ))
-  let #(bytes, trailers) = collected
-  use <- require(
-    list.is_empty(trailers),
-    error.new(error.Body(error.NotReplayable)),
+  let outgoing = with_http3_alt_used(client, outgoing)
+  http3_exchange.exchange_observed_with_lease_adoption(
+    session.connection,
+    outgoing,
+    deadline,
+    fn() { release_http3_session(client, session) },
+    fn(holder) { adopt_http3_session(session, holder, deadline) },
+    client.trace,
   )
-  use configuration <- result.try(
-    h3_client.with_timeout(
-      h3_client.new(),
-      int.min(total_milliseconds, 3_600_000),
+  |> result.map(fn(incoming) { Exchange(incoming, Http3, [], client.trace) })
+}
+
+fn run_pooled_http3_session(
+  client: Client,
+  outgoing: Request(body.Body),
+  session: PooledHttp3,
+  deadline: Int,
+  origin: Origin,
+  key: String,
+) -> Result(Exchange, error.Error) {
+  let http3_outgoing = with_http3_alt_used(client, outgoing)
+  case
+    http3_exchange.exchange_observed_routable_with_lease_adoption(
+      session.connection,
+      http3_outgoing,
+      deadline,
+      fn() { release_http3_session(client, session) },
+      fn() { retire_http3_session_before(session, deadline) },
+      fn(holder) { adopt_http3_session(session, holder, deadline) },
+      client.trace,
     )
-    |> result.map_error(map_http3_configuration_error),
-  )
-  use configuration <- result.try(
-    h3_client.with_request_body_limit(
-      configuration,
-      client.config.body_limits.endpoint_memory_bytes,
+  {
+    Error(failure) -> Error(failure)
+    Ok(http3_exchange.ResponseStarted(incoming)) ->
+      Ok(Exchange(incoming, Http3, [], client.trace))
+    Ok(http3_exchange.RequestUnstarted(_, source)) -> {
+      let outgoing = request.set_body(outgoing, source)
+      case
+        http3_exchange.await_owner_exit_before(
+          connection: session.connection,
+          deadline: deadline,
+        )
+      {
+        Ok(Nil) ->
+          reroute_unstarted_http3(client, outgoing, deadline, origin, key)
+        Error(failure) ->
+          dispose_unowned_request(client.trace, outgoing.body, failure)
+      }
+    }
+  }
+}
+
+fn reroute_unstarted_http3(
+  client: Client,
+  outgoing: Request(body.Body),
+  deadline: Int,
+  origin: Origin,
+  key: String,
+) -> Result(Exchange, error.Error) {
+  let client = Client(..client, trace: client_trace.attempt(client.trace))
+  let endpoint_port = http3_endpoint_port(client, outgoing)
+  case
+    start_new_https_route(
+      client,
+      outgoing,
+      deadline,
+      origin,
+      endpoint_port,
+      key,
     )
-    |> result.map_error(map_http3_configuration_error),
+  {
+    Ok(Exchange(trace: Some(_), ..) as exchange) -> Ok(exchange)
+    Ok(exchange) -> Ok(Exchange(..exchange, trace: client.trace))
+    Error(failure) ->
+      case
+        client_trace.claim_finished_if_missing(
+          client.trace,
+          None,
+          Error(failure),
+        )
+      {
+        True -> dispose_unowned_request(client.trace, outgoing.body, failure)
+        False -> Error(failure)
+      }
+  }
+}
+
+fn retire_http3_session_before(
+  session: PooledHttp3,
+  deadline: Int,
+) -> Result(Nil, error.Error) {
+  case release_http3_lease_before(session.lease, False, deadline) {
+    Ok(Nil) -> Ok(Nil)
+    Error(_) ->
+      case deadline - transport.monotonic_millisecond() > 0 {
+        True -> Error(error.new(error.Cancelled))
+        False -> Error(error.new(error.Timeout(error.Total)))
+      }
+  }
+}
+
+fn with_http3_alt_used(
+  client: Client,
+  outgoing: Request(body.Body),
+) -> Request(body.Body) {
+  request.set_header(
+    outgoing,
+    "alt-used",
+    alt_svc.used_authority(outgoing.host, http3_endpoint_port(client, outgoing)),
   )
-  use configuration <- result.try(
-    h3_client.with_response_body_limit(
-      configuration,
-      client.config.body_limits.buffered_bytes,
+}
+
+fn release_http3_session(
+  client: Client,
+  session: PooledHttp3,
+) -> Result(Nil, error.Error) {
+  case lifecycle_is_closed(client.lifecycle) {
+    True -> {
+      // Terminal close already owns the physical registration, connection monitor, and its absolute join deadline.
+      // Waiting for that same lifecycle actor here would form a release cycle and quarantine this request's otherwise-complete local lease.
+      Ok(Nil)
+    }
+    False -> {
+      let cleanup_deadline =
+        transport.monotonic_millisecond() + http3_pool_transition_milliseconds
+      let reusable =
+        client.config.pooling_enabled && http3_release_reusable(client, session)
+      case
+        release_http3_lease_before(session.lease, reusable, cleanup_deadline)
+      {
+        Ok(Nil) -> Ok(Nil)
+        Error(_) ->
+          case cleanup_deadline - transport.monotonic_millisecond() > 0 {
+            True -> Error(error.new(error.Service))
+            False -> Error(error.new(error.Timeout(error.Operation)))
+          }
+      }
+    }
+  }
+}
+
+fn http3_release_reusable(client: Client, session: PooledHttp3) -> Bool {
+  case client.config.http3_release_reuse_probe {
+    Some(probe) ->
+      case probe() {
+        Ok(reusable) -> reusable
+        Error(Nil) -> False
+      }
+    None ->
+      case http3_exchange.connection_reusable(session.connection) {
+        Ok(reusable) -> reusable
+        Error(_) -> False
+      }
+  }
+}
+
+fn http3_config(
+  client: Client,
+  deadline: Int,
+  native_trace: Option(h3_client.ConnectTrace),
+) -> Result(http3_exchange.Config, error.Error) {
+  let remaining = deadline - transport.monotonic_millisecond()
+  use <- require(remaining > 0, error.new(error.Timeout(error.Total)))
+  let timeouts = client.config.timeouts
+  use deadlines <- result.try(
+    http3_deadlines(h3_config.default_deadlines(), [
+      #(h3_failure.Dns, timeouts.dns_milliseconds),
+      #(h3_failure.Connect, timeouts.connect_milliseconds),
+      #(h3_failure.Handshake, timeouts.tls_milliseconds),
+      #(h3_failure.Operation, timeouts.operation_milliseconds),
+      #(h3_failure.Idle, timeouts.idle_milliseconds),
+      #(h3_failure.Total, remaining),
+    ]),
+  )
+  let limits = client.config.body_limits
+  use native_limits <- result.try(
+    h3_config.with_limit(
+      h3_config.default_limits(),
+      h3_failure.EndpointMemory,
+      limits.endpoint_memory_bytes,
     )
-    |> result.map_error(map_http3_configuration_error),
+    |> result.map_error(fn(_) { security_policy_error() }),
   )
-  use configuration <- result.try(
+  let native_config =
+    h3_client.new()
+    |> h3_client.with_deadlines(deadlines)
+    |> h3_client.with_limits(native_limits)
+  let native_config = case native_trace {
+    None -> native_config
+    Some(trace) ->
+      h3_client.with_connect_trace(client: native_config, trace: trace)
+  }
+  use native_config <- result.try(
     h3_client.with_stream_buffer_limit(
-      configuration,
-      client.config.body_limits.stream_buffer_bytes,
+      native_config,
+      limits.stream_buffer_bytes,
     )
     |> result.map_error(map_http3_configuration_error),
   )
-  use configuration <- result.try(add_http3_ca_certificates(
-    configuration,
+  use native_config <- result.try(add_http3_ca_certificates(
+    native_config,
     client.config.ca_certificates,
   ))
-  use incoming <- result.try(
-    h3_client.send(configuration, request.set_body(outgoing, bytes))
-    |> result.map_error(map_http3_error),
-  )
-  Ok(
-    Exchange(
-      response: response.set_body(incoming, body.from_bytes(incoming.body)),
-      selected_protocol: Http3,
-      redirect_history: [],
+  use adapter_config <- result.try(http3_exchange.configure(
+    native: native_config,
+    pull_bytes: limits.stream_buffer_bytes,
+    maximum_body_bytes: limits.endpoint_memory_bytes,
+    operation_milliseconds: int.min(3_600_000, timeouts.operation_milliseconds),
+    idle_milliseconds: int.min(
+      3_600_000,
+      client.config.pool_limits.idle_milliseconds,
     ),
-  )
+  ))
+  use adapter_config <- result.try(http3_exchange.with_connection_budget(
+    adapter_config,
+    int.min(3_600_000, remaining),
+  ))
+  let adapter_config =
+    http3_exchange.with_supervision(
+      adapter_config,
+      client.http3_resources,
+      lifecycle_owner(client.lifecycle),
+    )
+  Ok(case client.config.http3_stream_open_refusal_probe {
+    None -> adapter_config
+    Some(probe) ->
+      http3_exchange.with_stream_open_refusal_probe(adapter_config, probe)
+  })
+}
+
+fn http3_deadlines(
+  deadlines: h3_config.Deadlines,
+  phases: List(#(h3_failure.TimeoutPhase, Int)),
+) -> Result(h3_config.Deadlines, error.Error) {
+  case phases {
+    [] -> Ok(deadlines)
+    [#(phase, milliseconds), ..rest] -> {
+      use deadlines <- result.try(
+        h3_config.with_deadline(
+          deadlines,
+          phase,
+          int.min(3_600_000, milliseconds),
+        )
+        |> result.map_error(fn(_) { security_policy_error() }),
+      )
+      http3_deadlines(deadlines, rest)
+    }
+  }
 }
 
 fn add_http3_ca_certificates(
@@ -2042,24 +3796,8 @@ fn map_http3_configuration_error(
   security_policy_error()
 }
 
-fn map_http3_error(failure: h3_client.Error) -> error.Error {
-  case failure {
-    h3_client.InvalidBody -> error.new(error.Body(error.InvalidChunk))
-    h3_client.RequestBodyTooLarge(limit)
-    | h3_client.ResponseBodyTooLarge(limit) ->
-      error.new(error.Body(error.TooLarge(limit)))
-    h3_client.ConsumerTooSlow(_) -> error.new(error.Resource(error.Memory))
-    h3_client.ConnectionDraining | h3_client.RequestRejected ->
-      error.new(error.Protocol(error.Http3))
-    _ -> error.new(error.Protocol(error.Http3))
-  }
-}
-
-// RFC 6265 section 5.3 evicts cookies that share a domain with more than a
-// predetermined number of others before it evicts any cookie. The number here is
-// half the store's own entry ceiling, so no single domain can occupy more than
-// half of it while other domains are being dropped, and a store of one entry
-// still admits a cookie.
+// RFC 6265 section 5.3 evicts cookies that share a domain with more than a predetermined number of others before it evicts any cookie.
+// The number here is half the store's own entry ceiling, so no single domain can occupy more than half of it while other domains are being dropped, and a store of one entry still admits a cookie.
 fn cookie_domain_ceiling(maximum_entries: Int) -> Int {
   int.max(1, maximum_entries / 2)
 }
@@ -2072,30 +3810,42 @@ fn apply_cookie_policy(
     client.config.cookie_policy.enabled,
     request.get_header(outgoing, "cookie")
   {
-    False, _ | True, Ok(_) -> outgoing
+    False, _ -> outgoing
+    True, Ok(value) -> set_only_cookie_header(outgoing, value)
     True, Error(_) -> {
+      let retained =
+        policy_store_list(
+          client.cookie_store,
+          policy_partition(client.config.network_isolation_key),
+        )
       let partition = policy_partition(client.config.network_isolation_key)
-      let carried =
-        cookie.matching(
-          policy_store_list(client.cookie_store, partition),
+      let #(header, accessed) =
+        cookie.request_selection(
+          retained,
           outgoing.scheme,
           outgoing.host,
           outgoing.path,
           transport.monotonic_millisecond(),
         )
-      // RFC 6265 section 5.4 updates the last-access date of every cookie it
-      // sends, which is what section 5.3 breaks eviction ties by.
-      policy_store_touch(
-        client.cookie_store,
-        partition,
-        list.map(carried, cookie.key),
-      )
-      case cookie.field_value(carried) {
+      policy_store_touch(client.cookie_store, partition, accessed)
+      case header {
         None -> outgoing
-        Some(value) -> request.set_header(outgoing, "cookie", value)
+        Some(value) -> set_only_cookie_header(outgoing, value)
       }
     }
   }
+}
+
+fn set_only_cookie_header(
+  outgoing: Request(body),
+  value: String,
+) -> Request(body) {
+  request.Request(..outgoing, headers: [
+    #("cookie", value),
+    ..list.filter(outgoing.headers, fn(header) {
+      string.lowercase(header.0) != "cookie"
+    })
+  ])
 }
 
 fn apply_hsts_policy(client: Client, outgoing: Request(body)) -> Request(body) {
@@ -2112,10 +3862,7 @@ fn apply_hsts_policy(client: Client, outgoing: Request(body)) -> Request(body) {
       {
         False -> outgoing
         True -> {
-          let port = case outgoing.port {
-            Some(80) -> Some(443)
-            configured -> configured
-          }
+          let port = hsts.upgrade_port(outgoing.port)
           request.Request(..outgoing, scheme: Https, port:)
         }
       }
@@ -2126,8 +3873,9 @@ fn apply_hsts_policy(client: Client, outgoing: Request(body)) -> Request(body) {
 fn capture_response_policies(
   client: Client,
   outgoing: Request(body.Body),
-  incoming: Response(body.Body),
+  completed: Exchange,
 ) -> Nil {
+  let incoming = completed.response
   capture_response_cookies(client, outgoing, incoming)
   capture_hsts_headers(
     client,
@@ -2135,22 +3883,37 @@ fn capture_response_policies(
     incoming.headers,
     transport.monotonic_millisecond(),
   )
-  capture_alt_svc_headers(
-    client,
-    outgoing,
-    incoming.status,
-    incoming.headers,
-    transport.monotonic_millisecond(),
-  )
+  case incoming.status, completed.selected_protocol {
+    421, Http3 ->
+      invalidate_alt_svc_policy(
+        client,
+        outgoing,
+        transport.monotonic_millisecond(),
+      )
+    421, _ -> Nil
+    _, _ ->
+      capture_alt_svc_headers(
+        client,
+        outgoing,
+        incoming.headers,
+        transport.monotonic_millisecond(),
+        response_age_seconds(incoming),
+      )
+  }
   invalidate_cache_entry(client, outgoing, incoming.status)
 }
 
-/// Drop this target's stored response when an unsafe request changed it.
-///
-/// RFC 9111 section 4.4: a non-error answer to an unsafe request invalidates
-/// the target URI, so a later read does not serve what the write replaced. The
-/// key is the exact scheme, host, port, and target, so one origin's write
-/// reaches only its own entry.
+fn response_age_seconds(incoming: Response(body)) -> Int {
+  case response.get_header(incoming, "age") {
+    Error(_) -> 0
+    Ok(value) ->
+      case int.parse(string.trim(value)) {
+        Ok(age) if age >= 0 -> age
+        _ -> 0
+      }
+  }
+}
+
 fn invalidate_cache_entry(
   client: Client,
   outgoing: Request(body),
@@ -2196,90 +3959,140 @@ fn capture_hsts_headers(
 ) -> Nil {
   case outgoing.scheme, client.config.hsts_policy.enabled, headers {
     _, False, _ | Http, _, _ | _, _, [] -> Nil
-    Https, True, [#(name, value), ..rest] ->
-      // RFC 6797 section 8.1: a response carrying more than one of these is
-      // read for the first one only, so a second field cannot revise or
-      // withdraw what the first said. The walk stops at the first one whether
-      // or not it turned out to be well formed.
-      case string.lowercase(name) == "strict-transport-security" {
-        False -> capture_hsts_headers(client, outgoing, rest, now)
-        True ->
+    Https, True, [#(name, value), ..rest] -> {
+      case string.lowercase(name) {
+        "strict-transport-security" -> {
           case hsts.parse(value, outgoing.host, now) {
-            None -> Nil
             Some(entry) -> {
               let _stored = store_hsts_policy(client, entry, now)
               Nil
             }
+            None -> Nil
           }
+        }
+        _ -> capture_hsts_headers(client, outgoing, rest, now)
       }
+    }
   }
 }
 
 fn capture_alt_svc_headers(
   client: Client,
   outgoing: Request(body),
-  status: Int,
   headers: List(#(String, String)),
   now: Int,
+  response_age_seconds: Int,
 ) -> Nil {
   case outgoing.scheme, client.config.discovery_policy.enabled {
-    Http, _ | _, False -> Nil
-    // RFC 7838 section 6: a 421 says this server does not answer for the
-    // authority that was asked for. The alternative learned for that origin is
-    // withdrawn, and the Alt-Svc field the same response carries is ignored
-    // rather than believed, because it came from the server that just said it
-    // is the wrong one to ask.
-    //
-    // The section scopes the withdrawal to a 421 received from an alternative
-    // service. Withdrawing on any 421 for the origin is wider and is the safe
-    // direction: the worst it costs is relearning the alternative from the next
-    // response that advertises it.
-    Https, True ->
-      case status == 421 {
-        True -> withdraw_alt_svc_origin(client, outgoing, now)
-        False -> capture_alt_svc_fields(client, outgoing, headers, now)
-      }
-  }
-}
-
-fn capture_alt_svc_fields(
-  client: Client,
-  outgoing: Request(body),
-  headers: List(#(String, String)),
-  now: Int,
-) -> Nil {
-  case headers {
-    [] -> Nil
-    [#(name, value), ..rest] -> {
+    _, False | Http, _ -> Nil
+    Https, True -> {
       let origin = request_origin(outgoing)
       case
-        string.lowercase(name),
-        alt_svc.parse(value, outgoing.host, origin.port, now)
+        first_alt_svc_entry(
+          headers,
+          outgoing.host,
+          origin.port,
+          now,
+          response_age_seconds,
+        )
       {
-        "alt-svc", Some(entry) -> {
+        Some(entry) -> {
           let _stored = store_alt_svc_policy(client, entry, now)
           Nil
         }
-        _, _ -> Nil
+        None -> Nil
       }
-      capture_alt_svc_fields(client, outgoing, rest, now)
     }
   }
 }
 
-/// Drop this origin's alternative the way an `Alt-Svc: clear` would.
-fn withdraw_alt_svc_origin(
+fn first_alt_svc_entry(
+  headers: List(#(String, String)),
+  host: String,
+  port: Int,
+  now: Int,
+  response_age_seconds: Int,
+) -> Option(alt_svc.Entry) {
+  case alt_svc_clear_requested(headers) {
+    True -> alt_svc.parse("clear", host, port, now)
+    False ->
+      first_supported_alt_svc_entry(
+        headers,
+        host,
+        port,
+        now,
+        response_age_seconds,
+      )
+  }
+}
+
+fn alt_svc_clear_requested(headers: List(#(String, String))) -> Bool {
+  list.any(headers, fn(field) {
+    string.lowercase(field.0) == "alt-svc" && alt_svc.requests_clear(field.1)
+  })
+}
+
+fn first_supported_alt_svc_entry(
+  headers: List(#(String, String)),
+  host: String,
+  port: Int,
+  now: Int,
+  response_age_seconds: Int,
+) -> Option(alt_svc.Entry) {
+  case headers {
+    [] -> None
+    [#(name, value), ..rest] ->
+      case string.lowercase(name) {
+        "alt-svc" ->
+          case
+            alt_svc.parse_with_age(value, host, port, now, response_age_seconds)
+          {
+            Some(entry) -> Some(entry)
+            None ->
+              first_supported_alt_svc_entry(
+                rest,
+                host,
+                port,
+                now,
+                response_age_seconds,
+              )
+          }
+        _ ->
+          first_supported_alt_svc_entry(
+            rest,
+            host,
+            port,
+            now,
+            response_age_seconds,
+          )
+      }
+  }
+}
+
+fn invalidate_alt_svc_policy(
   client: Client,
   outgoing: Request(body),
   now: Int,
 ) -> Nil {
   let origin = request_origin(outgoing)
   case alt_svc.parse("clear", outgoing.host, origin.port, now) {
-    None -> Nil
     Some(entry) -> {
-      let _withdrawn = store_alt_svc_policy(client, entry, now)
+      // Always remove the live in-memory route, even if a persistence adapter has stopped.
+      // A future client load will validate and reauthenticate any independently retained record before use.
+      let key = alt_svc.key(entry.origin_host, entry.origin_port)
+      let _removed =
+        alt_svc_store_put(
+          client.alt_svc_store,
+          policy_partition(client.config.network_isolation_key),
+          key,
+          entry,
+          entry.expires_at,
+          entry.retained_bytes,
+        )
+      let _persisted = persist_alt_svc_policy(client, entry, now)
       Nil
     }
+    None -> Nil
   }
 }
 
@@ -2296,7 +4109,7 @@ fn capture_cookie_headers(
     [#(name, value), ..rest] -> {
       case
         string.lowercase(name),
-        cookie.parse(
+        cookie.parse_with_unix_milliseconds(
           value,
           scheme,
           host,
@@ -2325,16 +4138,10 @@ fn capture_cookie_headers(
 
 fn store_cookie_policy(client: Client, entry: cookie.Cookie, now: Int) -> Bool {
   let partition = policy_partition(client.config.network_isolation_key)
-  // RFC 6265 section 5.3 step 11: replacing a cookie with the same name,
-  // domain, and path keeps the creation time of the one it replaces, so a
-  // server that refreshes a cookie's value does not move it to the end of the
-  // order section 5.4 asks for.
   let entry = case
-    list.find(policy_store_list(client.cookie_store, partition), fn(retained) {
-      cookie.key(retained) == cookie.key(entry)
-    })
+    cookie_store_get(client.cookie_store, partition, cookie.key(entry))
   {
-    Ok(previous) -> cookie.Cookie(..entry, created_at: previous.created_at)
+    Ok(previous) -> cookie.with_creation(entry, previous.creation_milliseconds)
     Error(_) -> entry
   }
   case persist_cookie_policy(client, entry, now) {
@@ -2358,21 +4165,17 @@ fn persist_cookie_policy(
   now: Int,
 ) -> Bool {
   case client.config.cookie_store_adapter {
-    // RFC 6265 section 5.3: a cookie with no Expires and no Max-Age does not
-    // outlive the session, and a client is the session here, so it is held in
-    // memory and never handed to an adapter that would outlive one.
-    _ if !entry.persistent -> True
     None -> True
     Some(adapter) -> {
-      let operation = case entry.expires_at <= now {
-        True -> fn() {
+      let operation = case entry.expires_at <= now, entry.persistent {
+        True, _ | _, False -> fn() {
           client_store.remove(
             adapter,
             adapter_partition(client.config),
             cookie.key(entry),
           )
         }
-        False -> fn() {
+        False, True -> fn() {
           client_store.put(
             adapter,
             adapter_partition(client.config),
@@ -2385,7 +4188,7 @@ fn persist_cookie_policy(
               host_only: entry.host_only,
               secure: entry.secure,
               expires_in_milliseconds: entry.expires_at - now,
-              age_milliseconds: int.max(0, now - entry.created_at),
+              age_milliseconds: int.max(0, now - entry.creation_milliseconds),
             ),
           )
         }
@@ -2688,6 +4491,17 @@ fn http1_config(
     config.body_limits.stream_buffer_bytes,
   ))
   let http1 = http1_exchange.with_ca_certificates(http1, config.ca_certificates)
+  let http1 =
+    http1
+    |> http1_exchange.without_reused_connection_retry
+    |> http1_exchange.with_trace(client.trace)
+  let http1 =
+    http1
+    |> http1_exchange.with_connect_trace(client.trace)
+    |> http1_exchange.with_supervision(
+      resources: client.http3_resources,
+      lifecycle_owner: lifecycle_owner(client.lifecycle),
+    )
   let http1 = case config.proxy_policy.proxy {
     None -> http1
     Some(proxy) ->
@@ -2709,6 +4523,15 @@ fn http1_config(
         )
       },
       fn() { lifecycle_is_closed(client.lifecycle) },
+    )
+  let http1 =
+    http1_exchange.with_admission(
+      http1,
+      fn(origin) { reserve_tcp_socket(client.lifecycle, origin) },
+      fn(previous, socket) {
+        replace_registered_socket(client.lifecycle, previous, socket)
+        |> result.map_error(fn(_) { error.new(error.Cancelled) })
+      },
     )
   case config.pooling_enabled {
     False -> Ok(http1)
@@ -2756,6 +4579,12 @@ fn http2_config(
   let http2 =
     http2
     |> http2_exchange.with_ca_certificates(config.ca_certificates)
+    |> http2_exchange.with_trace(client.trace)
+    |> http2_exchange.with_connect_trace(client.trace)
+    |> http2_exchange.with_supervision(
+      resources: client.http3_resources,
+      lifecycle_owner: lifecycle_owner(client.lifecycle),
+    )
     |> http2_exchange.with_lifecycle(
       fn(origin, socket) {
         attach_socket(
@@ -2765,6 +4594,23 @@ fn http2_config(
         )
       },
       fn() { lifecycle_is_closed(client.lifecycle) },
+    )
+    |> http2_exchange.with_owner_adoption(fn(socket, owner) {
+      transfer_and_adopt_registered_socket_owner(
+        client.lifecycle,
+        socket,
+        owner,
+      )
+      |> result.map_error(fn(_) { error.new(error.Cancelled) })
+    })
+  let http2 =
+    http2_exchange.with_admission(
+      http2,
+      fn(origin) { reserve_tcp_socket(client.lifecycle, origin) },
+      fn(previous, socket) {
+        replace_registered_socket(client.lifecycle, previous, socket)
+        |> result.map_error(fn(_) { error.new(error.Cancelled) })
+      },
     )
   let http2 = case config.proxy_policy.proxy {
     None -> http2
@@ -2782,23 +4628,36 @@ fn http2_config(
       Ok(
         http2_exchange.with_pool(
           http2,
-          fn(origin) { checkout_http2(client.http2_pool, origin) },
-          fn(origin, socket, state, cleanup) {
-            checkin_http2(client.http2_pool, origin, socket, state, cleanup)
+          fn(origin) {
+            checkout_http2(client.http2_pool, client.lifecycle, origin)
           },
-        ),
+          fn(origin, socket, state, cleanup) {
+            checkin_http2(
+              client.http2_pool,
+              client.lifecycle,
+              origin,
+              socket,
+              state,
+              cleanup,
+            )
+          },
+        )
+        |> http2_exchange.with_http1_pool(fn(origin) {
+          checkout_socket(client.lifecycle, origin)
+        }),
       )
   }
 }
 
 fn checkout_http2(
   pool: Http2Pool,
+  lifecycle: Lifecycle,
   origin: String,
 ) -> Result(
   Option(#(transport.Socket, http2_wire.State, fn() -> Nil)),
   error.Error,
 ) {
-  case raw_checkout_http2(pool, origin) {
+  case raw_checkout_http2(pool, lifecycle, origin) {
     Ok(session) -> Ok(Some(session))
     Error(0) -> Ok(None)
     Error(_) -> Error(error.new(error.Cancelled))
@@ -2816,6 +4675,57 @@ fn checkout_socket(
   }
 }
 
+fn reserve_tcp_socket(
+  lifecycle: Lifecycle,
+  origin: String,
+) -> Result(tcp_reservation.Reservation, error.Error) {
+  case reserve_resource(lifecycle, origin) {
+    Error(2) -> Error(error.new(error.Resource(error.Connections)))
+    Error(_) -> Error(error.new(error.Cancelled))
+    Ok(registration) ->
+      Ok(
+        tcp_reservation.new(
+          fn(socket) {
+            attach_reserved_socket(registration, socket)
+            |> result.map_error(fn(_) { error.new(error.Cancelled) })
+          },
+          fn() { cancel_resource(registration) },
+        ),
+      )
+  }
+}
+
+fn reserve_tcp_socket_until(
+  lifecycle: Lifecycle,
+  origin: String,
+  deadline: Int,
+) -> Result(tcp_reservation.Reservation, error.Error) {
+  use registration <- result.try(
+    reserve_resource_before(lifecycle, origin, deadline)
+    |> result.map_error(fn(code) { race_lifecycle_failure(code, deadline) }),
+  )
+  Ok(
+    tcp_reservation.new(
+      fn(socket) {
+        attach_reserved_socket_before(registration, socket, deadline)
+        |> result.map_error(fn(code) { race_lifecycle_failure(code, deadline) })
+      },
+      fn() {
+        let _released = cancel_resource_until(registration, deadline)
+        Nil
+      },
+    ),
+  )
+}
+
+fn race_lifecycle_failure(code: Int, deadline: Int) -> error.Error {
+  case code, deadline > transport.monotonic_millisecond() {
+    2, _ -> error.new(error.Resource(error.Connections))
+    _, True -> error.new(error.Cancelled)
+    _, False -> error.new(error.Timeout(error.Total))
+  }
+}
+
 fn attach_socket(
   lifecycle lifecycle: Lifecycle,
   origin origin: String,
@@ -2828,85 +4738,449 @@ fn attach_socket(
   }
 }
 
-fn start_tcp_race_guard() -> Result(TcpRaceGuard, error.Error) {
+fn cancel_resource_until(registration: Registration, deadline: Int) -> Bool {
+  retire_http3_candidate_confirmed_before(registration, deadline) == Ok(Nil)
+}
+
+fn start_tcp_race_guard(
+  client: Client,
+  candidate: Registration,
+  deadline: Int,
+) -> Result(TcpRaceGuard, error.Error) {
+  use lease <- result.try(resource.acquire(
+    client.http3_resources,
+    memory_bytes: 0,
+  ))
   let cancellation = new_race_cancellation()
   let ready = process.new_subject()
+  let requester = process.self()
+  let lifecycle = lifecycle_owner(client.lifecycle)
   let pid =
     process.spawn_unlinked(fn() {
+      process_role.set(process_role.ClientRaceGuardian)
       let commands = process.new_subject()
+      let requester = process.monitor(requester)
+      let lifecycle = process.monitor(lifecycle)
       process.send(ready, commands)
-      tcp_race_guard_loop(commands, cancellation, None, 1)
+      let cleanup_confirmed =
+        tcp_race_guard_loop(TcpRaceRuntime(
+          commands:,
+          cancellation:,
+          guarded: None,
+          next_identifier: 1,
+          requester:,
+          lifecycle:,
+          deadline:,
+          candidate:,
+          helpers: [],
+          cleanup_confirmed: True,
+          join_confirmation: client.config.race_join_confirmation,
+          claim_offer_confirmation: client.config.race_claim_offer_confirmation,
+        ))
+      process.demonitor_process(requester)
+      process.demonitor_process(lifecycle)
+      case cleanup_confirmed {
+        True -> resource.release(lease)
+        False -> Nil
+      }
     })
-  case process.receive(ready, within: 1000) {
-    Ok(commands) -> Ok(TcpRaceGuard(commands, cancellation, pid))
+  case
+    process.receive(
+      ready,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  {
+    Ok(commands) ->
+      Ok(TcpRaceGuard(
+        commands,
+        cancellation,
+        pid,
+        deadline,
+        client.config.race_join_confirmation,
+        client.config.race_claim_commit_confirmation,
+      ))
     Error(Nil) -> {
+      let monitor = process.monitor(pid)
       mark_race_cancelled(cancellation)
       process.kill(pid)
-      Error(error.new(error.Service))
+      case
+        join_race_helper_until(
+          pid,
+          monitor,
+          deadline,
+          client.config.race_join_confirmation,
+        )
+      {
+        True -> {
+          resource.release(lease)
+          Error(error.new(error.Service))
+        }
+        False -> Error(error.new(error.Timeout(error.Operation)))
+      }
     }
   }
 }
 
-fn tcp_race_guard_loop(
-  commands: process.Subject(TcpRaceCommand),
-  cancellation: RaceCancellation,
-  guarded: Option(GuardedSocket),
-  next_identifier: Int,
-) -> Nil {
-  case process.receive_forever(commands) {
-    RaceAttach(socket, cleanup, reply) ->
-      case race_is_cancelled(cancellation), guarded {
+fn tcp_race_guard_loop(runtime: TcpRaceRuntime) -> Bool {
+  let selected =
+    process.new_selector()
+    |> process.select_map(runtime.commands, Some)
+    |> process.select_specific_monitor(runtime.requester, fn(_) { None })
+    |> process.select_specific_monitor(runtime.lifecycle, fn(_) { None })
+    |> process.selector_receive(within: int.max(
+      0,
+      runtime.deadline - transport.monotonic_millisecond(),
+    ))
+  case selected {
+    Error(Nil) | Ok(None) -> {
+      mark_race_cancelled(runtime.cancellation)
+      let socket_confirmed =
+        close_optional_guarded_socket(runtime.guarded, runtime.deadline)
+      let candidate_confirmed =
+        cancel_resource_until(runtime.candidate, runtime.deadline)
+      let contenders_confirmed =
+        stop_race_contenders(
+          runtime.helpers,
+          runtime.join_confirmation,
+          runtime.deadline,
+        )
+      runtime.cleanup_confirmed
+      && socket_confirmed
+      && candidate_confirmed
+      && contenders_confirmed
+    }
+    Ok(Some(RaceStart(http3, tcp, reply))) -> {
+      let http3 =
+        process.spawn_unlinked(fn() {
+          process_role.set(process_role.ClientConnectionCandidate)
+          http3()
+        })
+      let tcp =
+        process.spawn_unlinked(fn() {
+          process_role.set(process_role.ClientConnectionCandidate)
+          tcp()
+        })
+      process.send(reply, #(http3, tcp))
+      tcp_race_guard_loop(TcpRaceRuntime(..runtime, helpers: [http3, tcp]))
+    }
+    Ok(Some(RaceAttach(socket, cleanup, cleanup_before, reply))) ->
+      case race_is_cancelled(runtime.cancellation), runtime.guarded {
         True, _ | False, Some(_) -> {
-          close_guarded_socket(socket, cleanup)
+          let closed =
+            close_race_socket(socket, cleanup_before, runtime.deadline)
           process.send(reply, Error(Nil))
-          tcp_race_guard_loop(commands, cancellation, guarded, next_identifier)
+          tcp_race_guard_loop(
+            TcpRaceRuntime(
+              ..runtime,
+              cleanup_confirmed: runtime.cleanup_confirmed && closed,
+            ),
+          )
         }
         False, None -> {
-          process.send(reply, Ok(next_identifier))
+          process.send(reply, Ok(runtime.next_identifier))
           tcp_race_guard_loop(
-            commands,
-            cancellation,
-            Some(GuardedSocket(next_identifier, socket, cleanup)),
-            next_identifier + 1,
+            TcpRaceRuntime(
+              ..runtime,
+              guarded: Some(GuardedSocket(
+                runtime.next_identifier,
+                socket,
+                cleanup,
+                cleanup_before,
+              )),
+              next_identifier: runtime.next_identifier + 1,
+            ),
           )
         }
       }
-    RaceRelease(identifier) ->
-      case guarded {
-        Some(GuardedSocket(current, _, cleanup)) if current == identifier -> {
-          cleanup()
-          tcp_race_guard_loop(commands, cancellation, None, next_identifier)
+    Ok(Some(RaceRelease(identifier))) ->
+      case runtime.guarded {
+        Some(GuardedSocket(current, _, _, cleanup_before))
+          if current == identifier
+        -> {
+          let released = cleanup_before(runtime.deadline)
+          tcp_race_guard_loop(
+            TcpRaceRuntime(
+              ..runtime,
+              guarded: None,
+              cleanup_confirmed: runtime.cleanup_confirmed && released,
+            ),
+          )
         }
-        _ ->
-          tcp_race_guard_loop(commands, cancellation, guarded, next_identifier)
+        _ -> tcp_race_guard_loop(runtime)
       }
-    RaceCancel(reply) -> {
-      close_optional_guarded_socket(guarded)
-      process.send(reply, Nil)
-      tcp_race_cancelled_loop(commands)
+    Ok(Some(RaceCancel(reply))) -> {
+      mark_race_cancelled(runtime.cancellation)
+      let socket_confirmed =
+        close_optional_guarded_socket(runtime.guarded, runtime.deadline)
+      let candidate_confirmed =
+        cancel_resource_until(runtime.candidate, runtime.deadline)
+      let contenders_confirmed =
+        stop_race_contenders(
+          runtime.helpers,
+          runtime.join_confirmation,
+          runtime.deadline,
+        )
+      let confirmed =
+        runtime.cleanup_confirmed
+        && socket_confirmed
+        && candidate_confirmed
+        && contenders_confirmed
+      process.send(reply, confirmed)
+      confirmed
     }
-    RaceStop(reply) -> {
-      close_optional_guarded_socket(guarded)
-      process.send(reply, Nil)
-      Nil
+    Ok(Some(RaceSelectHttp3(reply))) -> {
+      mark_race_cancelled(runtime.cancellation)
+      let socket_confirmed =
+        close_optional_guarded_socket(runtime.guarded, runtime.deadline)
+      let contenders_confirmed =
+        stop_race_contenders(
+          runtime.helpers,
+          runtime.join_confirmation,
+          runtime.deadline,
+        )
+      let confirmed =
+        runtime.cleanup_confirmed && socket_confirmed && contenders_confirmed
+      process.send(reply, confirmed)
+      confirmed
+    }
+    Ok(Some(RaceClaim(reply))) -> {
+      let candidate_confirmed =
+        cancel_resource_until(runtime.candidate, runtime.deadline)
+      let loser_confirmed =
+        stop_race_contenders(
+          http3_race_contenders(runtime.helpers),
+          runtime.join_confirmation,
+          runtime.deadline,
+        )
+      let confirmed =
+        runtime.cleanup_confirmed && candidate_confirmed && loser_confirmed
+      case confirmed, runtime.guarded {
+        True, Some(GuardedSocket(identifier, _, cleanup, _) as guarded) -> {
+          case runtime.claim_offer_confirmation {
+            True -> {
+              process.send(reply, Ok(TcpRaceClaimOffer(identifier, cleanup)))
+              await_tcp_race_claim_commit(runtime, guarded, runtime.deadline)
+            }
+            False -> {
+              mark_race_cancelled(runtime.cancellation)
+              let closed =
+                close_optional_guarded_socket(Some(guarded), runtime.deadline)
+              let winner_stopped =
+                stop_race_contenders(
+                  tcp_race_contenders(runtime.helpers),
+                  runtime.join_confirmation,
+                  runtime.deadline,
+                )
+              runtime.cleanup_confirmed && closed && winner_stopped
+            }
+          }
+        }
+        False, Some(guarded) -> {
+          mark_race_cancelled(runtime.cancellation)
+          let closed =
+            close_optional_guarded_socket(Some(guarded), runtime.deadline)
+          let winner_stopped =
+            stop_race_contenders(
+              tcp_race_contenders(runtime.helpers),
+              runtime.join_confirmation,
+              runtime.deadline,
+            )
+          process.send(reply, Error(False))
+          confirmed && closed && winner_stopped
+        }
+        _, None -> {
+          mark_race_cancelled(runtime.cancellation)
+          let _winner_stopped =
+            stop_race_contenders(
+              tcp_race_contenders(runtime.helpers),
+              runtime.join_confirmation,
+              runtime.deadline,
+            )
+          process.send(reply, Error(False))
+          False
+        }
+      }
+    }
+    Ok(Some(RaceCommit(_, reply))) -> {
+      process.send(reply, False)
+      tcp_race_guard_loop(runtime)
     }
   }
 }
 
-fn tcp_race_cancelled_loop(commands: process.Subject(TcpRaceCommand)) -> Nil {
-  case process.receive(commands, within: 1000) {
-    Error(Nil) -> Nil
-    Ok(RaceAttach(socket, cleanup, reply)) -> {
-      close_guarded_socket(socket, cleanup)
+fn await_tcp_race_claim_commit(
+  runtime: TcpRaceRuntime,
+  guarded: GuardedSocket,
+  deadline: Int,
+) -> Bool {
+  let selected =
+    process.new_selector()
+    |> process.select_map(runtime.commands, Some)
+    |> process.select_specific_monitor(runtime.requester, fn(_) { None })
+    |> process.select_specific_monitor(runtime.lifecycle, fn(_) { None })
+    |> process.selector_receive(within: int.max(
+      0,
+      deadline - transport.monotonic_millisecond(),
+    ))
+  let GuardedSocket(identifier, _, _, _) = guarded
+  case selected {
+    Error(Nil) | Ok(None) -> {
+      mark_race_cancelled(runtime.cancellation)
+      let closed = close_optional_guarded_socket(Some(guarded), deadline)
+      let winner_stopped =
+        stop_race_contenders(
+          tcp_race_contenders(runtime.helpers),
+          runtime.join_confirmation,
+          deadline,
+        )
+      closed && winner_stopped
+    }
+    Ok(Some(RaceCommit(offered, reply))) if offered == identifier -> {
+      let winner_stopped =
+        stop_race_contenders(
+          tcp_race_contenders(runtime.helpers),
+          runtime.join_confirmation,
+          deadline,
+        )
+      let confirmed = runtime.cleanup_confirmed && winner_stopped
+      process.send(reply, confirmed)
+      confirmed
+    }
+    Ok(Some(RaceCommit(_, reply))) -> {
+      process.send(reply, False)
+      await_tcp_race_claim_commit(runtime, guarded, deadline)
+    }
+    Ok(Some(RaceRelease(released))) if released == identifier -> {
+      mark_race_cancelled(runtime.cancellation)
+      let closed = close_optional_guarded_socket(Some(guarded), deadline)
+      let winner_stopped =
+        stop_race_contenders(
+          tcp_race_contenders(runtime.helpers),
+          runtime.join_confirmation,
+          deadline,
+        )
+      closed && winner_stopped
+    }
+    Ok(Some(RaceRelease(_))) ->
+      await_tcp_race_claim_commit(runtime, guarded, deadline)
+    Ok(Some(RaceCancel(reply))) | Ok(Some(RaceSelectHttp3(reply))) -> {
+      mark_race_cancelled(runtime.cancellation)
+      let closed = close_optional_guarded_socket(Some(guarded), deadline)
+      let winner_stopped =
+        stop_race_contenders(
+          tcp_race_contenders(runtime.helpers),
+          runtime.join_confirmation,
+          deadline,
+        )
+      let confirmed = runtime.cleanup_confirmed && closed && winner_stopped
+      process.send(reply, confirmed)
+      confirmed
+    }
+    Ok(Some(RaceClaim(reply))) -> {
+      process.send(reply, Error(True))
+      await_tcp_race_claim_commit(runtime, guarded, deadline)
+    }
+    Ok(Some(RaceAttach(socket, _, cleanup_before, reply))) -> {
+      let closed = close_race_socket(socket, cleanup_before, deadline)
       process.send(reply, Error(Nil))
-      tcp_race_cancelled_loop(commands)
+      let committed = await_tcp_race_claim_commit(runtime, guarded, deadline)
+      closed && committed
     }
-    Ok(RaceRelease(_)) -> tcp_race_cancelled_loop(commands)
-    Ok(RaceCancel(reply)) -> {
-      process.send(reply, Nil)
-      tcp_race_cancelled_loop(commands)
+    Ok(Some(RaceStart(_, _, _))) ->
+      await_tcp_race_claim_commit(runtime, guarded, deadline)
+  }
+}
+
+fn start_race_contenders(
+  guard: TcpRaceGuard,
+  http3: fn() -> Nil,
+  tcp: fn() -> Nil,
+) -> Result(#(process.Pid, process.Pid), error.Error) {
+  let reply = process.new_subject()
+  process.send(guard.commands, RaceStart(http3, tcp, reply))
+  case
+    process.receive(
+      reply,
+      within: int.max(0, guard.deadline - transport.monotonic_millisecond()),
+    )
+  {
+    Ok(contenders) -> Ok(contenders)
+    Error(Nil) -> {
+      case cancel_tcp_race_guard(guard) {
+        True -> Error(error.new(error.Cancelled))
+        False -> Error(error.new(error.Timeout(error.Operation)))
+      }
     }
-    Ok(RaceStop(reply)) -> process.send(reply, Nil)
+  }
+}
+
+fn stop_race_contenders(
+  contenders: List(process.Pid),
+  confirmation: Bool,
+  deadline: Int,
+) -> Bool {
+  let monitored = monitor_race_contenders(contenders)
+  kill_race_contenders(monitored)
+  join_race_contenders(monitored, confirmation, deadline)
+}
+
+fn monitor_race_contenders(
+  contenders: List(process.Pid),
+) -> List(#(process.Pid, process.Monitor)) {
+  case contenders {
+    [] -> []
+    [pid, ..rest] -> {
+      let monitor = process.monitor(pid)
+      [#(pid, monitor), ..monitor_race_contenders(rest)]
+    }
+  }
+}
+
+fn kill_race_contenders(
+  contenders: List(#(process.Pid, process.Monitor)),
+) -> Nil {
+  case contenders {
+    [] -> Nil
+    [#(pid, _), ..rest] -> {
+      process.kill(pid)
+      kill_race_contenders(rest)
+    }
+  }
+}
+
+fn join_race_contenders(
+  contenders: List(#(process.Pid, process.Monitor)),
+  confirmation: Bool,
+  deadline: Int,
+) -> Bool {
+  case contenders {
+    [] -> True
+    [#(_, monitor), ..rest] -> {
+      let joined =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_) { Nil })
+        |> process.selector_receive(within: int.max(
+          0,
+          deadline - transport.monotonic_millisecond(),
+        ))
+      process.demonitor_process(monitor)
+      let rest_joined = join_race_contenders(rest, confirmation, deadline)
+      joined == Ok(Nil) && confirmation && rest_joined
+    }
+  }
+}
+
+fn http3_race_contenders(contenders: List(process.Pid)) -> List(process.Pid) {
+  case contenders {
+    [http3, _, ..] -> [http3]
+    _ -> []
+  }
+}
+
+fn tcp_race_contenders(contenders: List(process.Pid)) -> List(process.Pid) {
+  case contenders {
+    [_, tcp, ..] -> [tcp]
+    _ -> []
   }
 }
 
@@ -2916,58 +5190,258 @@ fn attach_tcp_race_socket(
   origin: String,
   socket: transport.Socket,
 ) -> Result(fn() -> Nil, error.Error) {
-  use cleanup <- result.try(attach_socket(
-    lifecycle: client.lifecycle,
-    origin: origin,
-    socket: socket,
-  ))
+  use registration <- result.try(
+    register_socket_before(client.lifecycle, origin, socket, guard.deadline)
+    |> result.map_error(fn(code) {
+      case code, guard.deadline - transport.monotonic_millisecond() > 0 {
+        2, _ -> error.new(error.Resource(error.Connections))
+        _, True -> error.new(error.Cancelled)
+        _, False -> error.new(error.Timeout(error.Total))
+      }
+    }),
+  )
+  let cleanup = fn() {
+    let _released = unregister_socket_before(registration, guard.deadline)
+    Nil
+  }
+  let cleanup_before = fn(deadline) {
+    unregister_socket_before(registration, deadline)
+  }
   case race_is_cancelled(guard.cancellation) {
     True -> {
-      close_guarded_socket(socket, cleanup)
+      let _closed = close_race_socket(socket, cleanup_before, guard.deadline)
       Error(error.new(error.Cancelled))
     }
     False -> {
       let reply = process.new_subject()
-      process.send(guard.commands, RaceAttach(socket, cleanup, reply))
-      case process.receive(reply, within: 1000) {
+      process.send(
+        guard.commands,
+        RaceAttach(socket, cleanup, cleanup_before, reply),
+      )
+      case
+        process.receive(
+          reply,
+          within: int.max(0, guard.deadline - transport.monotonic_millisecond()),
+        )
+      {
         Ok(Ok(identifier)) ->
           Ok(fn() { process.send(guard.commands, RaceRelease(identifier)) })
         Ok(Error(Nil)) -> Error(error.new(error.Cancelled))
         Error(Nil) -> {
-          close_guarded_socket(socket, cleanup)
-          Error(error.new(error.Cancelled))
+          let _closed =
+            close_race_socket(socket, cleanup_before, guard.deadline)
+          case guard.deadline - transport.monotonic_millisecond() > 0 {
+            True -> Error(error.new(error.Cancelled))
+            False -> Error(error.new(error.Timeout(error.Total)))
+          }
         }
       }
     }
   }
 }
 
-fn cancel_tcp_race_guard(guard: TcpRaceGuard) -> Nil {
+fn cancel_tcp_race_guard(guard: TcpRaceGuard) -> Bool {
+  let monitor = process.monitor(guard.pid)
+  cancel_tcp_race_guard_with_monitor(guard, monitor)
+}
+
+fn cancel_tcp_race_guard_with_monitor(
+  guard: TcpRaceGuard,
+  monitor: process.Monitor,
+) -> Bool {
   mark_race_cancelled(guard.cancellation)
+  let deadline = guard.deadline
   let reply = process.new_subject()
   process.send(guard.commands, RaceCancel(reply))
-  let _acknowledged = process.receive(reply, within: 1000)
-  Nil
-}
-
-fn stop_tcp_race_guard(guard: TcpRaceGuard) -> Nil {
-  let reply = process.new_subject()
-  process.send(guard.commands, RaceStop(reply))
-  let _acknowledged = process.receive(reply, within: 1000)
-  Nil
-}
-
-fn close_optional_guarded_socket(guarded: Option(GuardedSocket)) -> Nil {
-  case guarded {
-    None -> Nil
-    Some(GuardedSocket(_, socket, cleanup)) ->
-      close_guarded_socket(socket, cleanup)
+  let acknowledged =
+    process.receive(
+      reply,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  let joined =
+    join_race_helper_until(
+      guard.pid,
+      monitor,
+      deadline,
+      guard.join_confirmation,
+    )
+  let confirmed = case acknowledged {
+    Ok(cleaned) -> cleaned && joined
+    Error(Nil) -> False
+  }
+  case confirmed {
+    True -> True
+    False -> {
+      process.kill(guard.pid)
+      False
+    }
   }
 }
 
-fn close_guarded_socket(socket: transport.Socket, cleanup: fn() -> Nil) -> Nil {
-  let _closed = transport.close(socket)
-  cleanup()
+fn select_http3_race_guard(guard: TcpRaceGuard) -> Bool {
+  let deadline = guard.deadline
+  let monitor = process.monitor(guard.pid)
+  let reply = process.new_subject()
+  process.send(guard.commands, RaceSelectHttp3(reply))
+  let acknowledged =
+    process.receive(
+      reply,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  let joined =
+    join_race_helper_until(
+      guard.pid,
+      monitor,
+      deadline,
+      guard.join_confirmation,
+    )
+  let confirmed = case acknowledged {
+    Ok(cleaned) -> cleaned && joined
+    Error(Nil) -> False
+  }
+  case confirmed {
+    True -> True
+    False -> {
+      process.kill(guard.pid)
+      False
+    }
+  }
+}
+
+fn claim_tcp_race_guard(
+  guard: TcpRaceGuard,
+  candidate: TcpRaceCandidate,
+) -> Result(http2_exchange.Ready, Bool) {
+  let TcpRaceCandidate(_, handoff) = candidate
+  let deadline = guard.deadline
+  let monitor = process.monitor(guard.pid)
+  let reply = process.new_subject()
+  process.send(guard.commands, RaceClaim(reply))
+  let outcome =
+    process.receive(
+      reply,
+      within: int.max(0, deadline - transport.monotonic_millisecond()),
+    )
+  case outcome {
+    Ok(Ok(TcpRaceClaimOffer(identifier, cleanup))) -> {
+      let transferred = process.new_subject()
+      process.send(handoff, TcpCandidateHandoff(process.self(), transferred))
+      let handoff_outcome = receive_tcp_candidate_handoff(transferred, deadline)
+      case handoff_outcome {
+        Ok(ready) -> {
+          let ready = http2_exchange.with_ready_cleanup(ready, cleanup)
+          case guard.commit_confirmation {
+            True -> {
+              let committed = process.new_subject()
+              process.send(guard.commands, RaceCommit(identifier, committed))
+              let acknowledged =
+                process.receive(
+                  committed,
+                  within: int.max(
+                    0,
+                    deadline - transport.monotonic_millisecond(),
+                  ),
+                )
+              let joined =
+                join_race_helper_until(
+                  guard.pid,
+                  monitor,
+                  deadline,
+                  guard.join_confirmation,
+                )
+              case acknowledged, joined {
+                Ok(True), True -> Ok(ready)
+                _, _ -> {
+                  process.kill(guard.pid)
+                  http2_exchange.discard_ready(ready)
+                  Error(False)
+                }
+              }
+            }
+            False -> {
+              let cancelled = process.new_subject()
+              process.send(guard.commands, RaceCancel(cancelled))
+              let acknowledged =
+                process.receive(
+                  cancelled,
+                  within: int.max(
+                    0,
+                    deadline - transport.monotonic_millisecond(),
+                  ),
+                )
+              let joined =
+                join_race_helper_until(
+                  guard.pid,
+                  monitor,
+                  deadline,
+                  guard.join_confirmation,
+                )
+              case acknowledged, joined {
+                Ok(True), True -> Nil
+                _, _ -> process.kill(guard.pid)
+              }
+              http2_exchange.discard_ready(ready)
+              Error(False)
+            }
+          }
+        }
+        Error(Nil) -> {
+          let _cleanup_confirmed =
+            cancel_tcp_race_guard_with_monitor(guard, monitor)
+          Error(False)
+        }
+      }
+    }
+    Ok(Error(reason)) -> {
+      let joined =
+        join_race_helper_until(
+          guard.pid,
+          monitor,
+          deadline,
+          guard.join_confirmation,
+        )
+      case joined {
+        True -> Error(reason)
+        False -> {
+          process.kill(guard.pid)
+          Error(False)
+        }
+      }
+    }
+    Error(Nil) -> {
+      mark_race_cancelled(guard.cancellation)
+      process.kill(guard.pid)
+      let _joined =
+        join_race_helper_until(
+          guard.pid,
+          monitor,
+          deadline,
+          guard.join_confirmation,
+        )
+      Error(False)
+    }
+  }
+}
+
+fn close_optional_guarded_socket(
+  guarded: Option(GuardedSocket),
+  deadline: Int,
+) -> Bool {
+  case guarded {
+    None -> True
+    Some(GuardedSocket(_, socket, _, cleanup_before)) ->
+      close_race_socket(socket, cleanup_before, deadline)
+  }
+}
+
+fn close_race_socket(
+  socket: transport.Socket,
+  cleanup_before: fn(Int) -> Bool,
+  deadline: Int,
+) -> Bool {
+  let socket_closed = transport.close(socket) == Ok(Nil)
+  let lifecycle_released = cleanup_before(deadline)
+  socket_closed && lifecycle_released
 }
 
 fn read_tunnel_transport(

@@ -35,6 +35,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import quic_core/failure
+import quic_core/internal/stream_completion
 
 /// The accounting quantum: the step every reservation is rounded up to, and
 /// the unit in which a connection actor asks the listener for room.
@@ -45,12 +46,9 @@ import quic_core/failure
 ///
 /// 16 KiB, and the choice is forced by the defaults. `config.default_limits`
 /// pairs a 64 MiB `EndpointMemory` value with a 1024-connection admission
-/// limit, and admission charges `admission_quanta` for every connection, so an
-/// endpoint at its default connection limit must still be admitting
-/// connections while every one of them is idle. At a 64 KiB quantum those two
-/// defaults collide head on -- one quantum each would already be the whole
-/// 64 MiB budget. A 16 KiB quantum leaves 4096 quanta for 1024 connections,
-/// which is enough to fund each of them the 48 KiB admission charge below.
+/// limit. Four of these quanta fund each default connection, including the
+/// explicitly prepaid terminal history, so all 1024 reservations still fit
+/// in 64 MiB.
 ///
 /// A fine quantum does not mean chatty accounting: connections ask for room in
 /// `growth_step` units rather than a quantum at a time, so the ledger counts in
@@ -349,14 +347,19 @@ pub fn growth_step() -> Int {
 }
 
 /// The whole quanta an endpoint charges to admit one connection: its handshake
-/// working set plus the connection-level receive credit it will advertise in
-/// the handshake.
+/// working set, the connection-level receive credit it will advertise in the
+/// handshake, and a separate 4-KiB reservation for bounded terminal history.
 ///
 /// Charging for the advertised credit rather than for the working set alone is
 /// what makes the endpoint bound a bound rather than an aspiration. Everything
 /// a connection may hold beyond this is asked for first and granted second.
 pub fn admission_quanta() -> Int {
-  { working_set_bytes + initial_receive_credit_bytes } / quantum_bytes
+  whole_quanta(
+    working_set_bytes
+    + initial_receive_credit_bytes
+    + stream_completion.reserved_bytes(),
+  )
+  / quantum_bytes
 }
 
 /// The connection-level receive credit admission funds, in bytes, which is
@@ -373,6 +376,14 @@ pub fn new(limit: Int) -> Budget {
 /// The bytes this endpoint's connections hold between them, in whole quanta.
 pub fn used(ledger: Budget) -> Int {
   ledger.used
+}
+
+/// Bytes currently held by one reservation key.
+///
+/// Endpoint owners use this read-only view when they reconcile a supervised diagnostic child after its completion receipt.
+/// It exposes no peer or payload data and cannot mutate the ledger.
+pub fn holding_bytes(ledger: Budget, connection: BitArray) -> Int {
+  holding(ledger, connection)
 }
 
 /// Charge one connection for `bytes` more, rounded up to whole quanta.

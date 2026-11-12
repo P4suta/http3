@@ -7,24 +7,33 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/failure as runtime_failure
+import http3/internal/application_headers
 import http3/internal/native/client_connection
+import http3/internal/native/completion_deadline
 import http3/internal/native/connection_state as http3_state
 import http3/internal/native/datagram
-import http3/internal/native/diagnostic_capture
 import http3/internal/native/diagnostic_code
 import http3/internal/native/drain
+import http3/internal/native/error_code
 import http3/internal/native/header_semantics
 import http3/internal/native/message_stream
+import http3/internal/native/orderly_close
 import http3/internal/native/protocol
 import http3/internal/native/terminal_registry
 import http3/internal/native/ticket_store
 import http3/internal/process_label
+import http3/internal/qlog_admission
 import http3/internal/qpack/header.{type Header, Header}
+import http3/internal/read_deadline
 import quic_core.{type AddressFamily, type Version}
+import quic_core/client as core_client
 import quic_core/diagnostics as qlog
 import quic_core/failure as core_failure
 
 const worker_reply_grace_milliseconds = 100
+
+const maximum_reuse_query_milliseconds = 500
 
 const request_cancelled_code = 0x10c
 
@@ -35,13 +44,26 @@ const excessive_load_code = 0x107
 const maximum_terminal_handles = 1024
 
 // A connection still completing Retry or TLS can receive application calls.
-// Bound those callers independently of the BEAM mailbox and wake them only
-// when an authenticated network event makes request streams available.
+// Bound those callers independently of the BEAM mailbox and wake them only when an authenticated network event makes request streams available.
 const maximum_pending_open_streams = 64
 
-// Keep each HTTP DATA frame comfortably below the per-stream retained-send
-// bound. Larger public chunks are advanced incrementally by the actor.
+// Keep each HTTP DATA frame comfortably below the per-stream retained-send bound.
+// Larger public chunks are advanced incrementally by the actor.
 const maximum_request_data_chunk_bytes = 65_536
+
+// The core owns ACK processing.
+// While no HTTP/3 stream event is generated for a control-stream ACK, this finite wake samples the payload-free transport barrier without changing its immutable absolute deadline.
+const orderly_transport_poll_milliseconds = 10
+
+// RFC 9114's first GOAWAY is observable for a fixed interval before the final cutoff is selected.
+// The interval is capped inside the caller's immutable drain deadline, so a small configured drain never becomes an unbounded wait.
+const goaway_refinement_delay_milliseconds = 100
+
+// One close owns the protocol/core transition.
+// A bounded set of concurrent callers observes that same typed result instead of claiming early success.
+const maximum_close_waiters = 32
+
+const maximum_close_mailbox_scan = 64
 
 /// A live actor reference and fixed origin policy.
 pub opaque type Connection {
@@ -49,6 +71,8 @@ pub opaque type Connection {
     commands: Subject(Command),
     worker: Pid,
     timeout_milliseconds: Int,
+    drain_timeout_milliseconds: Int,
+    core_close_operation_allowance_milliseconds: Int,
     hostname: String,
     port: Int,
   )
@@ -147,6 +171,7 @@ pub type Error {
   TlsHandshakeFailed
   QuicFailure
   CoreFailure(core_failure.Failure)
+  RuntimeFailure(runtime_failure.Failure)
   Http3Failure
   ConcurrentSend
   ConnectionClosed
@@ -208,6 +233,10 @@ type Command {
     reply: Subject(Result(Nil, Error)),
   )
   Finish(stream_id: Int, reply: Subject(Result(Nil, Error)))
+  SendCompletionHandle(
+    stream_id: Int,
+    reply: Subject(Result(client_connection.SendCompletionHandle, Error)),
+  )
   Next(stream_id: Int, reply: Subject(Result(Event, Error)), deadline: Int)
   Cancel(stream_id: Int, reply: Subject(Result(Cancellation, Error)))
   NextPush(reply: Subject(Result(IncomingPush, Error)), deadline: Int)
@@ -217,7 +246,12 @@ type Command {
     deadline: Int,
   )
   CancelPush(push_id: Int, reply: Subject(Result(Cancellation, Error)))
-  Close(reply: Subject(Result(CloseResult, Error)))
+  Close(
+    reply: Subject(Result(CloseResult, Error)),
+    protocol_deadline_milliseconds: Int,
+    completion_deadline_milliseconds: Int,
+  )
+  ConnectionReusable(reply: Subject(Result(Bool, Error)))
   Capabilities(reply: Subject(Result(#(Bool, Bool, Bool, Bool), Error)))
   MaximumDatagram(stream_id: Int, reply: Subject(Result(Int, Error)))
   GuaranteedDatagram(stream_id: Int, reply: Subject(Result(Int, Error)))
@@ -254,6 +288,7 @@ type Command {
     ),
   )
   TelemetryStats(reply: Subject(Result(#(Int, Int, Int), Error)))
+  RecordApplicationError(code: Int)
 }
 
 type LoopMessage {
@@ -294,8 +329,7 @@ type PendingOpen {
   )
 }
 
-// Two stacks provide amortized O(1) FIFO enqueue/dequeue for every
-// peer-controlled queue, including zero-length DATA and Datagram frames.
+// Two stacks provide amortized O(1) FIFO enqueue/dequeue for every peer-controlled queue, including zero-length DATA and Datagram frames.
 type Queue(value) {
   Queue(front: List(value), back: List(value), count: Int)
 }
@@ -331,8 +365,7 @@ fn queue_filter(queue: Queue(value), keep: fn(value) -> Bool) -> Queue(value) {
   Queue(values, [], list.length(values))
 }
 
-// Two stacks provide amortized O(1) enqueue/dequeue while preserving the
-// order in which callers asked to open streams.
+// Two stacks provide amortized O(1) enqueue/dequeue while preserving the order in which callers asked to open streams.
 type PendingOpenQueue {
   PendingOpenQueue(
     front: List(PendingOpen),
@@ -394,12 +427,13 @@ type Worker {
     selector: process.Selector(LoopMessage),
     pending_opens: PendingOpenQueue,
     timeout_milliseconds: Int,
+    drain_timeout_milliseconds: Int,
     stream_buffer_limit: Int,
     queue_limit: Int,
     hostname: String,
     port: Int,
     http_datagrams: Bool,
-    qlog_writer: Option(qlog.Writer),
+    qlog_sink: Option(qlog.ApplicationSink),
     early_data_attempted: Bool,
     resumption_attempted: Bool,
     early_data_status: EarlyDataStatus,
@@ -409,6 +443,11 @@ type Worker {
     priorities: Dict(Int, #(Int, Bool)),
     keepalive_milliseconds: Int,
     next_keepalive_milliseconds: Int,
+    core_close_operation_allowance_milliseconds: Int,
+    orderly_close: Option(orderly_close.State),
+    close_reply: Option(Subject(Result(CloseResult, Error))),
+    close_waiters: List(Subject(Result(CloseResult, Error))),
+    close_completion_deadline_milliseconds: Option(Int),
   )
 }
 
@@ -429,6 +468,7 @@ pub fn connect(
   timeout_milliseconds: Int,
   operation_timeout_milliseconds: Int,
   idle_timeout_milliseconds: Int,
+  drain_timeout_milliseconds: Int,
   stream_buffer_limit: Int,
   endpoint_memory_limit: Int,
   queue_limit: Int,
@@ -446,23 +486,29 @@ pub fn connect(
   quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
+  connect_port: Int,
+  connect_trace: Option(qlog.ConnectTrace),
+  qlog_reservation: Option(qlog_admission.Reservation),
 ) -> Result(Connection, Error) {
   case
     hostname != ""
     && port > 0
     && port <= 65_535
+    && connect_port > 0
+    && connect_port <= 65_535
     && dns_timeout_milliseconds > 0
     && connect_timeout_milliseconds > 0
     && handshake_timeout_milliseconds > 0
     && timeout_milliseconds > 0
     && operation_timeout_milliseconds > 0
     && idle_timeout_milliseconds > 0
+    && drain_timeout_milliseconds > 0
     && stream_buffer_limit > 0
     && endpoint_memory_limit > 0
     && queue_limit > 0
     && telemetry_limit > 0
     && bidirectional_stream_limit > 0
-    && unidirectional_stream_limit > 0
+    && unidirectional_stream_limit >= 3
     && frame_limit > 0
     && datagram_limit > 0
     && qpack_table_limit > 0
@@ -497,6 +543,7 @@ pub fn connect(
                 timeout_milliseconds,
                 operation_timeout_milliseconds,
                 idle_timeout_milliseconds,
+                drain_timeout_milliseconds,
                 stream_buffer_limit,
                 endpoint_memory_limit,
                 queue_limit,
@@ -514,6 +561,9 @@ pub fn connect(
                 quic_version,
                 qlog_directory,
                 resumption_ticket,
+                connect_port,
+                connect_trace,
+                qlog_reservation,
               )
             })
           await_bootstrap(
@@ -580,6 +630,34 @@ pub fn finish(stream: Stream) -> Result(Nil, Error) {
   call(stream.connection, fn(reply) { Finish(stream.identifier, reply) })
 }
 
+/// Wait outside the HTTP/3 actor until the request FIN is acknowledged.
+///
+/// The short actor call only captures the opaque core-stream capability.
+/// The bounded transport wait therefore cannot stall response reads or unrelated streams on this HTTP/3 connection.
+pub fn await_request_completion(stream: Stream) -> Result(Nil, Error) {
+  use handle <- result.try(
+    call(stream.connection, fn(reply) {
+      SendCompletionHandle(stream.identifier, reply)
+    }),
+  )
+  client_connection.await_send_completion(
+    handle,
+    stream.connection.timeout_milliseconds,
+  )
+  |> result.map_error(map_connection_error)
+}
+
+/// Queue one validated payload-free application diagnostic when qlog is on.
+pub fn record_application_error(stream: Stream, code: Int) -> Nil {
+  process.send(stream.connection.commands, RecordApplicationError(code))
+}
+
+/// Configured per-operation limit, without allocating a read or waiter.
+@internal
+pub fn operation_timeout_milliseconds(stream: Stream) -> Int {
+  stream.connection.timeout_milliseconds
+}
+
 /// Pull one response event.
 pub fn next_event(stream: Stream) -> Result(Event, Error) {
   let deadline = now() + stream.connection.timeout_milliseconds
@@ -588,6 +666,33 @@ pub fn next_event(stream: Stream) -> Result(Event, Error) {
     stream.connection.timeout_milliseconds + worker_reply_grace_milliseconds,
     fn(reply) { Next(stream.identifier, reply, deadline) },
   )
+}
+
+/// Pull under a shared absolute deadline, with the original operation cap.
+@internal
+pub fn next_event_until(
+  stream: Stream,
+  deadline_milliseconds: Int,
+) -> Result(Event, Error) {
+  use #(deadline, remaining) <- result.try(
+    read_deadline.plan(
+      now: now(),
+      deadline: deadline_milliseconds,
+      operation: stream.connection.timeout_milliseconds,
+    )
+    |> result.replace_error(OperationTimeout),
+  )
+  let outcome =
+    call_with_timeout(
+      stream.connection,
+      remaining + worker_reply_grace_milliseconds,
+      fn(reply) { Next(stream.identifier, reply, deadline) },
+    )
+  let observed = now()
+  case outcome {
+    Ok(_) if observed >= deadline -> Error(OperationTimeout)
+    _ -> outcome
+  }
 }
 
 /// Cancel both stream directions idempotently.
@@ -621,15 +726,77 @@ pub fn cancel_push(push: Push) -> Result(Cancellation, Error) {
 }
 
 /// Close one connection idempotently.
+///
+/// The finite caller wait is fixed once from the configured HTTP/3 drain, the connection-specific core actor share, the core diagnostic-close allowance,
+/// and this actor's reply-only grace.
+/// HTTP/3 passes the same absolute cleanup boundary through core and qlog, so no phase starts a replacement timeout.
 pub fn close(connection: Connection) -> Result(CloseResult, Error) {
+  close_with_budget(connection, None)
+}
+
+pub fn close_within(
+  connection: Connection,
+  within_milliseconds: Int,
+) -> Result(CloseResult, Error) {
+  close_with_budget(connection, Some(within_milliseconds))
+}
+
+fn close_with_budget(
+  connection: Connection,
+  budget: Option(Int),
+) -> Result(CloseResult, Error) {
   case process.is_alive(connection.worker) {
     False -> Ok(AlreadyClosed)
-    True ->
-      case call(connection, Close) {
-        Error(ConnectionClosed) -> Ok(AlreadyClosed)
-        outcome -> outcome
+    True -> {
+      let started = now()
+      case
+        completion_deadline.new(
+          started,
+          connection.drain_timeout_milliseconds,
+          connection.core_close_operation_allowance_milliseconds
+            + core_client.close_completion_allowance_milliseconds(),
+          worker_reply_grace_milliseconds,
+        )
+        |> result.try(fn(plan) {
+          case budget {
+            None -> Ok(plan)
+            Some(milliseconds) -> completion_deadline.limit(plan, milliseconds)
+          }
+        })
+      {
+        Error(_) -> Error(OperationTimeout)
+        Ok(close_plan) ->
+          case
+            call_until(
+              connection,
+              completion_deadline.caller_deadline_milliseconds(close_plan),
+              fn(reply) {
+                Close(
+                  reply,
+                  completion_deadline.protocol_deadline_milliseconds(close_plan),
+                  completion_deadline.completion_deadline_milliseconds(
+                    close_plan,
+                  ),
+                )
+              },
+            )
+          {
+            Error(ConnectionClosed) -> Ok(AlreadyClosed)
+            outcome -> outcome
+          }
       }
+    }
   }
+}
+
+/// Query actor-owned GOAWAY and core-close state within a fixed small bound.
+pub fn connection_reusable(connection: Connection) -> Result(Bool, Error) {
+  call_with_timeout(
+    connection,
+    int.min(connection.timeout_milliseconds, maximum_reuse_query_milliseconds)
+      + worker_reply_grace_milliseconds,
+    ConnectionReusable,
+  )
 }
 
 /// Return negotiated and explicitly enabled advanced capabilities.
@@ -813,6 +980,7 @@ fn initialise(
   timeout_milliseconds: Int,
   operation_timeout_milliseconds: Int,
   idle_timeout_milliseconds: Int,
+  drain_timeout_milliseconds: Int,
   stream_buffer_limit: Int,
   endpoint_memory_limit: Int,
   queue_limit: Int,
@@ -830,6 +998,9 @@ fn initialise(
   quic_version: Version,
   qlog_directory: String,
   resumption_ticket: Option(ResumptionTicket),
+  connect_port: Int,
+  connect_trace: Option(qlog.ConnectTrace),
+  qlog_reservation: Option(qlog_admission.Reservation),
 ) -> Nil {
   let #(native_ticket, initial_address_token) = case resumption_ticket {
     Some(ResumptionTicket(_, _, ticket, token)) -> #(Some(ticket), token)
@@ -867,22 +1038,31 @@ fn initialise(
       qpack_table_limit,
       qpack_blocked_stream_limit,
       telemetry_limit,
-      "",
+      qlog_directory,
+      connect_port,
+      connect_trace,
+      qlog_reservation,
     )
   case client_connection.connect(config) {
     Error(error) -> process.send(bootstrap, Error(map_connection_error(error)))
     Ok(connection) ->
-      case open_qlog(qlog_directory, telemetry_limit) {
-        Error(_) -> {
-          client_connection.close(connection, 0x100, "qlog unavailable")
-          process.send(bootstrap, Error(QlogUnavailable))
+      case client_connection.application_diagnostics(connection) {
+        Error(error) -> {
+          client_connection.close(
+            connection,
+            error_code.runtime_greased_no_error(now()),
+            "",
+          )
+          process.send(bootstrap, Error(map_connection_error(error)))
         }
-        Ok(qlog_writer) -> {
-          case qlog_writer {
-            Some(writer) -> record_qlog_bootstrap(writer, connection, now())
+        Ok(qlog_sink) -> {
+          case qlog_sink {
+            Some(writer) -> record_qlog_bootstrap(writer, now())
             None -> Nil
           }
           let commands = process.new_subject()
+          let core_close_operation_allowance_milliseconds =
+            client_connection.close_operation_allowance_milliseconds(connection)
           let owner_monitor = process.monitor(owner)
           let selector =
             process.new_selector()
@@ -900,46 +1080,52 @@ fn initialise(
               commands,
               process.self(),
               operation_timeout_milliseconds,
+              drain_timeout_milliseconds,
+              core_close_operation_allowance_milliseconds,
               hostname,
               port,
             )),
           )
-          drive_and_loop(
-            Worker(
-              connection,
-              dict.new(),
-              terminal_registry.new(maximum_terminal_handles),
-              dict.new(),
-              terminal_registry.new(maximum_terminal_handles),
-              queue_new(),
-              None,
-              commands,
-              selector,
-              pending_open_queue(),
-              operation_timeout_milliseconds,
-              stream_buffer_limit,
-              queue_limit,
-              hostname,
-              port,
-              http_datagrams,
-              qlog_writer,
-              early_data_attempted,
-              resumption_attempted,
-              case early_data_attempted {
-                True -> Pending
-                False -> NotAttempted
-              },
-              None,
-              initial_address_token,
-              None,
-              dict.new(),
-              keepalive_milliseconds,
-              case keepalive_milliseconds {
-                0 -> 0
-                interval -> now() + interval
-              },
-            ),
-          )
+          drive_and_loop(Worker(
+            connection,
+            dict.new(),
+            terminal_registry.new(maximum_terminal_handles),
+            dict.new(),
+            terminal_registry.new(maximum_terminal_handles),
+            queue_new(),
+            None,
+            commands,
+            selector,
+            pending_open_queue(),
+            operation_timeout_milliseconds,
+            drain_timeout_milliseconds,
+            stream_buffer_limit,
+            queue_limit,
+            hostname,
+            port,
+            http_datagrams,
+            qlog_sink,
+            early_data_attempted,
+            resumption_attempted,
+            case early_data_attempted {
+              True -> Pending
+              False -> NotAttempted
+            },
+            None,
+            initial_address_token,
+            None,
+            dict.new(),
+            keepalive_milliseconds,
+            case keepalive_milliseconds {
+              0 -> 0
+              interval -> now() + interval
+            },
+            core_close_operation_allowance_milliseconds,
+            None,
+            None,
+            [],
+            None,
+          ))
         }
       }
   }
@@ -948,11 +1134,16 @@ fn initialise(
 
 fn loop(worker: Worker) -> Nil {
   let worker = dispatch_connection_events(worker)
-  let now = now()
-  let worker = expire_waiters(worker, now)
-  let worker = retry_pending_opens(worker, now)
-  let worker = maybe_queue_keepalive(worker, now)
-  wait_for_work(worker, now)
+  let current = now()
+  case advance_orderly_close(worker, current) {
+    Error(Nil) -> Nil
+    Ok(worker) -> {
+      let worker = expire_waiters(worker, current)
+      let worker = retry_pending_opens(worker, current)
+      let worker = maybe_queue_keepalive(worker, current)
+      wait_for_work(worker, current)
+    }
+  }
 }
 
 fn wait_for_work(worker: Worker, now: Int) -> Nil {
@@ -997,7 +1188,28 @@ fn next_worker_deadline(
     |> earlier_deadline(pending_open_deadline(worker.pending_opens))
     |> stream_deadlines(dict.values(worker.streams))
     |> push_deadlines(dict.values(worker.pushes))
-  Ok(deadline)
+  Ok(case worker.orderly_close {
+    None -> deadline
+    Some(close_state) -> {
+      let deadline =
+        earlier_deadline(
+          deadline,
+          Some(orderly_close.deadline_milliseconds(close_state)),
+        )
+      case orderly_close.final_goaway_queued(close_state) {
+        False ->
+          earlier_deadline(
+            deadline,
+            Some(orderly_close.refine_not_before_milliseconds(close_state)),
+          )
+        True ->
+          earlier_deadline(
+            deadline,
+            Some(now + orderly_transport_poll_milliseconds),
+          )
+      }
+    }
+  })
 }
 
 fn stream_deadlines(
@@ -1130,7 +1342,8 @@ fn earlier_deadline(first: Option(Int), second: Option(Int)) -> Option(Int) {
 
 fn maybe_queue_keepalive(worker: Worker, now: Int) -> Worker {
   case
-    worker.keepalive_milliseconds > 0
+    option.is_none(worker.orderly_close)
+    && worker.keepalive_milliseconds > 0
     && now >= worker.next_keepalive_milliseconds
   {
     False -> worker
@@ -1148,10 +1361,8 @@ fn maybe_queue_keepalive(worker: Worker, now: Int) -> Worker {
 }
 
 fn drive_and_loop(worker: Worker) -> Nil {
-  let before = qlog_io_before(worker.qlog_writer, worker.connection)
   case client_connection.drive(worker.connection) {
     Ok(connection) -> {
-      record_qlog_io(worker.qlog_writer, before, connection, now())
       let worker = Worker(..worker, connection: connection)
       case client_connection.activate_once(connection) {
         Error(error) ->
@@ -1160,8 +1371,8 @@ fn drive_and_loop(worker: Worker) -> Nil {
       }
     }
     Error(error) -> {
+      record_connection_error(worker.qlog_sink, error)
       close_peer_protocol_failure(worker.connection, error)
-      record_connection_error(worker.qlog_writer, error)
       terminate_with_error(worker, map_connection_error(error))
     }
   }
@@ -1171,7 +1382,6 @@ fn receive_and_loop(
   worker: Worker,
   message: client_connection.NetworkEvent,
 ) -> Nil {
-  let before = qlog_io_before(worker.qlog_writer, worker.connection)
   case client_connection.receive_active(worker.connection, message) {
     Error(client_connection.InvalidInput) ->
       case client_connection.activate_once(worker.connection) {
@@ -1180,19 +1390,15 @@ fn receive_and_loop(
           terminate_with_error(worker, map_connection_error(error))
       }
     Error(error) -> {
-      record_qlog_io(worker.qlog_writer, before, worker.connection, now())
+      record_connection_error(worker.qlog_sink, error)
       close_peer_protocol_failure(worker.connection, error)
-      record_connection_error(worker.qlog_writer, error)
       terminate_with_error(worker, map_connection_error(error))
     }
     Ok(connection) -> {
-      record_qlog_io(worker.qlog_writer, before, connection, now())
       let worker = Worker(..worker, connection: connection)
-      // ACK and MAX_STREAM_DATA input can release both congestion and stream
-      // buffer credit. Retry one bounded application chunk before driving so
-      // a pending sender cannot sleep until its operation deadline when the
-      // transport itself has no earlier timer. Dispatch first so a queued peer
-      // close keeps its authoritative terminal reason if the next drive fails.
+      // ACK and MAX_STREAM_DATA input can release both congestion and stream buffer credit.
+      // Retry one bounded application chunk before driving so a pending sender cannot sleep until its operation deadline when the transport itself has no earlier timer.
+      // Dispatch first so a queued peer close keeps its authoritative terminal reason if the next drive fails.
       worker
       |> dispatch_connection_events
       |> retry_pending_sends
@@ -1201,69 +1407,19 @@ fn receive_and_loop(
   }
 }
 
-fn record_qlog_io(
-  writer: Option(qlog.Writer),
-  before: Option(client_connection.Stats),
-  connection: client_connection.State,
-  now: Int,
-) -> Nil {
-  case writer, before {
-    Some(writer), Some(before) -> {
-      let after = client_connection.stats(connection)
-      let client_connection.Stats(
-        before_received,
-        before_sent,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-      ) = before
-      let client_connection.Stats(after_received, after_sent, _, _, _, _, _, _) =
-        after
-      let received = after_received - before_received
-      let sent = after_sent - before_sent
-      qlog.datagrams_received(writer, now, received)
-      qlog.datagrams_sent(writer, now, sent)
-      case received > 0 {
-        True -> qlog.packet_received(writer, now, qlog.UnknownPacket, 0)
-        False -> Nil
-      }
-      case sent > 0 {
-        True -> qlog.packet_sent(writer, now, qlog.UnknownPacket, 0)
-        False -> Nil
-      }
-      case received > 0 || sent > 0 {
-        True ->
-          qlog.recovery_metrics(
-            writer,
-            now,
-            client_connection.path_stats(connection),
-          )
-        False -> Nil
-      }
-    }
-    _, _ -> Nil
-  }
-}
-
-fn qlog_io_before(
-  writer: Option(qlog.Writer),
-  connection: client_connection.State,
-) -> Option(client_connection.Stats) {
-  diagnostic_capture.when_enabled(option.is_some(writer), fn() {
-    client_connection.stats(connection)
-  })
-}
-
 fn record_connection_error(
-  writer: Option(qlog.Writer),
+  writer: Option(qlog.ApplicationSink),
   error: client_connection.Error,
 ) -> Nil {
-  case writer, qlog.application_code(diagnostic_code.connection_error(error)) {
-    Some(writer), Ok(code) -> qlog.application_error(writer, now(), code)
-    _, _ -> Nil
+  case writer {
+    None -> Nil
+    Some(writer) ->
+      list.each(diagnostic_code.connection_errors(error), fn(value) {
+        case qlog.application_code(value) {
+          Ok(code) -> qlog.emit_application_error(writer, now(), code)
+          Error(_) -> Nil
+        }
+      })
   }
 }
 
@@ -1277,66 +1433,59 @@ fn close_peer_protocol_failure(
   }
 }
 
-/// Reconstruct the finite, non-secret protocol state already authenticated by
-/// the synchronous public-core connect. qlog is opened only after that call
-/// succeeds, so this snapshot makes the completed TLS and mandatory HTTP/3
-/// stream setup visible without pretending to have observed their key bytes.
-fn record_qlog_bootstrap(
-  writer: qlog.Writer,
-  connection: client_connection.State,
-  now: Int,
-) -> Nil {
-  qlog.connection_started(writer, now)
-  let client_connection.Stats(received, sent, _, _, _, _, _, _) =
-    client_connection.stats(connection)
-  // The public-core connect completed before this HTTP/3-owned writer could
-  // open. Preserve one payload-free representative event for each direction
-  // which the authenticated cumulative counters prove already occurred.
-  case received > 0 {
-    True -> qlog.packet_received(writer, now, qlog.UnknownPacket, 0)
-    False -> Nil
-  }
-  case sent > 0 {
-    True -> qlog.packet_sent(writer, now, qlog.UnknownPacket, 0)
-    False -> Nil
-  }
-  qlog.key_updated(writer, now, qlog.ClientOneRttSecret)
-  qlog.key_updated(writer, now, qlog.ServerOneRttSecret)
-  qlog.key_discarded(writer, now, qlog.ClientHandshakeSecret)
-  qlog.key_discarded(writer, now, qlog.ServerHandshakeSecret)
-  qlog.recovery_metrics(writer, now, client_connection.path_stats(connection))
-  qlog.congestion_state_updated(writer, now, qlog.ApplicationLimited)
-  qlog.http3_parameters_set(writer, now, qlog.LocalInitiator)
-  qlog.http3_parameters_set(writer, now, qlog.RemoteInitiator)
-  qlog.http3_stream_type_set(writer, now, 2, qlog.ControlStream)
-  qlog.http3_stream_type_set(writer, now, 6, qlog.QpackEncoderStream)
-  qlog.http3_stream_type_set(writer, now, 10, qlog.QpackDecoderStream)
+/// Add the authenticated HTTP/3 setup to the already funded core trace.
+fn record_qlog_bootstrap(writer: qlog.ApplicationSink, now: Int) -> Nil {
+  qlog.emit_http3_parameters_set(writer, now, qlog.LocalInitiator)
+  qlog.emit_http3_parameters_set(writer, now, qlog.RemoteInitiator)
+  qlog.emit_http3_stream_type_set(
+    writer,
+    now,
+    quic_core.StreamId(2),
+    qlog.ControlStream,
+  )
+  qlog.emit_http3_stream_type_set(
+    writer,
+    now,
+    quic_core.StreamId(6),
+    qlog.QpackEncoderStream,
+  )
+  qlog.emit_http3_stream_type_set(
+    writer,
+    now,
+    quic_core.StreamId(10),
+    qlog.QpackDecoderStream,
+  )
 }
 
 fn record_http3_stream_type(
-  writer: Option(qlog.Writer),
+  writer: Option(qlog.ApplicationSink),
   stream_id: Int,
   stream_type: qlog.Http3StreamType,
 ) -> Nil {
   case writer {
     Some(writer) ->
-      qlog.http3_stream_type_set(writer, now(), stream_id, stream_type)
+      qlog.emit_http3_stream_type_set(
+        writer,
+        now(),
+        quic_core.StreamId(stream_id),
+        stream_type,
+      )
     None -> Nil
   }
 }
 
 fn record_http3_frame_created(
-  writer: Option(qlog.Writer),
+  writer: Option(qlog.ApplicationSink),
   stream_id: Int,
   frame_type: qlog.Http3FrameType,
   payload_bytes: Int,
 ) -> Nil {
   case writer {
     Some(writer) ->
-      qlog.http3_frame_created(
+      qlog.emit_http3_frame_created(
         writer,
         now(),
-        stream_id,
+        quic_core.StreamId(stream_id),
         frame_type,
         payload_bytes,
       )
@@ -1350,12 +1499,12 @@ fn record_http3_frame_parsed(
   frame_type: qlog.Http3FrameType,
   payload_bytes: Int,
 ) -> Worker {
-  case worker.qlog_writer {
+  case worker.qlog_sink {
     Some(writer) ->
-      qlog.http3_frame_parsed(
+      qlog.emit_http3_frame_parsed(
         writer,
         now(),
-        stream_id,
+        quic_core.StreamId(stream_id),
         frame_type,
         payload_bytes,
       )
@@ -1369,7 +1518,6 @@ fn open_request_and_reply(
   headers: List(Header),
   reply: Subject(Result(Int, Error)),
 ) -> Worker {
-  let before = qlog_io_before(worker.qlog_writer, worker.connection)
   case
     client_connection.open_request(
       worker.connection,
@@ -1379,18 +1527,14 @@ fn open_request_and_reply(
     )
   {
     Error(error) -> {
+      record_connection_error(worker.qlog_sink, error)
       process.send(reply, Error(map_connection_error(error)))
       worker
     }
     Ok(#(connection, identifier)) -> {
-      record_qlog_io(worker.qlog_writer, before, connection, now())
-      record_http3_stream_type(
-        worker.qlog_writer,
-        identifier,
-        qlog.RequestStream,
-      )
+      record_http3_stream_type(worker.qlog_sink, identifier, qlog.RequestStream)
       record_http3_frame_created(
-        worker.qlog_writer,
+        worker.qlog_sink,
         identifier,
         qlog.HeadersFrame,
         0,
@@ -1426,6 +1570,373 @@ fn retry_pending_opens(worker: Worker, now: Int) -> Worker {
           }
           retry_pending_opens(worker, now)
         }
+      }
+  }
+}
+
+fn handle_orderly_close(
+  worker: Worker,
+  reply: Subject(Result(CloseResult, Error)),
+  protocol_deadline_milliseconds: Int,
+  completion_deadline_milliseconds: Int,
+) -> Result(Worker, Nil) {
+  case worker.close_reply {
+    Some(_) -> {
+      case list.length(worker.close_waiters) >= maximum_close_waiters - 1 {
+        True -> {
+          process.send(reply, Error(OperationTimeout))
+          Ok(worker)
+        }
+        False ->
+          Ok(Worker(..worker, close_waiters: [reply, ..worker.close_waiters]))
+      }
+    }
+    None -> {
+      let current = now()
+      case
+        orderly_close.refinement_not_before(
+          current,
+          protocol_deadline_milliseconds,
+          goaway_refinement_delay_milliseconds,
+        )
+      {
+        Error(_) ->
+          finish_abortive_close(worker, reply, completion_deadline_milliseconds)
+        Ok(refine_not_before) ->
+          case
+            orderly_close.new(
+              orderly_close.Client,
+              current,
+              protocol_deadline_milliseconds - current,
+              refine_not_before,
+            )
+          {
+            Error(_) ->
+              finish_abortive_close(
+                worker,
+                reply,
+                completion_deadline_milliseconds,
+              )
+            Ok(close_state) ->
+              begin_client_goaway(
+                worker,
+                close_state,
+                reply,
+                current,
+                completion_deadline_milliseconds,
+              )
+          }
+      }
+    }
+  }
+}
+
+fn begin_client_goaway(
+  worker: Worker,
+  close_state: orderly_close.State,
+  reply: Subject(Result(CloseResult, Error)),
+  current: Int,
+  completion_deadline_milliseconds: Int,
+) -> Result(Worker, Nil) {
+  let initial_identifier =
+    orderly_close.initial_goaway_identifier(orderly_close.Client)
+  case
+    orderly_close.initial_queued(close_state, initial_identifier),
+    client_connection.start_drain(worker.connection, current)
+  {
+    Ok(#(close_state, _)), Ok(connection) ->
+      Ok(
+        Worker(
+          ..worker,
+          connection: connection,
+          orderly_close: Some(close_state),
+          close_reply: Some(reply),
+          close_completion_deadline_milliseconds: Some(
+            completion_deadline_milliseconds,
+          ),
+        )
+        |> settle_client_application,
+      )
+    _, Ok(connection) ->
+      finish_abortive_close(
+        Worker(..worker, connection: connection),
+        reply,
+        completion_deadline_milliseconds,
+      )
+    _, Error(_) ->
+      finish_abortive_close(worker, reply, completion_deadline_milliseconds)
+  }
+}
+
+fn settle_client_application(worker: Worker) -> Worker {
+  let worker = abort_client_streams(worker, dict.keys(worker.streams))
+  let worker = cancel_client_pushes(worker, dict.keys(worker.pushes))
+  fail_all_work(worker, ConnectionClosed)
+}
+
+fn abort_client_streams(worker: Worker, identifiers: List(Int)) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] -> {
+      let worker = case
+        client_connection.abort_stream(
+          worker.connection,
+          identifier,
+          request_cancelled_code,
+        )
+      {
+        Error(_) -> worker
+        Ok(connection) -> Worker(..worker, connection: connection)
+      }
+      abort_client_streams(worker, rest)
+    }
+  }
+}
+
+fn cancel_client_pushes(worker: Worker, identifiers: List(Int)) -> Worker {
+  case identifiers {
+    [] -> worker
+    [identifier, ..rest] -> {
+      let worker = case
+        client_connection.cancel_push(worker.connection, identifier)
+      {
+        Error(_) -> worker
+        Ok(connection) -> Worker(..worker, connection: connection)
+      }
+      cancel_client_pushes(worker, rest)
+    }
+  }
+}
+
+fn advance_orderly_close(worker: Worker, current: Int) -> Result(Worker, Nil) {
+  case worker.orderly_close, client_connection.terminated(worker.connection) {
+    None, _ -> Ok(worker)
+    Some(_), True -> finish_pending_abortive_close(worker)
+    Some(close_state), False ->
+      case refine_client_goaway(worker, close_state, current) {
+        Error(Nil) -> Error(Nil)
+        Ok(worker) ->
+          case worker.orderly_close {
+            None -> finish_pending_abortive_close(worker)
+            Some(close_state) ->
+              observe_client_orderly_close(worker, close_state, current)
+          }
+      }
+  }
+}
+
+fn observe_client_orderly_close(
+  worker: Worker,
+  close_state: orderly_close.State,
+  current: Int,
+) -> Result(Worker, Nil) {
+  case orderly_close.final_goaway_queued(close_state) {
+    False -> Ok(worker)
+    True -> {
+      let application_settled = client_application_settled(worker)
+      let transport_flushed = case application_settled {
+        False -> False
+        True ->
+          client_connection.application_send_settled(worker.connection)
+          == Ok(True)
+      }
+      case
+        orderly_close.observe(
+          close_state,
+          current,
+          application_settled,
+          transport_flushed,
+        )
+      {
+        Error(_) | Ok(orderly_close.Abort(_, _)) ->
+          finish_pending_abortive_close(worker)
+        Ok(orderly_close.Continue(close_state, _)) ->
+          Ok(Worker(..worker, orderly_close: Some(close_state)))
+        Ok(orderly_close.Close(close_state, step)) ->
+          case step {
+            orderly_close.CloseWithNoError(code) ->
+              finish_orderly_close(worker, close_state, code)
+            _ -> finish_pending_abortive_close(worker)
+          }
+      }
+    }
+  }
+}
+
+fn refine_client_goaway(
+  worker: Worker,
+  close_state: orderly_close.State,
+  current: Int,
+) -> Result(Worker, Nil) {
+  case
+    orderly_close.final_goaway_queued(close_state),
+    current < orderly_close.refine_not_before_milliseconds(close_state)
+  {
+    True, _ | False, True -> Ok(worker)
+    False, False ->
+      case
+        orderly_close.final_queued(close_state, 0, current),
+        client_connection.refine_drain(worker.connection, 0)
+      {
+        Ok(#(close_state, _)), Ok(#(connection, _rejected)) ->
+          Ok(
+            Worker(
+              ..worker,
+              connection: connection,
+              orderly_close: Some(close_state),
+            ),
+          )
+        _, _ -> finish_pending_abortive_close(worker)
+      }
+  }
+}
+
+fn client_application_settled(worker: Worker) -> Bool {
+  pending_open_count(worker.pending_opens) == 0
+  && option.is_none(worker.push_waiter)
+  && list.all(dict.values(worker.streams), fn(stream) {
+    option.is_some(stream.failure)
+    || stream.cancelled
+    || stream.request_finished
+    && stream.response_finished
+  })
+  && list.all(dict.values(worker.pushes), fn(push) {
+    option.is_some(push.failure) || push.cancelled || push.response_finished
+  })
+}
+
+fn finish_orderly_close(
+  worker: Worker,
+  close_state: orderly_close.State,
+  code: Int,
+) -> Result(Worker, Nil) {
+  case client_connection.close_drained(worker.connection) {
+    Error(_) -> finish_pending_abortive_close(worker)
+    Ok(connection) -> {
+      let outcome =
+        close_worker_connection_until(
+          Worker(..worker, connection: connection),
+          code,
+        )
+        |> result.map(fn(_) { Closed })
+        |> result.map_error(map_connection_error)
+      notify_close_replies(worker, outcome)
+      case outcome {
+        Ok(_) -> {
+          let _closed = orderly_close.confirm_closed(close_state, code)
+          Nil
+        }
+        Error(_) -> Nil
+      }
+      Error(Nil)
+    }
+  }
+}
+
+fn finish_pending_abortive_close(worker: Worker) -> Result(Worker, Nil) {
+  let worker = fail_all_work(worker, ConnectionClosed)
+  let outcome =
+    close_worker_connection_until(
+      worker,
+      error_code.runtime_greased_no_error(now()),
+    )
+    |> result.map(fn(_) { Closed })
+    |> result.map_error(map_connection_error)
+  notify_close_replies(worker, outcome)
+  Error(Nil)
+}
+
+fn finish_abortive_close(
+  worker: Worker,
+  reply: Subject(Result(CloseResult, Error)),
+  completion_deadline_milliseconds: Int,
+) -> Result(Worker, Nil) {
+  // Publish this first close attempt in state before entering the synchronous core join.
+  // A concurrent Close can then either join through handle_command or be collected from the bounded mailbox prefix immediately before exit.
+  let worker =
+    Worker(
+      ..worker,
+      close_reply: Some(reply),
+      close_completion_deadline_milliseconds: Some(
+        completion_deadline_milliseconds,
+      ),
+    )
+    |> fail_all_work(ConnectionClosed)
+  let outcome =
+    client_connection.close_result_until(
+      worker.connection,
+      error_code.runtime_greased_no_error(now()),
+      completion_deadline_milliseconds,
+    )
+    |> result.map(fn(_) { Closed })
+    |> result.map_error(map_connection_error)
+  notify_close_replies(worker, outcome)
+  Error(Nil)
+}
+
+fn close_worker_connection_until(
+  worker: Worker,
+  application_error_code: Int,
+) -> Result(Nil, client_connection.Error) {
+  case worker.close_completion_deadline_milliseconds {
+    Some(deadline_milliseconds) ->
+      client_connection.close_result_until(
+        worker.connection,
+        application_error_code,
+        deadline_milliseconds,
+      )
+    // This state is not constructed by the close command.
+    // Treat corruption as an incomplete bounded close and let the dying actor's core monitor own final cleanup; never invent a fresh relative timeout here.
+    None -> Error(client_connection.OperationTimeout)
+  }
+}
+
+fn notify_close_replies(
+  worker: Worker,
+  outcome: Result(CloseResult, Error),
+) -> Nil {
+  let replies = case worker.close_reply {
+    None -> worker.close_waiters
+    Some(reply) -> [reply, ..worker.close_waiters]
+  }
+  let remaining_waiters = maximum_close_waiters - list.length(replies)
+  let replies =
+    collect_queued_close_replies(
+      worker.commands,
+      replies,
+      remaining_waiters,
+      maximum_close_mailbox_scan,
+    )
+  list.each(replies, fn(reply) { process.send(reply, outcome) })
+}
+
+/// The HTTP/3 actor can be synchronously inside the core completion call when another close arrives.
+/// Drain only a finite mailbox prefix before exit so those callers share the first outcome without making teardown unbounded.
+fn collect_queued_close_replies(
+  commands: Subject(Command),
+  replies: List(Subject(Result(CloseResult, Error))),
+  remaining_waiters: Int,
+  remaining_scan: Int,
+) -> List(Subject(Result(CloseResult, Error))) {
+  case remaining_waiters <= 0 || remaining_scan <= 0 {
+    True -> replies
+    False ->
+      case process.receive(commands, within: 0) {
+        Error(Nil) -> replies
+        Ok(Close(reply, _, _)) ->
+          collect_queued_close_replies(
+            commands,
+            [reply, ..replies],
+            remaining_waiters - 1,
+            remaining_scan - 1,
+          )
+        Ok(_) ->
+          collect_queued_close_replies(
+            commands,
+            replies,
+            remaining_waiters,
+            remaining_scan - 1,
+          )
       }
   }
 }
@@ -1489,7 +2000,7 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
             )
             |> result.map(fn(connection) {
               record_http3_frame_created(
-                worker.qlog_writer,
+                worker.qlog_sink,
                 identifier,
                 qlog.HeadersFrame,
                 0,
@@ -1508,9 +2019,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
         dict.has_key(worker.streams, identifier),
         stream_terminal_error(worker, identifier)
       {
-        // `fail_stream` may already have compacted a GOAWAY-rejected stream
-        // into the finite terminal registry. Preserve the same empty-FIN race
-        // contract in both the live and compacted representations.
+        // `fail_stream` may already have compacted a GOAWAY-rejected stream into the finite terminal registry.
+        // Preserve the same empty-FIN race contract in both the live and compacted representations.
         False, RequestRejected -> {
           process.send(reply, Ok(Nil))
           Ok(worker)
@@ -1519,10 +2029,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
           update_stream(worker, identifier, reply, fn(worker, stream) {
             case stream.request_finished, stream.failure {
               True, _ -> Error(RequestAlreadyFinished)
-              // A GOAWAY race can reject the stream after open but before its
-              // empty FIN command is handled. The FIN was already semantically
-              // committed by the caller; preserve that success and expose the
-              // authoritative rejection through `next_event`.
+              // A GOAWAY race can reject the stream after open but before its empty FIN command is handled.
+              // The FIN was already semantically committed by the caller; preserve that success and expose the authoritative rejection through `next_event`.
               False, Some(RequestRejected) ->
                 Ok(#(worker, StreamState(..stream, request_finished: True), Nil))
               False, _ ->
@@ -1546,13 +2054,37 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
             }
           })
       }
+    SendCompletionHandle(identifier, reply) -> {
+      let outcome = case dict.has_key(worker.streams, identifier) {
+        False -> Error(stream_terminal_error(worker, identifier))
+        True ->
+          client_connection.send_completion_handle(
+            worker.connection,
+            identifier,
+          )
+          |> result.map_error(map_connection_error)
+      }
+      process.send(reply, outcome)
+      Ok(worker)
+    }
     Next(identifier, reply, deadline) ->
-      case dict.get(worker.streams, identifier) {
-        Error(_) -> {
-          process.send(reply, Error(stream_terminal_error(worker, identifier)))
+      case deadline <= now() {
+        True -> {
+          process.send(reply, Error(OperationTimeout))
           Ok(worker)
         }
-        Ok(stream) -> handle_next(worker, identifier, stream, reply, deadline)
+        False ->
+          case dict.get(worker.streams, identifier) {
+            Error(_) -> {
+              process.send(
+                reply,
+                Error(stream_terminal_error(worker, identifier)),
+              )
+              Ok(worker)
+            }
+            Ok(stream) ->
+              handle_next(worker, identifier, stream, reply, deadline)
+          }
       }
     Cancel(identifier, reply) -> handle_cancel(worker, identifier, reply)
     NextPush(reply, deadline) -> handle_next_push(worker, reply, deadline)
@@ -1560,10 +2092,19 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       handle_next_push_event(worker, identifier, reply, deadline)
     CancelPush(identifier, reply) ->
       handle_cancel_push(worker, identifier, reply)
-    Close(reply) -> {
-      shutdown(worker, "application close")
-      process.send(reply, Ok(Closed))
-      Error(Nil)
+    Close(reply, protocol_deadline, completion_deadline) ->
+      handle_orderly_close(
+        worker,
+        reply,
+        protocol_deadline,
+        completion_deadline,
+      )
+    ConnectionReusable(reply) -> {
+      process.send(
+        reply,
+        Ok(client_connection.connection_reusable(worker.connection)),
+      )
+      Ok(worker)
     }
     Capabilities(reply) -> {
       process.send(
@@ -1572,7 +2113,7 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
           client_connection.datagrams_available(worker.connection),
           client_connection.active_migration_available(worker.connection),
           worker.early_data_attempted,
-          option.is_some(worker.qlog_writer),
+          option.is_some(worker.qlog_sink),
         )),
       )
       Ok(worker)
@@ -1620,9 +2161,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       Ok(worker)
     }
     EarlyData(reply) -> {
-      // The generic core actor can finish accepting or rejecting 0-RTT while
-      // this HTTP actor is otherwise idle. Refresh its bounded semantic
-      // events before answering a synchronous status query.
+      // The generic core actor can finish accepting or rejecting 0-RTT while this HTTP actor is otherwise idle.
+      // Refresh its bounded semantic events before answering a synchronous status query.
       let worker = dispatch_connection_events(worker)
       let status = case client_connection.early_data_status(worker.connection) {
         qlog.NotAttempted -> NotAttempted
@@ -1687,16 +2227,8 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
     }
     Ticket(reply, deadline) -> handle_ticket(worker, reply, deadline)
     Migrate(reply) -> {
-      case worker.qlog_writer {
-        Some(writer) -> qlog.migration_started(writer, now())
-        None -> Nil
-      }
       case client_connection.migrate(worker.connection) {
         Error(error) -> {
-          case worker.qlog_writer {
-            Some(writer) -> qlog.migration_abandoned(writer, now())
-            None -> Nil
-          }
           process.send(reply, Error(map_connection_error(error)))
           Ok(worker)
         }
@@ -1761,21 +2293,20 @@ fn handle_command(worker: Worker, command: Command) -> Result(Worker, Nil) {
       Ok(worker)
     }
     TelemetryStats(reply) -> {
-      process.send(reply, qlog_stats(worker.qlog_writer))
+      process.send(
+        reply,
+        client_connection.telemetry_stats(worker.connection)
+          |> result.map_error(map_connection_error),
+      )
       Ok(worker)
     }
-  }
-}
-
-fn qlog_stats(writer: Option(qlog.Writer)) -> Result(#(Int, Int, Int), Error) {
-  case writer {
-    None -> Ok(#(0, 0, 0))
-    Some(writer) ->
-      case qlog.stats(writer) {
-        Ok(qlog.Stats(dropped, errors, queued)) ->
-          Ok(#(dropped, errors, queued))
-        Error(_) -> Error(QlogUnavailable)
+    RecordApplicationError(code) -> {
+      case worker.qlog_sink, qlog.application_code(code) {
+        Some(sink), Ok(code) -> qlog.emit_application_error(sink, now(), code)
+        _, _ -> Nil
       }
+      Ok(worker)
+    }
   }
 }
 
@@ -2250,7 +2781,7 @@ fn advance_send(
       case client_connection.send_data(worker.connection, identifier, chunk) {
         Ok(connection) -> {
           record_http3_frame_created(
-            worker.qlog_writer,
+            worker.qlog_sink,
             identifier,
             qlog.DataFrame,
             bit_array.byte_size(chunk),
@@ -2265,12 +2796,9 @@ fn advance_send(
               ))
             }
             _ -> {
-              // Continue while the public core accepts bounded data. The core
-              // is the authority for transport/flow-control pressure; pausing
-              // here after every application chunk can leave both HTTP actors
-              // waiting even though the core still has granted buffer space.
-              // Once the core reports pressure, the error branch below keeps
-              // this finite remainder for ACK/MAX_STREAM_DATA progress.
+              // Continue while the public core accepts bounded data.
+              // The core is the authority for transport/flow-control pressure; pausing here after every application chunk can leave both HTTP actors waiting even though the core still has granted buffer space.
+              // Once the core reports pressure, the error branch below keeps this finite remainder for ACK/MAX_STREAM_DATA progress.
               let pending = PendingSend(rest, reply, deadline)
               let worker = Worker(..worker, connection: connection)
               let stream = StreamState(..stream, pending_send: Some(pending))
@@ -2331,9 +2859,7 @@ fn retry_pending_send_entries(
 
 /// Split off one chunk, or return everything when a whole chunk is not there.
 ///
-/// The split is a pattern rather than a measured slice: a payload shorter than
-/// one chunk simply has no matching clause, so the short case is the fallback
-/// instead of a length comparison guarding two slices that must not fail.
+/// The split is a pattern rather than a measured slice: a payload shorter than one chunk simply has no matching clause, so the short case is the fallback instead of a length comparison guarding two slices that must not fail.
 fn take_send_chunk(bytes: BitArray) -> #(BitArray, BitArray) {
   case bytes {
     <<chunk:bytes-size(maximum_request_data_chunk_bytes), rest:bits>> -> #(
@@ -2362,7 +2888,10 @@ fn handle_cancel(
       Ok(worker)
     }
     Ok(stream) ->
-      case stream.cancelled, stream.response_finished {
+      case
+        stream.cancelled,
+        stream.request_finished && stream.response_finished
+      {
         True, _ -> {
           process.send(reply, Ok(AlreadyCancelled))
           Ok(worker)
@@ -2379,35 +2908,81 @@ fn handle_cancel(
               request_cancelled_code,
             )
           {
+            Error(client_connection.Http3OperationFailed(
+              _,
+              protocol.ResourceFailure(protocol.ResourceStreamFinished),
+            ))
+              if stream.response_finished
+            ->
+              // The peer has already finished our receive direction and the core confirms the send direction is terminal.
+              // Retire the application handle without pretending another RESET was sent.
+              retire_finished_cancelled_stream(
+                worker,
+                identifier,
+                stream,
+                reply,
+              )
             Error(error) -> {
               process.send(reply, Error(map_connection_error(error)))
               Ok(worker)
             }
             Ok(connection) -> {
-              notify_waiter(stream.waiter, Error(StreamCancelled))
-              notify_pending_send(stream.pending_send, Error(StreamCancelled))
-              notify_datagram_waiter(
-                stream.datagram_waiter,
-                Error(StreamCancelled),
-              )
-              process.send(reply, Ok(Cancelled))
-              Ok(put_stream(
+              finish_cancelled_stream(
                 Worker(..worker, connection: connection),
                 identifier,
-                StreamState(
-                  ..stream,
-                  events: queue_new(),
-                  buffered_data_bytes: 0,
-                  waiter: None,
-                  pending_send: None,
-                  datagram_waiter: None,
-                  cancelled: True,
-                ),
-              ))
+                stream,
+                reply,
+              )
             }
           }
       }
   }
+}
+
+fn retire_finished_cancelled_stream(
+  worker: Worker,
+  identifier: Int,
+  stream: StreamState,
+  reply: Subject(Result(Cancellation, Error)),
+) -> Result(Worker, Nil) {
+  case client_connection.retire_aborted_stream(worker.connection, identifier) {
+    Error(error) -> {
+      process.send(reply, Error(map_connection_error(error)))
+      Ok(worker)
+    }
+    Ok(connection) ->
+      finish_cancelled_stream(
+        Worker(..worker, connection: connection),
+        identifier,
+        stream,
+        reply,
+      )
+  }
+}
+
+fn finish_cancelled_stream(
+  worker: Worker,
+  identifier: Int,
+  stream: StreamState,
+  reply: Subject(Result(Cancellation, Error)),
+) -> Result(Worker, Nil) {
+  notify_waiter(stream.waiter, Error(StreamCancelled))
+  notify_pending_send(stream.pending_send, Error(StreamCancelled))
+  notify_datagram_waiter(stream.datagram_waiter, Error(StreamCancelled))
+  process.send(reply, Ok(Cancelled))
+  Ok(put_stream(
+    worker,
+    identifier,
+    StreamState(
+      ..stream,
+      events: queue_new(),
+      buffered_data_bytes: 0,
+      waiter: None,
+      pending_send: None,
+      datagram_waiter: None,
+      cancelled: True,
+    ),
+  ))
 }
 
 fn update_stream(
@@ -2453,6 +3028,8 @@ fn dispatch_events(
 
 fn dispatch_event(worker: Worker, event: client_connection.Event) -> Worker {
   case event {
+    client_connection.DataFrameParsed(identifier, bytes) ->
+      record_http3_frame_parsed(worker, identifier, qlog.DataFrame, bytes)
     client_connection.Http3Event(http3_state.InformationalResponse(
       identifier,
       validated,
@@ -2475,18 +3052,11 @@ fn dispatch_event(worker: Worker, event: client_connection.Event) -> Worker {
         Ok(headers) -> enqueue(worker, identifier, Trailers(headers))
       }
     }
-    client_connection.Http3Event(http3_state.Data(identifier, <<>>)) ->
-      // Zero-length DATA is legal framing and remains visible in qlog, but
-      // the public `Data` event promises a non-empty application chunk.
-      record_http3_frame_parsed(worker, identifier, qlog.DataFrame, 0)
-    client_connection.Http3Event(http3_state.Data(identifier, bytes)) ->
+    client_connection.Http3Event(http3_state.Data(_, <<>>)) ->
+      // Zero-length DATA is legal framing and remains visible in qlog, but the public `Data` event promises a non-empty application chunk.
       worker
-      |> record_http3_frame_parsed(
-        identifier,
-        qlog.DataFrame,
-        bit_array.byte_size(bytes),
-      )
-      |> enqueue_data(identifier, bytes)
+    client_connection.Http3Event(http3_state.Data(identifier, bytes)) ->
+      enqueue_data(worker, identifier, bytes)
     client_connection.Http3Event(http3_state.StreamFinished(identifier)) ->
       finish_response(worker, identifier)
     client_connection.StreamWasReset(identifier, code)
@@ -2494,12 +3064,28 @@ fn dispatch_event(worker: Worker, event: client_connection.Event) -> Worker {
     -> fail_stream(worker, identifier, RequestRejected)
     client_connection.StreamWasReset(identifier, code) ->
       fail_stream(worker, identifier, StreamReset(code))
+    client_connection.PushStreamWasReset(push_id, stream_id, code) -> {
+      let worker = fail_push(worker, push_id, StreamReset(code))
+      Worker(
+        ..worker,
+        connection: client_connection.retire_stream(
+          worker.connection,
+          stream_id,
+        ),
+      )
+    }
     client_connection.Http3Event(http3_state.HttpDatagram(identifier, payload)) ->
       enqueue_datagram(worker, identifier, payload)
     client_connection.Http3Event(http3_state.PushPromised(identifier, validated)) ->
       worker
       |> record_http3_frame_parsed(identifier, qlog.PushPromiseFrame, 0)
       |> register_push(identifier, validated)
+    client_connection.Http3Event(http3_state.PushPromiseRejected(identifier, _)) ->
+      // The protocol layer already sent CANCEL_PUSH.
+      // Keep only bounded frame metadata; no push handle, request fields, or response data is exposed.
+      worker
+      |> record_http3_frame_parsed(identifier, qlog.PushPromiseFrame, 0)
+      |> discard_rejected_push(identifier)
     client_connection.Http3Event(http3_state.PushInformationalResponse(
       identifier,
       _,
@@ -2530,9 +3116,9 @@ fn dispatch_event(worker: Worker, event: client_connection.Event) -> Worker {
       |> record_http3_frame_parsed(3, qlog.GoAwayFrame, 0)
       |> fail_stream_ids(rejected, RequestRejected)
     client_connection.Http3Event(http3_state.PeerSettings(_)) -> {
-      case worker.qlog_writer {
+      case worker.qlog_sink {
         Some(writer) ->
-          qlog.http3_parameters_set(writer, now(), qlog.RemoteInitiator)
+          qlog.emit_http3_parameters_set(writer, now(), qlog.RemoteInitiator)
         None -> Nil
       }
       record_http3_frame_parsed(worker, 3, qlog.SettingsFrame, 0)
@@ -2554,13 +3140,7 @@ fn dispatch_event(worker: Worker, event: client_connection.Event) -> Worker {
           worker.latest_address_token,
         ),
       )
-    client_connection.PathValidated -> {
-      case worker.qlog_writer {
-        Some(writer) -> qlog.path_updated(writer, now())
-        None -> Nil
-      }
-      worker
-    }
+    client_connection.PathValidated -> worker
     client_connection.ConnectionTerminated ->
       fail_all_work(worker, ConnectionClosed)
     _ -> worker
@@ -2768,6 +3348,34 @@ fn fail_push(worker: Worker, identifier: Int, error: Error) -> Worker {
   }
 }
 
+// A duplicate promise can become unusable after a same-ID push was already announced to the actor.
+// Drop every queued response event before installing a value-free terminal so none of that response can be consumed or cached.
+fn discard_rejected_push(worker: Worker, identifier: Int) -> Worker {
+  case dict.get(worker.pushes, identifier) {
+    Error(_) -> worker
+    Ok(push) -> {
+      notify_waiter(push.waiter, Error(StreamCancelled))
+      put_push(
+        Worker(
+          ..worker,
+          pending_pushes: queue_filter(worker.pending_pushes, fn(value) {
+            value != identifier
+          }),
+        ),
+        identifier,
+        PushState(
+          ..push,
+          events: queue_new(),
+          buffered_data_bytes: 0,
+          waiter: None,
+          cancelled: True,
+          failure: Some(StreamCancelled),
+        ),
+      )
+    }
+  }
+}
+
 fn enqueue_datagram(
   worker: Worker,
   identifier: Int,
@@ -2941,6 +3549,10 @@ fn enqueue_with_buffer(
   event: Event,
   buffered: Int,
 ) -> Worker {
+  // Network delivery can precede the next periodic waiter-expiry pass.
+  // Retire an expired reader before deciding whether this event is consumed.
+  let stream =
+    StreamState(..stream, waiter: unexpired_read_waiter(stream.waiter, now()))
   case stream.waiter, queue_is_empty(stream.events) {
     Some(Waiter(reply, _)), True -> {
       process.send(reply, Ok(event))
@@ -2980,6 +3592,19 @@ fn enqueue_with_buffer(
             ),
           )
       }
+  }
+}
+
+fn unexpired_read_waiter(
+  waiter: Option(Waiter),
+  current: Int,
+) -> Option(Waiter) {
+  case waiter {
+    Some(Waiter(reply, deadline)) if current >= deadline -> {
+      process.send(reply, Error(OperationTimeout))
+      None
+    }
+    _ -> waiter
   }
 }
 
@@ -3167,36 +3792,21 @@ fn expire_waiter_entries(
 
 fn terminate_with_error(worker: Worker, error: Error) -> Nil {
   let worker = fail_all_work(worker, error)
+  notify_close_replies(worker, Error(error))
   shutdown(worker, "connection failed")
 }
 
 fn shutdown(worker: Worker, reason: String) -> Nil {
   let worker = fail_all_work(worker, ConnectionClosed)
-  client_connection.close(worker.connection, 0x100, reason)
-  case worker.qlog_writer {
-    Some(writer) -> {
-      qlog.connection_closed(writer, now())
-      let _ = qlog.close(writer)
-      Nil
-    }
-    None -> Nil
-  }
+  client_connection.close(
+    worker.connection,
+    error_code.runtime_greased_no_error(now()),
+    reason,
+  )
 }
 
 fn now() -> Int {
   qlog.monotonic_milliseconds()
-}
-
-fn open_qlog(
-  directory: String,
-  telemetry_limit: Int,
-) -> Result(Option(qlog.Writer), qlog.Error) {
-  case directory {
-    "" -> Ok(None)
-    _ ->
-      qlog.open(directory, qlog.Client, now(), telemetry_limit)
-      |> result.map(Some)
-  }
 }
 
 fn new_stream_state(headers: List(Header)) -> StreamState {
@@ -3388,6 +3998,8 @@ fn incoming_push(
         worker.commands,
         process.self(),
         worker.timeout_milliseconds,
+        worker.drain_timeout_milliseconds,
+        worker.core_close_operation_allowance_milliseconds,
         worker.hostname,
         worker.port,
       ),
@@ -3521,6 +4133,13 @@ fn decode_regular_headers(
 fn decode_headers(
   fields: List(Header),
 ) -> Result(List(#(String, String)), Error) {
+  decode_headers_raw(fields)
+  |> result.map(application_headers.combine_cookie_fields)
+}
+
+fn decode_headers_raw(
+  fields: List(Header),
+) -> Result(List(#(String, String)), Error) {
   case fields {
     [] -> Ok([])
     [Header(name, value, _), ..rest] -> {
@@ -3532,7 +4151,7 @@ fn decode_headers(
         bit_array.to_string(value)
         |> result.replace_error(InvalidHeaderEncoding),
       )
-      use rest <- result.try(decode_headers(rest))
+      use rest <- result.try(decode_headers_raw(rest))
       Ok([#(name, value), ..rest])
     }
   }
@@ -3597,6 +4216,107 @@ fn call_with_timeout(
   }
 }
 
+fn call_until(
+  connection: Connection,
+  deadline_milliseconds: Int,
+  make_command: fn(Subject(Result(value, Error))) -> Command,
+) -> Result(value, Error) {
+  use _ <- result.try(remaining_close_call_milliseconds(deadline_milliseconds))
+  case process.is_alive(connection.worker) {
+    False -> Error(ConnectionClosed)
+    True -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(connection.worker)
+      process.send(connection.commands, make_command(reply))
+      let selector =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { CallReply(value) })
+        |> process.select_specific_monitor(monitor, fn(_) { WorkerExited })
+      let outcome =
+        await_close_call_until(selector, deadline_milliseconds, None, False)
+      process.demonitor_process(monitor)
+      outcome
+    }
+  }
+}
+
+/// A close succeeds only after its typed result and this HTTP/3 owner actor's DOWN are both observed.
+/// Core has already applied the same absolute boundary to its transport actor, qlog writer, cleanup ticket, and reservation.
+fn await_close_call_until(
+  selector: process.Selector(CallOutcome(value)),
+  deadline_milliseconds: Int,
+  reply: Option(Result(value, Error)),
+  worker_down: Bool,
+) -> Result(value, Error) {
+  case reply, worker_down {
+    Some(outcome), True ->
+      case remaining_close_call_milliseconds(deadline_milliseconds) {
+        Ok(_) -> outcome
+        Error(error) -> close_call_timeout_result(Some(outcome), error)
+      }
+    _, _ ->
+      case remaining_close_call_milliseconds(deadline_milliseconds) {
+        Error(error) -> close_call_timeout_result(reply, error)
+        Ok(remaining) ->
+          case process.selector_receive(selector, within: remaining) {
+            Ok(CallReply(outcome)) ->
+              continue_close_call_until(
+                selector,
+                deadline_milliseconds,
+                Some(outcome),
+                worker_down,
+              )
+            Ok(WorkerExited) ->
+              continue_close_call_until(
+                selector,
+                deadline_milliseconds,
+                reply,
+                True,
+              )
+            Error(Nil) -> close_call_timeout_result(reply, OperationTimeout)
+          }
+      }
+  }
+}
+
+fn continue_close_call_until(
+  selector: process.Selector(CallOutcome(value)),
+  deadline_milliseconds: Int,
+  reply: Option(Result(value, Error)),
+  worker_down: Bool,
+) -> Result(value, Error) {
+  case remaining_close_call_milliseconds(deadline_milliseconds) {
+    Ok(_) ->
+      await_close_call_until(
+        selector,
+        deadline_milliseconds,
+        reply,
+        worker_down,
+      )
+    Error(error) -> close_call_timeout_result(reply, error)
+  }
+}
+
+fn close_call_timeout_result(
+  observed: Option(Result(value, Error)),
+  timeout: Error,
+) -> Result(value, Error) {
+  case observed {
+    Some(Error(error)) -> Error(error)
+    Some(Ok(_)) | None -> Error(timeout)
+  }
+}
+
+fn remaining_close_call_milliseconds(
+  deadline_milliseconds: Int,
+) -> Result(Int, Error) {
+  let remaining = deadline_milliseconds - now()
+  case deadline_milliseconds >= 0 && remaining > 0 {
+    True -> Ok(remaining)
+    False -> Error(OperationTimeout)
+  }
+}
+
 fn map_connection_error(error: client_connection.Error) -> Error {
   case client_connection.operation_failure(error) {
     Some(client_connection.DatagramsNotNegotiated) -> DatagramsNotNegotiated
@@ -3620,7 +4340,13 @@ fn map_unclassified_connection_error(error: client_connection.Error) -> Error {
     client_connection.TrustStoreFailed -> TrustStoreFailed
     client_connection.TlsHandshakeFailed -> TlsHandshakeFailed
     client_connection.QuicTransportFailed(_) -> QuicFailure
+    client_connection.CoreFailure(core_failure.Socket(core_failure.WriteFile)) ->
+      QlogUnavailable
     client_connection.CoreFailure(failure) -> CoreFailure(failure)
+    client_connection.Http3OperationFailed(
+      _,
+      protocol.FrameParserFailure(error),
+    ) -> RuntimeFailure(protocol.frame_parser_runtime_failure(error))
     client_connection.Http3OperationFailed(
       _,
       protocol.Http3Failure(http3_state.InvalidMessageFraming),

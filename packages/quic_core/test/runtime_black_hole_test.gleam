@@ -11,11 +11,14 @@
 //// runtime states those flushes hold.
 
 import gleam/bit_array
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import quic_core/internal/connection_state
 import quic_core/internal/driver
 import quic_core/internal/ecn
+import quic_core/internal/local_connection_id
 import quic_core/internal/packet_space
+import quic_core/internal/runtime/client_transport
 import quic_core/internal/runtime/connection
 import quic_core/internal/runtime/server_transport
 import quic_core/internal/tls/anti_replay
@@ -30,6 +33,92 @@ import quic_core/version
 
 @external(erlang, "quic_core_test_ffi", "fixture")
 fn fixture(name: String) -> Result(BitArray, Nil)
+
+@external(erlang, "quic_core_test_ffi", "migration_without_spare_identifier")
+fn migration_without_spare_identifier(state: connection.State) -> Bool
+
+@external(erlang, "quic_core_test_ffi", "replenish_client_identifiers")
+fn replenish_client_identifiers(
+  state: connection.State,
+) -> Result(connection.State, client_transport.Error)
+
+@external(erlang, "quic_core_test_ffi", "rotate_server_peer_identifier")
+fn rotate_server_peer_identifier(
+  state: server_transport.State,
+) -> Result(server_transport.State, driver.Error)
+
+type RollbackObservation {
+  RollbackObservation(
+    rotated: Bool,
+    refused: Bool,
+    old_socket_closed: Bool,
+    probe_socket_closed: Bool,
+  )
+}
+
+@external(erlang, "quic_core_test_ffi", "migration_rollback_observation")
+fn migration_rollback_observation(
+  state: connection.State,
+  now: Int,
+) -> RollbackObservation
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn migration_failure_rotates_identifier_before_restoring_old_socket_test() -> Nil {
+  let pair = pair_with_server_identifiers(2)
+  let observed = migration_rollback_observation(pair.client, pair.now)
+  assert observed == RollbackObservation(True, False, False, True)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn migration_failure_without_replacement_closes_both_sockets_test() -> Nil {
+  let pair = pair_with_server_identifiers(1)
+  let observed = migration_rollback_observation(pair.client, pair.now)
+  assert observed == RollbackObservation(False, True, True, True)
+}
+
+fn pair_with_server_identifiers(spares: Int) -> Pair {
+  let pair = established_pair()
+  let pair =
+    int.range(1, spares + 1, pair, fn(pair, value) {
+      let assert Ok(server) =
+        server_transport.issue_local_connection_id(pair.server, <<value:64>>, <<
+          value:128,
+        >>)
+      Pair(..pair, server: server)
+    })
+  int.range(1, 8, pair, fn(pair, _) { exchange(pair) })
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_identifiers_replenish_after_authenticated_peer_retirement_test() -> Nil {
+  let pair = established_pair()
+  let assert Ok(client) = replenish_client_identifiers(pair.client)
+  assert connection.local_connection_id_snapshot(client)
+    == local_connection_id.Snapshot(4, 4, 0, 4096)
+  let pair =
+    int.range(1, 8, Pair(..pair, client: client), fn(pair, _) { exchange(pair) })
+  let assert Ok(server) = rotate_server_peer_identifier(pair.server)
+  let pair =
+    int.range(1, 8, Pair(..pair, server: server), fn(pair, _) { exchange(pair) })
+  assert connection.local_connection_id_snapshot(pair.client)
+    == local_connection_id.Snapshot(3, 4, 1, 4096)
+  let assert Ok(client) = replenish_client_identifiers(pair.client)
+  let assert Ok(client) = replenish_client_identifiers(client)
+  assert connection.local_connection_id_snapshot(client)
+    == local_connection_id.Snapshot(4, 5, 1, 4096)
+  let pair =
+    int.range(1, 8, Pair(..pair, client: client), fn(pair, _) { exchange(pair) })
+  let assert Ok(_rotated) = rotate_server_peer_identifier(pair.server)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn migration_without_spare_identifier_refuses_before_socket_adoption_test() -> Nil {
+  let pair = established_pair()
+  assert connection.active_migration_available(pair.client)
+  let refused = migration_without_spare_identifier(pair.client)
+  assert refused == True
+}
 
 const original_destination_connection_id = <<1, 2, 3, 4, 5, 6, 7, 8>>
 
@@ -421,6 +510,7 @@ fn client_tls_config() -> engine.ClientConfig {
     application_protocols: [<<"h3">>],
     transport_parameters: [
       transport_parameter.InitialSourceConnectionId(client_connection_id),
+      transport_parameter.ActiveConnectionIdLimit(4),
       transport_parameter.GreaseQuicBit,
       transport_parameter.VersionInformation(version.Version1, [
         version.Version1,
@@ -456,6 +546,7 @@ fn server_config() -> server_transport.Config {
     ticket_key: <<0:256>>,
     stateless_reset_key: <<1:256>>,
     allow_zero_rtt: False,
+    zero_rtt_application_context: <<>>,
     idle_timeout_milliseconds: 30_000,
     congestion_control: connection_state.NewReno,
     bidirectional_stream_limit: 100,

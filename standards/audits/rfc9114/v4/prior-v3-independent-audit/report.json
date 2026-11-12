@@ -1,0 +1,272 @@
+{
+  "schema": 1,
+  "report_kind": "independent_rfc9114_v3_application_audit",
+  "status": "Rejected",
+  "shareable": true,
+  "native_processes_started": 0,
+  "audit_python": {
+    "implementation": "cpython",
+    "version": "3.12.14",
+    "executable_sha256": "dd5f8d19f6755d6491ee7c4bef2fe35ddd521334cc3ca3ed8fc93ebcadf135d0",
+    "isolated": true,
+    "bytecode_disabled": true
+  },
+  "canonical_requirements_before_sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+  "canonical_requirements_after_sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+  "frozen_identities": {
+    "standards/audits/rfc9114/apply_review.py": "6ce19c30a5cb42bd786e06d9110532cadcf83976900dd4f37fc93b0826124c74",
+    "standards/audits/rfc9114/launcher.py": "49e90fcce126756bdee94f2b2180e326d26729440c19090743e99e46c9c01a97",
+    "standards/audits/rfc9114/evidence_gate.py": "9e41a4071b35f665198135f193b78b83b0f540688c79cf5fbc22c7fdf77c075d",
+    "standards/audits/rfc9114/artifact-manifest.json": "1553b35577aa89bc8d5a375447df46fc62dda98f6ede1041ca6cf72b56b2f189",
+    ".mise.toml": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35",
+    ".github/workflows/ci.yml": "de49d2c660c451bd564ba36c6f19b56cd9e91b892c2288cc72d6ca494596b7a6",
+    "standards/requirements.json": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533"
+  },
+  "observed_identities": {
+    "standards/audits/rfc9114/apply_review.py": "6ce19c30a5cb42bd786e06d9110532cadcf83976900dd4f37fc93b0826124c74",
+    "standards/audits/rfc9114/launcher.py": "49e90fcce126756bdee94f2b2180e326d26729440c19090743e99e46c9c01a97",
+    "standards/audits/rfc9114/evidence_gate.py": "9e41a4071b35f665198135f193b78b83b0f540688c79cf5fbc22c7fdf77c075d",
+    "standards/audits/rfc9114/artifact-manifest.json": "1553b35577aa89bc8d5a375447df46fc62dda98f6ede1041ca6cf72b56b2f189",
+    ".mise.toml": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35",
+    ".github/workflows/ci.yml": "de49d2c660c451bd564ba36c6f19b56cd9e91b892c2288cc72d6ca494596b7a6",
+    "standards/requirements.json": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533"
+  },
+  "rendered_output_sha256": "76bdca016340f90dc8a75157b5fc4b04951e151eae3ed1cd000000ba0cd7115a",
+  "controls_completed": 15,
+  "controls": [
+    {
+      "name": "rendered_output_identity_and_scope",
+      "observed": "accepted",
+      "rendered_sha256": "76bdca016340f90dc8a75157b5fc4b04951e151eae3ed1cd000000ba0cd7115a",
+      "expected_sha256": "76bdca016340f90dc8a75157b5fc4b04951e151eae3ed1cd000000ba0cd7115a",
+      "outside_rfc9114_preserved": true
+    },
+    {
+      "name": "reviewed_source_contract",
+      "observed": "accepted",
+      "source_files": 27,
+      "citation_references": 110,
+      "unique_citations": 35,
+      "source_aggregate_sha256": "2c3e88a2691bf50df602912577baaca88cc45ce6021d8566b73baef4747072f7"
+    },
+    {
+      "name": "committed_target_in_place_write",
+      "observed": "recovery_intended_destroyed",
+      "links_before": 2,
+      "intended_before_sha256": "3b9f1530860219243b654d520de495dd6a77dcdcab528c111a45b882388dd70c",
+      "intended_after_sha256": "715b5767728be7f79e3a078151dff6d85bd804e7d69bb37066ab2e17dc2666c2",
+      "target_after_sha256": "715b5767728be7f79e3a078151dff6d85bd804e7d69bb37066ab2e17dc2666c2"
+    },
+    {
+      "name": "crash_after_report_lock_before_running",
+      "observed": "stale_ready_survives",
+      "successor_category": "exclusive_lock_busy",
+      "surviving_status": "Ready",
+      "surviving_run_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "rejected_publication_failure_after_ready",
+      "observed": "ready_survives",
+      "publication_category": "generated_write_failed",
+      "surviving_status": "Ready"
+    },
+    {
+      "name": "mise_python_arbitrary_executable_hash",
+      "observed": "accepted",
+      "accepted_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "coordinated_artifact_substitution",
+      "observed": "accepted",
+      "substituted_artifacts": [
+        ".mise.toml",
+        "standards/audits/rfc9114/apply_review.py",
+        "standards/audits/rfc9114/evidence_gate.py",
+        "standards/audits/rfc9114/launcher.py"
+      ],
+      "observed_artifacts": 9,
+      "substituted_manifest_sha256": "1847b2c4ab8a1a84c83d3e3655a3e9155bf33c0b816035039d2ce79084d19afc"
+    },
+    {
+      "name": "inventory_and_dead_branch_mutants",
+      "observed": "accepted",
+      "substituted_name": "invented_inventory",
+      "reordered_prefix": [
+        "reviewed_counts",
+        "baseline_render"
+      ],
+      "dead_tool_contract": "accepted",
+      "dead_launcher_contract": "accepted"
+    },
+    {
+      "name": "gate_empty_self_test_monkeypatch",
+      "observed": "static_ready",
+      "exit_code": 0,
+      "controls_completed": 0,
+      "status": "StaticReady"
+    },
+    {
+      "name": "report_unknown_secret_fields",
+      "observed": "accepted",
+      "extra_top_level": true,
+      "extra_control_field": true,
+      "extra_non_object_control": true
+    },
+    {
+      "name": "rejected_report_identity_short_circuit",
+      "observed": "accepted",
+      "input_identity_present": false,
+      "completion_present": false,
+      "unknown_field_present": true
+    },
+    {
+      "name": "alias_inputs",
+      "observed": "accepted",
+      "hardlink_accepted": true,
+      "hardlink_count": 2,
+      "symlink_available": true,
+      "symlink_accepted": true,
+      "symlink_unavailable_category": null
+    },
+    {
+      "name": "ci_recovery_artifact_scope",
+      "observed": "journal_only",
+      "transaction_journal_included": true,
+      "missing_recovery_patterns": [
+        "original.bin",
+        "intended.bin",
+        "claimed.bin",
+        "published.bin",
+        "concurrent-target.bin"
+      ]
+    },
+    {
+      "name": "ci_identity_binding",
+      "observed": "missing",
+      "ci_in_artifact_manifest": false,
+      "ci_in_report_inputs": false
+    },
+    {
+      "name": "production_report_freshness_binding",
+      "observed": "missing",
+      "production_expected_run_id_supplied": false,
+      "consumer_call_site": "evidence_gate.py:892"
+    }
+  ],
+  "blockers": [
+    {
+      "id": "hardlinked_recovery_copy_is_mutable_through_target",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:1242",
+        "standards/audits/rfc9114/apply_review.py:1261"
+      ],
+      "control": "committed_target_in_place_write"
+    },
+    {
+      "id": "stale_report_lock_can_preserve_old_ready",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:1132",
+        "standards/audits/rfc9114/apply_review.py:1674"
+      ],
+      "control": "crash_after_report_lock_before_running"
+    },
+    {
+      "id": "failed_rejection_publication_can_preserve_ready",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:1732",
+        "standards/audits/rfc9114/apply_review.py:2671",
+        "standards/audits/rfc9114/apply_review.py:2696"
+      ],
+      "control": "rejected_publication_failure_after_ready"
+    },
+    {
+      "id": "mise_python_executable_hash_is_not_pinned",
+      "source": [
+        "standards/audits/rfc9114/launcher.py:62",
+        "standards/audits/rfc9114/apply_review.py:1361"
+      ],
+      "control": "mise_python_arbitrary_executable_hash"
+    },
+    {
+      "id": "coordinated_mutable_artifact_substitution_is_accepted",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:1438",
+        "standards/audits/rfc9114/evidence_gate.py:277"
+      ],
+      "control": "coordinated_artifact_substitution"
+    },
+    {
+      "id": "mandatory_inventory_and_ast_contracts_are_self_defined_and_dead_code_blind",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:154",
+        "standards/audits/rfc9114/evidence_gate.py:340"
+      ],
+      "control": "inventory_and_dead_branch_mutants"
+    },
+    {
+      "id": "gate_self_test_inventory_can_be_empty",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:677",
+        "standards/audits/rfc9114/evidence_gate.py:825",
+        "standards/audits/rfc9114/evidence_gate.py:880"
+      ],
+      "control": "gate_empty_self_test_monkeypatch"
+    },
+    {
+      "id": "report_schema_and_secret_fields_are_not_closed",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:387",
+        "standards/audits/rfc9114/evidence_gate.py:450"
+      ],
+      "control": "report_unknown_secret_fields"
+    },
+    {
+      "id": "rejected_reports_skip_identity_and_completion_validation",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:401"
+      ],
+      "control": "rejected_report_identity_short_circuit"
+    },
+    {
+      "id": "audit_inputs_accept_aliases",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:99",
+        "standards/audits/rfc9114/evidence_gate.py:47"
+      ],
+      "control": "alias_inputs"
+    },
+    {
+      "id": "ci_omits_recovery_bytes",
+      "source": [
+        ".github/workflows/ci.yml:87",
+        ".github/workflows/ci.yml:96"
+      ],
+      "control": "ci_recovery_artifact_scope"
+    },
+    {
+      "id": "ci_workflow_identity_is_not_bound",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:299",
+        "standards/audits/rfc9114/apply_review.py:2587"
+      ],
+      "control": "ci_identity_binding"
+    },
+    {
+      "id": "report_consumer_has_no_fresh_run_binding",
+      "source": [
+        "standards/audits/rfc9114/evidence_gate.py:380",
+        "standards/audits/rfc9114/evidence_gate.py:892"
+      ],
+      "control": "production_report_freshness_binding"
+    },
+    {
+      "id": "no_crash_recovery_or_stale_lock_reconciliation_exists",
+      "source": [
+        "standards/audits/rfc9114/apply_review.py:1123",
+        "standards/audits/rfc9114/apply_review.py:1163"
+      ],
+      "control": "crash_after_report_lock_before_running"
+    }
+  ],
+  "rerun_command": "python -I -B build/root-validation/rfc9114-v3-independent-audit/audit_static.py"
+}

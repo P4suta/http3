@@ -154,7 +154,8 @@ type ClientConnectedContext {
   )
 }
 
-/// Client TLS state. Private keys and traffic secrets have no accessors.
+/// Client TLS state.
+/// Private keys and traffic secrets have no accessors.
 pub opaque type Client {
   ClientAwaitingServerHello(
     config: ClientConfig,
@@ -165,7 +166,7 @@ pub opaque type Client {
   )
   ClientAwaitingServerHelloAfterRetry(
     config: ClientConfig,
-    key_pair: key_exchange.KeyPair,
+    key_pair: Option(key_exchange.KeyPair),
     selected_cipher_suite: hello.CipherSuite,
     retry_transcript: transcript.Transcript,
     encoded_client_hello: BitArray,
@@ -224,7 +225,8 @@ type ServerRetryContext {
   )
 }
 
-/// Server TLS state. Private keys and traffic secrets have no accessors.
+/// Server TLS state.
+/// Private keys and traffic secrets have no accessors.
 pub opaque type Server {
   ServerAwaitingClientHello(
     config: ServerConfig,
@@ -382,16 +384,26 @@ pub fn start_server_with_resumption(
   Ok(ServerAwaitingClientHello(config, <<>>, Some(policy)))
 }
 
-/// Feed ordered CRYPTO bytes to the client state machine.
+/// Feed ordered CRYPTO bytes using the resumption offer's prepared time.
+/// Live transports use `handle_client_at` so HRR refreshes ticket age at receipt.
 pub fn handle_client(
   client client: Client,
   level level: EncryptionLevel,
   bytes bytes: BitArray,
 ) -> Result(Step(Client), Error) {
+  handle_client_with_time(client, level, bytes, None)
+}
+
+fn handle_client_with_time(
+  client: Client,
+  level: EncryptionLevel,
+  bytes: BitArray,
+  now_milliseconds: Option(Int),
+) -> Result(Step(Client), Error) {
   case client, level {
     ClientAwaitingServerHello(..), Initial
     | ClientAwaitingServerHelloAfterRetry(..), Initial
-    -> handle_server_hello(client, bytes)
+    -> handle_server_hello(client, bytes, now_milliseconds)
     ClientAwaitingEncryptedExtensions(..), Handshake
     | ClientAwaitingCertificate(..), Handshake
     | ClientAwaitingCertificateVerify(..), Handshake
@@ -402,7 +414,7 @@ pub fn handle_client(
   }
 }
 
-/// Feed CRYPTO bytes with the monotonic receive time required for tickets.
+/// Feed CRYPTO bytes with the monotonic receive time required for ticket age refresh on HelloRetryRequest and for storing post-handshake tickets.
 pub fn handle_client_at(
   client client: Client,
   level level: EncryptionLevel,
@@ -412,8 +424,9 @@ pub fn handle_client_at(
   case client, level, now_milliseconds >= 0 {
     ClientConnected(context), OneRtt, True ->
       handle_client_post_handshake(context, bytes, now_milliseconds)
-    ClientConnected(_), OneRtt, False -> Error(InvalidConfiguration)
-    _, _, _ -> handle_client(client: client, level: level, bytes: bytes)
+    _, _, False -> Error(InvalidConfiguration)
+    _, _, True ->
+      handle_client_with_time(client, level, bytes, Some(now_milliseconds))
   }
 }
 
@@ -524,8 +537,7 @@ pub fn server_early_data_attempted(server: Server) -> Bool {
   }
 }
 
-/// Retain the exact ClientHello after an authenticated QUIC Retry and mark
-/// the eventual server transport parameters as belonging to a retried path.
+/// Retain the exact ClientHello after an authenticated QUIC Retry and mark the eventual server transport parameters as belonging to a retried path.
 pub fn accept_quic_retry(client: Client) -> Result(#(Client, BitArray), Error) {
   case client {
     ClientAwaitingServerHello(config, key_pair, encoded, offer, <<>>)
@@ -541,8 +553,7 @@ pub fn accept_quic_retry(client: Client) -> Result(#(Client, BitArray), Error) {
   }
 }
 
-/// Tentatively adopt a compatible version offered by the original
-/// ClientHello before authenticating the server packet under that version.
+/// Tentatively adopt a compatible version offered by the original ClientHello before authenticating the server packet under that version.
 /// The ClientHello and its Chosen Version remain unchanged.
 pub fn negotiate_client_version(
   client: Client,
@@ -612,8 +623,8 @@ pub fn server_phase(server: Server) -> Phase {
   }
 }
 
-/// Report whether a connected server has a DNS name suitable for binding a
-/// resumable session ticket. TLS clients deliberately omit SNI for IP literals.
+/// Report whether a connected server has a DNS name suitable for binding a resumable session ticket.
+/// TLS clients deliberately omit SNI for IP literals.
 pub fn server_can_issue_session_ticket(server: Server) -> Bool {
   case server {
     ServerConnected(context) -> context.server_name != ""
@@ -629,6 +640,25 @@ pub fn issue_new_session_ticket(
   lifetime_seconds lifetime_seconds: Int,
   permit_early_data permit_early_data: Bool,
 ) -> Result(Step(Server), Error) {
+  issue_new_session_ticket_with_application_context(
+    server: server,
+    ticket_key: ticket_key,
+    now_milliseconds: now_milliseconds,
+    lifetime_seconds: lifetime_seconds,
+    permit_early_data: permit_early_data,
+    application_context: <<>>,
+  )
+}
+
+/// Issue one ticket bound to bounded opaque application compatibility state.
+pub fn issue_new_session_ticket_with_application_context(
+  server server: Server,
+  ticket_key ticket_key: BitArray,
+  now_milliseconds now_milliseconds: Int,
+  lifetime_seconds lifetime_seconds: Int,
+  permit_early_data permit_early_data: Bool,
+  application_context application_context: BitArray,
+) -> Result(Step(Server), Error) {
   case server {
     ServerConnected(context) -> {
       use remembered_parameters <- result.try(
@@ -639,7 +669,7 @@ pub fn issue_new_session_ticket(
         |> map_transport_parameter_result,
       )
       use ticket <- result.try(
-        session_ticket.issue(
+        session_ticket.issue_with_application_context(
           ticket_key:,
           issued_at_milliseconds: now_milliseconds,
           lifetime_seconds:,
@@ -650,6 +680,7 @@ pub fn issue_new_session_ticket(
           alpn: context.selected_alpn,
           quic_version: version_identifier(context.config.version),
           remembered_transport_parameters: remembered_parameters,
+          remembered_application_context: application_context,
           permit_early_data:,
         )
         |> map_session_ticket_result,
@@ -676,9 +707,8 @@ pub fn server_replay_cache(server server: Server) -> Option(anti_replay.Cache) {
   }
 }
 
-/// Refresh the listener-owned replay policy before processing more of a
-/// possibly fragmented ClientHello. A listener serializes this transition so
-/// concurrent handshakes do not complete against stale replay snapshots.
+/// Refresh the listener-owned replay policy before processing more of a possibly fragmented ClientHello.
+/// A listener serializes this transition so concurrent handshakes do not complete against stale replay snapshots.
 pub fn refresh_server_resumption_policy(
   server server: Server,
   policy policy: resumption.ServerPolicy,
@@ -691,8 +721,8 @@ pub fn refresh_server_resumption_policy(
         ServerRetryContext(..context, resumption_policy: Some(policy)),
         pending,
       ))
-    // The ClientHello and its binder have already been consumed. Refreshing
-    // after this point has no semantic effect and is safely idempotent.
+    // The ClientHello and its binder have already been consumed.
+    // Refreshing after this point has no semantic effect and is safely idempotent.
     ServerAwaitingClientCertificate(..)
     | ServerAwaitingClientCertificateVerify(..)
     | ServerAwaitingClientFinished(..)
@@ -884,8 +914,7 @@ fn client_extensions(
     None -> base
   }
   case resumption_offer {
-    // Advertising the PSK-DHE mode on a fresh handshake permits a compatible
-    // server to issue a NewSessionTicket for a later connection.
+    // Advertising the PSK-DHE mode on a fresh handshake permits a compatible server to issue a NewSessionTicket for a later connection.
     None ->
       Ok([extension.Extension(extension.PskKeyExchangeModes, psk_modes), ..base])
     Some(offer) -> Ok(list.append(base, resumption.client_extensions(offer)))
@@ -1045,7 +1074,8 @@ fn accept_client_hello(
     <<>> -> {
       use Nil <- result.try(require_client_tls13(extensions))
       use server_name <- result.try(client_server_name(extensions))
-      let config = select_server_credential(config, server_name)
+      let #(config, server_name_used) =
+        select_server_credential(config, server_name)
       use selected_alpn <- result.try(select_client_alpn(
         extensions,
         config.application_protocols,
@@ -1077,6 +1107,7 @@ fn accept_client_hello(
           build_server_flight(
             config,
             server_name,
+            server_name_used,
             encoded_client_hello,
             cipher_suite,
             key_share,
@@ -1191,7 +1222,8 @@ fn accept_second_client_hello(
     <<>> -> {
       use Nil <- result.try(require_client_tls13(extensions))
       use server_name <- result.try(client_server_name(extensions))
-      let config = select_server_credential(context.config, server_name)
+      let #(config, server_name_used) =
+        select_server_credential(context.config, server_name)
       use selected_alpn <- result.try(select_client_alpn(
         extensions,
         config.application_protocols,
@@ -1229,6 +1261,7 @@ fn accept_second_client_hello(
           build_server_flight(
             config,
             server_name,
+            server_name_used,
             encoded_client_hello,
             context.selected_cipher_suite,
             client_key_share,
@@ -1273,9 +1306,9 @@ pub fn server_name_matches(pattern: String, server_name: String) -> Bool {
 fn select_server_credential(
   config: ServerConfig,
   server_name: String,
-) -> ServerConfig {
+) -> #(ServerConfig, Bool) {
   case server_name {
-    "" -> config
+    "" -> #(config, False)
     _ -> {
       let selected = case
         find_exact_credential(
@@ -1288,14 +1321,16 @@ fn select_server_credential(
           find_wildcard_credential(config.alternative_credentials, server_name)
       }
       case selected {
-        None -> config
-        Some(credential) ->
+        None -> #(config, False)
+        Some(credential) -> #(
           ServerConfig(
             ..config,
             certificate_chain: credential.certificate_chain,
             signing_key: credential.signing_key,
             signature_scheme: credential.signature_scheme,
-          )
+          ),
+          True,
+        )
       }
     }
   }
@@ -1526,6 +1561,7 @@ fn server_hello_psk_extension(
 fn build_server_flight(
   config: ServerConfig,
   server_name: String,
+  server_name_used: Bool,
   encoded_client_hello: BitArray,
   cipher_suite: hello.CipherSuite,
   client_key_share: extension_value.KeyShare,
@@ -1584,6 +1620,7 @@ fn build_server_flight(
     secrets,
     hello_transcript,
     resumption_selection,
+    server_name_used,
   ))
   use application_secrets <- result.try(derive_application_secrets(
     algorithm,
@@ -1667,13 +1704,19 @@ fn server_handshake_messages(
   secrets: key_schedule.HandshakeSecrets,
   initial_transcript: transcript.Transcript,
   selection: Option(resumption.Selected),
+  server_name_used: Bool,
 ) -> Result(#(BitArray, transcript.Transcript), Error) {
+  let acknowledge_server_name = case selection {
+    None -> server_name_used
+    Some(_) -> False
+  }
   use #(encrypted_extensions, after_extensions) <- result.try(
     encode_server_encrypted_extensions(
       config,
       selected_alpn,
       initial_transcript,
       selection_early_data_accepted(selection),
+      acknowledge_server_name,
     ),
   )
   use #(certificate_request, after_request) <- result.try(
@@ -1722,6 +1765,7 @@ fn encode_server_encrypted_extensions(
   selected_alpn: BitArray,
   current: transcript.Transcript,
   accept_early_data: Bool,
+  acknowledge_server_name: Bool,
 ) -> Result(#(BitArray, transcript.Transcript), Error) {
   use alpn <- result.try(
     extension_value.encode_alpn([selected_alpn])
@@ -1738,17 +1782,24 @@ fn encode_server_encrypted_extensions(
     True -> [extension.Extension(extension.EarlyData, <<>>)]
     False -> []
   }
+  let server_name = case acknowledge_server_name {
+    True -> [extension.Extension(extension.ServerName, <<>>)]
+    False -> []
+  }
   use body <- result.try(
     message_body.encode_encrypted_extensions(
       list.append(
-        [
-          extension.Extension(
-            extension.ApplicationLayerProtocolNegotiation,
-            alpn,
-          ),
-          extension.Extension(extension.QuicTransportParameters, parameters),
-        ],
-        early_data,
+        server_name,
+        list.append(
+          [
+            extension.Extension(
+              extension.ApplicationLayerProtocolNegotiation,
+              alpn,
+            ),
+            extension.Extension(extension.QuicTransportParameters, parameters),
+          ],
+          early_data,
+        ),
       ),
       message_body.default_limits(),
     )
@@ -1941,13 +1992,18 @@ fn server_early_key_actions(
 fn handle_server_hello(
   client: Client,
   bytes: BitArray,
+  now_milliseconds: Option(Int),
 ) -> Result(Step(Client), Error) {
   case client {
     ClientAwaitingServerHello(config, key_pair, client_hello, offer, pending) ->
-      decode_server_hello(config, key_pair, client_hello, offer, <<
-        pending:bits,
-        bytes:bits,
-      >>)
+      decode_server_hello(
+        config,
+        key_pair,
+        client_hello,
+        offer,
+        <<pending:bits, bytes:bits>>,
+        now_milliseconds,
+      )
     ClientAwaitingServerHelloAfterRetry(
       config,
       key_pair,
@@ -1976,6 +2032,7 @@ fn decode_server_hello(
   client_hello: BitArray,
   offer: Option(resumption.ClientOffer),
   bytes: BitArray,
+  now_milliseconds: Option(Int),
 ) -> Result(Step(Client), Error) {
   case handshake.decode_next(bytes, handshake.default_limits()) {
     Ok(handshake.NeedMore) ->
@@ -2006,6 +2063,7 @@ fn decode_server_hello(
             offer,
             bytes,
             server_hello,
+            now_milliseconds,
           )
         }
         _ -> Error(UnexpectedMessage)
@@ -2023,17 +2081,20 @@ fn accept_server_hello(
   offer: Option(resumption.ClientOffer),
   encoded_server_hello: BitArray,
   server_hello: hello.ServerHello,
+  now_milliseconds: Option(Int),
 ) -> Result(Step(Client), Error) {
   case server_hello {
     hello.HelloRetryRequest(session_id, cipher_suite, extensions) ->
       accept_hello_retry_request(
         config,
         key_pair,
+        offer,
         client_hello,
         encoded_server_hello,
         session_id,
         cipher_suite,
         extensions,
+        now_milliseconds,
       )
     hello.ServerHello(_, session_id, cipher_suite, extensions) ->
       case session_id, key_pair {
@@ -2056,35 +2117,39 @@ fn accept_server_hello(
 fn accept_hello_retry_request(
   config: ClientConfig,
   key_pair: Option(key_exchange.KeyPair),
+  offer: Option(resumption.ClientOffer),
   encoded_client_hello: BitArray,
   encoded_retry: BitArray,
   session_id: BitArray,
   cipher_suite: hello.CipherSuite,
   extensions: List(extension.Extension),
+  now_milliseconds: Option(Int),
 ) -> Result(Step(Client), Error) {
-  case key_pair {
-    Some(_) -> Error(InvalidHelloRetryRequest)
-    None ->
-      case session_id {
-        <<>> ->
-          build_second_client_hello(
-            config,
-            encoded_client_hello,
-            encoded_retry,
-            cipher_suite,
-            extensions,
-          )
-        _ -> Error(InvalidHelloRetryRequest)
-      }
+  case session_id {
+    <<>> ->
+      build_second_client_hello(
+        config,
+        key_pair,
+        encoded_client_hello,
+        encoded_retry,
+        cipher_suite,
+        extensions,
+        offer,
+        now_milliseconds,
+      )
+    _ -> Error(InvalidHelloRetryRequest)
   }
 }
 
 fn build_second_client_hello(
   config: ClientConfig,
+  key_pair: Option(key_exchange.KeyPair),
   encoded_client_hello: BitArray,
   encoded_retry: BitArray,
   cipher_suite: hello.CipherSuite,
   extensions: List(extension.Extension),
+  offer: Option(resumption.ClientOffer),
+  now_milliseconds: Option(Int),
 ) -> Result(Step(Client), Error) {
   use #(algorithm, selected_group) <- result.try(validate_hello_retry_request(
     encoded_client_hello,
@@ -2092,22 +2157,33 @@ fn build_second_client_hello(
     extensions,
   ))
   use original <- result.try(decode_client_hello_message(encoded_client_hello))
-  use group <- result.try(named_group_to_key_exchange(selected_group))
-  use retry_key_pair <- result.try(
-    generate_key_pair(group) |> map_key_exchange_result,
-  )
-  use share <- result.try(encode_client_key_share(Some(retry_key_pair)))
+  use #(retry_key_pair, share) <- result.try(retry_client_key_share(
+    selected_group,
+    key_pair,
+  ))
+  use retry_offer <- result.try(case offer {
+    Some(value) ->
+      case resumption.client_hash_algorithm(value) == algorithm {
+        True ->
+          resumption.client_reject_early_data(value, now_milliseconds)
+          |> map_resumption_result
+          |> result.map(Some)
+        False -> Ok(None)
+      }
+    None -> Ok(None)
+  })
   use retry_extensions <- result.try(second_client_extensions(
     original.extensions,
     extensions,
     share,
+    retry_offer,
   ))
   let second_hello = hello.ClientHello(..original, extensions: retry_extensions)
   use second_body <- result.try(
     hello.encode_client(second_hello, hello.default_limits())
     |> map_hello_result,
   )
-  use encoded_second <- result.try(encode_message(
+  use placeholder <- result.try(encode_message(
     handshake.ClientHello,
     second_body,
   ))
@@ -2122,40 +2198,75 @@ fn build_second_client_hello(
     transcript.replace_for_hello_retry_request(after_first, encoded_retry)
     |> map_transcript_result,
   )
-  Ok(
-    Step(
-      ClientAwaitingServerHelloAfterRetry(
-        config,
-        retry_key_pair,
-        cipher_suite,
-        retry_transcript,
-        encoded_second,
-        None,
-        <<>>,
-      ),
-      [Send(Initial, encoded_second)],
+  use encoded_second <- result.try(case retry_offer {
+    None -> Ok(placeholder)
+    Some(value) ->
+      resumption.seal_client_hello(
+        value,
+        placeholder,
+        transcript.bytes(retry_transcript),
+      )
+      |> map_resumption_result
+  })
+  let rejected_early = case offer {
+    Some(value) ->
+      case resumption.client_early_data_requested(value) {
+        True -> [DiscardKeys(ZeroRtt), EarlyDataRejected]
+        False -> []
+      }
+    None -> []
+  }
+  Ok(Step(
+    ClientAwaitingServerHelloAfterRetry(
+      config,
+      retry_key_pair,
+      cipher_suite,
+      retry_transcript,
+      encoded_second,
+      retry_offer,
+      <<>>,
     ),
-  )
+    list.append(rejected_early, [Send(Initial, encoded_second)]),
+  ))
 }
 
 fn validate_hello_retry_request(
   encoded_client_hello: BitArray,
   cipher_suite: hello.CipherSuite,
   extensions: List(extension.Extension),
-) -> Result(#(crypto.HashAlgorithm, extension_value.NamedGroup), Error) {
+) -> Result(#(crypto.HashAlgorithm, Option(extension_value.NamedGroup)), Error) {
   use original <- result.try(decode_client_hello_message(encoded_client_hello))
   use algorithm <- result.try(require_supported_cipher(cipher_suite))
   use Nil <- result.try(require_server_tls13(extensions))
-  use selected_data <- result.try(require_extension(
-    extensions,
-    extension.KeyShare,
-  ))
+  use Nil <- result.try(validate_retry_extension_set(extensions))
+  use cookie <- result.try(retry_cookie(extensions))
+  case list.contains(original.cipher_suites, cipher_suite) {
+    False -> Error(InvalidHelloRetryRequest)
+    True -> {
+      use selected <- result.try(
+        case optional_extension(extensions, extension.KeyShare) {
+          Some(data) ->
+            validate_retry_selected_group(original, data) |> result.map(Some)
+          None ->
+            case cookie {
+              Some(_) -> Ok(None)
+              None -> Error(InvalidHelloRetryRequest)
+            }
+        },
+      )
+      Ok(#(algorithm, selected))
+    }
+  }
+}
+
+fn validate_retry_selected_group(
+  original: hello.ClientHello,
+  selected_data: BitArray,
+) -> Result(extension_value.NamedGroup, Error) {
   use selected_group <- result.try(
     extension_value.decode_selected_group(selected_data)
     |> map_extension_value_result,
   )
-  use Nil <- result.try(validate_retry_extension_set(extensions))
-  use _ <- result.try(retry_cookie(extensions))
   use offered_share_data <- result.try(require_extension(
     original.extensions,
     extension.KeyShare,
@@ -2173,13 +2284,29 @@ fn validate_hello_retry_request(
     |> map_extension_value_result,
   )
   case
-    list.contains(original.cipher_suites, cipher_suite)
-    && supported_named_group(selected_group)
+    supported_named_group(selected_group)
     && list.contains(supported_groups, selected_group)
     && !has_group_share(offered_shares, selected_group)
   {
-    True -> Ok(#(algorithm, selected_group))
+    True -> Ok(selected_group)
     False -> Error(InvalidHelloRetryRequest)
+  }
+}
+
+fn retry_client_key_share(
+  selected: Option(extension_value.NamedGroup),
+  original: Option(key_exchange.KeyPair),
+) -> Result(#(Option(key_exchange.KeyPair), Option(BitArray)), Error) {
+  case selected {
+    None -> Ok(#(original, None))
+    Some(selected_group) -> {
+      use group <- result.try(named_group_to_key_exchange(selected_group))
+      use pair <- result.try(
+        generate_key_pair(group) |> map_key_exchange_result,
+      )
+      use share <- result.try(encode_client_key_share(Some(pair)))
+      Ok(#(Some(pair), Some(share)))
+    }
   }
 }
 
@@ -2218,24 +2345,35 @@ fn retry_cookie(
 fn second_client_extensions(
   original: List(extension.Extension),
   retry_extensions: List(extension.Extension),
-  key_share: BitArray,
+  key_share: Option(BitArray),
+  offer: Option(resumption.ClientOffer),
 ) -> Result(List(extension.Extension), Error) {
   use cookie <- result.try(retry_cookie(retry_extensions))
   let unchanged =
     list.filter(original, fn(value) {
       case value.kind {
-        extension.KeyShare | extension.Cookie | extension.EarlyData -> False
+        extension.KeyShare -> key_share == None
+        extension.Cookie | extension.EarlyData | extension.PreSharedKey -> False
         _ -> True
       }
     })
-  let additions = case cookie {
-    None -> [extension.Extension(extension.KeyShare, key_share)]
-    Some(data) -> [
-      extension.Extension(extension.Cookie, data),
-      extension.Extension(extension.KeyShare, key_share),
-    ]
+  let shares = case key_share {
+    None -> []
+    Some(data) -> [extension.Extension(extension.KeyShare, data)]
   }
-  Ok(list.append(unchanged, additions))
+  let additions = case cookie {
+    None -> shares
+    Some(data) -> [extension.Extension(extension.Cookie, data), ..shares]
+  }
+  let psk = case offer {
+    None -> []
+    Some(value) ->
+      list.filter(resumption.client_extensions(value), fn(value) {
+        value.kind == extension.PreSharedKey
+      })
+  }
+  // pre_shared_key must remain last so its binder covers every other field.
+  Ok(list.append(unchanged, list.append(additions, psk)))
 }
 
 fn decode_client_hello_message(
@@ -2261,7 +2399,7 @@ fn has_group_share(
 
 fn decode_server_hello_after_retry(
   config: ClientConfig,
-  key_pair: key_exchange.KeyPair,
+  key_pair: Option(key_exchange.KeyPair),
   selected_cipher_suite: hello.CipherSuite,
   retry_transcript: transcript.Transcript,
   client_hello: BitArray,
@@ -2313,7 +2451,7 @@ fn decode_server_hello_after_retry(
 
 fn accept_server_hello_after_retry(
   config: ClientConfig,
-  key_pair: key_exchange.KeyPair,
+  key_pair: Option(key_exchange.KeyPair),
   selected_cipher_suite: hello.CipherSuite,
   retry_transcript: transcript.Transcript,
   client_hello: BitArray,
@@ -2335,14 +2473,18 @@ fn accept_server_hello_after_retry(
             transcript.append(after_client, encoded_server_hello)
             |> map_transcript_result,
           )
-          establish_client_handshake_with_transcript(
-            config,
-            key_pair,
-            cipher_suite,
-            extensions,
-            current,
-            offer,
-          )
+          case key_pair {
+            None -> Error(UnsupportedKeyShare)
+            Some(pair) ->
+              establish_client_handshake_with_transcript(
+                config,
+                pair,
+                cipher_suite,
+                extensions,
+                current,
+                offer,
+              )
+          }
         }
       }
   }
@@ -2613,6 +2755,10 @@ fn client_accept_encrypted_extensions(
     )
     |> map_message_body_result,
   )
+  use Nil <- result.try(validate_server_name_acknowledgement(
+    context,
+    extensions,
+  ))
   use selected <- result.try(selected_server_alpn(
     extensions,
     context.config.application_protocols,
@@ -2677,6 +2823,23 @@ fn server_accepted_early_data(
   case optional_extension(extensions, extension.EarlyData) {
     None -> Ok(False)
     Some(<<>>) -> Ok(True)
+    Some(_) -> Error(InvalidConfiguration)
+  }
+}
+
+fn validate_server_name_acknowledgement(
+  context: ClientHandshakeContext,
+  extensions: List(extension.Extension),
+) -> Result(Nil, Error) {
+  case optional_extension(extensions, extension.ServerName) {
+    None -> Ok(Nil)
+    Some(<<>>) ->
+      case
+        context.resumed || authentication.is_ip_address(context.config.hostname)
+      {
+        True -> Error(InvalidConfiguration)
+        False -> Ok(Nil)
+      }
     Some(_) -> Error(InvalidConfiguration)
   }
 }
@@ -3370,8 +3533,8 @@ fn select_client_alpn(
   use offered <- result.try(
     extension_value.decode_alpn(encoded) |> map_extension_value_result,
   )
-  // RFC 7301 gives the server's preference order authority over the client's
-  // offered order. `supported` is the configured server preference list.
+  // RFC 7301 gives the server's preference order authority over the client's offered order.
+  // `supported` is the configured server preference list.
   find_first_shared(supported, offered)
 }
 
@@ -3588,11 +3751,8 @@ fn validate_server_version_information(
     find_version_information(parameters),
     find_version_information(config.transport_parameters)
   {
-    // RFC 9368 section 8: a client that reached QUIC v1 through an
-    // incompatible Version Negotiation exchange treats a missing server
-    // parameter exactly as authenticated {v1, [v1]}. This exception exists
-    // only for v1; every negotiated later version still has to send the
-    // authenticated parameter.
+    // RFC 9368 section 8: a client that reached QUIC v1 through an incompatible Version Negotiation exchange treats a missing server parameter exactly as authenticated {v1, [v1]}.
+    // This exception exists only for v1; every negotiated later version still has to send the authenticated parameter.
     None, _ if required && config.version == version.Version1 -> Ok(Nil)
     None, _ if required -> Error(VersionNegotiationFailure)
     None, _ -> Ok(Nil)

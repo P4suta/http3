@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "chromium": {
+    "version": "153.0.8010.36",
+    "revision": "1681091",
+    "platform": "linux64",
+    "browser": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/linux64/chrome-linux64.zip",
+      "sha256": "167a098c4fdec156b58a9f678c90a84f9072d789f9c6e7b35496a6987b8b7ef8",
+      "executable": "chrome-linux64/chrome",
+      "archive_bytes": 195711476,
+      "executable_bytes": 293100864,
+      "executable_sha256": "79a4ebf6da53e4ceab11844257aabc5166f17b595dc694d6382cbee8ff50565f",
+      "resource_files": 303,
+      "resource_sha256": "955a18fd9c5916f96569be0cb12a2f692d4dd86746fea0ad7c648670ec3e633d"
+    },
+    "driver": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/linux64/chromedriver-linux64.zip",
+      "sha256": "c05f3bfb501b37b12b7fa2a54b8b30b51d089a64389898362aeb2785f12ac83f",
+      "executable": "chromedriver-linux64/chromedriver",
+      "archive_bytes": 11813432,
+      "executable_bytes": 22936152,
+      "executable_sha256": "cdb68fb7c5de1e8db562cc77ec767c67802cc45f7aaf5fff1b2f37590ab41a60",
+      "resource_files": 3,
+      "resource_sha256": "18c90e2d004e487b2b79d80b4743b0fc947e896e755441a9edd59cd582898f15"
+    }
+  }
+}

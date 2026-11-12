@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 the http contributors
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name = "http"
+summary = "Unpublished Gleam HTTP and QUIC packages for Erlang/OTP, under active protocol and release qualification"
+install = """
+git clone https://github.com/P4suta/http3.git
+cd http3
+mise trust
+mise install
+mise x -- mix local.hex 2.5.1 --force
+mise x -- mix archive.install hex mix_gleam 0.6.2 --force
+"""
+usage_language = "sh"
+usage = "mise run check"
+documentation_index = true
+copyright = "2026 the http contributors"
+license = "MIT OR Apache-2.0"
+
+[[consent]]
+contributor = "Yasunobu"
+evidence = "https://github.com/P4suta/http3/commit/a38f6ef05eca4451857d7cd597208c2848e98b02"

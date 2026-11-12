@@ -18,46 +18,72 @@ repository_root="$({
 readonly repository_root
 cd -- "$repository_root"
 
-failure_directory="$repository_root/build/interop-failure"
-readonly failure_directory
+# Store only typed scenario results in the root's shared evidence directory.
+# Peer qlogs and stdout are private temporary inputs, never exported.
+interop_evidence() {
+	(
+		cd -- "$repository_root/../.."
+		escript scripts/interop_audit.escript "$@"
+	)
+}
 
-clean_failure_directory() {
-	case "$failure_directory" in
-	"$repository_root/build/interop-failure") ;;
-	*)
-		echo "refusing to clean unexpected failure directory: $failure_directory" >&2
+declare -A interop_run_ids=()
+
+# Completion evidence is emitted only after the actual independent process exits and its runtime/dependency identity is checked again.
+interop_peer() {
+	local peer=$1
+	local role=$2
+	local scenario=$3
+	local run_id="${interop_run_ids[$peer]:-}"
+	shift 3
+	if [[ ! "$run_id" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "interop run id is unavailable" >&2
 		return 1
-		;;
-	esac
-	if [[ -d "$failure_directory" ]]; then
-		find "$failure_directory" -depth -delete
+	fi
+	# Every call runs inside start_child or the owned run_logged subshell.
+	# Replace that shell so its PID is the actual bounded peer supervisor.
+	exec python3 "$repository_root/../../scripts/interop_peer.py" \
+		--root "$repository_root/../.." --peer "$peer" --run-id "$run_id" --role "$role" \
+		--scenario "$scenario" --timeout 60 -- "$@"
+}
+
+require_run_id() {
+	if [[ ! "$1" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "interop run id is unavailable" >&2
+		return 1
 	fi
 }
+
+case "$mode" in
+all)
+	interop_evidence --prepare aioquic-h3
+	interop_evidence --prepare quic-go-h3
+	;;
+aioquic) interop_evidence --prepare aioquic-h3 ;;
+quicgo) interop_evidence --prepare quic-go-h3 ;;
+esac
 
 preserve_failure() {
-	local source
-	local relative
-	local destination
-
-	clean_failure_directory || return 1
-	mkdir -p "$failure_directory"
-	while IFS= read -r -d '' source; do
-		relative=${source#"$work_directory"/}
-		destination="$failure_directory/$relative"
-		mkdir -p "$(dirname -- "$destination")"
-		cp -- "$source" "$destination"
-	done < <(find "$work_directory" -type f \
-		\( -name '*.log' -o -name '*.qlog' -o -name '*.sqlog' \) \
-		-print0)
-	if [[ -f build/dev/fresh-build.json ]]; then
-		cp -- build/dev/fresh-build.json "$failure_directory/fresh-build.json"
-	fi
-	printf 'mode=%s\ncrash_dump=discarded-secret-bearing-runtime-state\n' "$mode" \
-		>"$failure_directory/summary.txt"
-	echo "preserved bounded interop diagnostics: $failure_directory" >&2
+	local status=$1 peer
+	local -a peers=()
+	case "$mode" in
+	all) peers=(aioquic-h3 quic-go-h3) ;;
+	aioquic) peers=(aioquic-h3) ;;
+	quicgo) peers=(quic-go-h3) ;;
+	*) return 1 ;;
+	esac
+	for peer in "${peers[@]}"; do
+		local run_id="${interop_run_ids[$peer]:-}"
+		if [[ -z "$run_id" ]]; then
+			continue
+		fi
+		if ! (cd -- "$repository_root/../.." && timeout --signal=TERM --kill-after=5s 60s \
+			escript scripts/interop_audit.escript --driver-failure "$peer" "$run_id" cleanup "$status") >/dev/null 2>&1; then
+			echo "interop driver failure record unavailable" >&2
+		fi
+	done
 }
 
-clean_failure_directory
 if [[ -f "$repository_root/erl_crash.dump" ]]; then
 	find "$repository_root/erl_crash.dump" -delete
 fi
@@ -68,9 +94,8 @@ work_directory="$(mktemp -d "${temporary_root%/}/http3-interop.XXXXXX")"
 readonly work_directory
 declare -a child_processes=()
 
-# Give instrumented peers a bounded window to close connections and flush
-# qlog before escalating to KILL. Failure cleanup is part of the evidence
-# contract: the diagnostic endpoint must not be the first process destroyed.
+# Give instrumented peers a bounded window to close connections and flush qlog before escalating to KILL.
+# Failure cleanup is part of the evidence contract: the diagnostic endpoint must not be the first process destroyed.
 terminate_children() {
 	local child_process
 	local attempt
@@ -110,7 +135,7 @@ cleanup() {
 		wait "$child_process" 2>/dev/null
 	done
 	if ((exit_status != 0)); then
-		preserve_failure || exit_status=1
+		preserve_failure "$exit_status" || exit_status=1
 	fi
 	if [[ -f "$repository_root/erl_crash.dump" ]]; then
 		find "$repository_root/erl_crash.dump" -delete
@@ -120,13 +145,15 @@ cleanup() {
 		find "$work_directory" -depth -delete
 		;;
 	*)
-		echo "refusing to clean unexpected path: $work_directory" >&2
+		echo "refusing to clean unexpected work directory" >&2
 		exit_status=1
 		;;
 	esac
 	exit "$exit_status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 start_child() {
 	local log_file=$1
@@ -137,38 +164,15 @@ start_child() {
 }
 
 wait_for_field() {
-	local log_file=$1
-	local child_process=$2
-	local field=$3
-	local line
-	local attempt
-
-	for ((attempt = 0; attempt < 300; attempt += 1)); do
-		if line="$(grep -m 1 "^${field}=" "$log_file")"; then
-			REPLY=${line#*=}
-			return 0
-		fi
-		if ! kill -0 "$child_process" 2>/dev/null; then
-			wait "$child_process" 2>/dev/null || true
-			echo "peer stopped before publishing ${field}:" >&2
-			sed -n '1,240p' "$log_file" >&2
-			return 1
-		fi
-		sleep 0.05
-	done
-
-	echo "timed out waiting for ${field}:" >&2
-	sed -n '1,240p' "$log_file" >&2
-	return 1
+	local log_file=$1 child_process=$2 field=$3
+	REPLY="$(python3 "$repository_root/../../scripts/interop_notice.py" wait "$log_file" "$child_process" 60 "$field")"
 }
 
 wait_for_child() {
 	local child_process=$1
-	local log_file=$2
 
 	if ! wait "$child_process"; then
-		echo "peer failed:" >&2
-		sed -n '1,240p' "$log_file" >&2
+		echo "peer failed" >&2
 		return 1
 	fi
 }
@@ -178,8 +182,7 @@ assert_log_contains() {
 	local expected=$2
 
 	if ! grep -F -q -- "$expected" "$log_file"; then
-		echo "missing peer observation '$expected':" >&2
-		sed -n '1,240p' "$log_file" >&2
+		echo "required peer observation missing" >&2
 		return 1
 	fi
 }
@@ -205,10 +208,10 @@ run_bounded() {
 run_logged() {
 	local log_file=$1
 	shift
-	"$@" 2>&1 | tee "$log_file"
+	("$@") >"$log_file" 2>&1
 }
 
-for required_command in erlc mise realpath timeout; do
+for required_command in erl erlc python3 realpath timeout; do
 	if ! command -v "$required_command" >/dev/null; then
 		echo "required command is unavailable: $required_command" >&2
 		exit 1
@@ -227,7 +230,7 @@ erlc -o "$work_directory" test/interop/http3_phase4_interop.erl
 erlc -o "$work_directory" test/interop/http3_quicgo_interop.erl
 
 erlang_command=(
-	mise exec -- erl -noshell
+	erl -noshell
 	-pa build/dev/erlang/*/ebin "$work_directory"
 )
 
@@ -241,8 +244,8 @@ run_quicgo_native_client() {
 	local port
 
 	mkdir "$peer_qlog" "$native_qlog"
-	start_child "$peer_log" env QLOGDIR="$peer_qlog" \
-		"$work_directory/quicgo" server \
+	QLOGDIR="$peer_qlog" start_child "$peer_log" \
+		interop_peer quic-go-h3 server "quic-${version}" "$repository_root/../../build/interop/bin/quic-go" server \
 		test/fixtures/server.pem test/fixtures/server-key.pem "$version"
 	server_process=$STARTED_CHILD
 	wait_for_field "$peer_log" "$server_process" PORT
@@ -275,9 +278,9 @@ run_quicgo_native_server() {
 	wait_for_field "$peer_log" "$server_process" PORT
 	port=$REPLY
 
-	run_logged "$work_directory/quicgo-client-${version}.log" \
-		run_bounded env QLOGDIR="$peer_qlog" \
-		"$work_directory/quicgo" client test/fixtures/ca.pem "$port" "$version"
+	QLOGDIR="$peer_qlog" run_logged "$work_directory/quicgo-client-${version}.log" \
+		interop_peer quic-go-h3 client "quic-${version}" \
+		"$repository_root/../../build/interop/bin/quic-go" client test/fixtures/ca.pem "$port" "$version"
 	wait_for_child "$server_process" "$peer_log"
 	assert_log_contains "$peer_log" \
 		"native server to quic-go client interop ok"
@@ -291,12 +294,22 @@ run_quicgo() {
 		return 1
 	fi
 
-	go -C test/interop/quicgo build \
-		-trimpath -o "$work_directory/quicgo" .
+	python3 "$repository_root/../../scripts/interop_go_build.py" \
+		--root "$repository_root/../.." --peer quic-go-h3
+	local observed_peer
+	observed_peer="$(go version -m "$repository_root/../../build/interop/bin/quic-go" | awk '$1 == "dep" && $2 == "github.com/quic-go/quic-go" { print $2 "@" $3 }')"
+	interop_run_ids["quic-go-h3"]="$(interop_evidence --begin quic-go-h3 "$observed_peer")"
+	require_run_id "${interop_run_ids["quic-go-h3"]}"
 	run_quicgo_native_client v1 quic_v1
+	interop_evidence --record quic-go-h3 "${interop_run_ids["quic-go-h3"]}" server quic-v1
 	run_quicgo_native_server v1
+	interop_evidence --record quic-go-h3 "${interop_run_ids["quic-go-h3"]}" client quic-v1
 	run_quicgo_native_client v2 quic_v2
+	interop_evidence --record quic-go-h3 "${interop_run_ids["quic-go-h3"]}" server quic-v2
 	run_quicgo_native_server v2
+	interop_evidence --record quic-go-h3 "${interop_run_ids["quic-go-h3"]}" client quic-v2
+	interop_evidence --finish quic-go-h3 "${interop_run_ids["quic-go-h3"]}"
+	unset 'interop_run_ids[quic-go-h3]'
 	echo "quic-go bidirectional QUIC v1/v2 interop passed"
 }
 
@@ -310,12 +323,10 @@ run_aioquic_native_client() {
 	local resumption_port
 
 	mkdir "$peer_qlog" "$native_qlog"
-	start_child "$peer_log" env \
-		HTTP3_INTEROP_QLOG="$peer_qlog" \
-		HTTP3_INTEROP_IDLE_TIMEOUT=60 \
-		HTTP3_INTEROP_EXIT_ON_COMPLETE=1 \
-		PYTHONDONTWRITEBYTECODE=1 \
-		"$python" test/interop/aioquic_phase4_server.py
+	HTTP3_INTEROP_QLOG="$peer_qlog" HTTP3_INTEROP_IDLE_TIMEOUT=60 \
+		HTTP3_INTEROP_EXIT_ON_COMPLETE=1 PYTHONDONTWRITEBYTECODE=1 \
+		start_child "$peer_log" interop_peer aioquic-h3 server advanced-h3 \
+		"$python" -I -B test/interop/aioquic_phase4_server.py
 	server_process=$STARTED_CHILD
 	wait_for_field "$peer_log" "$server_process" PORT
 	port=$REPLY
@@ -326,8 +337,8 @@ run_aioquic_native_client() {
 		run_bounded "${erlang_command[@]}" \
 		-eval '[PortText, ResumptionPortText, QlogText] = init:get_plain_arguments(), ok = http3_phase4_interop:run(list_to_integer(PortText), list_to_integer(ResumptionPortText), list_to_binary(QlogText)), halt(0).' \
 		-extra "$port" "$resumption_port" "$native_qlog"; then
-		echo "native aioquic client failed; peer log:" >&2
-		sed -n '1,240p' "$peer_log" >&2
+		echo "native aioquic client failed" >&2
+
 		return 1
 	fi
 	wait_for_child "$server_process" "$peer_log"
@@ -362,11 +373,10 @@ run_aioquic_native_server() {
 	wait_for_field "$peer_log" "$server_process" PORT
 	port=$REPLY
 
-	run_logged "$work_directory/aioquic-client.log" \
-		run_bounded env \
-		HTTP3_INTEROP_QLOG="$peer_qlog" \
-		PYTHONDONTWRITEBYTECODE=1 \
-		"$python" test/interop/aioquic_phase4_client.py "$port"
+	HTTP3_INTEROP_QLOG="$peer_qlog" PYTHONDONTWRITEBYTECODE=1 \
+		run_logged "$work_directory/aioquic-client.log" \
+		interop_peer aioquic-h3 client advanced-h3 \
+		"$python" -I -B test/interop/aioquic_phase4_client.py "$port"
 	wait_for_child "$server_process" "$peer_log"
 	assert_log_contains "$peer_log" \
 		"native server to aioquic client interop ok"
@@ -377,8 +387,7 @@ run_aioquic_native_server() {
 run_aioquic() {
 	local python="${HTTP3_AIOQUIC_PYTHON:-}"
 
-	# `uv venv` lays the interpreter out per platform: bin/python everywhere
-	# except Windows, which uses Scripts/python.exe.
+	# `uv venv` lays the interpreter out per platform: bin/python everywhere except Windows, which uses Scripts/python.exe.
 	for candidate in build/interop-venv/bin/python \
 		build/interop-venv/Scripts/python.exe; do
 		if [[ -z "$python" && -x "$candidate" ]]; then
@@ -394,10 +403,18 @@ run_aioquic() {
 		return 1
 	fi
 	env PYTHONDONTWRITEBYTECODE=1 "$python" -c \
-		'import importlib.metadata; assert importlib.metadata.version("aioquic") == "1.3.0"'
+		'import importlib.metadata; assert importlib.metadata.version("aioquic") == "1.7.0"'
+	local observed_peer
+	observed_peer="$(env PYTHONDONTWRITEBYTECODE=1 "$python" -c 'import importlib.metadata; print("aioquic==" + importlib.metadata.version("aioquic"))')"
+	interop_run_ids["aioquic-h3"]="$(interop_evidence --begin aioquic-h3 "$observed_peer")"
+	require_run_id "${interop_run_ids["aioquic-h3"]}"
 
 	run_aioquic_native_client "$python"
+	interop_evidence --record aioquic-h3 "${interop_run_ids["aioquic-h3"]}" server advanced-h3
 	run_aioquic_native_server "$python"
+	interop_evidence --record aioquic-h3 "${interop_run_ids["aioquic-h3"]}" client advanced-h3
+	interop_evidence --finish aioquic-h3 "${interop_run_ids["aioquic-h3"]}"
+	unset 'interop_run_ids[aioquic-h3]'
 	echo "aioquic bidirectional advanced interop passed"
 }
 

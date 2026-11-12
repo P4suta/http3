@@ -9,8 +9,8 @@ production dependency. The hermetic unit and loopback suites remain in
 
 | Peer | Native client evidence | Native server evidence |
 | --- | --- | --- |
-| aioquic 1.3.0 | v1 initial attempt to a v2-only peer, RFC 9368 compatible negotiation, certificate and hostname verification, HTTP Datagram, active migration, session ticket, actual 0-RTT request, and qlog | Bounded POST request and response with certificate and hostname verification and qlog |
-| quic-go 0.61.0 | Streaming POST request and response over explicitly selected QUIC v1 and v2, with qlog | Bounded POST request and response from explicitly selected QUIC v1 and v2 clients, with qlog |
+| aioquic 1.7.0 | v1 initial attempt to a v2-only peer, RFC 9368 compatible negotiation, certificate and hostname verification, HTTP Datagram, active migration, session ticket, actual 0-RTT request, and qlog | Bounded POST request and response with certificate and hostname verification and qlog |
+| quic-go 0.64.1 | Streaming POST request and response over explicitly selected QUIC v1 and v2, with qlog | Bounded POST request and response from explicitly selected QUIC v1 and v2 clients, with qlog |
 
 The aioquic peer records explicit observations for QUIC v2, the HTTP Datagram,
 the post-migration request, and the request received before handshake
@@ -47,9 +47,19 @@ mise run interop-campaign
 Override the bounded repetition count (1 through 100) with
 `HTTP3_INTEROP_REPETITIONS`. The report is written to
 `build/interop-campaign/aioquic.txt`. A failed trial stops immediately and
-copies the partial campaign report beside the peer/native logs and qlogs in
-`build/interop-failure`; a successful trial never hides a prior failure in the
-same campaign.
+copies only the scalar campaign report to `build/interop-failure/campaign.txt`.
+Failed drivers invalidate earlier successful results and retain a typed,
+source-bound record under the repository root's `build/interop/failures/`.
+Cleanup independently validates every retained record and publishes its
+bounded, current-source summary under `build/interop/failure-audits/`; unknown
+fields, stale attempts, links, hard links, and oversized inputs are rejected.
+Native logs and qlogs stay in the owned temporary directory until cleanup and
+are never copied into failure artifacts. A successful trial never hides a
+prior failure in the same campaign.
+
+CI passes the completed peer step's exact outcome to `interop_audit.escript --verify-published-failures-for PEER OUTCOME`.
+`success` requires no failure receipt; `failure` requires the named peer's current audited receipt.
+Cancelled, skipped, missing, or mixed evidence fails the evidence gate.
 
 The runner requires Bash and GNU `timeout`; the dedicated CI gate runs on
 Ubuntu. Every peer operation has a fixed deadline. A trap terminates remaining
@@ -57,15 +67,21 @@ children and deletes its uniquely named temporary directory on success,
 failure, or interruption. It never writes qlogs or Python bytecode into the
 working tree.
 
+The shared notification reader accepts only complete, canonical readiness lines from a regular file, with a 1 MiB input limit and an absolute deadline.
+It watches the peer's actual lifetime while waiting.
+Native stop markers and JSON readiness files are closed before atomic publication; existing records are never replaced.
+`mise run interop-runner-audit` at the repository root includes actual reader checkpoints, deadline and special-file controls, and private-output regression tests for these boundaries.
+
 Set `HTTP3_AIOQUIC_PYTHON` to use an already prepared Python interpreter. When
 it is unset, the runner first looks for `build/interop-venv/bin/python` and
 then falls back to `python3`.
 
 ## Updating a peer
 
-The direct aioquic intent is pinned in `requirements.txt`; every transitive
-version and distribution hash is retained in `requirements.lock`. Regenerate
-the lock deliberately with:
+The direct Python dependencies are pinned in `requirements.in`.
+The generated `requirements.txt` holds every transitive version and distribution hash.
+Renovate maintains this lock through its pip-compile manager.
+Regenerate it with:
 
 ```sh
 mise run interop-lock

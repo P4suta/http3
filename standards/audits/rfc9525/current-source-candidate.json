@@ -1,0 +1,264 @@
+{
+  "schema": 1,
+  "standard": "RFC9525",
+  "generated_on": "2026-09-13",
+  "classification": "Candidate",
+  "evidence_level": "StaticOnly",
+  "release_eligible": false,
+  "source_identity": {
+    "repository_head": "c24f8b1a256eb50e65998b5e782b2a1f04ec0c30",
+    "branch": "feat/pr11-completion",
+    "working_tree": "dirty",
+    "files": [
+      {
+        "path": "standards/requirements.json",
+        "bytes": 3818761,
+        "sha256": "a7df76a6dd253ad511746d82ae4e580870bcec31011541564ecaf04ad20d7997"
+      },
+      {
+        "path": "docs/CERTIFICATE_IDENTITY.md",
+        "bytes": 4836,
+        "sha256": "d8515e7d73d83a49f0dcd53baee6f4a6cc7b6f417cad5c6496e30423d448c518"
+      },
+      {
+        "path": "README.md",
+        "bytes": 5168,
+        "sha256": "1dcd9cf9e583ff1f666901d0143f7f274be721f3b5528ab24965e6da0d6b1240"
+      },
+      {
+        "path": "packages/http3/README.md",
+        "bytes": 3020,
+        "sha256": "87fdfe913375dea7a9230564a423c5258d7c6323c8dd8014928300604d3bd8a0"
+      },
+      {
+        "path": "packages/quic_core/README.md",
+        "bytes": 9468,
+        "sha256": "fa9259ad0d96fc54bea2b4672a24cf269805972b9d3db8a6ca1d04fdbb80a93a"
+      },
+      {
+        "path": "gleam.toml",
+        "bytes": 17875,
+        "sha256": "6d72eddf786f1594785a967cbd8d6f81f8ef1ceea2fbd413723bd5452ad86551"
+      },
+      {
+        "path": "test/certificate_identity_profile_test.gleam",
+        "bytes": 321,
+        "sha256": "abf6aa21a7e04cb5b3551e650f902c0d5c625b404ff27af1430847741858f462"
+      },
+      {
+        "path": "test/http_certificate_identity_profile_test.erl",
+        "bytes": 4018,
+        "sha256": "b43ceb09f40c8a1da0840a8357fb9998cb715748ec10b6c346ad84451daa5a3f"
+      },
+      {
+        "path": "src/http/client.gleam",
+        "bytes": 152469,
+        "sha256": "7c602c4d19ee8317ef7d383a9939488374d4d112238edfa7ae09acfb87afd9f1"
+      },
+      {
+        "path": "src/http_transport_ffi.erl",
+        "bytes": 55795,
+        "sha256": "949ddbb9e2b24f5ef3954f652619b5f1254953c5f4a4e07ed2eab413fd37882b"
+      },
+      {
+        "path": "packages/http3/src/http3/client.gleam",
+        "bytes": 34650,
+        "sha256": "3f43e95e882e0a082a28439ba302eedf1c442aa7862d37ce70ba897658cb5580"
+      },
+      {
+        "path": "packages/quic_core/src/quic_core/client.gleam",
+        "bytes": 49611,
+        "sha256": "acd069d0af6255102408b571cabe269ccedc200af0bbe641a087c3e5edf76101"
+      },
+      {
+        "path": "packages/quic_core/src/quic_core_tls_ffi.erl",
+        "bytes": 21217,
+        "sha256": "66bad4f81a9ae95971caeec385ca98ed473333172fd16360ad8a693056b00eeb"
+      }
+    ]
+  },
+  "execution": {
+    "performed": false,
+    "completed": 0,
+    "required_scope": "Run the static contract plus live TCP and QUIC certificate matrices on every required OTP and operating-system row.",
+    "rerun_command": "mise run windows-package-suite -- -Target http"
+  },
+  "counts": {
+    "canonical_open_at_review": 16,
+    "candidate_documentation_closures": 4,
+    "remaining_open": 12
+  },
+  "candidate_documentation_closures": [
+    {
+      "id": "RFC9525-2-001-MUST",
+      "source_occurrence": 1,
+      "source_clause_sha256": "0ee6d3f81c30c79b38aa5b3bcd2521371bfa4256c61c0ccaf1e7078faf33b4ad",
+      "candidate_disposition": "Implemented",
+      "evidence": [
+        "docs/CERTIFICATE_IDENTITY.md::Mandatory identifier profile",
+        "README.md::Certificate service identity",
+        "packages/http3/README.md::Certificate service identity",
+        "packages/quic_core/README.md::Certificate service identity",
+        "test/certificate_identity_profile_test.gleam::certificate_identity_profile_contracts_test_",
+        "test/http_certificate_identity_profile_test.erl::current_public_profile/0"
+      ]
+    },
+    {
+      "id": "RFC9525-2-002-SHOULD",
+      "source_occurrence": 2,
+      "source_clause_sha256": "d804a181ba34881edeb738129e050650d708c9f73ec0cc13e2865be5a39281c0",
+      "candidate_disposition": "Implemented",
+      "evidence": [
+        "docs/CERTIFICATE_IDENTITY.md::Origin and connection routing",
+        "docs/CERTIFICATE_IDENTITY.md::DNS wildcards",
+        "docs/CERTIFICATE_IDENTITY.md::Internationalized DNS names",
+        "test/http_certificate_identity_profile_test.erl::removed_identifier_statement_is_rejected/0",
+        "test/http_certificate_identity_profile_test.erl::removed_provider_mapping_is_rejected/0"
+      ]
+    },
+    {
+      "id": "RFC9525-3-MUST-STATE-SRV-ID-UNSUPPORTED",
+      "source_occurrence": 5,
+      "source_clause_sha256": "542e3e65bb4e8abe2722d05034e0f6665ed0c3476da94981eae88a12874550ed",
+      "candidate_disposition": "Implemented",
+      "evidence": [
+        "docs/CERTIFICATE_IDENTITY.md::Mandatory identifier profile",
+        "README.md::Certificate service identity",
+        "packages/http3/README.md::Certificate service identity",
+        "packages/quic_core/README.md::Certificate service identity"
+      ]
+    },
+    {
+      "id": "RFC9525-3-MUST-STATE-URI-ID-UNSUPPORTED",
+      "source_occurrence": 6,
+      "source_clause_sha256": "70cfab06072495f29b5dcb8f8db4294aff4b165cb8ee18255449406e6fec0e3c",
+      "candidate_disposition": "Implemented",
+      "evidence": [
+        "docs/CERTIFICATE_IDENTITY.md::Mandatory identifier profile",
+        "README.md::Certificate service identity",
+        "packages/http3/README.md::Certificate service identity",
+        "packages/quic_core/README.md::Certificate service identity"
+      ]
+    }
+  ],
+  "canonical_update_policy": "The four candidate documentation closures remain Open in standards/requirements.json until the contract test executes against these exact hashes and the requirements audit accepts the result.",
+  "remaining_requirements": [
+    {
+      "ids": [
+        "RFC9525-2-MUST-NOT-USE-COMMON-NAME",
+        "RFC9525-2-MUST-NOT-USE-OTHER-SUBJECT-RDN"
+      ],
+      "source_occurrences": [3, 4],
+      "source_clause_sha256": [
+        "449218a147d4942800a39f2d211523a07ff0ab20c9c4dc09b296939f6ef44909",
+        "73a482986575c5fa0ef56b436b4cbc6f3db81ef791a28df21ac258d48b03f0b1"
+      ],
+      "task_id": "VERIFY-RFC9525-SUBJECT-RDN-EXCLUSION",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "Trusted CN-only and other-subject-RDN-only apparent-match certificates through TCP and QUIC, with fallback mutations rejected."
+    },
+    {
+      "ids": ["RFC9525-6-2-026-SHOULD"],
+      "source_occurrences": [26],
+      "source_clause_sha256": ["fb5e4b34f09b3f238027c41ecaf653096b9c266b42389b7c5060f75240a935ad"],
+      "task_id": "VERIFY-RFC9525-MATCH-SEARCH-STOP",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "Bounded mixed-SAN observation proving the first valid match terminates the search and later candidates cannot change identity or outcome."
+    },
+    {
+      "ids": [
+        "RFC9525-6-2-028-MUST",
+        "RFC9525-6-2-030-MUST"
+      ],
+      "source_occurrences": [28, 30],
+      "source_clause_sha256": [
+        "2564707bbe4162856af724f59269cb005be6384c2bf5d6b55073d7e2a7bdcbb9",
+        "236ceb061e27a17a96b0b90992903186d665fd264a9620eee880664b4a60dd4a"
+      ],
+      "task_id": "VERIFY-RFC9525-IP-ID-PROVIDER-MATRIX",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3",
+        "packages/http3/test/client_test.gleam::ipv6_literal_certificate_identity_is_verified_test"
+      ],
+      "missing_evidence": "Exact IPv4 and IPv6 iPAddress SAN success plus prefix, lookalike, DNS-name, and address-family mismatches through both providers."
+    },
+    {
+      "ids": [
+        "RFC9525-6-3-032-MUST",
+        "RFC9525-6-3-033-MUST"
+      ],
+      "source_occurrences": [32, 33],
+      "source_clause_sha256": [
+        "0432ed2cb7be77b7abc6e168ceb55bdbd1fefcba3604cbe98df9ceeb96b91f9f",
+        "fc7a25ccc0207ee0e0315869a3ad6bb98acf7534e6e9e4d8559c5145dbe361ed"
+      ],
+      "task_id": "VERIFY-RFC9525-ASCII-DNS-LABEL-MATRIX",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "ASCII case variants plus reordered, missing, extra, and near-collision DNS labels through TCP and QUIC, including mutation detection."
+    },
+    {
+      "ids": ["RFC9525-6.3-MUST-CONVERT-U-LABELS-TO-A-LABELS"],
+      "source_occurrences": [34],
+      "source_clause_sha256": ["cce54c562fadf1418579d367d21f87510e2eba097bb738e1ab6f1d16943c78d6"],
+      "task_id": "IMP-RFC9525-IDNA-CANONICALIZATION",
+      "symbols": [
+        "src/http/client.gleam::request_origin",
+        "packages/quic_core/src/quic_core/internal/tls/extension_value.gleam::encode_server_name",
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "One canonical U-label-to-A-label result must be established before DNS, SNI, verification, authority, pooling, and tickets; invalid IDNA must fail before I/O."
+    },
+    {
+      "ids": [
+        "RFC9525-6-3-035-MUST",
+        "RFC9525-6-3-036-MUST"
+      ],
+      "source_occurrences": [35, 36],
+      "source_clause_sha256": [
+        "652f8fa81b59c965b36c036e55c263bf76b0b7d02fa2abc5e235711aac507ffd",
+        "81ea7b03e8ee28d9d025f7c5e5ba51bed35abdf4f54b5a065d912528809edb10"
+      ],
+      "task_id": "VERIFY-RFC9525-IDNA-LABEL-COMPARISON",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "Equivalent U-label/A-label identity, case-insensitive A-label comparison, ordered labels, and mutation detection through both providers after canonicalization exists."
+    },
+    {
+      "ids": [
+        "RFC9525-6-3-037-MUST",
+        "RFC9525-6-3-038-MUST"
+      ],
+      "source_occurrences": [37, 38],
+      "source_clause_sha256": [
+        "3da74c5ef4ef81706261589c8122356b399d8997f8a89b7e4a2ce498ba7b52f8",
+        "b06bf5d5c2235bb5edfa96f70e3aa3ece2221ae5215600f36a0826495a239236"
+      ],
+      "task_id": "VERIFY-RFC9525-CERTIFICATE-WILDCARD-MATRIX",
+      "symbols": [
+        "packages/quic_core/src/quic_core_tls_ffi.erl::verify_service_identity/2",
+        "src/http_transport_ffi.erl::client_tls_options/3"
+      ],
+      "missing_evidence": "Whole-leftmost single-label success and partial, non-leftmost, multi-label, bare-suffix, and malformed wildcard rejection through both providers, including broadening mutations."
+    }
+  ],
+  "failure_classification": "NotExecuted",
+  "secrecy": {
+    "contains_certificate_bytes": false,
+    "contains_origin_values": false,
+    "contains_process_or_socket_identity": false,
+    "shareable": true
+  }
+}

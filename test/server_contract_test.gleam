@@ -3,15 +3,82 @@ import gleam/http/request
 import gleam/http/response
 import gleam/option.{None}
 import gleeunit
+import gleeunit/should
 import http/body
 import http/context
 import http/error
+import http/internal/transport
 import http/resource
 import http/server
 import http_test_support
 
+type Once
+
+@external(erlang, "http_server_contract_test_ffi", "new_once")
+fn new_once() -> Once
+
+@external(erlang, "http_server_contract_test_ffi", "claim_once")
+fn claim_once(once: Once) -> Bool
+
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+pub fn startup_primitive_failure_stops_allocated_controller_test() -> Nil {
+  let observed = process.new_subject()
+  let config =
+    server.defaults()
+    |> server.with_startup_failure_probe(fn(controller) {
+      process.send(observed, controller)
+      http_test_support.exit_now()
+    })
+  let assert Error(failure) =
+    server.start(config, fn(_, _) { Ok(test_response(204, body.empty())) })
+  assert error.kind(failure) == error.Resource(error.Memory)
+
+  let assert Ok(controller) = process.receive(observed, within: 1000)
+  let assert Error(stopped) = resource.acquire(controller, memory_bytes: 1)
+  assert error.kind(stopped) == error.Service
+  assert resource.snapshot(controller).active_workers == 0
+  assert resource.snapshot(controller).memory_bytes == 0
+}
+
+pub fn worker_spawn_failure_releases_admission_and_request_body_test() -> Nil {
+  let fail_next_spawn = new_once()
+  let request_cancelled = process.new_subject()
+  let config =
+    server.defaults()
+    |> server.with_worker_spawn_failure_probe(fn() {
+      case claim_once(fail_next_spawn) {
+        True -> http_test_support.exit_now()
+        False -> Nil
+      }
+    })
+  let assert Ok(running) =
+    server.start(config, fn(_, _) { Ok(test_response(204, body.empty())) })
+  let assert Ok(failing_body) =
+    body.from_pull(body.pull(fn(_) { Ok(body.PullEnd([])) }), None, None, fn() {
+      process.send(request_cancelled, Nil)
+    })
+
+  let assert Error(failure) =
+    server.handle(
+      running,
+      test_request("/spawn-failure", failing_body),
+      test_context(),
+    )
+  assert error.kind(failure) == error.Resource(error.RequestWorkers)
+  assert process.receive(request_cancelled, within: 1000) == Ok(Nil)
+
+  let assert Ok(recovered) =
+    server.handle(
+      running,
+      test_request("/after-spawn-failure", body.empty()),
+      test_context(),
+    )
+  assert recovered.status == 204
+  body.cancel(recovered.body)
+  assert server.stop(running) == Ok(Nil)
 }
 
 pub fn handler_panic_and_exit_are_isolated_and_redacted_test() -> Nil {
@@ -95,13 +162,23 @@ pub fn successful_handler_leaves_request_body_cleanup_to_the_adapter_test() -> N
     server.handle(running, test_request("/complete", request_body), metadata)
   assert response.status == 204
   assert process.receive(cancelled, within: 0) == Error(Nil)
-  assert await_cancellation_broker(metadata, 100)
+  assert context.cancellation_snapshot(metadata)
+    == context.CancellationSnapshot(
+      cancelled: False,
+      broker_stopped: False,
+      active_subscriptions: 1,
+      notifications: 0,
+      explicit_unsubscriptions: 1,
+      abandoned_subscriptions: 0,
+    )
+  body.cancel(response.body)
+  assert await_cancellation_broker(metadata, 1000)
     == context.CancellationSnapshot(
       cancelled: False,
       broker_stopped: True,
       active_subscriptions: 0,
       notifications: 0,
-      explicit_unsubscriptions: 1,
+      explicit_unsubscriptions: 2,
       abandoned_subscriptions: 0,
     )
   assert server.stop(running) == Ok(Nil)
@@ -110,6 +187,7 @@ pub fn successful_handler_leaves_request_body_cleanup_to_the_adapter_test() -> N
 pub fn cancellation_stops_the_worker_and_cancels_the_request_body_test() -> Nil {
   let started = process.new_subject()
   let cancelled = process.new_subject()
+  let blocked_handler = process.new_subject()
   let source = body.pull(fn(_) { Ok(body.PullEnd([])) })
   let assert Ok(request_body) =
     body.from_pull(source, None, None, fn() { process.send(cancelled, Nil) })
@@ -117,7 +195,9 @@ pub fn cancellation_stops_the_worker_and_cancels_the_request_body_test() -> Nil 
   let assert Ok(running) =
     server.start(server.defaults(), fn(_, _) {
       process.send(started, Nil)
-      process.sleep(1000)
+      // Cancellation must stop a handler that is waiting on application work;
+      // a finite never-released latch models that state without a timing race.
+      let assert Ok(Nil) = process.receive(blocked_handler, within: 5000)
       Ok(test_response(200, body.empty()))
     })
   let task =
@@ -135,7 +215,7 @@ pub fn cancellation_stops_the_worker_and_cancels_the_request_body_test() -> Nil 
   assert cancellation.cancelled
   assert cancellation.broker_stopped
   assert cancellation.active_subscriptions == 0
-  assert cancellation.notifications == 1
+  assert cancellation.notifications == 2
   assert server.stop(running) == Ok(Nil)
 }
 
@@ -152,15 +232,19 @@ pub fn reload_is_atomic_and_drain_rejects_new_work_then_waits_test() -> Nil {
   let assert Ok(configuration) = server.with_drain_timeout(configuration, 1000)
   let assert Ok(running) =
     server.start(configuration, fn(_, _) {
-      process.send(started, Nil)
-      process.sleep(100)
+      let release_old_handler = process.new_subject()
+      process.send(started, release_old_handler)
+      // A bounded latch holds the accepted request until the drain transition and refusal have both been observed.
+      // This avoids inferring actor state from elapsed wall time.
+      let assert Ok(Nil) = process.receive(release_old_handler, within: 5000)
       Ok(test_response(201, body.empty()))
     })
   let first =
     http_test_support.start_task(fn() {
       server.handle(running, test_request("/old", body.empty()), test_context())
     })
-  assert process.receive(started, within: 1000) == Ok(Nil)
+  let release_old_handler =
+    process.receive(started, within: 1000) |> should.be_ok
 
   assert server.reload_handler(running, fn(_, _) {
       Ok(test_response(202, body.empty()))
@@ -169,9 +253,16 @@ pub fn reload_is_atomic_and_drain_rejects_new_work_then_waits_test() -> Nil {
   let assert Ok(after_reload) =
     server.handle(running, test_request("/new", body.empty()), test_context())
   assert after_reload.status == 202
+  body.cancel(after_reload.body)
 
   let draining = http_test_support.start_task(fn() { server.drain(running) })
-  process.sleep(10)
+  let state_deadline = transport.monotonic_millisecond() + 2000
+  assert await_server_state(
+      running: running,
+      expected: server.Draining,
+      deadline_milliseconds: state_deadline,
+    )
+    == server.Draining
   let assert Error(refused) =
     server.handle(
       running,
@@ -180,12 +271,33 @@ pub fn reload_is_atomic_and_drain_rejects_new_work_then_waits_test() -> Nil {
     )
   assert error.kind(refused) == error.Service
 
+  process.send(release_old_handler, Nil)
   let assert Ok(before_reload) = http_test_support.await_task(first)
   assert before_reload.status == 201
+  body.cancel(before_reload.body)
   assert http_test_support.await_task(draining) == Ok(Nil)
   assert server.state(running) == server.Draining
   assert server.stop(running) == Ok(Nil)
   assert server.state(running) == server.Stopped
+}
+
+fn await_server_state(
+  running running: server.Server,
+  expected expected: server.State,
+  deadline_milliseconds deadline_milliseconds: Int,
+) -> server.State {
+  let observed = server.state(running)
+  case observed == expected {
+    True -> observed
+    False -> {
+      assert transport.monotonic_millisecond() < deadline_milliseconds
+      await_server_state(
+        running: running,
+        expected: expected,
+        deadline_milliseconds: deadline_milliseconds,
+      )
+    }
+  }
 }
 
 fn test_request(

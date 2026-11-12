@@ -507,6 +507,29 @@ pub fn peer_concurrency_limit_is_released_by_reset_test() -> Nil {
   Nil
 }
 
+pub fn duplicate_resets_for_a_closed_stream_do_not_poison_the_next_exchange_test() -> Nil {
+  let state = ready(connection.Client)
+  let assert Ok(connection.HeadersWritten(state, 1, _)) =
+    connection.send_request_headers(state, get_request(), end_stream: True)
+  let assert Ok(connection.Transition(state, [connection.StreamReset(1, 0)])) =
+    connection.receive_frame(state, frame.Header(4, frame.RstStream, 0, 1), <<
+      0:size(32),
+    >>)
+  let assert Ok(connection.HeadersWritten(state, 3, _)) =
+    connection.send_request_headers(state, get_request(), end_stream: True)
+  let assert Ok(connection.Transition(state, actions)) =
+    connection.receive_frame(state, frame.Header(4, frame.RstStream, 0, 1), <<
+      0:size(32),
+    >>)
+  assert actions == []
+  let assert Ok(connection.Transition(state, actions)) =
+    connection.receive_frame(state, frame.Header(4, frame.RstStream, 0, 1), <<
+      5:size(32),
+    >>)
+  assert actions == []
+  assert connection.stream_state(state, 3) == stream_state.HalfClosedLocal
+}
+
 pub fn peer_header_table_limit_is_applied_to_the_next_header_block_test() -> Nil {
   let state = ready(connection.Client)
   let assert Ok(connection.Transition(state, _)) =

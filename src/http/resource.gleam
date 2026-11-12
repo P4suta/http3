@@ -42,6 +42,9 @@ fn raw_acquire(
   memory_bytes: Int,
 ) -> Result(LeaseHandle, Int)
 
+@external(erlang, "http_server_ffi", "resource_controller_available")
+fn raw_available(controller: ControllerHandle) -> Bool
+
 @external(erlang, "http_server_ffi", "resource_resize")
 fn raw_resize(
   controller: ControllerHandle,
@@ -95,6 +98,17 @@ pub fn start(limits: Limits) -> Controller {
     handle: new_controller(limits.maximum_workers, limits.memory_bytes),
     limits:,
   )
+}
+
+/// Allocate a controller through the typed package-internal startup boundary.
+/// Public protocols use this form so VM resource exhaustion cannot publish an executor backed by an unavailable controller.
+@internal
+pub fn start_checked(limits: Limits) -> Result(Controller, error.Error) {
+  let controller = start(limits)
+  case raw_available(controller.handle) {
+    True -> Ok(controller)
+    False -> Error(error.new(error.Resource(error.Memory)))
+  }
 }
 
 /// Acquire one worker and its initial memory grant before starting work.

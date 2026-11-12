@@ -102,8 +102,8 @@ fn put_attribute(
 @external(erlang, "http_server_ffi", "get_context_attribute")
 fn get_attribute(attributes: Attributes, key: KeyToken) -> Option(value)
 
-@external(erlang, "http_server_ffi", "new_cancel_handle")
-fn new_cancel_handle() -> CancelHandle
+@external(erlang, "http_server_ffi", "new_cancel_handle_checked")
+fn new_cancel_handle() -> Result(CancelHandle, Nil)
 
 @external(erlang, "http_server_ffi", "mark_cancelled")
 fn mark_cancelled(handle: CancelHandle) -> Bool
@@ -146,17 +146,21 @@ pub fn new(
   {
     False -> Error(error.new(error.Policy(error.SecurityPolicy)))
     True ->
-      Ok(Context(
-        protocol:,
-        peer_endpoint:,
-        local_endpoint:,
-        deadline_milliseconds: monotonic_millisecond() + within_milliseconds,
-        tls_identity:,
-        early_data:,
-        extended_connect_protocol: option.None,
-        attributes: new_attributes(),
-        cancellation: new_cancel_handle(),
-      ))
+      case new_cancel_handle() {
+        Error(Nil) -> Error(error.new(error.Resource(error.Memory)))
+        Ok(cancellation) ->
+          Ok(Context(
+            protocol:,
+            peer_endpoint:,
+            local_endpoint:,
+            deadline_milliseconds: monotonic_millisecond() + within_milliseconds,
+            tls_identity:,
+            early_data:,
+            extended_connect_protocol: option.None,
+            attributes: new_attributes(),
+            cancellation:,
+          ))
+      }
   }
 }
 

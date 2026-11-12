@@ -10,6 +10,9 @@ const maximum_milliseconds = 3_600_000
 
 const maximum_limit = 2_147_483_647
 
+// Every HTTP/3 endpoint creates one control stream and the mandatory QPACK encoder and decoder streams before it can exchange requests.
+const minimum_http3_unidirectional_streams = 3
+
 /// IP-family policy for clients and listeners.
 pub type AddressFamily {
   Ipv4
@@ -32,14 +35,28 @@ pub opaque type Deadlines {
 
 /// Finite endpoint, stream, buffer, queue, and telemetry limits.
 ///
-/// Every role-applicable field is enforced by the current runtime.
 /// `EndpointMemory` is a listener-wide aggregate budget on servers: admission,
 /// receive-credit growth, application writes, and routed mailbox bytes are
 /// charged before growth and released with the supervised connection actor.
-/// A client is one endpoint connection, so its budget must fund the core
-/// admission reservation before any connection actor or socket is created;
-/// its stream, queue, and Datagram limits bound subsequent per-connection
-/// growth.
+/// Clients fund each connection's core admission before creating its actor or
+/// socket. Their stream, queue and Datagram limits bound per-connection growth.
+/// With qlog enabled, copies of the same Client also share a diagnostic byte
+/// budget and `Connections` slots across attempts and origins. The diagnostic
+/// allowance reserves 16 KiB for this layer's scalar bookkeeping and a 1 MiB
+/// core writer working set per live trace. Accepted but unfinished qlog records
+/// take 16 KiB quanta dynamically from one core diagnostic budget shared by
+/// every connection derived from that Client. Device completion returns each
+/// quantum; resource refusal drops only the diagnostic event and is visible in
+/// finite counters. Another 64 KiB must remain available for initial core
+/// admission. Unconfirmed startup/cleanup holds its diagnostic slice until the
+/// core registry observes a confirmed later join. The registry retains at most
+/// 64 tickets per identity for seven seconds each; refusal or expiry leaves the
+/// slice quarantined.
+/// `Frame` bounds complete-buffered frame payloads, including HEADERS and
+/// control/extension frames, and blocked QPACK data. DATA itself is delivered
+/// incrementally in chunks of at most 65,536 bytes; its wire-declared length
+/// does not allocate a matching buffer. `RequestBody` and `ResponseBody`
+/// independently bound the cumulative application body.
 pub opaque type Limits {
   Limits(
     connections: Int,
@@ -179,13 +196,19 @@ pub fn limit(
 }
 
 /// Change one resource maximum while rejecting zero and infinity sentinels.
+/// HTTP/3 unidirectional-stream capacity is at least three so the control and
+/// two mandatory QPACK streams can always be created before optional streams.
 pub fn with_limit(
   limits limits: Limits,
   resource resource: failure.Resource,
   maximum maximum: Int,
 ) -> Result(Limits, Error) {
+  let minimum = case resource {
+    failure.UnidirectionalStreams -> minimum_http3_unidirectional_streams
+    _ -> 1
+  }
   use <- bool.guard(
-    when: maximum <= 0 || maximum > maximum_limit,
+    when: maximum < minimum || maximum > maximum_limit,
     return: Error(InvalidLimit(resource, maximum)),
   )
   Ok(case resource {

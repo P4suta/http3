@@ -1,22 +1,22 @@
 [tools]
 gleam = "1.18.1"
-erlang = "29.0.5"
-elixir = "1.20.3"
-rebar = "3.27.0"
+erlang = "29.1.2"
+elixir = "1.20.4"
+rebar = "3.28.0"
 actionlint = "1.7.12"
-go = "1.27.0"
-python = "3.12.13"
-uv = "0.12.5"
+go = "1.27.3"
+python = "3.14.9"
+uv = "0.13.5"
 taplo = "0.10.0"
-typos = "1.49.0"
-markdownlint-cli2 = "0.22.1"
+typos = "1.51.1"
+markdownlint-cli2 = "0.24.0"
 shellcheck = "0.11.0"
-shfmt = "3.13.1"
-"pipx:reuse" = "6.2.0"
+shfmt = "3.14.1"
+"pipx:reuse" = { version = "6.2.0", extras = "charset-normalizer" }
 gitleaks = "8.30.1"
-osv-scanner = "2.5.1"
-semgrep = "1.174.0"
-syft = "1.51.0"
+osv-scanner = "2.7.0"
+semgrep = "1.182.1"
+syft = "1.55.0"
 
 [tasks.format]
 description = "Check all three Gleam packages"
@@ -73,6 +73,10 @@ run = [
 [tasks.package-layout]
 description = "Audit the three-package dependency layout"
 run = "escript scripts/package_layout_audit.escript"
+
+[tasks.vm-output-audit]
+description = "Verify owned VM output and console bootstrap boundaries"
+run = "escript scripts/process_runner.escript --vm-output-self-test"
 
 [tasks.status-audit]
 description = "Audit machine-readable qualification truth and generated status"
@@ -209,7 +213,17 @@ run = [
 
 [tasks.interop-curl]
 description = "Run independent curl HTTP/1.1 and HTTP/2 client interoperability"
-run = "bash test/interop/curl/run.sh"
+shell = "bash -c"
+run = """
+if [ "$(uname -s)" != Linux ]; then
+  echo 'curl interoperability requires Linux.' >&2
+  exit 1
+fi
+mise -C test/interop/curl install conda:curl || exit "$?"
+curl_prefix="$(mise -C test/interop/curl where conda:curl)" || exit "$?"
+export PATH="$curl_prefix/bin:$PATH"
+exec bash test/interop/curl/run.sh
+"""
 
 [tasks.interop-http3]
 description = "Run both independent HTTP/3 peer phase gates"
@@ -221,16 +235,15 @@ description = "Install the hash-locked aioquic interoperability peer"
 dir = "{{ config_root }}/packages/http3"
 run = [
   "uv venv --clear --python 3.12.13 build/interop-venv",
-  # Addressing the environment by directory rather than by interpreter path
-  # keeps this working where `uv venv` lays the interpreter out differently;
+  # Addressing the environment by directory rather than by interpreter path keeps this working where `uv venv` lays the interpreter out differently;
   # Windows puts it in Scripts/python.exe rather than bin/python.
-  "uv pip sync --python build/interop-venv --require-hashes --strict test/interop/requirements.lock",
+  "uv pip sync --python build/interop-venv --require-hashes --strict test/interop/requirements.txt",
 ]
 
 [tasks.interop-lock]
 description = "Regenerate the hash-locked aioquic peer dependency set"
-dir = "{{ config_root }}/packages/http3"
-run = "uv pip compile test/interop/requirements.txt --output-file test/interop/requirements.lock --generate-hashes --universal --python-version 3.12 --exclude-newer 2026-08-24 --custom-compile-command 'mise run interop-lock'"
+dir = "{{ config_root }}/packages/http3/test/interop"
+run = "uv pip compile requirements.in --output-file=requirements.txt --generate-hashes --universal --python-version=3.12"
 
 [tasks.interop-aioquic]
 description = "Run bidirectional advanced aioquic interoperability"
@@ -261,13 +274,12 @@ run = "gitleaks dir . --redact --no-banner"
 
 [tasks.semgrep]
 description = "Run repository-owned FFI and public-boundary security rules"
-# mise runs task commands through cmd.exe on Windows, which answers neither
-# `mkdir -p` nor a POSIX inline environment assignment. The gate already
-# requires bash for the shell scripts it runs and lints.
+# mise runs task commands through cmd.exe on Windows, which answers neither `mkdir -p` nor a POSIX inline environment assignment.
+# The gate already requires bash for the shell scripts it runs and lints.
 shell = "bash -c"
 run = [
   "mkdir -p build/semgrep",
-  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
+  "SEMGREP_SETTINGS_FILE=build/semgrep/settings.yml SEMGREP_LOG_FILE=build/semgrep/semgrep.log semgrep scan --jobs 2 --metrics off --disable-version-check --no-git-ignore --error --config .semgrep.yml src packages/http3/src packages/quic_core/src",
 ]
 
 [tasks.sbom]
@@ -320,6 +332,13 @@ run = [
   "gleam run -m glinter -- --stats",
   "cd packages/http3 && gleam run -m glinter -- --stats",
   "cd packages/quic_core && gleam run -m glinter -- --stats",
+  "mise run lint-repository",
+]
+
+[tasks.lint-repository]
+description = "Lint prose, configuration, workflows, shell scripts, spelling, licences, and secrets"
+shell = "bash -c"
+run = [
   "markdownlint-cli2 \"**/*.md\" \"#build/**\" \"#deps/**\" \"#packages/http3/build/**\" \"#packages/http3/deps/**\" \"#packages/quic_core/build/**\" \"#packages/quic_core/deps/**\"",
   "taplo fmt --check",
   "taplo lint",
@@ -384,12 +403,12 @@ run = [
 description = "Run the pinned bidirectional RFC 9204 QPACK differential oracle"
 run = [
   "bash scripts/fresh_build.sh http3",
-  "test -x packages/http3/build/interop-venv/bin/python",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py --self-test",
+  "uv run --no-project --python packages/http3/build/interop-venv python --version",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py --self-test",
   "escript scripts/qpack_differential.escript --self-test",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py generate build/qpack-differential/oracle.json",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py generate build/qpack-differential/oracle.json",
   "escript scripts/qpack_differential.escript exercise build/qpack-differential/oracle.json build/qpack-differential/implementation.json",
-  "packages/http3/build/interop-venv/bin/python packages/http3/test/interop/qpack_oracle.py verify build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
+  "uv run --no-project --python packages/http3/build/interop-venv python packages/http3/test/interop/qpack_oracle.py verify build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
   "escript scripts/qpack_differential.escript finalize build/qpack-differential/oracle.json build/qpack-differential/implementation.json build/qpack-differential/oracle-report.json",
 ]
 
@@ -508,7 +527,8 @@ run = [
 description = "Run every automated local gate and assemble an unpublished source bundle"
 run = [
   "mise run check",
-  "mise run security",
+  "mise run stability",
+  "mise run sbom",
   "mise run coverage",
   "mise run coverage-full",
   "mise run property",
@@ -535,20 +555,22 @@ run = [
 ]
 
 [tasks.check]
-description = "Run every required local verification"
+description = "Run deterministic change verification without release campaigns"
 run = [
   "mise run status-audit",
   "mise run package-layout",
+  "mise run vm-output-audit",
   "mise run http-check",
   "mise run http3-check",
   "mise run core-check",
-  "mise run stability",
+  "mise run fresh-build",
   "mise run fresh-build-audit",
   "mise run coverage-coordinate-audit",
   "mise run core-package",
   "mise run mix-package",
   "mise run ffi-audit",
   "mise run api",
-  "mise run lint",
+  "mise run lint-repository",
   "mise run semgrep",
+  "mise run dependency-audit",
 ]

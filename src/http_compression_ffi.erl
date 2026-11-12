@@ -1,6 +1,11 @@
 -module(http_compression_ffi).
 
--export([compress/4, decompress/7]).
+-export([compress/4, decompress/7, retain_bytes/1]).
+
+%% Only called after the public store has validated and prepaid the complete
+%% record. Detach any large backing binary before publishing retained state.
+-spec retain_bytes(binary()) -> binary().
+retain_bytes(Bytes) when is_binary(Bytes) -> binary:copy(Bytes).
 
 -define(INVALID, 1).
 -define(LIMIT, 2).
@@ -33,6 +38,10 @@ decompress(2, Input, Dictionary, MaximumOutput, MaximumRatio, MaximumWork,
          is_integer(MaximumRatio), is_integer(MaximumWork) ->
     zlib_decompress(Input, Dictionary, 15, MaximumOutput, MaximumRatio,
                     MaximumWork);
+decompress(3, Input, Dictionary, MaximumOutput, MaximumRatio, MaximumWork,
+           WindowLog) ->
+    http_brotli_ffi:decode(Input, Dictionary, MaximumOutput, MaximumRatio,
+                      MaximumWork, WindowLog);
 decompress(4, Input, Dictionary, MaximumOutput, MaximumRatio, MaximumWork,
            WindowLog)
     when is_binary(Input), is_binary(Dictionary), is_integer(MaximumOutput),

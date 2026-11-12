@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "audit": "http1_handler_guardian_v4_independent_review",
+  "status": "Rejected",
+  "candidate_hashes_unchanged": true,
+  "shareable_artifacts": {
+    "audit.py": {
+      "sha256": "d8b759dd1f5835c573a977ddd00c6ec0a9fa25dc394acbd4965915f3e61cc8c1",
+      "bytes": 24100
+    },
+    "stdout.jsonl": {
+      "sha256": "93c004405b66e8f1a3ebec49ac251ace437e4e82c0d02022802eb5c743963dee",
+      "bytes": 3009
+    },
+    "stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "process-observation.json": {
+      "sha256": "64d1f44e4a2bc03488439764108acd5a2148b09fda41c51785d142f33074849e",
+      "bytes": 361
+    },
+    "independent-review.json": {
+      "sha256": "6a99821082cff90986809cb0cbaa312d52179381d77c5519568cfca4cab71d3d",
+      "bytes": 11819
+    }
+  },
+  "private_artifacts": {
+    "run.json": {
+      "sha256": "742ea465fcc30f1216701c4980baf35894ebb92ffa32ea2d935d64bc630aca9f",
+      "bytes": 211,
+      "classification": "private_non_shareable_contains_owned_child_pid",
+      "included_in_shareable_bundle": false
+    }
+  },
+  "safe_process_observation": {
+    "final_visible_processes": 0,
+    "final_native_processes": 0,
+    "owned_child_pid": "redacted",
+    "native_execution": "prohibited_and_not_invoked"
+  },
+  "evidence_scope": {
+    "independent_mutants_completed": 12,
+    "independent_false_greens": 12,
+    "provisional_red_completed": 19,
+    "provisional_red_failed": 19,
+    "evidence_forgery_controls": 9,
+    "blockers": 15
+  },
+  "reproduction": {
+    "program": "build/root-validation/http1-handler-guardian-v4-independent-audit/audit.py",
+    "semantic_arguments": [
+      "-I",
+      "-B"
+    ],
+    "required_supervision": "hidden owned process; 30 second absolute deadline; 1 MiB stdout and stderr limits; exact child cleanup",
+    "expected_exit": 0,
+    "expected_review_status": "Rejected"
+  }
+}

@@ -59,3 +59,37 @@ pub fn origin_encoder_rejects_non_ascii_or_non_origin_values_test() -> Nil {
     )
     == Error(origin.NonAscii)
 }
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn authenticated_origin_comparison_normalizes_host_and_default_port_test() -> Nil {
+  assert origin.same_authenticated_origin(
+    <<"https">>,
+    <<"EXAMPLE.com:443">>,
+    <<"https">>,
+    <<"example.com">>,
+  )
+  assert origin.same_authenticated_origin(
+    <<"http">>,
+    <<"example.com:80">>,
+    <<"http">>,
+    <<"EXAMPLE.COM">>,
+  )
+  assert !origin.same_authenticated_origin(
+    <<"https">>,
+    <<"example.com">>,
+    <<"http">>,
+    <<"example.com">>,
+  )
+  assert !origin.same_authenticated_origin(
+    <<"https">>,
+    <<"example.com">>,
+    <<"https">>,
+    <<"other.example">>,
+  )
+  assert !origin.same_authenticated_origin(
+    <<"https">>,
+    <<"user@example.com">>,
+    <<"https">>,
+    <<"example.com">>,
+  )
+}

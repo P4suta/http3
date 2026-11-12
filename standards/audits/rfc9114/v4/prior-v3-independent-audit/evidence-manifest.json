@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "manifest_kind": "independent_rfc9114_v3_application_audit_evidence",
+  "status": "Rejected",
+  "artifacts": {
+    "audit_static.py": "e794b2622466ecdd3f0e753c6bcff3240374c4460ec23b4847a1c66796749e21",
+    "report.json": "2e113c08bb912ac0876cead37fb8f64de34c87a37a118e2fe7a48e02632385d8"
+  },
+  "canonical_requirements_before_sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+  "canonical_requirements_after_sha256": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533",
+  "production_frozen_identities": {
+    "standards/audits/rfc9114/apply_review.py": "6ce19c30a5cb42bd786e06d9110532cadcf83976900dd4f37fc93b0826124c74",
+    "standards/audits/rfc9114/launcher.py": "49e90fcce126756bdee94f2b2180e326d26729440c19090743e99e46c9c01a97",
+    "standards/audits/rfc9114/evidence_gate.py": "9e41a4071b35f665198135f193b78b83b0f540688c79cf5fbc22c7fdf77c075d",
+    "standards/audits/rfc9114/artifact-manifest.json": "1553b35577aa89bc8d5a375447df46fc62dda98f6ede1041ca6cf72b56b2f189",
+    ".mise.toml": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35",
+    ".github/workflows/ci.yml": "de49d2c660c451bd564ba36c6f19b56cd9e91b892c2288cc72d6ca494596b7a6",
+    "standards/requirements.json": "6d9c34e9311c73cc9540b5b51a133c755d6225d88015068169a44369842bf533"
+  }
+}

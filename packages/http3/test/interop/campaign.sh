@@ -37,7 +37,9 @@ cleanup() {
 		find "$report" -delete
 	fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 printf 'profile=http3-interop-repeat-v1\nmode=%s\nrequested=%s\n' \
 	"$mode" "$repetitions" >"$report"

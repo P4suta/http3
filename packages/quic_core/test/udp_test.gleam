@@ -5,8 +5,19 @@ import quic_core/internal/ecn
 import quic_core/internal/packet_space
 import quic_core/internal/udp
 
+// nolint: unused_exports -- gleeunit discovers public tests by suffix.
+@external(erlang, "quic_core_udp_advisory_test_ffi", "classifies_unverified_path_errors")
+pub fn asynchronous_icmp_is_distinct_from_a_closed_udp_socket_test() -> Nil
+
+// nolint: unused_exports -- gleeunit discovers public tests by suffix.
+@external(erlang, "quic_core_udp_advisory_test_ffi", "preserves_connection_state")
+pub fn asynchronous_icmp_preserves_active_and_migrating_connection_state_test() -> Nil
+
 @external(erlang, "quic_core_test_ffi", "inject_relay_connection_reset")
-fn inject_relay_connection_reset(relay: udp.Relay) -> Nil
+fn inject_relay_connection_reset(relay: udp.Relay) -> Result(Nil, Nil)
+
+@external(erlang, "quic_core_test_ffi", "await_relay_stopped")
+fn await_relay_stopped(relay: udp.Relay) -> Result(Nil, Nil)
 
 @external(erlang, "quic_core_test_ffi", "socket_buffer_bytes")
 fn socket_buffer_bytes(socket: udp.Socket) -> List(Int)
@@ -113,6 +124,8 @@ pub fn classifies_every_send_result_for_the_send_paths_test() -> Nil {
     udp.AddressInUse,
     udp.AddressUnavailable,
     udp.EcnUnavailable,
+    // A receive-only advisory must never be mistaken for a successful send.
+    udp.UnverifiedPathError,
     udp.SocketFailure,
   ]
   assert list.all(fatal, fn(error) {
@@ -327,8 +340,24 @@ pub fn relay_waits_for_credit_before_forwarding_another_batch_test() -> Nil {
   let assert Ok([udp.Datagram(_, <<"second">>, _)]) =
     receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
-  let assert Ok(Nil) = udp.stop_relay(relay)
+  let assert Ok(Nil) =
+    udp.stop_relay_until(relay, udp.monotonic_millisecond() + 1000)
+  let assert Ok(Nil) = await_relay_stopped(relay)
   let assert Ok(Nil) = udp.close(sender)
+  Nil
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn expired_relay_stop_is_typed_and_cannot_orphan_the_relay_test() -> Nil {
+  let assert Ok(loopback) = udp.ipv4(127, 0, 0, 1)
+  let assert Ok(ephemeral) = udp.endpoint(loopback, 0)
+  let assert Ok(receiver) = udp.open(ephemeral)
+  let assert Ok(relay) = udp.start_relay(receiver)
+  let expired = udp.monotonic_millisecond()
+
+  assert udp.stop_relay_until(relay, expired) == Error(udp.Timeout)
+  // A failed orderly result still performs the ownership-safe forced path.
+  let assert Ok(Nil) = await_relay_stopped(relay)
   Nil
 }
 
@@ -341,13 +370,15 @@ pub fn relay_ignores_connection_local_icmp_reset_test() -> Nil {
   let assert Ok(receiver_endpoint) = udp.local_endpoint(receiver)
   let assert Ok(relay) = udp.start_relay(receiver)
 
-  inject_relay_connection_reset(relay)
+  // The test-only FFI returns only after the relay acknowledges a payload-free mailbox probe queued behind the injected advisory by the same sender.
+  let assert Ok(Nil) = inject_relay_connection_reset(relay)
   let assert Ok(Nil) =
     udp.send(sender, receiver_endpoint, <<"still-listening">>, ecn.NotEct)
   let assert Ok([udp.Datagram(_, <<"still-listening">>, _)]) =
     receive_relay_until(relay, udp.monotonic_millisecond() + 1000)
 
   let assert Ok(Nil) = udp.stop_relay(relay)
+  let assert Ok(Nil) = await_relay_stopped(relay)
   let assert Ok(Nil) = udp.close(sender)
   Nil
 }

@@ -9,6 +9,7 @@ import gleam/result
 import gleam/string
 import gleeunit
 import http/context
+import http/internal/transport
 import http/masque
 import http/status
 import http3/address as http3_address
@@ -199,9 +200,8 @@ pub fn connect_udp_request_mapping_and_confirm_before_payload_test() -> Nil {
   assert masque.request_protocol(h3) == Some("connect-udp")
   assert masque.request_headers(h3) == [#("capsule-protocol", "?1")]
 
-  // RFC 9931 forbids optimistic CONNECT-UDP payload on HTTP/1.x. Keep this
-  // assertion protocol-specific so a future shared tunnel refactor cannot
-  // accidentally permit the HTTP/1 Upgrade request to carry datagrams.
+  // RFC 9931 forbids optimistic CONNECT-UDP payload on HTTP/1.x.
+  // Keep this assertion protocol-specific so a future shared tunnel refactor cannot accidentally permit the HTTP/1 Upgrade request to carry datagrams.
   let pending_h1 = masque.client_tunnel(h1)
   assert masque.send_datagram(pending_h1, <<"too-early":utf8>>)
     == Error(masque.NotEstablished)
@@ -538,7 +538,8 @@ pub fn rfc9298_default_well_known_h3_proxy_listener_is_exact_and_observable_test
   assert snapshot.setup_rejections == 0
   assert snapshot.setup_response_failures == 0
 
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   assert masque.stop_udp_proxy_listener(listener)
     == Ok(masque.UdpProxyListenerStopped)
   assert masque.stop_udp_proxy_listener(listener)
@@ -657,7 +658,8 @@ pub fn rfc9298_default_listener_establishes_before_2xx_and_relays_live_udp_test(
   assert listener_snapshot.setup_response_failures == 0
   assert listener_snapshot.duplicate_setup_attempts == 1
   assert masque.close_udp_proxy_session(session) == Ok(Nil)
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   let assert Ok(_) = masque.stop_udp_proxy_listener(listener)
   http_test_support.stop_udp_echo_server(echo_server)
 }
@@ -731,9 +733,77 @@ pub fn rfc9298_default_listener_sends_typed_dns_rejection_and_trace_test() -> Ni
   assert snapshot.policy_rejections == 0
   assert snapshot.setup_rejections == 1
   assert snapshot.setup_response_failures == 0
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   let assert Ok(_) = masque.stop_udp_proxy_listener(listener)
   Nil
+}
+
+pub fn udp_proxy_cleanup_remains_idempotent_after_peer_connection_closes_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let assert masque.UdpEndpoint(masque.Ipv4(_), target_port) = peer
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let assert Ok(configuration) = http3_server.new(certificate, private_key)
+  let assert Ok(configuration) = http3_server.with_timeout(configuration, 3000)
+  let assert Ok(listener) =
+    masque.start_udp_proxy_listener(configuration, limits())
+  let assert Ok(port) = masque.udp_proxy_listener_port(listener)
+  let assert Ok(client_configuration) =
+    http3_client.with_ca_certificate(http3_client.new(), ca_certificate)
+  let assert Ok(connection) =
+    http3_client.connect(
+      http3_client.with_http_datagrams(client_configuration),
+      "localhost",
+      port,
+    )
+  let outgoing =
+    request.new()
+    |> request.set_host("localhost")
+    |> request.set_port(port)
+    |> request.set_path(
+      "/.well-known/masque/udp/127.0.0.1/" <> int.to_string(target_port) <> "/",
+    )
+    |> request.set_header("capsule-protocol", "?1")
+    |> request.set_body(Nil)
+  let assert Ok(stream) =
+    http3_client.open_extended_connect(connection, outgoing, "connect-udp")
+  let assert Ok(masque.UdpProxyRequestAccepted(accepted)) =
+    masque.accept_udp_proxy_request(listener)
+  let assert Ok(policy) = masque.deny_all(limits())
+  let assert Ok(policy) =
+    masque.allow_udp(policy, masque.UdpTarget("127.0.0.1", target_port))
+  let assert Ok(policy) =
+    masque.allow_udp_destination(
+      policy,
+      masque.IpPrefix(masque.Ipv4(<<127, 0, 0, 1>>), 32),
+    )
+  let assert Ok(masque.SystemUdpProxyEstablished(active, _)) =
+    masque.establish_system_udp_proxy_request(
+      accepted,
+      policy,
+      proxy_setup_config(1000, 1000),
+      masque.udp_proxy_idle_timeout_disabled(),
+      resolver: fn(_, _) { Error(masque.DnsLookupFailed) },
+    )
+  assert http3_client.next_event(stream)
+    == Ok(http3_client.Response(200, [#("capsule-protocol", "?1")]))
+  assert http3_client.close_within(
+      connection: connection,
+      within_milliseconds: 5000,
+    )
+    == Ok(http3_client.Closed)
+  // Joining the listener makes the closed HTTP/3 owner a deterministic barrier.
+  assert masque.stop_udp_proxy_listener(listener)
+    == Ok(masque.UdpProxyListenerStopped)
+  let session = masque.system_udp_proxy_session(active)
+  assert masque.close_udp_proxy_session(session) == Ok(Nil)
+  assert masque.close_udp_proxy_session(session) == Ok(Nil)
+  let snapshot = masque.udp_proxy_session_snapshot(session)
+  assert snapshot.state == masque.UdpProxyClosed
+  assert snapshot.cleanup_failures == 0
+  assert snapshot.cleanup_timeouts == 0
+  http_test_support.stop_udp_echo_server(echo_server)
 }
 
 pub fn rfc9298_default_listener_reclaims_socket_when_2xx_cannot_be_sent_test() -> Nil {
@@ -791,7 +861,8 @@ pub fn rfc9298_default_listener_reclaims_socket_when_2xx_cannot_be_sent_test() -
   assert snapshot.setup_response_failures == 1
   assert snapshot.setup_response_cleanup_calls == 1
   assert snapshot.setup_response_cleanup_failures == 0
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   http_test_support.stop_udp_echo_server(echo_server)
 }
 
@@ -864,7 +935,8 @@ pub fn rfc9298_default_listener_live_rejection_matrix_is_exact_test() -> Nil {
   assert snapshot.accepted_requests == 0
   assert snapshot.rejected_requests == 5
   assert snapshot.rejection_response_failures == 0
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   let assert Ok(_) = masque.stop_udp_proxy_listener(listener)
   Nil
 }
@@ -1068,7 +1140,6 @@ pub fn rfc9298_dns_error_and_timeout_reject_without_opening_socket_test() -> Nil
   assert dns_timeout_snapshot.timing.dns_milliseconds
     >= dns_timeout_snapshot.timing.dns_adapter.queue_milliseconds
     + dns_timeout_snapshot.timing.dns_adapter.callback_milliseconds
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
 }
 
@@ -1084,10 +1155,8 @@ pub fn rfc9298_setup_trace_attributes_each_finite_adapter_deadline_test() -> Nil
   ) =
     masque.establish_udp_proxy(
       authorized,
-      // This test is about the socket-open deadline. Keep the preceding DNS
-      // adapter's budget well outside fresh-VM code-load and scheduler jitter
-      // so an overloaded qualification host cannot legitimately time out the
-      // wrong phase before the assertion is reached.
+      // This test is about the socket-open deadline.
+      // Keep the preceding DNS adapter's budget well outside fresh-VM code-load and scheduler jitter so an overloaded qualification host cannot legitimately time out the wrong phase before the assertion is reached.
       proxy_setup_config(2000, 5),
       resolver: fn(_, _) {
         process.sleep(2)
@@ -1099,9 +1168,8 @@ pub fn rfc9298_setup_trace_attributes_each_finite_adapter_deadline_test() -> Nil
       },
     )
 
-  // Durations and deadline attribution are deliberately payload- and
-  // target-free. They make a fresh-BEAM scheduler delay distinguishable from
-  // DNS, adoption, and cleanup failures without retaining adapter error text.
+  // Durations and deadline attribution are deliberately payload- and target-free.
+  // They make a fresh-BEAM scheduler delay distinguishable from DNS, adoption, and cleanup failures without retaining adapter error text.
   assert snapshot.timing.dns_milliseconds >= 2
   assert snapshot.timing.socket_open_milliseconds >= 5
   assert snapshot.timing.socket_adoption_milliseconds == 0
@@ -1313,7 +1381,6 @@ pub fn malformed_foreign_proxy_adapters_are_isolated_and_redacted_test() -> Nil 
   assert socket_snapshot.timing.socket_open_adapter.callback_started == True
   assert socket_snapshot.timing.socket_open_adapter.supervisor_timed_out
     == False
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
 }
 
@@ -1326,7 +1393,6 @@ pub fn proxy_cleanup_timeout_retry_and_concurrent_close_are_observable_test() ->
     })
   assert masque.close_udp_proxy(timeout_tunnel)
     == Error(masque.ProxySocketCleanupTimeout)
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
   assert masque.udp_proxy_resource_snapshot(timeout_tunnel)
     == masque.UdpProxyResourceSnapshot(
@@ -1431,9 +1497,8 @@ pub fn rfc9298_unusable_socket_closes_bound_request_stream_once_test() -> Nil {
     )
   assert process.receive(calls, within: 0) == Error(Nil)
 
-  // An operating-system unusable notification makes the session inactive
-  // before cleanup callbacks run, then closes both sides under the finite
-  // socket deadline. A duplicate notification is observable but idempotent.
+  // An operating-system unusable notification makes the session inactive before cleanup callbacks run, then closes both sides under the finite socket deadline.
+  // A duplicate notification is observable but idempotent.
   assert masque.notify_udp_socket_unusable(session) == Ok(Nil)
   assert process.receive(calls, within: 0) == Ok("request-stream-closed")
   assert process.receive(calls, within: 0) == Ok("socket-closed")
@@ -1463,7 +1528,8 @@ pub fn rfc9298_unusable_socket_closes_bound_request_stream_once_test() -> Nil {
       ),
     )
 
-  // Termination wins before source and payload inspection. Even a spoofed,
+  // Termination wins before source and payload inspection.
+  // Even a spoofed,
   // oversized packet can only increment the inactive counter afterwards.
   let spoofed = masque.UdpEndpoint(masque.Ipv4(<<203, 0, 113, 9>>), 9)
   let assert masque.DiscardSessionUdpPacket(
@@ -1578,8 +1644,7 @@ pub fn rfc9298_request_stream_end_closes_socket_at_same_transition_test() -> Nil
   assert process.receive(calls, within: 0) == Ok("socket-closed")
   assert process.receive(calls, within: 0) == Error(Nil)
 
-  // A later kernel notification cannot replace the causal first reason or
-  // invoke either already-converged cleanup operation again.
+  // A later kernel notification cannot replace the causal first reason or invoke either already-converged cleanup operation again.
   assert masque.notify_udp_socket_unusable(session) == Ok(Nil)
   assert process.receive(calls, within: 0) == Error(Nil)
   let snapshot = masque.udp_proxy_session_snapshot(session)
@@ -1619,7 +1684,6 @@ pub fn rfc9298_unusable_cleanup_timeout_is_bounded_and_payload_free_test() -> Ni
       request_stream: Some(masque.UdpRequestStreamCleanupTimeout),
     ))
   assert process.receive(calls, within: 0) == Ok("socket-closed")
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
   assert masque.udp_proxy_session_snapshot(session)
     == masque.UdpProxySessionSnapshot(
@@ -1667,7 +1731,6 @@ pub fn udp_proxy_application_close_is_supervised_without_skipping_socket_test() 
       request_stream: Some(masque.UdpRequestStreamCleanupFailed),
     ))
   assert process.receive(calls, within: 0) == Ok("socket-closed")
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
   let snapshot = masque.udp_proxy_session_snapshot(session)
   assert snapshot.state == masque.UdpProxyClosing
@@ -1688,9 +1751,8 @@ pub fn rfc9298_concurrent_terminal_notifications_keep_first_reason_test() -> Nil
     })
   let request_stream =
     masque.udp_request_stream_resource(fn(_, _) {
-      // The worker creates the release subject because a Gleam Subject can be
-      // received only by its owner. This two-sided barrier fixes the exact
-      // overlap under test without racing a sleep against the cleanup lease.
+      // The worker creates the release subject because a Gleam Subject can be received only by its owner.
+      // This two-sided barrier fixes the exact overlap under test without racing a sleep against the cleanup lease.
       let release = process.new_subject()
       process.send(started, release)
       case process.receive(release, within: 5000) {
@@ -1845,7 +1907,6 @@ pub fn proxy_setup_configuration_answer_count_and_heap_are_bounded_test() -> Nil
   assert heap_snapshot.adapter_failures == 1
   assert heap_snapshot.timing.dns_adapter.callback_started == True
   assert heap_snapshot.timing.dns_adapter.supervisor_timed_out == False
-  process.sleep(10)
   assert http_test_support.message_queue_length() == before
 }
 
@@ -2367,6 +2428,7 @@ pub fn rfc9298_system_udp_owner_relays_loopback_with_bounded_trace_test() -> Nil
   assert snapshot.receive_timeouts == 0
   assert snapshot.socket_failures == 0
   assert snapshot.not_ect == True
+  assert snapshot.not_ect_configuration != masque.SystemUdpNotEctNotConfigured
 
   assert masque.close_udp_proxy_session(session) == Ok(Nil)
   assert masque.system_udp_socket_snapshot(session).state
@@ -2375,18 +2437,11 @@ pub fn rfc9298_system_udp_owner_relays_loopback_with_bounded_trace_test() -> Nil
 }
 
 pub fn a_burst_compression_is_material_only_when_packets_were_batched_test() -> Nil {
-  // The compression figure is the difference between how far apart two packets
-  // arrived and how far apart they left. For a relay that sends one datagram
-  // per send -- which this one does, and which is why the snapshot reports a
-  // maximum batch of one -- that difference reduces to the decrease in the
-  // relay's own per-packet delay: a packet that waited fifteen milliseconds for
-  // a scheduler slot followed by one that waited two hundred microseconds
-  // measures as a fourteen millisecond compression with nothing coalesced.
+  // The compression figure is the difference between how far apart two packets arrived and how far apart they left.
+  // For a relay that sends one datagram per send -- which this one does, and which is why the snapshot reports a maximum batch of one -- that difference reduces to the decrease in the relay's own per-packet delay: a packet that waited fifteen milliseconds for a scheduler slot followed by one that waited two hundred microseconds measures as a fourteen millisecond compression with nothing coalesced.
   //
-  // An operator reading a counter named for burst compression would act on it
-  // as though packets had been put on the wire together. So the batch decides
-  // whether a measurement is material, and the microsecond figure beside it
-  // keeps reporting the raw measurement either way.
+  // An operator reading a counter named for burst compression would act on it as though packets had been put on the wire together.
+  // So the batch decides whether a measurement is material, and the microsecond figure beside it keeps reporting the raw measurement either way.
   let counted = http_test_support.material_burst_compressions
 
   // A large compression with no batching is not material, at any size.
@@ -2425,7 +2480,7 @@ pub fn rfc9298_system_udp_relay_has_one_to_one_bounded_timing_trace_test() -> Ni
   http_test_support.stop_udp_echo_server(echo_server)
 }
 
-pub fn rfc9298_system_udp_live_wire_ignores_target_ecn_and_sends_not_ect_test() -> Nil {
+pub fn rfc9298_system_udp_relays_with_independent_ecn_observation_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_ecn_echo_server()
   let session = system_udp_session(peer, 1000)
 
@@ -2436,28 +2491,49 @@ pub fn rfc9298_system_udp_live_wire_ignores_target_ecn_and_sends_not_ect_test() 
     datagram: <<0, "ecn-wire":utf8>>,
   ) = masque.receive_system_udp_datagram(session, 1000)
 
-  let #(received_packets, proxy_to_target_tos, target_to_proxy_tos) =
-    http_test_support.udp_ecn_echo_snapshot(echo_server)
-  assert received_packets == 1
+  let observation = http_test_support.udp_ecn_echo_snapshot(echo_server)
+  assert observation.received_packets == 1
+  case observation.incoming_tos {
+    http_test_support.EcnObserved(tos) -> {
+      assert tos == 0
+    }
+    http_test_support.EcnUnobserved -> Nil
+  }
+  case observation.configured_reply_tos {
+    http_test_support.EcnObserved(tos) -> {
+      assert tos == 3
+    }
+    http_test_support.EcnUnobserved -> Nil
+  }
   let socket = masque.system_udp_socket_snapshot(session)
   assert socket.not_ect == True
+  assert socket.not_ect_configuration != masque.SystemUdpNotEctNotConfigured
   assert socket.sent_packets == 1
   assert socket.received_packets == 1
 
-  case proxy_to_target_tos {
-    // A host that delivers the received traffic class proves the wire byte
-    // directly: the proxy marks Not-ECT however the target marked its reply.
-    0 -> {
-      assert target_to_proxy_tos == 3
-    }
-    // Windows refuses `recvtos` on a UDP socket, so the fixture records its
-    // sentinel rather than a class it never read, and the relay round trip
-    // above is the whole wire observation that platform can make.
-    unobserved -> {
-      assert unobserved == -1
-    }
-  }
+  assert masque.close_udp_proxy_session(session) == Ok(Nil)
+  http_test_support.stop_udp_echo_server(echo_server)
+}
 
+pub fn udp_observer_rearms_plain_messages_and_retains_unobserved_ecn_test() -> Nil {
+  let #(echo_server, peer) =
+    http_test_support.start_udp_unobserved_echo_server()
+  let session = system_udp_session(peer, 1000)
+  let session =
+    int.range(from: 0, to: 2, with: session, run: fn(session, _) {
+      let assert masque.SystemUdpSent(session: session) =
+        masque.forward_system_udp_datagram(session, <<0, "plain-observer":utf8>>)
+      let assert masque.SystemUdpForward(
+        session: session,
+        datagram: <<0, "plain-observer":utf8>>,
+      ) = masque.receive_system_udp_datagram(session, 1000)
+      session
+    })
+  let observation = http_test_support.udp_ecn_echo_snapshot(echo_server)
+  assert observation.received_packets == 2
+  assert observation.incoming_tos == http_test_support.EcnUnobserved
+  assert observation.configured_reply_tos == http_test_support.EcnUnobserved
+  assert !observation.receive_tos_option_accepted
   assert masque.close_udp_proxy_session(session) == Ok(Nil)
   http_test_support.stop_udp_echo_server(echo_server)
 }
@@ -2716,28 +2792,36 @@ pub fn rfc9298_packet_too_big_snapshot_is_atomic_under_race_test() -> Nil {
 
 /// Wait for a payload-free condition instead of guessing a sleep.
 ///
-/// A fixed sleep is a guess about scheduling: too short and the assertion after
-/// it races, too long and every run pays for it. This polls until the condition
-/// holds or a finite deadline passes, and reports which happened.
+/// A fixed sleep is a guess about scheduling: too short and the assertion after it races, too long and every run pays for it.
+/// This polls until the condition holds or a finite deadline passes, and reports which happened.
 fn await_condition(
   within deadline_milliseconds: Int,
   until check: fn() -> Bool,
 ) -> Bool {
+  await_condition_until(
+    deadline: transport.monotonic_millisecond()
+      + int.max(0, deadline_milliseconds),
+    until: check,
+  )
+}
+
+fn await_condition_until(
+  deadline deadline: Int,
+  until check: fn() -> Bool,
+) -> Bool {
   use <- bool.guard(when: check(), return: True)
-  use <- bool.guard(when: deadline_milliseconds <= 0, return: False)
+  let remaining = deadline - transport.monotonic_millisecond()
+  use <- bool.guard(when: remaining <= 0, return: False)
   process.sleep(1)
-  await_condition(within: deadline_milliseconds - 1, until: check)
+  await_condition_until(deadline:, until: check)
 }
 
 pub fn rfc9298_system_udp_receive_credit_timeout_and_mailbox_converge_test() -> Nil {
   let before = http_test_support.message_queue_length()
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
-  // The second pull is only refused while the first is still waiting, so the
-  // first deadline has to outlast the scheduling delay between them rather
-  // than merely exceed a sleep. A tenth of a second did not: under load the
-  // first pull expired before the second was issued and the refusal became a
-  // timeout.
+  // The second pull is only refused while the first is still waiting, so the first deadline has to outlast the scheduling delay between them rather than merely exceed a sleep.
+  // A tenth of a second did not: under load the first pull expired before the second was issued and the refusal became a timeout.
   let waiting =
     http_test_support.start_task(fn() {
       masque.receive_system_udp_datagram(session, 1000)
@@ -2803,7 +2887,16 @@ pub fn rfc9298_system_udp_active_once_holds_one_packet_until_credit_test() -> Ni
     masque.forward_system_udp_datagram(session, <<0, "first":utf8>>)
   let assert masque.SystemUdpSent(session) =
     masque.forward_system_udp_datagram(session, <<0, "second":utf8>>)
-  process.sleep(20)
+
+  // The snapshot request is handled by the socket owner itself.
+  // Waiting for its buffered counter therefore proves that the second UDP message crossed the active-once boundary; a scheduler-dependent delay cannot establish that ordering.
+  assert await_condition(within: 1000, until: fn() {
+    let snapshot = masque.system_udp_socket_snapshot(session)
+    snapshot.sent_packets == 2
+    && snapshot.buffered_packets == 1
+    && snapshot.received_packets == 0
+    && snapshot.queued_commands == 0
+  })
 
   let held = masque.system_udp_socket_snapshot(session)
   assert held.sent_packets == 2
@@ -2861,7 +2954,9 @@ pub fn rfc9298_system_udp_owner_exit_closes_orphan_before_next_call_test() -> Ni
     })
   let assert Ok(session) = process.receive(handed_off, within: 1000)
   assert http_test_support.await_task(owner) == Nil
-  process.sleep(20)
+  assert await_condition(within: 1000, until: fn() {
+    masque.system_udp_socket_snapshot(session).state == masque.SystemUdpClosed
+  })
   assert masque.system_udp_socket_snapshot(session).state
     == masque.SystemUdpClosed
 
@@ -2911,15 +3006,61 @@ pub fn rfc9298_system_udp_event_wait_is_finite_and_payload_free_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
 
-  let assert masque.SystemUdpEventTimedOut(session: timed_out) =
-    masque.wait_system_udp_event(session, 10)
-  let snapshot = masque.system_udp_socket_snapshot(timed_out)
-  assert snapshot.event_waiting == False
-  assert snapshot.event_timeouts == 1
-  assert snapshot.socket_failures == 0
+  let completed =
+    assert_system_udp_event_deadline(masque.wait_system_udp_event(session, 100))
 
-  assert masque.close_udp_proxy_session(timed_out) == Ok(Nil)
+  assert masque.close_udp_proxy_session(completed) == Ok(Nil)
   http_test_support.stop_udp_echo_server(echo_server)
+}
+
+pub fn rfc9298_system_udp_stalled_event_wait_is_terminal_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let tunnel = system_udp_tunnel(peer, 1000)
+  let socket = masque.udp_proxy_socket(tunnel)
+  let session =
+    masque.bind_udp_proxy_stream(
+      tunnel,
+      masque.udp_request_stream_resource(fn(_, _) { Ok(Nil) }),
+    )
+  http_test_support.suspend_system_udp_owner(socket)
+  let observed = masque.wait_system_udp_event(session, 100)
+  let assert masque.SystemUdpEventObserved(..) = observed
+  let completed = assert_system_udp_event_deadline(observed)
+  assert masque.close_udp_proxy_session(completed) == Ok(Nil)
+  http_test_support.stop_udp_echo_server(echo_server)
+}
+
+fn assert_system_udp_event_deadline(
+  observed: masque.SystemUdpEventWait,
+) -> masque.UdpProxySession(masque.SystemUdpSocket) {
+  case observed {
+    masque.SystemUdpEventTimedOut(session: timed_out) -> {
+      let snapshot = masque.system_udp_socket_snapshot(timed_out)
+      assert snapshot.event_waiting == False
+      assert snapshot.event_timeouts == 1
+      assert snapshot.socket_failures == 0
+      timed_out
+    }
+    _ -> {
+      let assert masque.SystemUdpEventObserved(
+        session: terminated,
+        failure: masque.SystemUdpSocketFailure,
+        cleanup: Ok(Nil),
+      ) = observed
+      let socket = masque.system_udp_socket_snapshot(terminated)
+      assert socket.state == masque.SystemUdpClosed
+      assert socket.event_waiting == False
+      assert socket.receive_waiting == False
+      assert socket.queued_commands == 0
+      assert socket.socket_failures == 1
+      let resources = masque.udp_proxy_session_snapshot(terminated)
+      assert resources.state == masque.UdpProxyClosed
+      assert resources.cleanup_attempts == 1
+      assert resources.request_stream.close_calls == 1
+      assert resources.socket.close_calls == 1
+      terminated
+    }
+  }
 }
 
 pub fn rfc9298_system_udp_event_wait_observes_actor_crash_and_cleans_once_test() -> Nil {
@@ -3052,8 +3193,8 @@ pub fn rfc9298_supervised_system_udp_session_holds_terminal_waiter_test() -> Nil
     attempts: 100,
   )
 
-  // The terminal watcher is not a short poll based on the socket-operation
-  // deadline. With no traffic it remains installed and records no timeout.
+  // The terminal watcher is not a short poll based on the socket-operation deadline.
+  // With no traffic it remains installed and records no timeout.
   process.sleep(50)
   let idle = masque.system_udp_socket_snapshot(session)
   assert idle.state == masque.SystemUdpOpen
@@ -3170,7 +3311,7 @@ pub fn rfc9298_system_udp_idle_activity_is_event_driven_bounded_and_atomic_test(
       inbound_events: activity.inbound_activity_events,
       accounting_consistent: activity.activity_events
         == activity.outbound_activity_events + activity.inbound_activity_events,
-      wake_credit_bounded: activity.maximum_pending_commands == 1
+      wake_credit_bounded: activity.maximum_pending_commands == 2
         && activity.wake_signals <= activity.activity_events
         && activity.owner_wakeups <= activity.wake_signals,
       close:,
@@ -3221,8 +3362,7 @@ pub fn rfc9298_system_udp_idle_owner_expires_without_activity_test() -> Nil {
     attempts: 100,
   )
 
-  // With no activity, the short package-internal policy exercises the same
-  // owner deadline and first-reason transition as the public two-minute floor.
+  // With no activity, the short package-internal policy exercises the same owner deadline and first-reason transition as the public two-minute floor.
   let close_reason = process.receive(stream_closed, within: 5000)
   wait_for_udp_idle_state(
     session: session,
@@ -3392,6 +3532,7 @@ fn udp_proxy_idle_state_name(state: masque.UdpProxyIdleState) -> String {
     masque.UdpIdleWatching -> "watching"
     masque.UdpIdleStopped -> "stopped"
     masque.UdpIdleExpired -> "expired"
+    masque.UdpIdleUnavailable -> "unavailable"
   }
 }
 
@@ -3414,6 +3555,7 @@ fn optional_udp_proxy_termination_reason_name(
     Some(masque.SocketUnusable) -> "socket-unusable"
     Some(masque.ApplicationClosed) -> "application-closed"
     Some(masque.IdleTimeout) -> "idle-timeout"
+    Some(masque.IdleControlUnavailable) -> "idle-control-unavailable"
   }
 }
 
@@ -3454,8 +3596,12 @@ pub fn rfc9298_system_udp_idle_owner_stops_without_reclassification_test() -> Ni
     expected: masque.UdpIdleStopped,
     attempts: 100,
   )
-  process.sleep(125)
+  let #(deadline_state, deadline_expirations, deadline_stop_signals) =
+    force_idle_deadline_check(session)
   let idle = masque.udp_proxy_idle_snapshot(session)
+  assert deadline_state == 1
+  assert deadline_expirations == 0
+  assert deadline_stop_signals == 1
   assert idle.state == masque.UdpIdleStopped
   assert idle.expirations == 0
   assert idle.stop_signals == 1
@@ -3518,6 +3664,193 @@ pub fn rfc9298_udp_idle_direction_snapshot_is_atomic_under_race_test() -> Nil {
   assert inbound == 20_000
 }
 
+@external(erlang, "http_masque_idle_lifetime_test", "invalidate_idle_timeout")
+fn invalidate_idle_timeout(
+  session: masque.UdpProxySession(masque.SystemUdpSocket),
+) -> Nil
+
+@external(erlang, "http_masque_idle_lifetime_test", "force_idle_deadline_check")
+fn force_idle_deadline_check(
+  session: masque.UdpProxySession(masque.SystemUdpSocket),
+) -> #(Int, Int, Int)
+
+type TestIdleOwner
+
+@external(erlang, "http_masque_idle_lifetime_test", "orphan_idle_wake")
+fn orphan_idle_wake(
+  session: masque.UdpProxySession(masque.SystemUdpSocket),
+) -> TestIdleOwner
+
+@external(erlang, "http_masque_idle_lifetime_test", "observe_idle_owner_stopped")
+fn observe_idle_owner_stopped(owner: TestIdleOwner) -> Bool
+
+@external(erlang, "http_masque_idle_lifetime_test", "pause_idle_owner")
+fn pause_idle_owner(
+  session: masque.UdpProxySession(masque.SystemUdpSocket),
+) -> TestIdleOwner
+
+@external(erlang, "http_masque_idle_lifetime_test", "resume_idle_owner")
+fn resume_idle_owner(owner: TestIdleOwner) -> Nil
+
+@external(erlang, "http_masque_idle_lifetime_test", "idle_owner")
+fn idle_owner(
+  session: masque.UdpProxySession(masque.SystemUdpSocket),
+) -> TestIdleOwner
+
+pub fn idle_close_waits_for_existing_cleanup_without_killing_its_owner_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let entered = process.new_subject()
+  let callback_completed = process.new_subject()
+  let session =
+    masque.bind_supervised_system_udp_proxy_stream_with_idle(
+      system_udp_tunnel(peer, 1000),
+      masque.udp_request_stream_resource(fn(reason, _) {
+        let release = process.new_subject()
+        process.send(entered, #(release, reason))
+        let released = process.receive(release, within: 1000)
+        process.send(callback_completed, released)
+        Ok(Nil)
+      }),
+      masque.udp_proxy_idle_timeout_for_testing(50),
+    )
+  let owner = idle_owner(session)
+  let assert Ok(#(release, reason)) = process.receive(entered, within: 1000)
+  let closed = process.new_subject()
+  let _closer =
+    process.spawn_unlinked(fn() {
+      process.send(closed, masque.close_udp_proxy_session(session))
+    })
+  let early = process.receive(closed, within: 20)
+  process.send(release, Nil)
+  let completed = process.receive(callback_completed, within: 1000)
+  let result = case early {
+    Ok(outcome) -> Ok(outcome)
+    Error(Nil) -> process.receive(closed, within: 1000)
+  }
+  let joined = observe_idle_owner_stopped(owner)
+  let snapshot = masque.udp_proxy_session_snapshot(session)
+  http_test_support.stop_udp_echo_server(echo_server)
+  assert reason == masque.IdleTimeout
+  assert early == Error(Nil)
+  assert completed == Ok(Ok(Nil))
+  assert result == Ok(Ok(Nil))
+  assert joined == True
+  assert snapshot.termination == Some(masque.IdleTimeout)
+  assert snapshot.socket.close_calls == 1
+  assert snapshot.request_stream.close_calls == 1
+}
+
+pub fn idle_owner_join_timeout_is_not_success_and_can_be_retried_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let assert Ok(policy) = masque.udp_proxy_idle_timeout(120_000)
+  let session =
+    masque.bind_supervised_system_udp_proxy_stream_with_idle(
+      system_udp_tunnel(peer, 100),
+      masque.udp_request_stream_resource(fn(_, _) { Ok(Nil) }),
+      policy,
+    )
+  let owner = pause_idle_owner(session)
+  let first = masque.close_udp_proxy_session(session)
+  let terminal = masque.udp_proxy_session_snapshot(session)
+  resume_idle_owner(owner)
+  let joined = observe_idle_owner_stopped(owner)
+  let retried = masque.close_udp_proxy_session(session)
+  http_test_support.stop_udp_echo_server(echo_server)
+  assert first == Error(masque.UdpProxyIdleOwnerJoinTimeout)
+  assert terminal.socket.close_calls == 1
+  assert terminal.request_stream.close_calls == 1
+  assert joined == True
+  assert retried == Ok(Nil)
+  assert masque.udp_proxy_session_snapshot(session).socket.close_calls == 1
+}
+
+pub fn idle_owner_is_joined_even_when_activity_wake_sender_dies_test() -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let assert Ok(policy) = masque.udp_proxy_idle_timeout(120_000)
+  let session =
+    masque.bind_supervised_system_udp_proxy_stream_with_idle(
+      system_udp_tunnel(peer, 1000),
+      masque.udp_request_stream_resource(fn(_, _) { Ok(Nil) }),
+      policy,
+    )
+  let owner = orphan_idle_wake(session)
+  let cleanup = masque.close_udp_proxy_session(session)
+  let terminal = masque.udp_proxy_session_snapshot(session)
+  let joined = observe_idle_owner_stopped(owner)
+  http_test_support.stop_udp_echo_server(echo_server)
+  assert cleanup == Ok(Nil)
+  assert terminal.socket.close_calls == 1
+  assert terminal.request_stream.close_calls == 1
+  assert terminal.state == masque.UdpProxyClosed
+  assert joined == True
+}
+
+pub fn idle_control_failure_after_send_closes_once_without_resending_test() -> Nil {
+  exercise_idle_control_failure(False)
+}
+
+pub fn idle_control_failure_after_receive_closes_once_without_consuming_twice_test() -> Nil {
+  exercise_idle_control_failure(True)
+}
+
+fn exercise_idle_control_failure(after_send: Bool) -> Nil {
+  let #(echo_server, peer) = http_test_support.start_udp_echo_server()
+  let stream_closed = process.new_subject()
+  let session =
+    masque.bind_supervised_system_udp_proxy_stream_with_idle(
+      system_udp_tunnel(peer, 1000),
+      masque.udp_request_stream_resource(fn(reason, _) {
+        process.send(stream_closed, reason)
+        Ok(Nil)
+      }),
+      masque.udp_proxy_idle_timeout_for_testing(5000),
+    )
+  let unrelated = system_udp_session(peer, 1000)
+  case after_send {
+    False -> {
+      invalidate_idle_timeout(session)
+      let assert masque.SystemUdpSent(_) =
+        masque.forward_system_udp_datagram(session, <<0, "once":utf8>>)
+    }
+    True -> {
+      let assert masque.SystemUdpSent(_) =
+        masque.forward_system_udp_datagram(session, <<0, "once":utf8>>)
+      invalidate_idle_timeout(session)
+      let assert masque.SystemUdpForward(_, <<0, "once":utf8>>) =
+        masque.receive_system_udp_datagram(session, 1000)
+    }
+  }
+  assert process.receive(stream_closed, within: 1000)
+    == Ok(masque.IdleControlUnavailable)
+  let terminal = masque.udp_proxy_session_snapshot(session)
+  assert terminal.state == masque.UdpProxyClosed
+  assert terminal.termination == Some(masque.IdleControlUnavailable)
+  assert terminal.socket.close_calls == 1
+  assert terminal.request_stream.close_calls == 1
+  assert masque.udp_proxy_idle_snapshot(session).state
+    == masque.UdpIdleUnavailable
+  assert masque.system_udp_socket_snapshot(session).sent_packets == 1
+  case after_send {
+    True -> {
+      assert masque.system_udp_socket_snapshot(session).received_packets == 1
+    }
+    False -> Nil
+  }
+  assert masque.close_udp_proxy_session(session) == Ok(Nil)
+  let repeated = masque.udp_proxy_session_snapshot(session)
+  assert repeated.socket.close_calls == 1
+  assert repeated.request_stream.close_calls == 1
+  assert repeated.termination == Some(masque.IdleControlUnavailable)
+  let assert masque.SystemUdpSent(_) =
+    masque.forward_system_udp_datagram(unrelated, <<0, "independent":utf8>>)
+  let assert masque.SystemUdpForward(_, <<0, "independent":utf8>>) =
+    masque.receive_system_udp_datagram(unrelated, 1000)
+  assert masque.udp_proxy_session_snapshot(unrelated).state
+    == masque.UdpProxyOpen
+  assert masque.close_udp_proxy_session(unrelated) == Ok(Nil)
+  http_test_support.stop_udp_echo_server(echo_server)
+}
+
 pub fn rfc9298_terminal_system_udp_session_rejects_before_parse_or_io_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
@@ -3527,8 +3860,8 @@ pub fn rfc9298_terminal_system_udp_session_rejects_before_parse_or_io_test() -> 
   let receiver_before = masque.udp_proxy_session_receiver_snapshot(session)
   let socket_before = masque.system_udp_socket_snapshot(session)
 
-  // This bit array is deliberately malformed. A terminal session must reject
-  // it before Context ID/alignment parsing or an owner command is attempted.
+  // This bit array is deliberately malformed.
+  // A terminal session must reject it before Context ID/alignment parsing or an owner command is attempted.
   let assert masque.SystemUdpSessionInactive(session: session) =
     masque.forward_system_udp_datagram(session, <<0:size(1)>>)
   let assert masque.SystemUdpSessionInactive(session: session) =
@@ -3570,9 +3903,8 @@ pub fn rfc9298_system_udp_event_and_datagram_waiters_have_independent_credit_tes
 pub fn rfc9298_system_udp_duplicate_event_waiter_is_busy_then_converges_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
   let session = system_udp_session(peer, 1000)
-  // Timeout delivery itself has a dedicated test. Keep this waiter alive long
-  // enough to make duplicate admission, rather than a scheduler race with its
-  // expiry, the only transition under test here.
+  // Timeout delivery itself has a dedicated test.
+  // Keep this waiter alive long enough to make duplicate admission, rather than a scheduler race with its expiry, the only transition under test here.
   let first =
     http_test_support.start_task(fn() {
       masque.wait_system_udp_event(session, 5000)
@@ -3772,16 +4104,14 @@ pub fn rfc9298_system_udp_error_cancels_live_http3_request_stream_test() -> Nil 
   assert snapshot.socket.close_calls == 1
   assert snapshot.socket.cleanup_attempts == 1
 
-  let _closed = http3_client.close(connection)
+  let _closed =
+    http3_client.close_within(connection: connection, within_milliseconds: 5000)
   assert http3_server.stop(listener) == Ok(http3_server.Stopped)
   http_test_support.stop_udp_echo_server(echo_server)
 }
 
 pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
   let #(echo_server, peer) = http_test_support.start_udp_echo_server()
-  // This test drives each receive with its own 1 ms deadline below. Give the
-  // unrelated fresh-BEAM socket-owner startup a production-shaped budget so
-  // scheduler cold-start latency cannot masquerade as a command-credit bug.
   let tunnel = system_udp_tunnel(peer, 1000)
   let socket = masque.udp_proxy_socket(tunnel)
   let stream_closed = process.new_subject()
@@ -3798,7 +4128,7 @@ pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
     list.repeat(Nil, times: 8)
     |> list.map(fn(_) {
       http_test_support.start_task(fn() {
-        masque.receive_system_udp_datagram(session, 1)
+        masque.receive_system_udp_datagram(session, 1000)
       })
     })
   wait_for_system_udp_queue(session: session, expected: 8, attempts: 100)
@@ -3809,6 +4139,7 @@ pub fn rfc9298_system_udp_command_flood_is_grant_before_growth_test() -> Nil {
   let assert masque.SystemUdpReceiveBusy(session: busy_session) =
     masque.receive_system_udp_datagram(session, 1)
   assert masque.system_udp_socket_snapshot(busy_session).rejected_commands == 1
+  http_test_support.kill_system_udp_owner(socket)
   list.each(admitted, fn(task) {
     let assert masque.SystemUdpSocketTerminated(..) =
       http_test_support.await_task(task)
@@ -4029,18 +4360,12 @@ pub fn rfc9298_datagram_capsule_admission_discards_before_payload_test() -> Nil 
 }
 
 pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
-  // RFC 9484 section 4.8: an Internet Protocol Number names both an upper layer
-  // and an IPv6 extension header, so an endpoint that scopes by that number
-  // walks the chain of extensions and matches the outermost non-extension
-  // number. Reading the Next Header field of the fixed header instead matches
-  // the first extension, which is the wrong end of the chain in both
-  // directions: traffic the rule allows is refused, and traffic it does not
-  // allow is forwarded under the extension's own number.
+  // RFC 9484 section 4.8: an Internet Protocol Number names both an upper layer and an IPv6 extension header, so an endpoint that scopes by that number walks the chain of extensions and matches the outermost non-extension number.
+  // Reading the Next Header field of the fixed header instead matches the first extension, which is the wrong end of the chain in both directions: traffic the rule allows is refused, and traffic it does not allow is forwarded under the extension's own number.
   let source = <<0x20, 0x01, 0x0d, 0xb8, 0:size(96)>>
   let destination = <<0x20, 0x01, 0x0d, 0xb8, 0:size(88), 1>>
   let prefix = masque.IpPrefix(masque.Ipv6(source), 32)
-  // Hop-by-Hop Options carrying UDP: Next Header 17, Hdr Ext Len 0, then six
-  // octets of Pad6 to fill the fixed eight-octet minimum.
+  // Hop-by-Hop Options carrying UDP: Next Header 17, Hdr Ext Len 0, then six octets of Pad6 to fill the fixed eight-octet minimum.
   let hop_by_hop = <<17, 0, 1, 4, 0, 0, 0, 0>>
   let udp = <<1000:size(16), 2000:size(16), 8:size(16), 0:size(16)>>
   let extended = <<
@@ -4054,8 +4379,7 @@ pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
   let assert <<_before:bytes-size(7), hop_limit, _after:bits>> = forwarded
   assert hop_limit == 63
 
-  // The extension's own number is not what the packet carries, so a rule
-  // written for Hop-by-Hop Options does not admit the UDP inside it.
+  // The extension's own number is not what the packet carries, so a rule written for Hop-by-Hop Options does not admit the UDP inside it.
   let assert Ok(extension) = masque.allow_ip_destination(empty, prefix, Some(0))
   assert masque.forward_ip_packet(extension, extended, limits())
     == Error(masque.DestinationForbidden)
@@ -4080,8 +4404,7 @@ pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
   assert masque.forward_ip_packet(over_tcp, chained, limits())
     != Error(masque.DestinationForbidden)
 
-  // A chain whose length field runs past the packet cannot be resolved, so the
-  // packet is refused rather than matched against whatever was reached.
+  // A chain whose length field runs past the packet cannot be resolved, so the packet is refused rather than matched against whatever was reached.
   let truncated = <<
     6:4,
     0:8,
@@ -4096,9 +4419,8 @@ pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
   assert masque.forward_ip_packet(upper, truncated, limits())
     == Error(masque.InvalidIpPacket)
 
-  // The walk is bounded rather than led by the packet. Eight extensions, the
-  // number of positions RFC 8200 section 4.1 lays out, still resolve; a ninth
-  // is refused instead of walked.
+  // The walk is bounded rather than led by the packet.
+  // Eight extensions, the number of positions RFC 8200 section 4.1 lays out, still resolve; a ninth is refused instead of walked.
   let padding = <<0, 0, 1, 4, 0, 0, 0, 0>>
   let last = <<17, 0, 1, 4, 0, 0, 0, 0>>
   let eight =
@@ -4128,10 +4450,8 @@ pub fn connect_ip_scoping_walks_the_ipv6_extension_header_chain_test() -> Nil {
 }
 
 pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
-  // RFC 9484 section 4.6, as corrected by erratum 8444: a "target" or
-  // "ipproto" left at the wildcard is percent-encoded, because RFC 6570 simple
-  // expansion escapes every character outside the unreserved set and "*" is
-  // not in it. A bare "*" names a different path than the template expands to,
+  // RFC 9484 section 4.6, as corrected by erratum 8444: a "target" or "ipproto" left at the wildcard is percent-encoded, because RFC 6570 simple expansion escapes every character outside the unreserved set and "*" is not in it.
+  // A bare "*" names a different path than the template expands to,
   // so a proxy matching the template would not recognise the request.
   let assert Ok(unscoped) =
     masque.connect_ip(
@@ -4142,8 +4462,7 @@ pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
     )
   assert masque.request_path(unscoped) == "/.well-known/masque/ip/%2A/%2A/"
 
-  // Each variable is expanded on its own, so one wildcard beside one value is
-  // encoded in the wildcard position only.
+  // Each variable is expanded on its own, so one wildcard beside one value is encoded in the wildcard position only.
   let assert Ok(targeted) =
     masque.connect_ip(
       masque.Http2,
@@ -4165,12 +4484,8 @@ pub fn connect_ip_percent_encodes_the_wildcard_variables_test() -> Nil {
 }
 
 pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
-  // RFC 9484 section 11: where an endpoint knows the prefix its peer is allowed
-  // to send from -- because it assigned one in an ADDRESS_ASSIGN capsule, or
-  // because it was configured out of band -- it follows BCP 38 and refuses
-  // anything else. A policy carrying no source prefix is an endpoint that does
-  // not know, and constrains nothing; the first prefix added makes every source
-  // outside it a spoofed one.
+  // RFC 9484 section 11: where an endpoint knows the prefix its peer is allowed to send from -- because it assigned one in an ADDRESS_ASSIGN capsule, or because it was configured out of band -- it follows BCP 38 and refuses anything else.
+  // A policy carrying no source prefix is an endpoint that does not know, and constrains nothing; the first prefix added makes every source outside it a spoofed one.
   let packet = <<
     0x45, 0, 28:size(16), 1:size(16), 0:size(16), 64, 17, 0x8e99:size(16), 192,
     0, 2, 1, 198, 51, 100, 2, 1, 2, 3, 4, 5, 6, 7, 8,
@@ -4208,8 +4523,7 @@ pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
   assert masque.forward_ip_packet(other_family, packet, limits())
     == Error(masque.SourceForbidden)
 
-  // The source is read before the destination, so a spoofed source is refused
-  // as one rather than reported as a forbidden destination.
+  // The source is read before the destination, so a spoofed source is refused as one rather than reported as a forbidden destination.
   let assert Ok(bare) = masque.deny_all(limits())
   let assert Ok(bare) =
     masque.allow_ip_source(
@@ -4219,8 +4533,7 @@ pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
   assert masque.forward_ip_packet(bare, packet, limits())
     == Error(masque.SourceForbidden)
 
-  // A prefix that is not one is refused when the rule is written, not when a
-  // packet arrives.
+  // A prefix that is not one is refused when the rule is written, not when a packet arrives.
   assert masque.allow_ip_source(
       policy,
       masque.IpPrefix(masque.Ipv4(<<192, 0, 2, 1>>), 24),
@@ -4229,12 +4542,8 @@ pub fn connect_ip_forwarding_rejects_a_spoofed_source_test() -> Nil {
 }
 
 pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
-  // RFC 9484 section 4.6 gives the "target" variable a grammar -- an IPv6
-  // prefix, an IPv4 prefix, a reg-name, or the wildcard -- and three conditions
-  // the grammar cannot state: a prefix length is decimal, no larger than the
-  // address it qualifies, and every bit of the address below it is zero. A
-  // target that meets none of these still expands into a path, so the request
-  // would name a scope the proxy has to reject.
+  // RFC 9484 section 4.6 gives the "target" variable a grammar -- an IPv6 prefix, an IPv4 prefix, a reg-name, or the wildcard -- and three conditions the grammar cannot state: a prefix length is decimal, no larger than the address it qualifies, and every bit of the address below it is zero.
+  // A target that meets none of these still expands into a path, so the request would name a scope the proxy has to reject.
   let scoped = fn(target) {
     masque.connect_ip(
       masque.Http2,
@@ -4250,19 +4559,16 @@ pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
   let assert Ok(_) = scoped("192.0.2.1")
   let assert Ok(_) = scoped("2001:db8::42")
 
-  // A colon in a literal is percent-encoded on expansion, and so is the slash
-  // that introduces a prefix length.
+  // A colon in a literal is percent-encoded on expansion, and so is the slash that introduces a prefix length.
   let assert Ok(literal) = scoped("2001:db8::/32")
   assert masque.request_path(literal)
     == "/.well-known/masque/ip/2001%3Adb8%3A%3A%2F32/%2A/"
 
-  // Bits below the prefix length are set, so the target names an address where
-  // it claims to name a network.
+  // Bits below the prefix length are set, so the target names an address where it claims to name a network.
   assert scoped("198.51.100.1/24") == Error(masque.InvalidScope)
   assert scoped("2001:db8::1/32") == Error(masque.InvalidScope)
 
-  // A length longer than the address, and a length that is not a decimal
-  // integer at all.
+  // A length longer than the address, and a length that is not a decimal integer at all.
   assert scoped("198.51.100.0/33") == Error(masque.InvalidScope)
   assert scoped("2001:db8::/129") == Error(masque.InvalidScope)
   assert scoped("198.51.100.0/x") == Error(masque.InvalidScope)
@@ -4270,14 +4576,12 @@ pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
 
   // A name is not a prefix, so it carries no length.
   assert scoped("example.com/24") == Error(masque.InvalidScope)
-  // Figure 6 ends in reg-name, so a dotted string that is not an address is
-  // still a name and is carried as one. A string with colons in it can only
-  // have been meant as an IPv6 literal, so a malformed one is refused.
+  // Figure 6 ends in reg-name, so a dotted string that is not an address is still a name and is carried as one.
+  // A string with colons in it can only have been meant as an IPv6 literal, so a malformed one is refused.
   let assert Ok(_) = scoped("198.51.100.256")
   assert scoped("2001:db8:::1") == Error(masque.InvalidScope)
 
-  // The policy side reads the same grammar, so a scope that cannot be
-  // requested cannot be allowed either.
+  // The policy side reads the same grammar, so a scope that cannot be requested cannot be allowed either.
   let assert Ok(policy) = masque.deny_all(limits())
   assert masque.allow_ip_scope(
       policy,
@@ -4287,11 +4591,8 @@ pub fn connect_ip_scope_target_follows_the_variable_format_test() -> Nil {
 }
 
 pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
-  // RFC 9484 sections 4.2 through 4.5: the HTTP/1.1 mapping is an upgrade to
-  // "connect-ip" answered with 101, and the HTTP/2 and HTTP/3 mapping is an
-  // Extended CONNECT answered in the 2xx range. Each response also has to start
-  // the Capsule Protocol, and no payload may be proxied until one of them has
-  // been read.
+  // RFC 9484 sections 4.2 through 4.5: the HTTP/1.1 mapping is an upgrade to "connect-ip" answered with 101, and the HTTP/2 and HTTP/3 mapping is an Extended CONNECT answered in the 2xx range.
+  // Each response also has to start the Capsule Protocol, and no payload may be proxied until one of them has been read.
   let scope = masque.IpScope(Some("198.51.100.0/24"), Some(17))
   let assert Ok(upgraded) =
     masque.connect_ip(masque.Http1, "proxy.example", scope, limits())
@@ -4316,8 +4617,7 @@ pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
   ]
   assert masque.confirm(tunnel, 200, switched)
     == Error(masque.UnexpectedStatus(200))
-  // An upgrade naming the other proxying protocol is not this tunnel, and a
-  // response that never starts the Capsule Protocol carries no capsules.
+  // An upgrade naming the other proxying protocol is not this tunnel, and a response that never starts the Capsule Protocol carries no capsules.
   assert masque.confirm(tunnel, 101, [
       #("connection", "upgrade"),
       #("upgrade", "connect-udp"),
@@ -4337,8 +4637,7 @@ pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
   >>
   assert masque.send_datagram(established, packet) == Ok(<<0, packet:bits>>)
 
-  // Extended CONNECT carries the protocol in a pseudo-header instead, and its
-  // success is any 2xx rather than the protocol switch.
+  // Extended CONNECT carries the protocol in a pseudo-header instead, and its success is any 2xx rather than the protocol switch.
   let assert Ok(extended) =
     masque.connect_ip(masque.Http3, "proxy.example", scope, limits())
   assert masque.request_method(extended) == http.Connect
@@ -4360,6 +4659,48 @@ pub fn connect_ip_request_and_response_mapping_is_exact_test() -> Nil {
       #("upgrade", "connect-ip"),
     ])
     == Error(masque.InvalidResponse)
+}
+
+pub fn rfc9484_errata_8444_percent_encodes_each_wildcard_test() -> Nil {
+  [masque.Http1, masque.Http2, masque.Http3]
+  |> list.each(fn(protocol) {
+    let assert Ok(all_protocols_and_targets) =
+      masque.connect_ip(
+        protocol,
+        "proxy.example",
+        masque.IpScope(None, None),
+        limits(),
+      )
+    assert masque.request_path(all_protocols_and_targets)
+      == "/.well-known/masque/ip/%2A/%2A/"
+
+    let assert Ok(all_protocols) =
+      masque.connect_ip(
+        protocol,
+        "proxy.example",
+        masque.IpScope(Some("198.51.100.0/24"), None),
+        limits(),
+      )
+    assert masque.request_path(all_protocols)
+      == "/.well-known/masque/ip/198.51.100.0%2F24/%2A/"
+
+    let assert Ok(all_targets) =
+      masque.connect_ip(
+        protocol,
+        "proxy.example",
+        masque.IpScope(None, Some(17)),
+        limits(),
+      )
+    assert masque.request_path(all_targets) == "/.well-known/masque/ip/%2A/17/"
+  })
+
+  assert masque.connect_ip(
+      masque.Http3,
+      "proxy.example",
+      masque.IpScope(Some("*"), None),
+      limits(),
+    )
+    == Error(masque.InvalidScope)
 }
 
 pub fn connect_ip_packet_forwarding_enforces_scope_route_and_ttl_test() -> Nil {
@@ -4474,11 +4815,10 @@ pub fn permanent_ip_capsules_have_exact_wire_vectors_test() -> Nil {
     == Ok(Some(masque.RouteAdvertisement([route])))
 }
 
-// A route advertisement is peer input. Every bound the validator checks is
-// checked here, because the ordering and overlap scans read these ranges as
-// plain integers and cannot re-decide a malformed one.
-// An address capsule is peer input too. Every field the decoder reads has a
-// bound, and the bounds are the ones RFC 9484 sections 4.7.1 and 4.7.2 state.
+// A route advertisement is peer input.
+// Every bound the validator checks is checked here, because the ordering and overlap scans read these ranges as plain integers and cannot re-decide a malformed one.
+// An address capsule is peer input too.
+// Every field the decoder reads has a bound, and the bounds are the ones RFC 9484 sections 4.7.1 and 4.7.2 state.
 pub fn address_capsules_reject_malformed_entries_test() -> Nil {
   let assign = fn(payload) {
     masque.decode_capsule(http3_capsule.Extension(1, payload), limits())
@@ -4498,18 +4838,15 @@ pub fn address_capsules_reject_malformed_entries_test() -> Nil {
   assert assign(<<0, 4, 192, 0>>) == Error(masque.InvalidAddress)
   let assert Ok(Some(_)) = assign(<<0, 4, 192, 0, 2, 0, 24>>)
 
-  // A Request ID answers a request, so zero is not one, and the same one
-  // cannot appear twice in a capsule.
+  // A Request ID answers a request, so zero is not one, and the same one cannot appear twice in a capsule.
   assert request(<<0, 4, 0, 0, 0, 0, 32>>) == Error(masque.InvalidAddress)
   assert request(<<1, 4, 0, 0, 0, 0, 32, 1, 4, 0, 0, 0, 0, 32>>)
     == Error(masque.InvalidAddress)
-  // RFC 9484 section 4.7.2: a capsule with no Requested Address at all aborts
-  // the request stream rather than being read as a request for nothing.
+  // RFC 9484 section 4.7.2: a capsule with no Requested Address at all aborts the request stream rather than being read as a request for nothing.
   assert request(<<>>) == Error(masque.InvalidCapsule)
   let assert Ok(Some(_)) = request(<<1, 4, 0, 0, 0, 0, 32>>)
 
-  // The same bounds hold on the way out, so a malformed entry cannot be built
-  // and sent either.
+  // The same bounds hold on the way out, so a malformed entry cannot be built and sent either.
   assert masque.encode_capsule(
       masque.AddressAssign([
         masque.AssignedAddress(
@@ -4542,8 +4879,7 @@ pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil 
   assert masque.encode_capsule(masque.RouteAdvertisement([reversed]), limits())
     == Error(masque.InvalidRoute)
 
-  // A range whose bounds are in different address spaces has no decoding at
-  // all, so it is refused before any numeric comparison is reached.
+  // A range whose bounds are in different address spaces has no decoding at all, so it is refused before any numeric comparison is reached.
   let mixed_family =
     masque.IpRoute(
       masque.Ipv4(<<192, 0, 2, 0>>),
@@ -4604,9 +4940,8 @@ pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil 
   let assert Ok(_) =
     masque.encode_capsule(masque.RouteAdvertisement([earlier, ipv6]), limits())
 
-  // A wildcard protocol sorts ahead of a numbered one, so this pair is
-  // correctly ordered and only the overlap scan can reject it. Without a case
-  // like this the ordering check answers for the overlap check as well.
+  // A wildcard protocol sorts ahead of a numbered one, so this pair is correctly ordered and only the overlap scan can reject it.
+  // Without a case like this the ordering check answers for the overlap check as well.
   let any_protocol =
     masque.IpRoute(
       masque.Ipv4(<<192, 0, 2, 0>>),
@@ -4634,10 +4969,8 @@ pub fn route_advertisement_rejects_malformed_and_unordered_ranges_test() -> Nil 
   let assert Ok(_) =
     masque.encode_capsule(masque.RouteAdvertisement([below, inside]), limits())
 
-  // Two address families share no address space even when their ranges read as
-  // overlapping integers. `::` to `::ffff:ffff` covers exactly the numbers an
-  // IPv4 range can hold, so an overlap scan which forgot the family would
-  // refuse this pair.
+  // Two address families share no address space even when their ranges read as overlapping integers.
+  // `::` to `::ffff:ffff` covers exactly the numbers an IPv4 range can hold, so an overlap scan which forgot the family would refuse this pair.
   let low_ipv6 =
     masque.IpRoute(
       masque.Ipv6(<<0:size(128)>>),
@@ -4718,10 +5051,8 @@ fn inbound_http1_udp_request() -> request.Request(Nil) {
 }
 
 pub fn a_stopped_udp_proxy_listener_reports_its_lifecycle_rather_than_a_port_test() -> Nil {
-  // The port accessor answers from the listener underneath, so once that has
-  // stopped there is no port to answer with and the typed failure is what the
-  // caller reads. Stopping twice is idempotent and says which of the two it
-  // was, so an owner that stops a listener it already stopped is not an error.
+  // The port accessor answers from the listener underneath, so once that has stopped there is no port to answer with and the typed failure is what the caller reads.
+  // Stopping twice is idempotent and says which of the two it was, so an owner that stops a listener it already stopped is not an error.
   let #(certificate, private_key, _ca_certificate) =
     http_test_support.server_credentials()
   let assert Ok(configuration) = http3_server.new(certificate, private_key)

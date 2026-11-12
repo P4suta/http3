@@ -32,7 +32,7 @@ pub fn main() -> Nil {
 
 type IsolationTerminal {
   IsolationDeadline
-  IsolationReadFailure
+  IsolationReadFailure(transport.Error)
   IsolationReadEnd
   IsolationWireFailure
 }
@@ -80,10 +80,17 @@ type GoAwayTrace {
 pub fn concurrent_streams_complete_without_head_of_line_handler_blocking_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
+  let slow_started = process.new_subject()
+  let fast_started = process.new_subject()
   let handler = fn(incoming: request.Request(body.Body), _) {
     case incoming.path {
-      "/slow" -> process.sleep(100)
-      _ -> Nil
+      "/slow" -> {
+        let release_slow = process.new_subject()
+        process.send(slow_started, release_slow)
+        let assert Ok(Nil) = process.receive(release_slow, within: 5000)
+        Nil
+      }
+      _ -> process.send(fast_started, Nil)
     }
     Ok(response.Response(status: 204, headers: [], body: body.empty()))
   }
@@ -133,9 +140,18 @@ pub fn concurrent_streams_complete_without_head_of_line_handler_blocking_test() 
   let assert Ok(Nil) = send_frames(socket, slow)
   let assert Ok(Nil) = send_frames(socket, fast)
 
-  let assert Ok(#(socket, _, responses)) =
-    collect_responses(socket, state, [], 2)
-  assert responses == [#(3, 204), #(1, 204)]
+  let assert Ok(release_slow) = process.receive(slow_started, within: 2000)
+  assert process.receive(fast_started, within: 2000) == Ok(Nil)
+  let assert Ok(#(socket, state, fast_response)) =
+    collect_responses(socket, state, [], 1)
+  assert fast_response == [#(3, 204)]
+
+  // Release the first handler only after stream 3 has completed.
+  // The ordering is now caused by explicit synchronization rather than scheduler timing.
+  process.send(release_slow, Nil)
+  let assert Ok(#(socket, _, slow_response)) =
+    collect_responses(socket, state, [], 1)
+  assert slow_response == [#(1, 204)]
 
   let assert Ok(Nil) = transport.close(socket)
   let assert Ok(Nil) = server.drain_listener(listener)
@@ -612,6 +628,177 @@ pub fn response_source_stops_at_the_peer_window_until_the_client_pulls_test() ->
   Nil
 }
 
+pub fn invalid_response_trailers_reset_only_their_stream_test() -> Nil {
+  rejected_trailer_isolation([#("bad\nname", "rejected")], [])
+}
+
+pub fn oversized_response_trailers_reset_only_their_stream_test() -> Nil {
+  rejected_trailer_isolation([#("x-large", string.repeat("x", 65_536))], [])
+}
+
+pub fn short_response_trailers_reset_only_their_stream_test() -> Nil {
+  rejected_trailer_isolation([#("x-completed", "yes")], [
+    #("content-length", "3"),
+  ])
+}
+
+pub fn short_response_without_trailers_resets_only_its_stream_test() -> Nil {
+  rejected_trailer_isolation([], [#("content-length", "3")])
+}
+
+fn rejected_trailer_isolation(
+  trailers: body.Headers,
+  headers: body.Headers,
+) -> Nil {
+  let #(certificate, private_key, ca_certificate) =
+    http_test_support.server_credentials()
+  let waiting = process.new_subject()
+  let cancelled = process.new_subject()
+  let assert Ok(source) =
+    body.from_pull(
+      body.pull(fn(_) {
+        Ok(body.PullData(
+          <<"ok":utf8>>,
+          body.pull(fn(_) {
+            let released = process.new_subject()
+            process.send(waiting, released)
+            case process.receive(released, within: 5000) {
+              Ok(Nil) -> Ok(body.PullEnd(trailers))
+              Error(Nil) -> Error(error.new(error.Timeout(error.Operation)))
+            }
+          }),
+        ))
+      }),
+      None,
+      None,
+      fn() { process.send(cancelled, Nil) },
+    )
+    |> result.replace_error(Nil)
+  let assert Ok(executor) =
+    server.start(server.defaults(), fn(incoming, _) {
+      case incoming.path {
+        "/invalid-trailers" ->
+          Ok(response.Response(status: 200, headers:, body: source))
+        _ -> Ok(response.new(204) |> response.set_body(body.empty()))
+      }
+    })
+    |> result.replace_error(Nil)
+  let assert Ok(listener) =
+    server.listen_http2_tls(
+      executor,
+      <<127, 0, 0, 1>>,
+      0,
+      server.http2_defaults(),
+      certificate,
+      private_key,
+      "localhost",
+    )
+    |> result.replace_error(Nil)
+  let context.Endpoint(_, port) = server.listener_endpoint(listener)
+  let assert Ok(socket) =
+    transport.connect("127.0.0.1", port, 1000, 1000)
+    |> result.replace_error(Nil)
+  let assert Ok(secured) =
+    transport.upgrade_client_tls(
+      socket,
+      "localhost",
+      [ca_certificate],
+      [<<"h2":utf8>>],
+      1000,
+    )
+    |> result.replace_error(Nil)
+  let transport.TlsReady(socket, selected, _) = secured
+  assert selected == <<"h2":utf8>>
+  let assert Ok(state) =
+    wire.new(connection.Client, connection_limits(), wire_limits())
+    |> result.replace_error(Nil)
+  let assert Ok(started) =
+    wire.initial_bytes(state, []) |> result.replace_error(Nil)
+  let wire.Started(state, initial) = started
+  assert result.is_ok(transport.send(socket, initial))
+  let assert Ok(written) =
+    wire.send_request_headers(
+      state,
+      get_request(port, "/invalid-trailers"),
+      True,
+    )
+    |> result.replace_error(Nil)
+  let wire.HeadersWritten(state, first, frames) = written
+  assert first == 1
+  assert result.is_ok(send_frames(socket, frames))
+  let assert Ok(released) = process.receive(waiting, within: 1000)
+  let assert Ok(written) =
+    wire.send_request_headers(state, get_request(port, "/fast"), True)
+    |> result.replace_error(Nil)
+  let wire.HeadersWritten(state, second, frames) = written
+  assert second == 3
+  assert result.is_ok(send_frames(socket, frames))
+  let assert Ok(received) =
+    collect_responses(socket, state, [], 2) |> result.replace_error(Nil)
+  let #(socket, state, responses) = received
+  assert list.contains(responses, #(1, 200))
+  assert list.contains(responses, #(3, 204))
+  process.send(released, Nil)
+  let reset = collect_reset_and_fast_response(socket, state, False, True, 5000)
+  let disposed = case reset {
+    Ok(_) -> process.receive(cancelled, within: 1000)
+    Error(_) -> Error(Nil)
+  }
+  let reuse =
+    reset
+    |> result.replace_error(Nil)
+    |> result.try(fn(state) {
+      let #(socket, state, _, _) = state
+      reuses_after_reset(socket, state, port)
+    })
+    |> result.unwrap(False)
+  let _closed = transport.close(socket)
+  let stopped_listener = server.stop_listener(listener)
+  let stopped_executor = server.stop(executor)
+  let cancellation_count =
+    count_cancellation_receipts(cancelled, case disposed {
+      Ok(Nil) -> 1
+      Error(Nil) -> 0
+    })
+  // Convert successful wire state to a scalar before any failing assertion.
+  assert result.map(reset, fn(_) { Nil }) == Ok(Nil)
+  assert disposed == Ok(Nil)
+  assert reuse
+  assert cancellation_count == 1
+  assert stopped_listener == Ok(Nil)
+  assert stopped_executor == Ok(Nil)
+}
+
+fn reuses_after_reset(
+  socket: transport.Socket,
+  state: wire.State,
+  port: Int,
+) -> Result(Bool, Nil) {
+  use written <- result.try(
+    wire.send_request_headers(state, get_request(port, "/after-reset"), True)
+    |> result.replace_error(Nil),
+  )
+  let wire.HeadersWritten(state, third, frames) = written
+  use _ <- result.try(send_frames(socket, frames))
+  use received <- result.try(collect_responses(socket, state, [], 1))
+  let #(_, _, statuses) = received
+  Ok(third == 5 && statuses == [#(5, 204)])
+}
+
+fn count_cancellation_receipts(
+  subject: process.Subject(Nil),
+  count: Int,
+) -> Int {
+  case count >= 2 {
+    True -> count
+    False ->
+      case process.receive(subject, within: 0) {
+        Error(Nil) -> count
+        Ok(Nil) -> count_cancellation_receipts(subject, count + 1)
+      }
+  }
+}
+
 pub fn stalled_response_source_resets_only_its_stream_test() -> Nil {
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
@@ -767,8 +954,7 @@ pub fn externally_cancelled_context_resets_only_its_http2_stream_test() -> Nil {
   let assert Ok(#(socket, state, True, True)) =
     collect_reset_and_fast_response(socket, state, False, False, 5000)
 
-  // A stream-local cancellation must not poison later streams on the same
-  // authenticated connection.
+  // A stream-local cancellation must not poison later streams on the same authenticated connection.
   let assert Ok(wire.HeadersWritten(state, 5, healthy_request)) =
     wire.send_request_headers(
       state,
@@ -1429,14 +1615,14 @@ fn collect_reset_and_fast_response_until(
       ))
     False, True -> {
       case transport.read(socket, 65_536, int.max(remaining, 1)) {
-        Error(_) ->
+        Error(failure) ->
           Error(isolation_trace(
             reset_seen,
             fast_seen,
             response_statuses,
             stream_resets,
             peer_goaways,
-            IsolationReadFailure,
+            IsolationReadFailure(failure),
           ))
         Ok(transport.ReadEnd(_)) ->
           Error(isolation_trace(
@@ -1947,13 +2133,35 @@ fn collect_responses(
   reversed: List(#(Int, Int)),
   expected: Int,
 ) -> Result(#(transport.Socket, wire.State, List(#(Int, Int))), Nil) {
-  case list.length(reversed) >= expected {
-    True -> Ok(#(socket, state, list.reverse(reversed)))
-    False -> {
+  collect_responses_until(
+    socket,
+    state,
+    reversed,
+    expected,
+    transport.monotonic_millisecond() + 5000,
+  )
+}
+
+fn collect_responses_until(
+  socket: transport.Socket,
+  state: wire.State,
+  reversed: List(#(Int, Int)),
+  expected: Int,
+  deadline: Int,
+) -> Result(#(transport.Socket, wire.State, List(#(Int, Int))), Nil) {
+  let remaining = deadline - transport.monotonic_millisecond()
+  case list.length(reversed) >= expected, remaining > 0 {
+    True, _ -> Ok(#(socket, state, list.reverse(reversed)))
+    False, False -> Error(Nil)
+    False, True -> {
       use read <- result.try(
-        transport.read(socket, 65_536, 1000) |> result.map_error(fn(_) { Nil }),
+        transport.read(socket, 65_536, int.min(remaining, 1000))
+        |> result.replace_error(Nil),
       )
-      let assert transport.ReadData(bytes, socket) = read
+      use #(bytes, socket) <- result.try(case read {
+        transport.ReadData(bytes, socket) -> Ok(#(bytes, socket))
+        transport.ReadEnd(_) -> Error(Nil)
+      })
       use fed <- result.try(
         wire.feed(state, bytes) |> result.map_error(fn(_) { Nil }),
       )
@@ -1963,11 +2171,12 @@ fn collect_responses(
         |> result.map_error(fn(_) { Nil }),
       )
       use _ <- result.try(send_frames(socket, automatic))
-      collect_responses(
+      collect_responses_until(
         socket,
         state,
         response_actions(actions, reversed),
         expected,
+        deadline,
       )
     }
   }
@@ -2039,10 +2248,8 @@ fn wire_limits() -> wire.Limits {
 }
 
 pub fn a_request_body_ending_in_trailers_reaches_its_handler_test() -> Nil {
-  // RFC 9113 section 8.1: a request body may end with a trailer section
-  // instead of an END_STREAM on its last DATA frame. The server has to finish
-  // the body on the trailers rather than keep waiting for data that will not
-  // arrive, and the handler has to see them.
+  // RFC 9113 section 8.1: a request body may end with a trailer section instead of an END_STREAM on its last DATA frame.
+  // The server has to finish the body on the trailers rather than keep waiting for data that will not arrive, and the handler has to see them.
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
   let observed = process.new_subject()
@@ -2111,10 +2318,7 @@ pub fn a_request_body_ending_in_trailers_reaches_its_handler_test() -> Nil {
 }
 
 pub fn a_handler_failure_becomes_a_response_unless_it_cancelled_test() -> Nil {
-  // A handler that returns an error still owes the peer a response, and which
-  // response depends on what the error was: a deadline or a cancellation is
-  // the stream already ending, so nothing more is written for it, while any
-  // other failure is answered rather than left hanging.
+  // A handler that returns an error still owes the peer a response, and which response depends on what the error was: a deadline or a cancellation is the stream already ending, so nothing more is written for it, while any other failure is answered rather than left hanging.
   let #(certificate, private_key, ca_certificate) =
     http_test_support.server_credentials()
   let handler = fn(incoming: request.Request(body.Body), _) {

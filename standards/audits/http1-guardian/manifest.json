@@ -1,0 +1,77 @@
+{
+  "schema": 5,
+  "audit": "http1_handler_guardian",
+  "status": "candidate",
+  "ready_allowed": false,
+  "canonical_command": "mise run http1-guardian-audit",
+  "phase_order": [
+    "semantic",
+    "independent",
+    "evidence"
+  ],
+  "phase_control_counts": {
+    "semantic": 71,
+    "independent": 12,
+    "evidence": 35
+  },
+  "input_inventory": [
+    ".mise.toml",
+    "src/http/internal/http1/server.gleam",
+    "src/http_server_ffi.erl",
+    "test/server_handler_lifetime_test.gleam",
+    "test/http_handler_lifetime_test_ffi.erl",
+    "scripts/spawn_monitor_contract_audit.py",
+    "standards/audits/http1-guardian/README.md",
+    "standards/audits/http1-guardian/adversarial_contract_check.py",
+    "standards/audits/http1-guardian/consumer.py",
+    "standards/audits/http1-guardian/control-authority.json",
+    "standards/audits/http1-guardian/guardian_contract_check.py",
+    "standards/audits/http1-guardian/integration-plan.json",
+    "standards/audits/http1-guardian/launcher.py",
+    "standards/audits/http1-guardian/manifest.json",
+    "standards/audits/http1-guardian/review.md",
+    "standards/audits/http1-guardian/spawn_monitor_dataflow_contract_check.py",
+    "standards/audits/http1-guardian/v5_core.py",
+    "standards/audits/http1-guardian/v5-fix-matrix.json",
+    "standards/audits/http1-guardian/v5_gate.py",
+    "standards/audits/http1-guardian/history/manifest.json"
+  ],
+  "executable_roles": {
+    "launcher": "standards/audits/http1-guardian/launcher.py",
+    "core": "standards/audits/http1-guardian/v5_core.py",
+    "gate": "standards/audits/http1-guardian/v5_gate.py",
+    "consumer": "standards/audits/http1-guardian/consumer.py",
+    "guardian": "standards/audits/http1-guardian/guardian_contract_check.py",
+    "scanner": "scripts/spawn_monitor_contract_audit.py"
+  },
+  "control_authority": "standards/audits/http1-guardian/control-authority.json",
+  "history_manifest": "standards/audits/http1-guardian/history/manifest.json",
+  "history_chain": [
+    "v2:Rejected",
+    "v3:Rejected",
+    "v4:Rejected",
+    "v5:Red",
+    "v5:candidate"
+  ],
+  "runtime_policy": {
+    "implementation": "cpython",
+    "version": "3.12.13",
+    "mise_request": "python@3.12.13",
+    "configuration": ".mise.toml",
+    "configuration_sha256": "pending_root_freeze"
+  },
+  "limits": {
+    "overall_milliseconds": 240000,
+    "phase_milliseconds": 60000,
+    "cleanup_milliseconds": 10000,
+    "input_bytes": 4194304,
+    "tool_bytes": 67108864,
+    "report_bytes": 1048576,
+    "process_output_bytes": 1048576
+  },
+  "integration": {
+    "mise_task": "staged",
+    "ci_job": "staged",
+    "always_upload": "staged"
+  }
+}

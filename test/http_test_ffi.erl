@@ -35,12 +35,14 @@
     start_exclusive_udp_port_guard/0,
     start_task/1,
     start_udp_ecn_echo_server/0,
+    start_udp_unobserved_echo_server/0,
     start_udp_echo_server/0,
     start_udp_fixed_response_server/1,
     stop_udp_echo_server/1,
     stop_exclusive_udp_port_guard/1,
     suspend_system_udp_owner/1,
     tls_option_cipher_profile/0,
+    transport_orphaned_trace/0,
     udp_ecn_echo_snapshot/1,
     udp_loopback_packet/1,
     with_blackhole_first_host/1
@@ -49,6 +51,14 @@
 -define(TASK_TIMEOUT, 10000).
 -define(BLACKHOLE_ADDRESS, {192, 0, 2, 1}).
 -define(LOOPBACK_ADDRESS, {127, 0, 0, 1}).
+
+-spec transport_orphaned_trace() -> tuple().
+transport_orphaned_trace() ->
+    Trace = http_transport_ffi:diagnostics_new(),
+    {http_transport_diagnostics, Counters, _Started} = Trace,
+    %% Model an emitter that reserved its slot and exited before publishing.
+    atomics:put(Counters, 1, 1),
+    Trace.
 
 -spec http1_listener_snapshot_race(pos_integer()) ->
     {non_neg_integer(), non_neg_integer(), non_neg_integer(),
@@ -793,29 +803,114 @@ address_family(Address) ->
         _ -> inet6
     end.
 
-%% Run the concurrent family resolution with each family's answer delayed by the
-%% given number of milliseconds, where a negative delay means the query dies
-%% without answering. Returns how long the whole collection took and which
-%% families were represented in the result.
+%% Control query readiness and reply order around the production resolution delay.
 -spec family_resolution_trace(integer(), integer(), integer()) ->
     {non_neg_integer(), boolean(), boolean()}.
 family_resolution_trace(SixDelay, FourDelay, _Unused) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Controller, Monitor} = spawn_monitor(fun() ->
+        family_resolution_controller(Parent, Tag)
+    end),
     Query = fun(Delay, Answer) ->
         fun() ->
-            case Delay < 0 of
-                true -> exit(resolution_failed);
-                false -> timer:sleep(Delay)
-            end,
-            Answer
+            ControllerMonitor = monitor(process, Controller),
+            Controller ! {Tag, query, self(), Delay},
+            try
+                receive
+                    {Tag, reply} -> Answer;
+                    {Tag, fail} -> exit(resolution_failed);
+                    {'DOWN', ControllerMonitor, process, Controller, _} ->
+                        error(resolution_controller_failed)
+                after 3000 -> error(resolution_query_not_released)
+                end
+            after demonitor(ControllerMonitor, [flush]) end
         end
     end,
     Started = erlang:monotonic_time(millisecond),
-    Answers = http_transport_ffi:resolve_families([
-        {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
-        {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
-    ]),
-    Elapsed = erlang:monotonic_time(millisecond) - Started,
-    {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}.
+    try
+        Answers = http_transport_ffi:resolve_families([
+            {inet6, Query(SixDelay, [{inet6, {0, 0, 0, 0, 0, 0, 0, 1}}])},
+            {inet, Query(FourDelay, [{inet, ?LOOPBACK_ADDRESS}])}
+        ]),
+        Elapsed = erlang:monotonic_time(millisecond) - Started,
+        {Elapsed, maps:is_key(inet6, Answers), maps:is_key(inet, Answers)}
+    after
+        Controller ! {Tag, done},
+        receive
+            {'DOWN', Monitor, process, Controller, normal} -> ok;
+            {'DOWN', Monitor, process, Controller, _} ->
+                error(resolution_controller_failed)
+        after 3000 ->
+            exit(Controller, kill),
+            error(resolution_controller_not_joined)
+        end
+    end.
+
+-type resolution_query() :: {pid(), reference(), integer()}.
+
+-spec family_resolution_controller(pid(), reference()) -> ok.
+family_resolution_controller(Parent, Tag) ->
+    ParentMonitor = monitor(process, Parent),
+    Queries = family_resolution_queries(Tag, 2, []),
+    try
+        case lists:all(fun({_, _, Delay}) -> Delay >= 0 andalso Delay < 50 end,
+                       Queries) of
+            true ->
+                true = erlang:suspend_process(Parent),
+                lists:foreach(fun(Query) -> family_resolution_reply(Query, Tag) end,
+                              lists:keysort(3, Queries)),
+                true = erlang:resume_process(Parent);
+            false ->
+                lists:foreach(fun(Query = {_, _, Delay}) ->
+                    case Delay < 50 of
+                        true -> family_resolution_reply(Query, Tag);
+                        false -> ok
+                    end
+                end, Queries)
+        end,
+        receive
+            {Tag, done} -> ok;
+            {'DOWN', ParentMonitor, process, Parent, _} ->
+                error(resolution_owner_failed)
+        after 3000 -> error(resolution_owner_not_finished)
+        end,
+        lists:foreach(fun(Query = {_, _, Delay}) ->
+            case Delay >= 50 of
+                true -> family_resolution_reply(Query, Tag);
+                false -> ok
+            end
+        end, Queries)
+    after
+        try erlang:resume_process(Parent) of
+            _ -> ok
+        catch error:badarg -> ok end,
+        lists:foreach(fun({Worker, WorkerMonitor, _}) ->
+            exit(Worker, kill),
+            demonitor(WorkerMonitor, [flush])
+        end, Queries),
+        demonitor(ParentMonitor, [flush])
+    end.
+
+-spec family_resolution_queries(reference(), non_neg_integer(), [resolution_query()]) ->
+    [resolution_query()].
+family_resolution_queries(_, 0, Queries) -> Queries;
+family_resolution_queries(Tag, Remaining, Queries) ->
+    receive
+        {Tag, query, Worker, Delay} ->
+            Monitor = monitor(process, Worker),
+            family_resolution_queries(Tag, Remaining - 1,
+                                      [{Worker, Monitor, Delay} | Queries])
+    after 3000 -> error(resolution_queries_not_concurrent)
+    end.
+
+-spec family_resolution_reply(resolution_query(), reference()) -> ok.
+family_resolution_reply({Worker, Monitor, Delay}, Tag) ->
+    Outcome = case Delay < 0 of true -> fail; false -> reply end,
+    Worker ! {Tag, Outcome},
+    receive {'DOWN', Monitor, process, Worker, _} -> ok
+    after 3000 -> error(resolution_query_not_joined)
+    end.
 
 %% Register one name with the given IPv4 and IPv6 addresses in the host file,
 %% resolve it through the production path, and return the resolved order.
@@ -993,14 +1088,45 @@ start_udp_fixed_response_server(Response)
 
 -spec start_udp_ecn_echo_server() -> {tuple(), tuple()}.
 start_udp_ecn_echo_server() ->
+    start_udp_observer_echo_server(true).
+
+-spec start_udp_unobserved_echo_server() -> {tuple(), tuple()}.
+start_udp_unobserved_echo_server() ->
+    start_udp_observer_echo_server(false).
+
+-spec start_udp_observer_echo_server(boolean()) -> {tuple(), tuple()}.
+start_udp_observer_echo_server(RequestAncillary) ->
     Caller = self(),
     Reference = make_ref(),
-    Counters = atomics:new(3, [{signed, true}]),
+    Counters = atomics:new(4, [{signed, true}]),
     atomics:put(Counters, 2, -1),
     atomics:put(Counters, 3, -1),
     {Pid, Monitor} = spawn_monitor(fun() ->
-        {Socket, ReplyTrafficClass} = open_ecn_echo_socket(),
-        atomics:put(Counters, 3, ReplyTrafficClass),
+        {ok, Socket} = gen_udp:open(
+            0,
+            [
+                binary,
+                inet,
+                {active, once},
+                {ip, {127, 0, 0, 1}}
+            ]
+        ),
+        %% Receiving ancillary data and configuring a CE-marked response are
+        %% independent capabilities. Windows may accept recvtos yet deliver
+        %% ordinary five-element UDP messages, while rejecting tos = 3.
+        case RequestAncillary andalso observer_setopts(Socket, [{recvtos, true}]) of
+            true -> atomics:put(Counters, 4, 1);
+            false -> ok
+        end,
+        case RequestAncillary andalso observer_setopts(Socket, [{tos, 3}]) of
+            true ->
+                case inet:getopts(Socket, [tos]) of
+                    {ok, [{tos, ReplyTos}]} when is_integer(ReplyTos) ->
+                        atomics:put(Counters, 3, ReplyTos);
+                    _ -> ok
+                end;
+            false -> ok
+        end,
         {ok, {{127, 0, 0, 1}, Port}} = inet:sockname(Socket),
         Caller ! {Reference, udp_ecn_echo_ready, Port},
         udp_ecn_echo_loop(Socket, Reference, Counters)
@@ -1019,15 +1145,29 @@ start_udp_ecn_echo_server() ->
         erlang:error(udp_ecn_echo_start_timeout)
     end.
 
--spec udp_ecn_echo_snapshot(tuple()) -> {integer(), integer(), integer()}.
+-spec observer_setopts(gen_udp:socket(), [gen_udp:option()]) -> boolean().
+observer_setopts(Socket, Options) ->
+    try inet:setopts(Socket, Options) of
+        ok -> true;
+        {error, _} -> false
+    catch _:_ -> false
+    end.
+
+-spec udp_ecn_echo_snapshot(tuple()) -> tuple().
 udp_ecn_echo_snapshot(
     {http_test_udp_ecn_echo, _Pid, _Monitor, _Reference, Counters}
 ) ->
     {
+        udp_ecn_snapshot,
         atomics:get(Counters, 1),
-        atomics:get(Counters, 2),
-        atomics:get(Counters, 3)
+        ecn_observation(atomics:get(Counters, 2)),
+        ecn_observation(atomics:get(Counters, 3)),
+        atomics:get(Counters, 4) =:= 1
     }.
+
+-spec ecn_observation(integer()) -> ecn_unobserved | {ecn_observed, integer()}.
+ecn_observation(-1) -> ecn_unobserved;
+ecn_observation(Value) -> {ecn_observed, Value}.
 
 -spec stop_udp_echo_server(tuple()) -> nil.
 stop_udp_echo_server({http_test_udp_echo, Pid, Monitor, Reference}) ->
@@ -1057,6 +1197,14 @@ udp_echo_loop(Socket, Reference) ->
         {Reference, stop_udp_echo} ->
             gen_udp:close(Socket),
             exit(normal);
+        {udp_error, Socket, Reason}
+            when Reason =:= econnreset; Reason =:= econnrefused;
+                 Reason =:= enetunreach; Reason =:= ehostunreach ->
+            %% An earlier peer can close immediately after its send. Its
+            %% ICMP advisory must not terminate this shared echo fixture and
+            %% erase another session's independent response. Keep one credit.
+            ok = inet:setopts(Socket, [{active, once}]),
+            udp_echo_loop(Socket, Reference);
         {udp_error, Socket, Reason} ->
             gen_udp:close(Socket),
             exit({udp_echo_error, Reason});
@@ -1336,28 +1484,6 @@ observe_packet_too_big_snapshot(Diagnostics, Reference, Violations) ->
         )
     end.
 
-%% Open the echo socket asking for the received and sent traffic class, and
-%% fall back to a plain socket where the runtime refuses those options. Windows
-%% is the platform that refuses them, and the fallback is what lets the relay
-%% round trip still be observed there.
--spec open_ecn_echo_socket() -> {gen_udp:socket(), integer()}.
-open_ecn_echo_socket() ->
-    Base = [binary, inet, {active, once}, {ip, {127, 0, 0, 1}}],
-    case gen_udp:open(0, Base ++ [{recvtos, true}, {tos, 3}]) of
-        {ok, Socket} ->
-            {Socket, reply_traffic_class(Socket)};
-        {error, _Reason} ->
-            {ok, Socket} = gen_udp:open(0, Base),
-            {Socket, -1}
-    end.
-
--spec reply_traffic_class(gen_udp:socket()) -> integer().
-reply_traffic_class(Socket) ->
-    case inet:getopts(Socket, [tos]) of
-        {ok, [{tos, Value}]} when is_integer(Value) -> Value;
-        _Other -> -1
-    end.
-
 -spec echo_ecn_datagram(
     gen_udp:socket(),
     inet:ip_address(),
@@ -1377,6 +1503,12 @@ echo_ecn_datagram(Socket, Address, Port, Payload, Counters, TrafficClass) ->
     no_return().
 udp_ecn_echo_loop(Socket, Reference, Counters) ->
     receive
+        {udp, Socket, Address, Port, Payload} ->
+            atomics:add(Counters, 1, 1),
+            atomics:put(Counters, 2, -1),
+            ok = gen_udp:send(Socket, Address, Port, Payload),
+            ok = inet:setopts(Socket, [{active, once}]),
+            udp_ecn_echo_loop(Socket, Reference, Counters);
         {udp, Socket, Address, Port, Ancillary, Payload} ->
             IncomingTrafficClass = case lists:keyfind(tos, 1, Ancillary) of
                 {tos, Value} when is_integer(Value) -> Value;

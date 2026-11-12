@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "status": "Rejected",
+  "classification": "independent_review_false_green",
+  "invalidated_at": "2026-09-13",
+  "invalidated_manifest_sha256": "982609574c4814ce4bcedc1456ff166016eb20cb4d9ff95323e752ee9206660d",
+  "invalidated_review_sha256": "5025400367f1947fa65d312860f5f4a291311e3a5a06ba84055d29718d115330",
+  "invalidated_scanner_sha256": "9c42047e7358596b5faf02facc661e5104d34b09dfc43a8c9fc5839b33a10a20",
+  "invalidated_guardian_checker_sha256": "6db0843690d457e79a512ef33f530a90d31081d52dd66f521d5173e4f5c0eb15",
+  "invalidated_wrapper_sha256": "93f20d507e918b2a84ebf7a2007a3c8de8436367014d1b6898d528f21f613be9",
+  "preserved_red": [
+    "build/root-validation/http1-handler-guardian-deadline-v2-red",
+    "build/root-validation/spawn-monitor-dataflow-v2-red"
+  ],
+  "invalidated_green": [
+    "build/root-validation/http1-handler-guardian-deadline-v2-static-green",
+    "build/root-validation/spawn-monitor-dataflow-v2-self-test-green",
+    "build/root-validation/spawn-monitor-dataflow-v2-audit-green",
+    "build/root-validation/spawn-monitor-dataflow-v2-contract-green"
+  ],
+  "reasons": [
+    "matching_mailbox_can_starve_deadline",
+    "guardian_checker_accepts_dead_or_early_run_decoy",
+    "spawn_scanner_accepts_dead_scope_wrong_receiver_composite",
+    "wrapper_does_not_compare_report_identity_values",
+    "exception_text_can_leak_path"
+  ],
+  "replacement": "build/root-validation/http1-handler-guardian-v4-static-green/evidence.json"
+}

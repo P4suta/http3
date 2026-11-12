@@ -19,10 +19,13 @@ import http/internal/http1
 import http/internal/http1/body as http1_body
 import http/internal/http1/encode
 import http/internal/transport
+import http/internal/upload
 
 const http1_alpn = <<"http/1.1":utf8>>
 
 const startup_milliseconds = 1000
+
+const handler_cleanup_milliseconds = 1000
 
 const accept_poll_milliseconds = 25
 
@@ -125,6 +128,11 @@ type ConnectionCommand {
   StopConnection
 }
 
+type HeadReceive {
+  HeadReceived(transport.Socket, http1.RequestHead, BitArray)
+  HeadReceiveEnded
+}
+
 type ConnectionBoot {
   ConnectionBoot(
     commands: Subject(ConnectionCommand),
@@ -138,6 +146,7 @@ type ConnectionEntry {
     pid: Pid,
     monitor: Monitor,
     commands: Subject(ConnectionCommand),
+    socket: transport.Socket,
   )
 }
 
@@ -196,16 +205,46 @@ type DispatchReply {
   DispatchReply(Result(Response(body.Body), error.Error))
 }
 
+type HandlerTermination {
+  HandlerTimedOut
+  HandlerStopped
+}
+
+type HandlerCommand {
+  TerminateHandler(termination: HandlerTermination, requested_at: Int)
+}
+
+type HandlerStartFailure {
+  HandlerStartTimedOut
+  HandlerStartFailed
+}
+
+type HandlerEvent {
+  HandlerResult(DispatchReply)
+  HandlerFailed
+  HandlerTerminated(HandlerTermination)
+  HandlerCleanupUnconfirmed(HandlerTermination)
+}
+
 type HandlerMessage {
   IncomingMessage(IncomingCommand)
-  HandlerCompleted(DispatchReply)
-  HandlerExited(process.Down)
+  HandlerEventMessage(HandlerEvent)
+  HandlerGuardianExited(process.Down)
   ConnectionControl(ConnectionCommand)
 }
 
-type ResponseReadMessage {
-  ResponseReadCompleted(Result(body.Read, error.Error))
-  ResponseReaderExited(process.Down)
+type ResponseMessage {
+  ResponseSource(upload.Event)
+  ResponseControl(ConnectionCommand)
+}
+
+type ResponseStream {
+  ResponseStream(
+    socket: transport.Socket,
+    input: BitArray,
+    read_ended: Bool,
+    draining: Bool,
+  )
 }
 
 type HandlerOutcome {
@@ -229,8 +268,19 @@ fn mark_draining(lifecycle: Lifecycle) -> Bool
 @external(erlang, "http_server_ffi", "mark_server_stopped")
 fn mark_stopped(lifecycle: Lifecycle) -> Bool
 
-@external(erlang, "http_server_ffi", "run_guarded")
-fn run_guarded(run: fn() -> value) -> Result(value, Nil)
+@external(erlang, "http_server_ffi", "start_http1_handler_guardian")
+fn start_http1_handler_guardian(
+  events: Subject(HandlerEvent),
+  run: fn() -> DispatchReply,
+  cancel: fn() -> Nil,
+  discard: fn(DispatchReply) -> Nil,
+  probe: fn(Int, Pid) -> Nil,
+  after_result: fn() -> Nil,
+  terminate: fn(Pid) -> Nil,
+  handler_deadline: Int,
+  cleanup_milliseconds: Int,
+  startup_milliseconds: Int,
+) -> Result(#(Monitor, Subject(HandlerCommand)), HandlerStartFailure)
 
 @external(erlang, "http_http1_listener_ffi", "new")
 fn new_listener_diagnostics() -> ListenerDiagnostics
@@ -295,8 +345,8 @@ fn raw_listener_snapshot(
   Int,
 )
 
-/// Construct finite server defaults. Cleartext permission is enforced by the
-/// public server configuration rather than represented here.
+/// Construct finite server defaults.
+/// Cleartext permission is enforced by the public server configuration rather than represented here.
 pub fn defaults() -> Config {
   Config(
     backlog: 128,
@@ -722,14 +772,64 @@ fn stop_runtime(
   let _closed = transport.stop(runtime.listener)
   list.each(runtime.connections, fn(connection) {
     process.send(connection.commands, StopConnection)
-    process.kill(connection.pid)
-    process.demonitor_process(connection.monitor)
-    record_connection_exit(runtime.diagnostics)
+    let _closed = transport.close(connection.socket)
   })
-  list.each(runtime.drain_waiters, fn(waiter) { process.send(waiter, Ok(Nil)) })
-  let _stopped = mark_stopped(runtime.lifecycle)
-  record_listener_state(runtime.diagnostics, 2)
-  process.send(reply, Ok(Nil))
+  let deadline =
+    transport.monotonic_millisecond()
+    + int.min(
+      runtime.config.drain_timeout_milliseconds,
+      runtime.config.operation_timeout_milliseconds,
+    )
+  let joined =
+    list.fold(runtime.connections, True, fn(joined, connection) {
+      let exited =
+        process.new_selector()
+        |> process.select_specific_monitor(connection.monitor, fn(_) { Nil })
+        |> process.selector_receive(within: int.max(
+          0,
+          deadline - transport.monotonic_millisecond(),
+        ))
+      case exited {
+        Ok(Nil) -> {
+          process.demonitor_process(connection.monitor)
+          record_connection_exit(runtime.diagnostics)
+          joined
+        }
+        Error(Nil) -> {
+          // A forced exit is a failed graceful join, never a successful stop.
+          process.kill(connection.pid)
+          let killed =
+            process.new_selector()
+            |> process.select_specific_monitor(connection.monitor, fn(_) { Nil })
+            |> process.selector_receive(within: int.max(
+              0,
+              deadline + 1000 - transport.monotonic_millisecond(),
+            ))
+          process.demonitor_process(connection.monitor)
+          case killed {
+            Ok(Nil) -> record_connection_exit(runtime.diagnostics)
+            Error(Nil) -> Nil
+          }
+          False
+        }
+      }
+    })
+  let outcome = case joined {
+    True -> Ok(Nil)
+    False -> Error(error.new(error.Timeout(error.Operation)))
+  }
+  list.each(runtime.drain_waiters, fn(waiter) { process.send(waiter, outcome) })
+  case joined {
+    True -> {
+      let _stopped = mark_stopped(runtime.lifecycle)
+      record_listener_state(runtime.diagnostics, 2)
+    }
+    False -> {
+      let _draining = mark_draining(runtime.lifecycle)
+      record_listener_state(runtime.diagnostics, 1)
+    }
+  }
+  process.send(reply, outcome)
 }
 
 fn connection_exited(
@@ -857,7 +957,7 @@ fn spawn_connection(
                 elapsed_milliseconds(started_milliseconds),
               )
               process.send(proceed, Nil)
-              Ok(ConnectionEntry(pid:, monitor:, commands:))
+              Ok(ConnectionEntry(pid:, monitor:, commands:, socket:))
             }
           }
         }
@@ -931,7 +1031,12 @@ fn secure(
         |> result.map_error(map_tls_error),
       )
       let transport.TlsReady(socket, selected, _) = ready
-      use <- require(selected == http1_alpn, protocol_error())
+      // HTTP/1.1 predates ALPN.
+      // An absent extension keeps that protocol; an explicitly incompatible selection must never be reinterpreted as H1.
+      use <- require(
+        selected == <<>> || selected == http1_alpn,
+        protocol_error(),
+      )
       Ok(#(
         socket,
         context.TlsIdentity(service_identity, None),
@@ -994,13 +1099,14 @@ fn receive_and_handle_request(
     http1.request_parser(head_limits(config))
     |> result.map_error(fn(_) { protocol_error() }),
   )
-  case receive_head(socket, parser, buffered, config) {
+  case receive_head(socket, parser, buffered, config, commands, False) {
     Error(#(status, failure)) -> {
       let _sent =
         send_simple_error(socket, status, reason_phrase(status), config)
       Error(failure)
     }
-    Ok(#(socket, head, remaining)) -> {
+    Ok(HeadReceiveEnded) -> Ok(Nil)
+    Ok(HeadReceived(socket, head, remaining)) -> {
       record_request_head(diagnostics)
       case expectation(head.headers) {
         UnsupportedExpectation -> {
@@ -1031,19 +1137,17 @@ fn receive_and_handle_request(
 
 /// Read one request head, naming the status its failure is answered with.
 ///
-/// RFC 9112 section 3 asks for 414 when a request target is longer than the
-/// server will parse, which the parser names apart from any other framing
-/// failure. Every other failure keeps the 400 this section's own error handling
-/// calls for.
+/// RFC 9112 section 3 asks for 414 when a request target is longer than the server will parse, which the parser names apart from any other framing failure.
+/// Every other failure keeps the 400 this section's own error handling calls for.
 fn receive_head(
   socket: transport.Socket,
   parser: http1.RequestParser,
   input: BitArray,
   config: Config,
-) -> Result(
-  #(transport.Socket, http1.RequestHead, BitArray),
-  #(Int, error.Error),
-) {
+  commands: Subject(ConnectionCommand),
+  received_input: Bool,
+) -> Result(HeadReceive, #(Int, error.Error)) {
+  let received_input = received_input || bit_array.byte_size(input) > 0
   case http1.feed_request(parser, input) {
     Error(failure) -> Error(#(head_failure_status(failure), protocol_error()))
     Ok(http1.RequestReady(head, remaining)) ->
@@ -1051,21 +1155,47 @@ fn receive_head(
         bit_array.byte_size(remaining) <= config.maximum_stream_buffer_bytes
       {
         False -> Error(#(400, resource_error()))
-        True -> Ok(#(socket, head, remaining))
+        True -> Ok(HeadReceived(socket, head, remaining))
       }
     Ok(http1.NeedMore(parser)) ->
-      case
-        transport.read(
-          socket,
-          config.maximum_stream_buffer_bytes,
-          config.idle_timeout_milliseconds,
-        )
-      {
-        Error(failure) -> Error(#(400, map_transport_error(failure)))
-        Ok(transport.ReadEnd(_)) -> Error(#(400, protocol_error()))
-        Ok(transport.ReadData(bytes, socket)) ->
-          receive_head(socket, parser, bytes, config)
-      }
+      read_next_head(socket, parser, config, commands, received_input)
+  }
+}
+
+fn read_next_head(
+  socket: transport.Socket,
+  parser: http1.RequestParser,
+  config: Config,
+  commands: Subject(ConnectionCommand),
+  received_input: Bool,
+) -> Result(HeadReceive, #(Int, error.Error)) {
+  let controls = process.new_selector() |> process.select(commands)
+  case
+    transport.read_or_select(
+      socket,
+      config.maximum_stream_buffer_bytes,
+      config.idle_timeout_milliseconds,
+      controls,
+    )
+  {
+    Error(transport.Closed) | Ok(transport.ReadSocket(transport.ReadEnd(_))) ->
+      head_receive_ended(commands, received_input)
+    Error(failure) -> Error(#(400, map_transport_error(failure)))
+    Ok(transport.ReadMessage(_, _)) -> Ok(HeadReceiveEnded)
+    Ok(transport.ReadSocket(transport.ReadData(bytes, socket))) ->
+      receive_head(socket, parser, bytes, config, commands, received_input)
+  }
+}
+
+fn head_receive_ended(
+  commands: Subject(ConnectionCommand),
+  received_input: Bool,
+) -> Result(HeadReceive, #(Int, error.Error)) {
+  // Local shutdown may close the socket before the selector observes its already-issued control.
+  // A peer EOF is normal only between request heads.
+  case process.receive(commands, within: 0), received_input {
+    Ok(_), _ | Error(Nil), False -> Ok(HeadReceiveEnded)
+    Error(Nil), True -> Error(#(400, protocol_error()))
   }
 }
 
@@ -1142,31 +1272,40 @@ fn handle_valid_request(
         || !incoming_wire_complete(incoming)
         || response.status == 101
         || request.method == gleam_http.Connect
+      let buffered = case incoming_remaining(incoming) {
+        Ok(buffered) -> buffered
+        Error(_) -> <<>>
+      }
       case
-        write_response(incoming.socket, request.method, response, close, config)
+        write_response(
+          incoming.socket,
+          buffered,
+          request.method,
+          response,
+          close,
+          commands,
+          request_context,
+          config,
+        )
       {
         Error(failure) -> Error(failure)
-        Ok(socket) ->
-          case close {
+        Ok(stream) ->
+          case close || stream.draining || stream.read_ended {
             True -> Ok(Nil)
             False ->
-              case incoming_remaining(incoming) {
-                Error(failure) -> Error(failure)
-                Ok(buffered) ->
-                  connection_loop(
-                    socket,
-                    buffered,
-                    request_count + 1,
-                    commands,
-                    handler,
-                    config,
-                    diagnostics,
-                    scheme,
-                    tls_identity,
-                    peer_endpoint,
-                    local_endpoint,
-                  )
-              }
+              connection_loop(
+                stream.socket,
+                stream.input,
+                request_count + 1,
+                commands,
+                handler,
+                config,
+                diagnostics,
+                scheme,
+                tls_identity,
+                peer_endpoint,
+                local_endpoint,
+              )
           }
       }
     }
@@ -1259,25 +1398,54 @@ fn run_handler(
   config: Config,
   diagnostics: ListenerDiagnostics,
 ) -> HandlerOutcome {
-  let completed = process.new_subject()
-  let pid =
-    process.spawn_unlinked(fn() {
-      record_handler_dispatch(diagnostics)
-      process.send(completed, DispatchReply(handler(request, request_context)))
-    })
-  let monitor = process.monitor(pid)
-  let outcome =
-    await_handler(
-      incoming,
-      incoming_commands,
-      completed,
-      connection_commands,
-      monitor,
-      pid,
-      request_context,
-      False,
-      config,
+  let events = process.new_subject()
+  let handler_deadline =
+    transport.monotonic_millisecond()
+    + context.remaining_milliseconds(request_context)
+  let started =
+    start_http1_handler_guardian(
+      events,
+      fn() {
+        record_handler_dispatch(diagnostics)
+        DispatchReply(handler(request, request_context))
+      },
+      fn() { context.cancel(request_context) },
+      discard_dispatch_reply,
+      fn(_, _) { Nil },
+      fn() { Nil },
+      fn(pid) { process.kill(pid) },
+      handler_deadline,
+      handler_cleanup_milliseconds,
+      startup_milliseconds,
     )
+  let outcome = case started {
+    Error(failure) -> {
+      context.cancel(request_context)
+      body.cancel(request.body)
+      case failure {
+        HandlerStartTimedOut ->
+          HandlerOutcome(
+            Error(error.new(error.Timeout(error.Operation))),
+            incoming,
+            True,
+          )
+        HandlerStartFailed ->
+          HandlerOutcome(Error(service_error()), incoming, True)
+      }
+    }
+    Ok(#(guardian_monitor, guardian_commands)) ->
+      await_handler(
+        incoming,
+        incoming_commands,
+        events,
+        guardian_commands,
+        connection_commands,
+        guardian_monitor,
+        False,
+        config,
+        handler_deadline,
+      )
+  }
   record_handler_completion(diagnostics, handler_succeeded(outcome))
   outcome
 }
@@ -1285,71 +1453,78 @@ fn run_handler(
 fn await_handler(
   incoming: IncomingState,
   incoming_commands: Subject(IncomingCommand),
-  completed: Subject(DispatchReply),
+  events: Subject(HandlerEvent),
+  guardian_commands: Subject(HandlerCommand),
   connection_commands: Subject(ConnectionCommand),
-  monitor: Monitor,
-  pid: Pid,
-  request_context: context.Context,
+  guardian_monitor: Monitor,
   draining: Bool,
   config: Config,
+  handler_deadline: Int,
 ) -> HandlerOutcome {
+  let remaining = handler_remaining(handler_deadline)
   let selector =
     process.new_selector()
-    |> process.select_map(incoming_commands, IncomingMessage)
-    |> process.select_map(completed, HandlerCompleted)
-    |> process.select_map(connection_commands, ConnectionControl)
-    |> process.select_specific_monitor(monitor, HandlerExited)
+    |> process.select_map(events, HandlerEventMessage)
+    |> process.select_specific_monitor(guardian_monitor, HandlerGuardianExited)
+  let selector = case remaining > 0 {
+    True ->
+      selector
+      |> process.select_map(incoming_commands, IncomingMessage)
+      |> process.select_map(connection_commands, ConnectionControl)
+    False -> selector
+  }
   case
-    process.selector_receive(
+    receive_http1_handler_message(
       selector,
-      within: config.operation_timeout_milliseconds,
+      handler_deadline,
+      config.operation_timeout_milliseconds,
     )
   {
-    Error(Nil) -> {
-      context.cancel(request_context)
-      process.kill(pid)
-      process.demonitor_process(monitor)
-      HandlerOutcome(
-        Error(error.new(error.Timeout(error.Operation))),
+    Error(Nil) ->
+      terminate_handler_and_await(
         incoming,
-        True,
+        events,
+        guardian_commands,
+        guardian_monitor,
+        HandlerTimedOut,
+        handler_deadline,
       )
-    }
-    Ok(ConnectionControl(StopConnection)) -> {
-      context.cancel(request_context)
-      process.kill(pid)
-      process.demonitor_process(monitor)
-      HandlerAborted
-    }
+    Ok(ConnectionControl(StopConnection)) ->
+      terminate_handler_and_await(
+        incoming,
+        events,
+        guardian_commands,
+        guardian_monitor,
+        HandlerStopped,
+        transport.monotonic_millisecond(),
+      )
     Ok(ConnectionControl(DrainConnection)) ->
       await_handler(
         incoming,
         incoming_commands,
-        completed,
+        events,
+        guardian_commands,
         connection_commands,
-        monitor,
-        pid,
-        request_context,
+        guardian_monitor,
         True,
         config,
+        handler_deadline,
       )
-    Ok(HandlerCompleted(DispatchReply(outcome))) -> {
-      process.demonitor_process(monitor)
-      HandlerOutcome(outcome, incoming, draining)
-    }
-    Ok(HandlerExited(_)) ->
-      HandlerOutcome(Error(service_error()), incoming, True)
+    Ok(HandlerEventMessage(event)) ->
+      finish_handler_event(event, guardian_monitor, incoming, draining)
+    Ok(HandlerGuardianExited(_)) ->
+      reconcile_handler_guardian_exit(events, incoming, draining)
     Ok(IncomingMessage(CancelIncoming)) ->
       await_handler(
         incoming,
         incoming_commands,
-        completed,
+        events,
+        guardian_commands,
         connection_commands,
-        monitor,
-        pid,
-        request_context,
+        guardian_monitor,
         draining,
         config,
+        handler_deadline,
       )
     Ok(IncomingMessage(PullIncoming(sequence, maximum, reply))) -> {
       case sequence == incoming.sequence && maximum > 0 {
@@ -1358,29 +1533,29 @@ fn await_handler(
           await_handler(
             incoming,
             incoming_commands,
-            completed,
+            events,
+            guardian_commands,
             connection_commands,
-            monitor,
-            pid,
-            request_context,
+            guardian_monitor,
             True,
             config,
+            handler_deadline,
           )
         }
         True ->
-          case fulfill_incoming(incoming, maximum, config) {
+          case fulfill_incoming(incoming, maximum, config, handler_deadline) {
             Error(failure) -> {
               process.send(reply, Error(failure))
               await_handler(
                 incoming,
                 incoming_commands,
-                completed,
+                events,
+                guardian_commands,
                 connection_commands,
-                monitor,
-                pid,
-                request_context,
+                guardian_monitor,
                 True,
                 config,
+                handler_deadline,
               )
             }
             Ok(#(incoming, event)) -> {
@@ -1388,13 +1563,13 @@ fn await_handler(
               await_handler(
                 incoming,
                 incoming_commands,
-                completed,
+                events,
+                guardian_commands,
                 connection_commands,
-                monitor,
-                pid,
-                request_context,
+                guardian_monitor,
                 draining,
                 config,
+                handler_deadline,
               )
             }
           }
@@ -1403,15 +1578,250 @@ fn await_handler(
   }
 }
 
+fn terminate_handler_and_await(
+  incoming: IncomingState,
+  events: Subject(HandlerEvent),
+  guardian_commands: Subject(HandlerCommand),
+  guardian_monitor: Monitor,
+  termination: HandlerTermination,
+  requested_at: Int,
+) -> HandlerOutcome {
+  process.send(guardian_commands, TerminateHandler(termination, requested_at))
+  await_handler_termination(
+    incoming,
+    events,
+    guardian_monitor,
+    termination,
+    requested_at + handler_cleanup_milliseconds,
+  )
+}
+
+fn await_handler_termination(
+  incoming: IncomingState,
+  events: Subject(HandlerEvent),
+  guardian_monitor: Monitor,
+  termination: HandlerTermination,
+  cleanup_deadline: Int,
+) -> HandlerOutcome {
+  let selector =
+    process.new_selector()
+    |> process.select_map(events, HandlerEventMessage)
+    |> process.select_specific_monitor(guardian_monitor, HandlerGuardianExited)
+  case
+    process.selector_receive(
+      selector,
+      within: handler_remaining(cleanup_deadline),
+    )
+  {
+    Error(Nil) -> handler_termination_outcome(termination, incoming)
+    Ok(HandlerEventMessage(event)) -> {
+      discard_handler_event_result(event)
+      case event {
+        HandlerCleanupUnconfirmed(_) -> Nil
+        _ -> {
+          let _joined =
+            await_handler_guardian_down(guardian_monitor, cleanup_deadline)
+          Nil
+        }
+      }
+      handler_termination_outcome(termination, incoming)
+    }
+    Ok(HandlerGuardianExited(_)) ->
+      case process.receive(events, within: 0) {
+        Error(Nil) -> HandlerOutcome(Error(service_error()), incoming, True)
+        Ok(event) -> {
+          discard_handler_event_result(event)
+          handler_termination_outcome(termination, incoming)
+        }
+      }
+    Ok(IncomingMessage(_)) | Ok(ConnectionControl(_)) ->
+      handler_termination_outcome(termination, incoming)
+  }
+}
+
+fn finish_handler_event(
+  event: HandlerEvent,
+  guardian_monitor: Monitor,
+  incoming: IncomingState,
+  draining: Bool,
+) -> HandlerOutcome {
+  case event {
+    HandlerCleanupUnconfirmed(termination) ->
+      handler_termination_outcome(termination, incoming)
+    _ -> {
+      let cleanup_deadline =
+        transport.monotonic_millisecond() + handler_cleanup_milliseconds
+      case await_handler_guardian_down(guardian_monitor, cleanup_deadline) {
+        True -> handler_event_outcome(event, incoming, draining)
+        False -> {
+          discard_handler_event_result(event)
+          HandlerOutcome(Error(service_error()), incoming, True)
+        }
+      }
+    }
+  }
+}
+
+fn reconcile_handler_guardian_exit(
+  events: Subject(HandlerEvent),
+  incoming: IncomingState,
+  draining: Bool,
+) -> HandlerOutcome {
+  case process.receive(events, within: 0) {
+    Error(Nil) -> HandlerOutcome(Error(service_error()), incoming, True)
+    Ok(event) -> handler_event_outcome(event, incoming, draining)
+  }
+}
+
+fn await_handler_guardian_down(
+  guardian_monitor: Monitor,
+  cleanup_deadline: Int,
+) -> Bool {
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(guardian_monitor, fn(_) { Nil })
+  process.selector_receive(
+    selector,
+    within: handler_remaining(cleanup_deadline),
+  )
+  == Ok(Nil)
+}
+
+fn handler_event_outcome(
+  event: HandlerEvent,
+  incoming: IncomingState,
+  draining: Bool,
+) -> HandlerOutcome {
+  case event {
+    HandlerResult(DispatchReply(outcome)) ->
+      HandlerOutcome(outcome, incoming, draining)
+    HandlerFailed -> HandlerOutcome(Error(service_error()), incoming, True)
+    HandlerTerminated(termination) | HandlerCleanupUnconfirmed(termination) ->
+      handler_termination_outcome(termination, incoming)
+  }
+}
+
+fn handler_termination_outcome(
+  termination: HandlerTermination,
+  incoming: IncomingState,
+) -> HandlerOutcome {
+  case termination {
+    HandlerTimedOut ->
+      HandlerOutcome(
+        Error(error.new(error.Timeout(error.Operation))),
+        incoming,
+        True,
+      )
+    HandlerStopped -> HandlerAborted
+  }
+}
+
+fn discard_handler_event_result(event: HandlerEvent) -> Nil {
+  case event {
+    HandlerResult(reply) -> discard_dispatch_reply(reply)
+    _ -> Nil
+  }
+}
+
+fn discard_dispatch_reply(reply: DispatchReply) -> Nil {
+  case reply {
+    DispatchReply(Ok(response)) -> body.cancel(response.body)
+    DispatchReply(Error(_)) -> Nil
+  }
+}
+
+fn handler_remaining(deadline: Int) -> Int {
+  int.max(0, deadline - transport.monotonic_millisecond())
+}
+
+fn receive_http1_handler_message(
+  selector: process.Selector(HandlerMessage),
+  handler_deadline: Int,
+  relative_timeout_milliseconds: Int,
+) -> Result(HandlerMessage, Nil) {
+  let _relative_timeout_milliseconds = relative_timeout_milliseconds
+  process.selector_receive(
+    selector,
+    within: handler_remaining(handler_deadline),
+  )
+}
+
+/// Exercise the exact absolute receive primitive with synchronized traffic.
+/// This internal seam exposes only a finite count and no request data.
+@internal
+pub fn handler_deadline_traffic_control(
+  traffic: Subject(Subject(Nil)),
+  ready: Subject(Nil),
+  within_milliseconds within_milliseconds: Int,
+  relative_timeout_milliseconds relative_timeout_milliseconds: Int,
+) -> Int {
+  case
+    within_milliseconds > 0
+    && within_milliseconds <= 10_000
+    && relative_timeout_milliseconds > 0
+    && relative_timeout_milliseconds <= 10_000
+  {
+    False -> 0
+    True -> {
+      let handler_deadline =
+        transport.monotonic_millisecond() + within_milliseconds
+      process.send(ready, Nil)
+      handler_deadline_traffic_loop(
+        traffic,
+        handler_deadline,
+        relative_timeout_milliseconds,
+        0,
+      )
+    }
+  }
+}
+
+fn handler_deadline_traffic_loop(
+  traffic: Subject(Subject(Nil)),
+  handler_deadline: Int,
+  relative_timeout_milliseconds: Int,
+  received: Int,
+) -> Int {
+  let selector =
+    process.new_selector()
+    |> process.select_map(traffic, fn(reply) {
+      process.send(reply, Nil)
+      IncomingMessage(CancelIncoming)
+    })
+  case
+    receive_http1_handler_message(
+      selector,
+      handler_deadline,
+      relative_timeout_milliseconds,
+    )
+  {
+    Error(Nil) -> received
+    Ok(_) ->
+      handler_deadline_traffic_loop(
+        traffic,
+        handler_deadline,
+        relative_timeout_milliseconds,
+        received + 1,
+      )
+  }
+}
+
 fn fulfill_incoming(
   incoming: IncomingState,
   maximum: Int,
   config: Config,
+  handler_deadline: Int,
 ) -> Result(#(IncomingState, IncomingReply), error.Error) {
-  use incoming <- result.try(send_continue_if_needed(incoming))
-  case incoming.pending {
-    <<>> -> fulfill_without_pending(incoming, maximum, config)
-    pending -> emit_incoming(incoming, pending, maximum)
+  case handler_remaining(handler_deadline) > 0 {
+    False -> Error(error.new(error.Timeout(error.Operation)))
+    True -> {
+      use incoming <- result.try(send_continue_if_needed(incoming))
+      case incoming.pending {
+        <<>> ->
+          fulfill_without_pending(incoming, maximum, config, handler_deadline)
+        pending -> emit_incoming(incoming, pending, maximum)
+      }
+    }
   }
 }
 
@@ -1434,6 +1844,7 @@ fn fulfill_without_pending(
   incoming: IncomingState,
   maximum: Int,
   config: Config,
+  handler_deadline: Int,
 ) -> Result(#(IncomingState, IncomingReply), error.Error) {
   case incoming.terminal, incoming.decoder {
     Some(IncomingTerminal(trailers, _)), _ ->
@@ -1441,35 +1852,43 @@ fn fulfill_without_pending(
     None, None -> Error(protocol_error())
     None, Some(decoder) ->
       case incoming.input {
-        <<>> ->
-          case
-            transport.read(
-              incoming.socket,
-              smallest(maximum, config.maximum_stream_buffer_bytes),
-              config.idle_timeout_milliseconds,
-            )
-          {
-            Error(failure) -> Error(map_transport_error(failure))
-            Ok(transport.ReadEnd(socket)) ->
-              case http1_body.finish(decoder) {
-                Error(failure) -> Error(map_body_error(failure))
-                Ok(outcome) ->
-                  handle_body_outcome(
+        <<>> -> {
+          let remaining = handler_remaining(handler_deadline)
+          case remaining > 0 {
+            False -> Error(error.new(error.Timeout(error.Operation)))
+            True ->
+              case
+                transport.read(
+                  incoming.socket,
+                  smallest(maximum, config.maximum_stream_buffer_bytes),
+                  smallest(config.idle_timeout_milliseconds, remaining),
+                )
+              {
+                Error(failure) -> Error(map_transport_error(failure))
+                Ok(transport.ReadEnd(socket)) ->
+                  case http1_body.finish(decoder) {
+                    Error(failure) -> Error(map_body_error(failure))
+                    Ok(outcome) ->
+                      handle_body_outcome(
+                        IncomingState(..incoming, socket:, input: <<>>),
+                        outcome,
+                        maximum,
+                        config,
+                        handler_deadline,
+                      )
+                  }
+                Ok(transport.ReadData(bytes, socket)) ->
+                  handle_body_feed(
                     IncomingState(..incoming, socket:, input: <<>>),
-                    outcome,
+                    decoder,
+                    bytes,
                     maximum,
                     config,
+                    handler_deadline,
                   )
               }
-            Ok(transport.ReadData(bytes, socket)) ->
-              handle_body_feed(
-                IncomingState(..incoming, socket:, input: <<>>),
-                decoder,
-                bytes,
-                maximum,
-                config,
-              )
           }
+        }
         input ->
           handle_body_feed(
             IncomingState(..incoming, input: <<>>),
@@ -1477,6 +1896,7 @@ fn fulfill_without_pending(
             input,
             maximum,
             config,
+            handler_deadline,
           )
       }
   }
@@ -1488,12 +1908,13 @@ fn handle_body_feed(
   bytes: BitArray,
   maximum: Int,
   config: Config,
+  handler_deadline: Int,
 ) -> Result(#(IncomingState, IncomingReply), error.Error) {
   use outcome <- result.try(
     http1_body.feed(decoder, bytes)
     |> result.map_error(map_body_error),
   )
-  handle_body_outcome(incoming, outcome, maximum, config)
+  handle_body_outcome(incoming, outcome, maximum, config, handler_deadline)
 }
 
 fn handle_body_outcome(
@@ -1501,6 +1922,7 @@ fn handle_body_outcome(
   outcome: http1_body.Outcome,
   maximum: Int,
   config: Config,
+  handler_deadline: Int,
 ) -> Result(#(IncomingState, IncomingReply), error.Error) {
   case outcome {
     http1_body.BodyNeedMore(decoder) ->
@@ -1508,6 +1930,7 @@ fn handle_body_outcome(
         IncomingState(..incoming, decoder: Some(decoder)),
         maximum,
         config,
+        handler_deadline,
       )
     http1_body.BodyData(bytes, decoder) ->
       emit_incoming(
@@ -1575,10 +1998,8 @@ fn make_request(
   use parts <- result.try(parse_target(method, target, scheme))
   let TargetParts(path, query, target_authority) = parts
   use headers <- result.try(headers_to_strings(head.headers))
-  // RFC 9112 section 3.2.2: an absolute-form target carries the authority the
-  // request is for, and the Host field is ignored in its favour. Where there is
-  // no such authority the Host field is the only one there is, and section 3.2
-  // requires it.
+  // RFC 9112 section 3.2.2: an absolute-form target carries the authority the request is for, and the Host field is ignored in its favour.
+  // Where there is no such authority the Host field is the only one there is, and section 3.2 requires it.
   use authority <- result.try(case target_authority {
     Some(authority) -> Ok(authority)
     None ->
@@ -1618,10 +2039,8 @@ fn make_request_or_reject(
 
 /// What a request needs from its target.
 ///
-/// The authority is present only for the absolute form, which RFC 9112 section
-/// 3.2.2 says is the one a server uses in place of the Host field. Carrying it
-/// here rather than reading the Host field twice is what makes the two
-/// impossible to disagree about which resource was asked for.
+/// The authority is present only for the absolute form, which RFC 9112 section 3.2.2 says is the one a server uses in place of the Host field.
+/// Carrying it here rather than reading the Host field twice is what makes the two impossible to disagree about which resource was asked for.
 type TargetParts {
   TargetParts(path: String, query: Option(String), authority: Option(String))
 }
@@ -1654,10 +2073,8 @@ fn origin_form(target: String, authority: Option(String)) -> TargetParts {
 
 /// Read an absolute-form request target.
 ///
-/// The scheme has to be the one this listener serves. A target naming the other
-/// one is a request for a resource this connection cannot be answering, and
-/// answering it anyway would let the scheme a client asked for and the scheme
-/// its bytes travelled under differ.
+/// The scheme has to be the one this listener serves.
+/// A target naming the other one is a request for a resource this connection cannot be answering, and answering it anyway would let the scheme a client asked for and the scheme its bytes travelled under differ.
 fn parse_absolute_form(
   target: String,
   scheme: gleam_http.Scheme,
@@ -1678,8 +2095,7 @@ fn parse_absolute_form(
 
 /// Split an absolute form's authority from the path and query after it.
 ///
-/// A query may follow the authority with no path between them, in which case
-/// the path is the root the origin form would have spelled explicitly.
+/// A query may follow the authority with no path between them, in which case the path is the root the origin form would have spelled explicitly.
 fn split_authority(rest: String) -> #(String, String) {
   case string.split_once(rest, on: "/") {
     Ok(#(authority, tail)) -> #(authority, "/" <> tail)
@@ -1807,11 +2223,45 @@ fn token_list_contains(value: String, expected: String) -> Bool {
 
 fn write_response(
   socket: transport.Socket,
+  input: BitArray,
   method: gleam_http.Method,
   response: Response(body.Body),
   close: Bool,
+  commands: Subject(ConnectionCommand),
+  request_context: context.Context,
   config: Config,
-) -> Result(transport.Socket, error.Error) {
+) -> Result(ResponseStream, error.Error) {
+  let stream = ResponseStream(socket, input, False, False)
+  let outcome =
+    write_response_body(
+      stream,
+      method,
+      response,
+      close,
+      commands,
+      request_context,
+      config,
+    )
+  body.transfer_finished(response.body, result.map(outcome, fn(_) { Nil }))
+  case outcome {
+    Error(failure) -> {
+      body.transfer_finished(response.body, Error(failure))
+      body.cancel(response.body)
+    }
+    Ok(_) -> Nil
+  }
+  outcome
+}
+
+fn write_response_body(
+  stream: ResponseStream,
+  method: gleam_http.Method,
+  response: Response(body.Body),
+  close: Bool,
+  commands: Subject(ConnectionCommand),
+  request_context: context.Context,
+  config: Config,
+) -> Result(ResponseStream, error.Error) {
   use framing <- result.try(response_framing(method, response))
   use headers <- result.try(response_headers(
     response.status,
@@ -1829,16 +2279,46 @@ fn write_response(
     |> result.map_error(fn(_) { protocol_error() }),
   )
   use _ <- result.try(
-    transport.send(socket, head)
+    transport.send(stream.socket, head)
     |> result.map_error(map_transport_error),
   )
   case framing {
     http1.NoBody -> {
+      body.transfer_finished(response.body, Ok(Nil))
       body.cancel(response.body)
-      Ok(socket)
+      Ok(stream)
     }
-    http1.ContentLength(_) -> write_fixed_body(socket, response.body, config)
-    http1.Chunked -> write_chunked_body(socket, response.body, config)
+    http1.ContentLength(_) | http1.Chunked -> {
+      let deadline =
+        transport.monotonic_millisecond()
+        + context.remaining_milliseconds(request_context)
+      use source <- result.try(
+        upload.start(
+          source: response.body,
+          maximum_chunk: config.maximum_stream_buffer_bytes,
+          deadline: deadline,
+          expiry: error.Operation,
+          total_deadline: deadline,
+          resources: None,
+          lifecycle_owner: None,
+          abandon: fn(_) {
+            let _closed = transport.close(stream.socket)
+            Nil
+          },
+          released: fn(_) { Nil },
+        ),
+      )
+      let outcome =
+        write_stream_body(stream, source, framing, commands, deadline, config)
+      let transferred = result.map(outcome, fn(_) { Nil })
+      let disposed = upload.finish_source(source, transferred)
+      let released = upload.release(source, transferred)
+      case outcome, disposed, released {
+        Error(failure), _, _ -> Error(failure)
+        _, Error(failure), _ | _, _, Error(failure) -> Error(failure)
+        Ok(stream), Ok(Nil), Ok(Nil) -> Ok(stream)
+      }
+    }
     http1.CloseDelimited | http1.Tunnel -> Error(protocol_error())
   }
 }
@@ -1858,9 +2338,13 @@ fn response_framing(
     gleam_http.Connect, status if status >= 200 && status < 300 ->
       Ok(http1.NoBody)
     _, _ ->
-      case body.known_length(response.body) {
-        Some(length) -> Ok(http1.ContentLength(length))
-        None -> Ok(http1.Chunked)
+      case
+        body.may_have_trailers(response.body),
+        body.known_length(response.body)
+      {
+        True, _ -> Ok(http1.Chunked)
+        False, Some(length) -> Ok(http1.ContentLength(length))
+        False, None -> Ok(http1.Chunked)
       }
   }
 }
@@ -1911,108 +2395,136 @@ fn convert_response_headers(
   }
 }
 
-fn write_fixed_body(
-  socket: transport.Socket,
-  outgoing: body.Body,
+fn write_stream_body(
+  stream: ResponseStream,
+  source: upload.Upload,
+  framing: http1.Framing,
+  commands: Subject(ConnectionCommand),
+  deadline: Int,
   config: Config,
-) -> Result(transport.Socket, error.Error) {
-  case read_response_body(outgoing, config) {
-    Error(failure) -> cancel_body(outgoing, failure)
-    Ok(body.Done(_)) -> Ok(socket)
-    Ok(body.Data(bytes, next)) ->
-      case transport.send(socket, bytes) {
-        Error(failure) -> cancel_body(next, map_transport_error(failure))
-        Ok(Nil) -> write_fixed_body(socket, next, config)
-      }
-  }
-}
-
-fn write_chunked_body(
-  socket: transport.Socket,
-  outgoing: body.Body,
-  config: Config,
-) -> Result(transport.Socket, error.Error) {
-  case read_response_body(outgoing, config) {
-    Error(failure) -> cancel_body(outgoing, failure)
-    Ok(body.Data(bytes, next)) ->
-      case encode.chunk(bytes) {
-        Error(_) -> cancel_body(next, protocol_error())
-        Ok(chunk) ->
-          case transport.send(socket, chunk) {
-            Error(failure) -> cancel_body(next, map_transport_error(failure))
-            Ok(Nil) -> write_chunked_body(socket, next, config)
-          }
-      }
-    Ok(body.Done(completed)) -> {
-      let trailers =
-        body.trailers(completed)
-        |> option_headers
-        |> list.map(fn(header) {
-          http1.Header(
-            bit_array.from_string(header.0),
-            bit_array.from_string(header.1),
+) -> Result(ResponseStream, error.Error) {
+  upload.request_next(source)
+  use #(event, stream) <- result.try(await_response_source(
+    stream,
+    source,
+    commands,
+    deadline,
+    config,
+  ))
+  case event {
+    upload.Chunk(bytes) -> {
+      use encoded <- result.try(case framing {
+        http1.Chunked ->
+          encode.chunk(bytes) |> result.map_error(fn(_) { protocol_error() })
+        _ -> Ok(bytes)
+      })
+      use _ <- result.try(
+        transport.send(stream.socket, encoded)
+        |> result.map_error(map_transport_error),
+      )
+      write_stream_body(stream, source, framing, commands, deadline, config)
+    }
+    upload.End(trailers) -> {
+      use _ <- result.try(case framing {
+        http1.Chunked -> {
+          let fields =
+            list.map(trailers, fn(header) {
+              http1.Header(
+                bit_array.from_string(header.0),
+                bit_array.from_string(header.1),
+              )
+            })
+          use final <- result.try(
+            encode.final_chunk(fields, head_limits(config))
+            |> result.map_error(fn(_) { protocol_error() }),
           )
-        })
-      case encode.final_chunk(trailers, head_limits(config)) {
-        Error(_) -> cancel_body(completed, protocol_error())
-        Ok(final) ->
-          case transport.send(socket, final) {
-            Error(failure) ->
-              cancel_body(completed, map_transport_error(failure))
-            Ok(Nil) -> Ok(socket)
-          }
-      }
+          transport.send(stream.socket, final)
+          |> result.map_error(map_transport_error)
+        }
+        _ -> Ok(Nil)
+      })
+      Ok(stream)
     }
+    upload.Failed(failure) -> Error(failure)
+    upload.SourceDisposed -> Error(service_error())
   }
 }
 
-fn read_response_body(
-  outgoing: body.Body,
+fn await_response_source(
+  stream: ResponseStream,
+  source: upload.Upload,
+  commands: Subject(ConnectionCommand),
+  deadline: Int,
   config: Config,
-) -> Result(body.Read, error.Error) {
-  let completed = process.new_subject()
-  let pid =
-    process.spawn_unlinked(fn() {
-      let read = case
-        run_guarded(fn() {
-          body.read(outgoing, config.maximum_stream_buffer_bytes)
-        })
-      {
-        Ok(result) -> result
-        Error(Nil) -> Error(service_error())
-      }
-      process.send(completed, read)
-    })
-  let monitor = process.monitor(pid)
-  let outcome =
+) -> Result(#(upload.Event, ResponseStream), error.Error) {
+  let remaining = deadline - transport.monotonic_millisecond()
+  use <- require(remaining > 0, error.new(error.Timeout(error.Operation)))
+  let selector =
     process.new_selector()
-    |> process.select_map(completed, ResponseReadCompleted)
-    |> process.select_specific_monitor(monitor, ResponseReaderExited)
-    |> process.selector_receive(within: config.operation_timeout_milliseconds)
-  let read = case outcome {
-    Ok(ResponseReadCompleted(result)) -> result
-    Ok(ResponseReaderExited(_)) ->
-      // A successful reply is sent before the worker exits. Preserve it if
-      // both signals reached the mailbox before the selector ran.
-      case process.receive(completed, within: 0) {
-        Ok(result) -> result
-        Error(Nil) -> Error(service_error())
-      }
-    Error(Nil) -> {
-      process.kill(pid)
-      Error(error.new(error.Timeout(error.Operation)))
+    |> process.select_map(upload.events(source), ResponseSource)
+    |> process.select_map(commands, ResponseControl)
+  let received = case stream.read_ended {
+    True ->
+      process.selector_receive(selector, within: remaining)
+      |> result.map(fn(event) { transport.ReadMessage(event, stream.socket) })
+      |> result.map_error(fn(_) { error.new(error.Timeout(error.Operation)) })
+    False ->
+      transport.read_or_select(
+        stream.socket,
+        int.max(
+          1,
+          config.maximum_stream_buffer_bytes - bit_array.byte_size(stream.input),
+        ),
+        remaining,
+        selector,
+      )
+      |> result.map_error(map_transport_error)
+  }
+  use received <- result.try(received)
+  case received {
+    transport.ReadMessage(ResponseSource(event), socket) ->
+      Ok(#(event, ResponseStream(..stream, socket:)))
+    transport.ReadMessage(ResponseControl(StopConnection), _) ->
+      Error(error.new(error.Cancelled))
+    transport.ReadMessage(ResponseControl(DrainConnection), socket) ->
+      await_response_source(
+        ResponseStream(..stream, socket:, draining: True),
+        source,
+        commands,
+        deadline,
+        config,
+      )
+    transport.ReadSocket(transport.ReadEnd(socket)) -> {
+      use <- require(
+        !transport.read_end_is_terminal(socket),
+        error.new(error.Cancelled),
+      )
+      await_response_source(
+        ResponseStream(..stream, socket:, read_ended: True),
+        source,
+        commands,
+        deadline,
+        config,
+      )
+    }
+    transport.ReadSocket(transport.ReadData(bytes, socket)) -> {
+      use <- require(
+        bit_array.byte_size(stream.input) + bit_array.byte_size(bytes)
+          <= config.maximum_stream_buffer_bytes,
+        resource_error(),
+      )
+      await_response_source(
+        ResponseStream(..stream, socket:, input: <<
+          stream.input:bits,
+          bytes:bits,
+        >>),
+        source,
+        commands,
+        deadline,
+        config,
+      )
     }
   }
-  process.demonitor_process(monitor)
-  read
-}
-
-fn cancel_body(
-  outgoing: body.Body,
-  failure: error.Error,
-) -> Result(value, error.Error) {
-  body.cancel(outgoing)
-  Error(failure)
 }
 
 fn send_simple_error(
@@ -2173,13 +2685,6 @@ fn take_at_most(
       )
       Ok(#(chunk, remaining))
     }
-  }
-}
-
-fn option_headers(headers: Option(body.Headers)) -> body.Headers {
-  case headers {
-    Some(headers) -> headers
-    None -> []
   }
 }
 

@@ -3,6 +3,8 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("diagnostic_failure.hrl").
+
 -define(TRACE_ENVIRONMENT, "HTTP3_BENCHMARK_TRACE_DIR").
 -define(MARKER, <<"trace-payload-marker-5f17c9">>).
 -define(CSV_HEADER,
@@ -32,8 +34,9 @@ guarded_self_test() ->
     catch
         Class:Reason:Stacktrace ->
             io:format(standard_error,
-                      "progress trace self-test failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+                      "progress trace self-test failed: ~s~n",
+                      [json:encode(diagnostic_failure_details(
+                         Class, Reason, Stacktrace))]),
             halt(1)
     end.
 

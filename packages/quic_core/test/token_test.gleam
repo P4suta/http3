@@ -1,6 +1,13 @@
 import quic_core/internal/address_token
+import quic_core/internal/runtime/server_worker
 import quic_core/internal/stateless_reset
 import quic_core/version
+
+type InspectionObservation {
+  ReadableRetryAddressMismatch
+  AuthenticationUnreadable
+  OtherInspection
+}
 
 const token_key = <<
   0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
@@ -177,6 +184,155 @@ pub fn seals_expiring_address_bound_retry_tokens_test() -> Nil {
       nonce,
     )
     == Error(address_token.InvalidInput)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn inspection_distinguishes_readable_retry_rejection_from_foreign_bytes_test() -> Nil {
+  let address = <<127, 0, 0, 1>>
+  let other_address = <<127, 0, 0, 2>>
+  let nonce = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11>>
+  let original_destination = <<9, 8, 7, 6, 5, 4, 3, 2>>
+  let retry_source = <<1, 2, 3, 4, 5, 6, 7, 8>>
+  let assert Ok(token) =
+    address_token.seal_with_nonce(
+      token_key,
+      address_token.Retry,
+      version.Version1,
+      address,
+      4433,
+      original_destination,
+      retry_source,
+      1000,
+      nonce,
+    )
+
+  let readable =
+    address_token.inspect(
+      token_key,
+      token,
+      version.Version1,
+      other_address,
+      4433,
+      1050,
+      100,
+    )
+    |> observe_inspection
+  assert readable == ReadableRetryAddressMismatch
+
+  let assert <<first, rest:bits>> = token
+  let changed = first + 1
+  let tampered = <<changed, rest:bits>>
+  let unreadable =
+    address_token.inspect(
+      token_key,
+      tampered,
+      version.Version1,
+      address,
+      4433,
+      1050,
+      100,
+    )
+    |> observe_inspection
+  assert unreadable == AuthenticationUnreadable
+
+  assert server_worker.initial_token_decision(
+      [token_key],
+      token,
+      version.Version1,
+      other_address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.InvalidRetryTokenRefused
+  assert server_worker.initial_token_decision(
+      [token_key],
+      token,
+      version.Version1,
+      address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.RetryTokenAccepted
+  assert server_worker.initial_token_decision(
+      [<<0xff:size(256)>>, token_key],
+      token,
+      version.Version1,
+      other_address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.InvalidRetryTokenRefused
+  assert server_worker.initial_token_decision(
+      [token_key],
+      tampered,
+      version.Version1,
+      address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.UnreadableTokenRetried
+  assert server_worker.initial_token_decision(
+      [token_key],
+      <<>>,
+      version.Version1,
+      address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.MissingTokenRetried
+
+  let new_token_nonce = <<11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0>>
+  let assert Ok(new_token) =
+    address_token.seal_with_nonce(
+      token_key,
+      address_token.NewToken,
+      version.Version1,
+      address,
+      4433,
+      <<>>,
+      <<>>,
+      1000,
+      new_token_nonce,
+    )
+  assert server_worker.initial_token_decision(
+      [token_key],
+      new_token,
+      version.Version1,
+      other_address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.InvalidNewTokenRetried
+  assert server_worker.initial_token_decision(
+      [token_key],
+      new_token,
+      version.Version1,
+      address,
+      4433,
+      retry_source,
+      1050,
+    )
+    == server_worker.NewTokenAccepted
+}
+
+fn observe_inspection(
+  value: address_token.Inspection,
+) -> InspectionObservation {
+  case value {
+    address_token.ReadableButInvalid(
+      address_token.Retry,
+      address_token.AddressMismatch,
+    ) -> ReadableRetryAddressMismatch
+    address_token.Unreadable(address_token.AuthenticationFailed) ->
+      AuthenticationUnreadable
+    _ -> OtherInspection
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

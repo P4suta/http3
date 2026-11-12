@@ -7,6 +7,8 @@
     concurrent_next_datagrams/2,
     concurrent_next_events/1,
     connection_owner_cleanup/3,
+    connection_worker/1,
+    abrupt_connection_close/1,
     checkpoint/1,
     await_task/1,
     fail/1,
@@ -29,6 +31,7 @@
     with_qlog_directory/1,
     with_qlog_directory_expect/2,
     with_reordering_proxy/3,
+    with_shared_endpoint_proxy/3,
     with_temp_override/1,
     with_tmpdir_override/1,
     write_probe_file/1
@@ -47,7 +50,7 @@ pause_milliseconds(Milliseconds) ->
 
 %% Runs Fun with the path of a uniquely named scratch directory and reports how
 %% many qlog traces were written there. Successful fixtures are deleted. A
-%% failing fixture retains its traces and prints only their count and path
+%% failing fixture retains its traces and prints only their count
 %% before re-raising, so a rare live-path failure remains diagnosable without
 %% dumping trace contents into CI output.
 -spec with_qlog_directory(fun((binary()) -> term())) -> term().
@@ -63,8 +66,8 @@ with_qlog_directory(Fun) when is_function(Fun, 1) ->
         Class:Reason:Stacktrace ->
             FailureFiles = filelib:wildcard(filename:join(Directory, "*.qlog")),
             io:format(standard_error,
-                "qlog fixture failed; retained ~B trace(s) at ~ts~n",
-                [length(FailureFiles), Directory]),
+                "qlog fixture failed; retained ~B trace(s)~n",
+                [length(FailureFiles)]),
             erlang:raise(Class, Reason, Stacktrace)
     end.
 
@@ -92,8 +95,8 @@ with_qlog_directory_expect(Fun, Expected)
         Class:Reason:Stacktrace ->
             FailureFiles = filelib:wildcard(filename:join(Directory, "*.qlog")),
             io:format(standard_error,
-                "qlog fixture failed; retained ~B trace(s) at ~ts~n",
-                [length(FailureFiles), Directory]),
+                "qlog fixture failed; retained ~B trace(s)~n",
+                [length(FailureFiles)]),
             erlang:raise(Class, Reason, Stacktrace)
     end.
 
@@ -386,11 +389,11 @@ server_owner_cleanup(Configuration) ->
     Ref = make_ref(),
     {Creator, CreatorMonitor} = spawn_monitor(fun() ->
         case http3@server:start(Configuration) of
-            {ok, {listener,
-                  {listener,
-                   {listener, _Commands, Worker, _Timeout, _DrainTimeout}}}}
-                    when is_pid(Worker) ->
-                Parent ! {Ref, worker, Worker};
+            {ok, {listener, {listener, Native}}} ->
+                case native_worker(listener, Native) of
+                    {ok, Worker} -> Parent ! {Ref, worker, Worker};
+                    error -> Parent ! {Ref, error, invalid_listener_handle}
+                end;
             Error ->
                 Parent ! {Ref, error, Error}
         end
@@ -534,14 +537,38 @@ connection_owner_cleanup(Configuration, Host, Port) ->
         false
     end.
 
+-spec abrupt_connection_close(term()) -> boolean().
+abrupt_connection_close(Connection) ->
+    case connection_worker(Connection) of
+        {ok, Worker} ->
+            Monitor = monitor(process, Worker),
+            exit(Worker, kill),
+            receive
+                {'DOWN', Monitor, process, Worker, _Reason} -> true
+            after ?FIXTURE_TIMEOUT ->
+                demonitor(Monitor, [flush]),
+                false
+            end;
+        error -> false
+    end.
+
+-spec connection_worker(term()) -> {ok, pid()} | error.
 connection_worker({connection, {http3_connection, Worker, _Timeout}}) when is_pid(Worker) ->
     {ok, Worker};
-connection_worker(
-    {connection, {connection, {connection, _Commands, Worker, _Timeout, _Host, _Port}}}
-) when is_pid(Worker) ->
-    {ok, Worker};
+connection_worker({connection, {connection, Native}}) ->
+    native_worker(connection, Native);
+connection_worker({stream, {stream, {stream, Native, _Identifier}}}) ->
+    native_worker(connection, Native);
 connection_worker(_Connection) ->
     error.
+
+-spec native_worker(connection | listener, term()) -> {ok, pid()} | error.
+native_worker(Tag, Native)
+    when is_tuple(Native), tuple_size(Native) >= 4,
+         tuple_size(Native) =< 16, element(1, Native) =:= Tag,
+         is_pid(element(3, Native)) ->
+    {ok, element(3, Native)};
+native_worker(_, _) -> error.
 
 collect_test_results(_Ref, 0, Results) ->
     Results;
@@ -635,6 +662,17 @@ with_mtu_limited_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
 with_reordering_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
     with_proxy(ServerPort, reordering, Fun, CaCert).
 
+%% Route sequential connections through one stable server-facing UDP endpoint.
+%% The fixture uses this to prove that endpoint equality is not connection
+%% identity. Each connection is allowed to finish before the next becomes the
+%% proxy's active client, so the deliberately small fixture needs no routing
+%% table and remains finite.
+-spec with_shared_endpoint_proxy(
+    inet:port_number(), binary(), fun((inet:port_number(), binary()) -> Result)
+) -> Result.
+with_shared_endpoint_proxy(ServerPort, CaCert, Fun) when is_function(Fun, 2) ->
+    with_proxy(ServerPort, shared_endpoint, Fun, CaCert).
+
 with_proxy(ServerPort, Mode, Fun, CaCert) ->
     {Proxy, Monitor, ProxyPort} = start_proxy(ServerPort, Mode),
     try
@@ -692,7 +730,9 @@ initial_proxy_state(delay) ->
 initial_proxy_state(mtu_limit) ->
     #{dropped_large => 0};
 initial_proxy_state(reordering) ->
-    #{held_client => undefined, reordering_done => false}.
+    #{held_client => undefined, reordering_done => false};
+initial_proxy_state(shared_endpoint) ->
+    #{}.
 
 proxy_loop(Socket, ServerPort, Mode, Client, State) ->
     receive

@@ -27,6 +27,9 @@ type GuardMessage {
   GuardExited
 }
 
+@external(erlang, "quic_core_process_ffi", "spawn_monitor")
+fn spawn_monitor(run: fn() -> Nil) -> #(process.Pid, process.Monitor)
+
 /// Validate a finite external replay-guard deadline.
 pub fn new(
   timeout_milliseconds timeout_milliseconds: Int,
@@ -54,12 +57,11 @@ pub fn permits(
     False -> False
     True -> {
       let reply = process.new_subject()
-      let worker =
-        process.spawn_unlinked(fn() {
+      let #(worker, monitor) =
+        spawn_monitor(fn() {
           process_label.set(process_label.ReplayGuard)
           process.send(reply, guard.check(fingerprint, valid_for_milliseconds))
         })
-      let monitor = process.monitor(worker)
       let selector =
         process.new_selector()
         |> process.select_map(reply, GuardResult)

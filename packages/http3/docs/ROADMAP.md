@@ -37,9 +37,10 @@ Status: blocked.
 - Keep the passing per-trace transport, TLS, recovery, QPACK, and HTTP/3 qlog
   profile, pinned schema, redaction, and qvis checks Green while the complete
   standards-event inventory is mapped.
-- Complete general Brotli compressed meta-block decoding and the declared live
-  protocol adapters for extensions. Retain independent OHTTP and MASQUE
-  vectors and peer evidence.
+- Retain the completed general Brotli compressed meta-block decoder and its
+  independent synthetic corpus while completing the declared live protocol
+  adapters for extensions. Retain independent OHTTP and MASQUE vectors and
+  peer evidence.
 - Keep local bind/socket policy and every remaining platform-specific behavior
   typed, bounded, and default-safe. The Windows row is measured
   ([evidence](evidence/2026-09-14-windows-socket-policy.md)): same-port

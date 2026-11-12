@@ -30,7 +30,7 @@ defmodule Http.MixProject do
   defp deps do
     [
       {:gleam_erlang, "== 1.3.0"},
-      {:gleam_http, "== 4.3.0"},
+      {:gleam_http, "== 4.5.0"},
       {:gleam_stdlib, "== 1.0.5"},
       {:http3, path: "packages/http3"}
     ]

@@ -1,8 +1,6 @@
-name: Nightly
+name: Release verification
 
 on:
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +12,7 @@ concurrency:
 jobs:
   model:
     name: State model shard ${{ matrix.shard }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -35,9 +33,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Run randomized state model
         run: mise run model -- --shard "${{ matrix.shard }}" --shards 8
@@ -48,15 +46,16 @@ jobs:
 
       - name: Upload model evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-model-shard-${{ matrix.shard }}
           path: build/model/
           if-no-files-found: ignore
+          retention-days: 7
 
   generated-campaigns:
     name: ${{ matrix.mode }} million-case shard ${{ matrix.shard }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -80,9 +79,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Run generated campaign shard
         run: mise run "${{ matrix.mode }}" -- --shard "${{ matrix.shard }}" --shards 8
@@ -93,15 +92,16 @@ jobs:
 
       - name: Upload generated campaign evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-${{ matrix.mode }}-shard-${{ matrix.shard }}
           path: build/campaign/${{ matrix.mode }}/
           if-no-files-found: ignore
+          retention-days: 7
 
   coverage-full:
     name: Whole-repository coverage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
       - name: Check out repository
@@ -110,9 +110,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Run full coverage
         run: mise run coverage-full
@@ -123,15 +123,16 @@ jobs:
 
       - name: Upload coverage evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-coverage-full
           path: build/coverage/
           if-no-files-found: ignore
+          retention-days: 7
 
   interop-matrix:
     name: Interop ${{ matrix.peer }} on OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -151,9 +152,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Install hash-locked interoperability peers
         run: mise run interop-setup
@@ -167,11 +168,12 @@ jobs:
 
       - name: Upload interoperability evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-interop-${{ matrix.peer }}-otp-${{ matrix.otp }}
           path: build/interop/
           if-no-files-found: ignore
+          retention-days: 7
 
   credential-matrix:
     name: Credentials / ${{ matrix.platform }} / OTP ${{ matrix.otp }}
@@ -209,9 +211,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Run live credential matrix row
         run: mise run credential-matrix-local
@@ -222,15 +224,16 @@ jobs:
 
       - name: Upload credential evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-credential-${{ matrix.platform }}-otp-${{ matrix.otp }}
           path: build/credential-matrix/local/
           if-no-files-found: ignore
+          retention-days: 7
 
   credential-aggregate:
     name: Aggregate credential attestations
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     needs:
       - credential-matrix
@@ -242,12 +245,12 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Download credential rows
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: nightly-credential-*
           path: build/credential-matrix/local
@@ -258,15 +261,16 @@ jobs:
 
       - name: Upload aggregate evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-credential-aggregate
           path: build/credential-matrix/report.json
           if-no-files-found: ignore
+          retention-days: 7
 
   faults-netem:
     name: Network fault injection
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - name: Check out repository
@@ -275,9 +279,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Run deterministic fault gate
         run: mise run fault
@@ -294,47 +298,16 @@ jobs:
 
       - name: Upload fault evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-faults-netem
           path: build/fault/
           if-no-files-found: ignore
-
-  soak:
-    name: Sustained soak (informational)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          version: 2026.8.10
-
-      - name: Run soak workload
-        id: soak
-        continue-on-error: true
-        run: mise run soak
-
-      - name: Annotate failure
-        if: steps.soak.outcome == 'failure'
-        run: echo "::error::nightly gate soak failed (informational, hosted timing is not evidence)"
-
-      - name: Upload soak evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nightly-soak
-          path: packages/http3/benchmarks/results/
-          if-no-files-found: ignore
+          retention-days: 7
 
   qlog-cddl:
     name: qlog schema validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - name: Check out repository
@@ -343,9 +316,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Validate emitted qlog traces
         run: mise run qlog-validate
@@ -356,15 +329,16 @@ jobs:
 
       - name: Upload qlog evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-qlog-cddl
           path: build/qlog/
           if-no-files-found: ignore
+          retention-days: 7
 
   errata-drift:
     name: Requirement and errata drift
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -373,9 +347,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Audit requirement coverage
         run: mise run requirements-audit
@@ -386,15 +360,16 @@ jobs:
 
       - name: Upload requirement evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-errata-drift
           path: build/requirements/
           if-no-files-found: ignore
+          retention-days: 7
 
   release-sim:
     name: Three-package release simulation on OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -411,9 +386,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: 2026.8.10
+          version: 2026.10.17
 
       - name: Simulate the three-package release
         run: mise run release-sim
@@ -424,8 +399,9 @@ jobs:
 
       - name: Upload release simulation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-release-sim-otp-${{ matrix.otp }}
           path: build/release-sim/
           if-no-files-found: ignore
+          retention-days: 7

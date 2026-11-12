@@ -182,9 +182,6 @@ fn await_task(task: Task(value)) -> value
 @external(erlang, "http3_benchmark_ffi", "monotonic_microseconds")
 fn monotonic_microseconds() -> Int
 
-@external(erlang, "http3_benchmark_ffi", "runtime_metrics")
-fn runtime_metrics() -> #(Int, Int, Int, Int, Int, Int)
-
 @external(erlang, "http3_benchmark_ffi", "diagnostic_metrics")
 fn raw_diagnostic_metrics() -> #(Int, Int, Int, Int, Int, Int, Int, Int)
 
@@ -269,6 +266,9 @@ fn await_cleanup_metrics(
   maximum_sockets: Int,
 ) -> #(Int, Int, Int, Int, Int, Int)
 
+@external(erlang, "http3_benchmark_ffi", "await_priming_metrics")
+fn await_priming_metrics() -> #(Int, Int, Int, Int, Int, Int)
+
 @external(erlang, "http3_benchmark_ffi", "write_line")
 fn write_line(line: String) -> Nil
 
@@ -276,7 +276,13 @@ fn write_line(line: String) -> Nil
 fn fail(reason: reason) -> value
 
 pub fn main() -> Nil {
-  let configuration = parse_configuration(arguments())
+  run(arguments())
+}
+
+/// Execute the fixed workload inside an independently bounded qualification VM.
+@internal
+pub fn run(arguments: List(String)) -> Nil {
+  let configuration = parse_configuration(arguments)
   csv_columns()
   |> string.join(",")
   |> write_line
@@ -1195,7 +1201,7 @@ fn metrics() -> Metrics {
     ports,
     network_ports,
     sockets,
-  ) = runtime_metrics()
+  ) = await_priming_metrics()
   Metrics(
     processes,
     memory_bytes,

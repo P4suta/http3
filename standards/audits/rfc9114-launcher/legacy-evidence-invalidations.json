@@ -1,0 +1,211 @@
+{
+  "schema": 1,
+  "invalidation_kind": "rfc9114_launcher_evidence_invalidation_chain",
+  "status": "Active",
+  "shareable": true,
+  "current_generation": 4,
+  "invalidated": [
+    {
+      "id": "launcher_freeze_v2",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-freeze.json",
+      "sha256": "2c7467569d7debbc788400aaec5b583fcfa2a50382bfba4ed9178b90fa9c385e",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "structural_v3_ps5",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v3-ps5.1.json",
+      "sha256": "226d97a0009d4b37b01dbd4103433018a118e0d6517dcaa896a776a9a1ec6446",
+      "generation": 3,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "structural_v3_ps7",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v3-ps7.6.json",
+      "sha256": "fa8608696dc87f9a03d654ddb9d4e4689e0788ca095ccc4b991000c17ecd8332",
+      "generation": 3,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "structural_v3_independent_ps5",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v3-independent-ps5.1.json",
+      "sha256": "107f5c63212d6a5ab9edf1f614978ca289fda653f73d603226df983955aa898e",
+      "generation": 3,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "structural_v2_ps5",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-ps5.1.json",
+      "sha256": "670e08facafa45e4da802e691e4655ee55a7ce998870bd7ff4500ef341b4089c",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "structural_v2_ps7",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-ps7.6.json",
+      "sha256": "265c879e915e8ce8bb8b4163eff5fe4dee95fb455fc29a00df0d50c15a6dce9f",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "compatibility_v2",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-compatibility.evidence.json",
+      "sha256": "09f0fbe91c8cab0380fd4d4a3864022ec53aeacebe4c98e9d22729a315de2df7",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "hardening_v2",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-hardening.evidence.json",
+      "sha256": "a58454db09ab4a5923aaf97a3fc75d54daa78283b83bcebe5874668838bd626f",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "mutant_summary_v3",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-mutants-v3/summary.json",
+      "sha256": "7029b285c8cf3d46c91b737eecfc7a0fffea9c97f2f0497d9622efadd5b0971c",
+      "generation": 3,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "launcher_static_red",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-static-red.evidence.json",
+      "sha256": "26ffcc193bb242ed81fb770847993447a02964afcef1f84f8951cfd916f3514c",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    },
+    {
+      "id": "independent_launcher_audit_report",
+      "path": "build/root-validation/rfc9114-peer-error-mapping/independent-launcher-audit/independent-audit-report.json",
+      "sha256": "15b54017c152dfa1e6357f070d301ec48828a46e8707c23f28f5a70691fbeda9",
+      "generation": 2,
+      "status": "Rejected",
+      "reason_codes": [
+        "source_inventory_drift",
+        "atomic_writer_contract_not_live",
+        "hidden_process_contract_not_live",
+        "identity_map_structure_not_strict",
+        "external_invocation_allowlist_incomplete",
+        "consumer_gate_absent",
+        "shared_evidence_path_race",
+        "independent_reaudit_required"
+      ]
+    }
+  ],
+  "replacement": {
+    "lock_path": "standards/audits/rfc9114-launcher/evidence-lock.json",
+    "status": "Pending",
+    "independent_audit_required": true
+  },
+  "reason_codes": [
+    "source_inventory_drift",
+    "atomic_writer_contract_not_live",
+    "hidden_process_contract_not_live",
+    "identity_map_structure_not_strict",
+    "external_invocation_allowlist_incomplete",
+    "consumer_gate_absent",
+    "shared_evidence_path_race",
+    "independent_reaudit_required"
+  ]
+}

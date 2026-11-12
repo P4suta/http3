@@ -26,6 +26,26 @@ pub type Error {
   InvalidOrigin
 }
 
+/// Compare two request origins after strict ASCII parsing and default-port normalization.
+/// Invalid or non-HTTP origins fail closed.
+///
+/// The boolean result deliberately carries no host or authority bytes, so a rejected peer origin can be recorded without retaining sensitive routing data in an error or diagnostic event.
+pub fn same_authenticated_origin(
+  first_scheme: BitArray,
+  first_authority: BitArray,
+  second_scheme: BitArray,
+  second_authority: BitArray,
+) -> Bool {
+  case
+    parse_request_origin(first_scheme, first_authority),
+    parse_request_origin(second_scheme, second_authority)
+  {
+    Some(first), Some(second) ->
+      normalize_default_port(first) == normalize_default_port(second)
+    _, _ -> False
+  }
+}
+
 /// Decode a finite ORIGIN payload. Syntactically invalid origin entries are
 /// ignored individually, while malformed length framing is rejected.
 pub fn decode(
@@ -126,6 +146,24 @@ fn parse_origin(encoded: BitArray) -> Option(Origin) {
         Error(Nil) -> None
       }
     _, _ -> None
+  }
+}
+
+fn parse_request_origin(
+  scheme: BitArray,
+  authority: BitArray,
+) -> Option(Origin) {
+  case bit_array.bit_size(scheme) % 8, bit_array.bit_size(authority) % 8 {
+    0, 0 -> parse_origin(<<scheme:bits, "://":utf8, authority:bits>>)
+    _, _ -> None
+  }
+}
+
+fn normalize_default_port(origin: Origin) -> Origin {
+  case origin {
+    Origin("http", host, Some(80)) -> Origin("http", host, None)
+    Origin("https", host, Some(443)) -> Origin("https", host, None)
+    value -> value
   }
 }
 

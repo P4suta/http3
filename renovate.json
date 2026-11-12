@@ -1,0 +1,72 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>P4suta/renovate-config"],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/build/**",
+    "**/deps/**",
+    "**/fixtures/**",
+    "**/__fixtures__/**",
+    "**/examples/**"
+  ],
+  "pip-compile": {
+    "managerFilePatterns": ["/^packages/http3/test/interop/requirements\\.txt$/"]
+  },
+  "pip_requirements": {"enabled": false},
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^standards/interop-profile\\.json$/"],
+      "matchStrings": [
+        "\"id\"\\s*:\\s*\"curl-h1-h2\"[^}]*\"pin\"\\s*:\\s*\"curl (?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "conda:curl",
+      "packageNameTemplate": "curl",
+      "datasourceTemplate": "conda",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Look up browser peer build packages in the Ubuntu 24.04 repositories.",
+      "matchFileNames": ["test/interop/browser/Dockerfile", "test/interop/browser/Firefox.Dockerfile"],
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "https://archive.ubuntu.com/ubuntu?suite=noble&components=main&binaryArch=amd64",
+        "https://archive.ubuntu.com/ubuntu?suite=noble-updates&components=main&binaryArch=amd64",
+        "https://security.ubuntu.com/ubuntu?suite=noble-security&components=main&binaryArch=amd64"
+      ]
+    },
+    {
+      "description": "Look up native peer build packages in the Debian 12 repositories.",
+      "matchFileNames": ["packages/http3/test/interop/ngtcp2/Dockerfile"],
+      "matchDatasources": ["deb"],
+      "registryUrls": [
+        "https://deb.debian.org/debian?suite=bookworm&components=main&binaryArch=amd64",
+        "https://security.debian.org/debian-security?suite=bookworm-security&components=main&binaryArch=amd64"
+      ]
+    },
+    {
+      "description": "Update the curl tool and interoperability profile together.",
+      "matchManagers": ["mise", "custom.regex"],
+      "matchDatasources": ["conda"],
+      "matchPackageNames": ["curl"],
+      "registryUrls": ["https://api.anaconda.org/package/conda-forge"],
+      "groupName": "curl interoperability peer"
+    },
+    {
+      "description": "Keep generated-text artifact support until https://github.com/P4suta/http3/issues/45 is complete.",
+      "matchManagers": ["mise", "github-actions"],
+      "matchPackageNames": ["gleam-lang/gleam"],
+      "allowedVersions": "<1.19.0"
+    },
+    {
+      "description": "Keep Semgrep's Windows dependency support until https://github.com/P4suta/http3/issues/49 is complete.",
+      "matchManagers": ["mise"],
+      "matchPackageNames": ["python/cpython"],
+      "allowedVersions": "<3.15.0"
+    }
+  ]
+}

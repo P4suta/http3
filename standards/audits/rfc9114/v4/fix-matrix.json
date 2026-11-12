@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "matrix_kind": "rfc9114_v4_independent_audit_fix_matrix",
+  "generation": 4,
+  "source_audit": {
+    "report_sha256": "2e113c08bb912ac0876cead37fb8f64de34c87a37a118e2fe7a48e02632385d8",
+    "manifest_sha256": "a962f0c28423df6edd4dd02eea869f3ecac850efff3a7678cd85d6b41343ca48",
+    "audit_script_sha256": "e794b2622466ecdd3f0e753c6bcff3240374c4460ec23b4847a1c66796749e21"
+  },
+  "blockers": [
+    {"id": "hardlinked_recovery_copy_is_mutable_through_target", "fix": "independent recovery copies and same-directory publish staging"},
+    {"id": "stale_report_lock_can_preserve_old_ready", "fix": "OS-released lock plus durable pending attempt checked by consumers"},
+    {"id": "failed_rejection_publication_can_preserve_ready", "fix": "Running pointer before work and immutable final publication last"},
+    {"id": "mise_python_executable_hash_is_not_pinned", "fix": "anchor-controlled OS/architecture/version/executable hash allowlist"},
+    {"id": "coordinated_mutable_artifact_substitution_is_accepted", "fix": "externally pinned source-tree anchor"},
+    {"id": "mandatory_inventory_and_ast_contracts_are_self_defined_and_dead_code_blind", "fix": "independent reviewed control manifest and anchor mutation rejection"},
+    {"id": "gate_self_test_inventory_can_be_empty", "fix": "independent exact gate-control manifest"},
+    {"id": "report_schema_and_secret_fields_are_not_closed", "fix": "closed recursive report and pointer schemas"},
+    {"id": "rejected_reports_skip_identity_and_completion_validation", "fix": "same identity and completion schema for every terminal status"},
+    {"id": "audit_inputs_accept_aliases", "fix": "descriptor-bound read with symlink, reparse, hardlink and swap rejection"},
+    {"id": "ci_omits_recovery_bytes", "fix": "safe fixture recovery byte artifacts in staged CI upload"},
+    {"id": "ci_workflow_identity_is_not_bound", "fix": "CI workflow hash in external anchor and reports"},
+    {"id": "report_consumer_has_no_fresh_run_binding", "fix": "mandatory caller-provided expected run identifier"},
+    {"id": "no_crash_recovery_or_stale_lock_reconciliation_exists", "fix": "durable transaction and attempt reconciliation state machines"}
+  ]
+}

@@ -1,3 +1,5 @@
+%% SPDX-FileCopyrightText: 2026 the http contributors
+%% SPDX-License-Identifier: MIT OR Apache-2.0
 -module(http3_idle_wakeup_ffi).
 
 -export([
@@ -5,10 +7,17 @@
     fail/1,
     finish/2,
     monotonic_millisecond/0,
+    mark_phase/1,
+    quiescence_progress/7,
+    take_diagnostics/0,
+    observe_enter/1,
+    observe_leave/2,
     passed/1,
     self_test/0,
+    ownership_regression_test/0,
     start/4,
-    write/1
+    write/1,
+    take_evidence/0
 ]).
 
 -define(SYNC_TIMEOUT_MILLISECONDS, 5000).
@@ -32,13 +41,8 @@ start(QuiescenceMilliseconds, StableSamples, PollMilliseconds, MaximumAttempts)
         {error, _Counts} ->
             {error, 1};
         {ok, PidRoles} ->
-            case install_trace_patterns() of
-                ok -> start_collector(
-                    Owner, PidRoles, QuiescenceMilliseconds,
-                    StableSamples, PollMilliseconds, MaximumAttempts
-                );
-                error -> {error, 2}
-            end
+            start_collector(Owner, PidRoles, QuiescenceMilliseconds,
+                StableSamples, PollMilliseconds, MaximumAttempts)
     end;
 start(_QuiescenceMilliseconds, _StableSamples, _PollMilliseconds,
       _MaximumAttempts) ->
@@ -68,14 +72,74 @@ passed(_Other) ->
 
 -spec write(map()) -> nil.
 write(Evidence) when is_map(Evidence) ->
-    io:put_chars([json:encode(Evidence), $\n]),
+    put({?MODULE, evidence}, Evidence),
     nil.
+
+take_evidence() -> erase({?MODULE, evidence}).
+
+%% One finite record belongs to the fixture process. It contains no runtime
+%% handles or protocol payloads and survives a later setup/cleanup failure.
+mark_phase(Phase) when is_integer(Phase), Phase >= 0, Phase =< 14 ->
+    Now = monotonic_millisecond(),
+    Initial = #{phase => Phase, start => Now, phase_start => Now,
+                elapsed => #{}, quiescence => null, topology => null},
+    State = case {Phase, get({?MODULE, diagnostic})} of
+        {0, _} -> Initial;
+        {_, undefined} -> Initial;
+        {_, #{phase := Phase} = Current} -> Current;
+        {_, Current} -> (complete_phase(Current, Now))#{phase := Phase, phase_start := Now}
+    end,
+    put({?MODULE, diagnostic}, State), nil.
+
+quiescence_progress(Sample, Stable, ClientFlight, ServerFlight, ClientRecovery, ServerRecovery, Changed)
+        when is_integer(Sample), Sample >= 0, Sample =< 80,
+             is_integer(Stable), Stable >= 0, Stable =< 5,
+             is_integer(ClientFlight), ClientFlight >= 0,
+             is_integer(ServerFlight), ServerFlight >= 0,
+             is_boolean(ClientRecovery), is_boolean(ServerRecovery), is_boolean(Changed) ->
+    update_diagnostic(quiescence, #{sample => Sample, stable_samples => Stable,
+        client_bytes_in_flight => bounded_counter(ClientFlight),
+        server_bytes_in_flight => bounded_counter(ServerFlight),
+        client_in_recovery => ClientRecovery, server_in_recovery => ServerRecovery,
+        traffic_changed => Changed}), nil.
+
+take_diagnostics() ->
+    case erase({?MODULE, diagnostic}) of
+        undefined -> null;
+        State ->
+            Now = monotonic_millisecond(), Finished = complete_phase(State, Now),
+            #{schema => 1, phase => maps:get(phase, State),
+              elapsed_milliseconds => bounded_counter(Now - maps:get(start, State)),
+              phases => [#{phase => Phase, elapsed_milliseconds => Time} ||
+                         {Phase, Time} <- lists:sort(maps:to_list(maps:get(elapsed, Finished)))],
+              quiescence => maps:get(quiescence, State), topology => maps:get(topology, State)}
+    end.
+
+complete_phase(State, Now) ->
+    Phase = maps:get(phase, State), Elapsed = maps:get(elapsed, State),
+    Time = maps:get(Phase, Elapsed, 0) + erlang:max(0, Now - maps:get(phase_start, State)),
+    State#{elapsed := Elapsed#{Phase => bounded_counter(Time)}}.
+
+bounded_counter(Value) -> erlang:min(2147483647, erlang:max(0, Value)).
+update_diagnostic(Key, Value) ->
+    case get({?MODULE, diagnostic}) of
+        undefined -> ok;
+        State -> put({?MODULE, diagnostic}, State#{Key := Value}), ok
+    end.
+observe_enter(Timeout) -> http3_idle_observer:enter(Timeout).
+observe_leave(Timeout, Outcome) -> http3_idle_observer:leave(Timeout, Outcome).
 
 %% Keep the evidence classifier executable without sockets or timing. The
 %% live qualification below separately exercises BEAM tracing and actor
 %% topology; this pins fail-closed status construction for malformed inputs.
 -spec self_test() -> ok.
 self_test() ->
+    nil = mark_phase(0), nil = mark_phase(8),
+    nil = quiescence_progress(1, 0, 99, 0, true, false, true),
+    nil = mark_phase(14),
+    #{phase := 14, phases := [#{phase := 0}, #{phase := 8}, #{phase := 14}],
+      quiescence := #{sample := 1, client_bytes_in_flight := 99}, topology := null} = take_diagnostics(),
+    null = take_diagnostics(),
     RoleRows = [
         role_row(Label, Count, Count, empty_stat())
      || {Label, Count} <- expected_roles()
@@ -116,139 +180,217 @@ self_test() ->
         self(), maps:get(stats, UnboundedBoundary)
     ),
     1 = maps:get(forever_boundary_message_returns, UnboundedBoundaryStat),
+    MissingLeave = record_timed_call(self(), 10,
+        record_timed_call(self(), 10, BoundaryState)),
+    true = maps:get(sync_failed, MissingLeave),
+    MissingCrossKind = record_unbounded_call(self(),
+        record_timed_call(self(), 10, BoundaryState)),
+    true = maps:get(sync_failed, MissingCrossKind),
+    false = maps:get(sync_failed,
+        handle_trace({idle_scalar, self(), message, zero},
+            BoundaryState#{events_received => 0, pid_roles => #{self() => test},
+                           sync_failed => false})),
+    true = maps:get(sync_failed, handle_trace({private, <<"idle-private-marker">>},
+        BoundaryState#{sync_failed => false})),
+    ok = http3_idle_observer:self_test(),
+    ok = lifecycle_controls(),
+    nil = ownership_regression_test(),
+    ok.
+
+%% A winning connection outlives the setup actor that spawned it. Its existing
+%% owner monitor remains authoritative; a sibling owner's connection must not
+%% be included when observing only this owner's subtree.
+ownership_regression_test() ->
+    Parent = self(),
+    {OtherOwner, OtherMonitor} = spawn_monitor(fun() ->
+        proc_lib:set_label(<<"http3.client">>), receive stop -> ok end
+    end),
+    {Owner, OwnerMonitor} = spawn_monitor(fun() ->
+        proc_lib:set_label(<<"http3.client">>),
+        Parent ! idle_owner_ready, receive stop -> ok end
+    end),
+    receive idle_owner_ready -> ok after 1000 -> error(idle_owner_missing) end,
+    {Starter, StarterMonitor} = spawn_monitor(fun() ->
+        Winner = spawn(fun() ->
+            proc_lib:set_label(<<"quic_core.client">>),
+            _ = monitor(process, Owner),
+            Parent ! idle_winner_ready, receive stop -> ok end
+        end),
+        Parent ! {idle_winner, Winner}
+    end),
+    Winner = receive {idle_winner, Pid} -> Pid after 1000 -> error(idle_winner_missing) end,
+    WinnerMonitor = monitor(process, Winner),
+    try
+        receive idle_winner_ready -> ok after 1000 -> error(idle_winner_not_ready) end,
+        receive {'DOWN', StarterMonitor, process, Starter, normal} -> ok
+            after 1000 -> error(idle_starter_not_joined) end,
+        false = is_process_alive(Starter),
+        false = descendant_of(Winner, Owner, 64),
+        <<"quic_core.client">> = maps:get(Winner, current_expected_actors(Owner)),
+        false = maps:is_key(Winner, current_expected_actors(OtherOwner)),
+        nil
+    after
+        exit(Winner, kill), exit(Owner, kill), exit(OtherOwner, kill),
+        receive {'DOWN', WinnerMonitor, process, Winner, _} -> ok after 1000 -> error(idle_winner_cleanup) end,
+        receive {'DOWN', OwnerMonitor, process, Owner, _} -> ok after 1000 -> error(idle_owner_cleanup) end,
+        receive {'DOWN', OtherMonitor, process, OtherOwner, _} -> ok after 1000 -> error(idle_other_owner_cleanup) end
+    end.
+
+lifecycle_controls() ->
+    Roles = #{self() => <<"http3.client">>},
+    {ok, Trace = {http3_idle_wakeup_trace, Collector, _}} =
+        start_collector(self(), Roles, 0, 5, 100, 80),
+    {ok, nil} = begin_observation(Trace),
+    ok = observe_enter(1000), ok = observe_leave(1000, message),
+    {ok, Evidence} = finish(Trace, 0),
+    false = is_process_alive(Collector),
+    #{events_sent := 2, events_received := 2, events_dropped := 0,
+      invalid_events := 0} = maps:get(<<"observer">>, Evidence),
+    %% A sent event removed before delivery is an incomplete observation, even
+    %% if every actor remains alive and the timeout count happens to be zero.
+    Handle = http3_idle_observer:open(Roles, self()),
+    try
+        ok = observe_enter(1000), receive {idle_scalar, _, _, _} -> ok end,
+        {false, _} = await_delivery(1,
+            #{events_received => 0}, erlang:monotonic_time(millisecond), true)
+    after true = http3_idle_observer:close(Handle) end,
+    Parent = self(),
+    {Owner, OwnerMonitor} = spawn_monitor(fun() ->
+        {ok, {http3_idle_wakeup_trace, Child, _}} =
+            start_collector(self(), #{self() => <<"http3.client">>}, 0, 5, 100, 80),
+        Parent ! {owned_collector, Child}, receive never -> ok end
+    end),
+    Child = receive {owned_collector, Pid} -> Pid
+        after 3000 -> erlang:error(missing_collector) end,
+    ChildMonitor = erlang:monitor(process, Child),
+    exit(Owner, kill),
+    receive {'DOWN', OwnerMonitor, process, Owner, killed} -> ok end,
+    receive {'DOWN', ChildMonitor, process, Child, normal} -> ok
+        after 3000 -> erlang:error(owner_death_leaked_collector) end,
+    Probe = http3_idle_observer:open(Roles, self()),
+    true = http3_idle_observer:close(Probe),
     ok.
 
 start_collector(Owner, PidRoles, QuiescenceMilliseconds, StableSamples,
                 PollMilliseconds, MaximumAttempts) ->
-    Collector = spawn(fun() ->
+    {Collector, Monitor} = spawn_opt(fun() ->
         OwnerMonitor = erlang:monitor(process, Owner),
-        collector_loop(#{
-            owner => Owner,
-            owner_monitor => OwnerMonitor,
-            pid_roles => PidRoles,
-            start_pid_roles => PidRoles,
-            stats => empty_stats(PidRoles),
-            started_milliseconds => undefined,
-            unexpected_exits => 0,
-            quiescence_maximum_attempts => MaximumAttempts,
-            quiescence_milliseconds => QuiescenceMilliseconds,
-            quiescence_poll_milliseconds => PollMilliseconds,
-            quiescence_stable_samples => StableSamples,
-            sync_failed => false
-        })
-    end),
-    Monitor = erlang:monitor(process, Collector),
-    case enable_tracing(maps:keys(PidRoles), Collector, []) of
-        {ok, Traced} ->
-            Collector ! {traced, Traced},
-            {ok, {http3_idle_wakeup_trace, Collector, Monitor}};
-        {error, Traced} ->
-            disable_tracing(Traced),
-            uninstall_trace_patterns(),
-            exit(Collector, kill),
-            receive
-                {'DOWN', Monitor, process, Collector, _Reason} -> ok
-            after ?SYNC_TIMEOUT_MILLISECONDS -> ok
-            end,
-            {error, 2}
+        receive {configuration, Handle} ->
+            collector_loop(#{
+                owner => Owner, owner_monitor => OwnerMonitor,
+                observer => Handle, events_received => 0,
+                pid_roles => PidRoles, start_pid_roles => PidRoles,
+                stats => empty_stats(PidRoles), started_milliseconds => undefined,
+                unexpected_exits => 0,
+                quiescence_maximum_attempts => MaximumAttempts,
+                quiescence_milliseconds => QuiescenceMilliseconds,
+                quiescence_poll_milliseconds => PollMilliseconds,
+                quiescence_stable_samples => StableSamples, sync_failed => false})
+        after ?SYNC_TIMEOUT_MILLISECONDS -> exit(normal)
+        end
+    end, [monitor, {max_heap_size, #{size => 2097152, kill => true,
+                                   error_logger => false,
+                                   include_shared_binaries => true}}]),
+    try http3_idle_observer:open(PidRoles, Collector) of
+        Handle ->
+            Collector ! {configuration, Handle},
+            {ok, {http3_idle_wakeup_trace, Collector, Monitor}}
+    catch _:_ ->
+        kill_and_join(Collector, Monitor), {error, 2}
     end.
 
 request(Collector, Monitor, Operation) ->
     Reference = make_ref(),
     Collector ! {request, self(), Reference, Operation},
     receive
-        {Reference, Reply} -> Reply;
-        {'DOWN', Monitor, process, Collector, _Reason} -> {error, 4}
+        {Reference, Reply} ->
+            case Operation of
+                {finish, _} ->
+                    receive {'DOWN', Monitor, process, Collector, normal} -> Reply;
+                            {'DOWN', Monitor, process, Collector, _} -> {error, 4}
+                    after ?SYNC_TIMEOUT_MILLISECONDS ->
+                        kill_and_join(Collector, Monitor), {error, 5}
+                    end;
+                _ -> Reply
+            end;
+        {'DOWN', Monitor, process, Collector, _Reason} ->
+            _ = http3_idle_observer:cleanup(Collector), {error, 4}
     after ?SYNC_TIMEOUT_MILLISECONDS * 2 ->
-        {error, 5}
+        kill_and_join(Collector, Monitor), {error, 5}
+    end.
+
+kill_and_join(Collector, Monitor) ->
+    exit(Collector, kill),
+    receive {'DOWN', Monitor, process, Collector, _} ->
+        _ = http3_idle_observer:cleanup(Collector), ok
+    after ?SYNC_TIMEOUT_MILLISECONDS -> erlang:error(observer_not_reaped)
     end.
 
 collector_loop(State) ->
     OwnerMonitor = maps:get(owner_monitor, State),
+    Owner = maps:get(owner, State),
+    Handle = maps:get(observer, State),
     receive
-        {traced, Traced} ->
-            collector_loop(State#{traced => Traced});
-        {request, Caller, Reference, begin_observation} ->
+        {request, Owner, Reference, begin_observation} ->
             {Synced, State1} = synchronize(State),
             Started = erlang:monotonic_time(millisecond),
-            State2 = State1#{
-                %% Preserve an observed select that crossed the observation
-                %% boundary while zeroing every measurement counter. A trace
-                %% may also attach after an actor entered select; unmatched
-                %% returns from that case are classified explicitly below.
-                stats => reset_stats(maps:get(stats, State1)),
-                started_milliseconds => Started,
-                unexpected_exits => 0,
-                sync_failed => not Synced
-            },
-            Caller ! {Reference, case Synced of
-                true -> {ok, nil};
-                false -> {error, 6}
+            State2 = State1#{stats => reset_stats(maps:get(stats, State1)),
+                started_milliseconds => Started, unexpected_exits => 0,
+                sync_failed => maps:get(sync_failed, State1) orelse not Synced},
+            ok = http3_idle_observer:resume(Handle),
+            Owner ! {Reference, case Synced of
+                true -> {ok, nil}; false -> {error, 6}
             end},
             collector_loop(State2);
-        {request, Caller, Reference, {finish, MinimumMilliseconds}} ->
+        {request, Owner, Reference, {finish, MinimumMilliseconds}} ->
             Ended = erlang:monotonic_time(millisecond),
-            Traced = maps:get(traced, State, []),
-            disable_tracing(Traced),
+            Closed = http3_idle_observer:close(Handle),
             {Synced, State1} = synchronize(State),
-            uninstall_trace_patterns(),
-            Evidence = build_evidence(
-                State1#{sync_failed =>
-                    maps:get(sync_failed, State1) orelse not Synced},
-                Ended,
-                MinimumMilliseconds
-            ),
-            Caller ! {Reference, {ok, Evidence}},
+            Evidence = build_evidence(State1#{sync_failed =>
+                maps:get(sync_failed, State1) orelse not Synced orelse not Closed},
+                Ended, MinimumMilliseconds),
+            Owner ! {Reference, {ok, Evidence}},
             exit(normal);
-        {'DOWN', OwnerMonitor, process, _Owner, _Reason} ->
-            disable_tracing(maps:get(traced, State, [])),
-            uninstall_trace_patterns(),
-            exit(normal);
-        Message ->
-            collector_loop(handle_trace(Message, State))
+        {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
+            _ = http3_idle_observer:close(Handle), exit(normal);
+        Message -> collector_loop(handle_trace(Message, State))
     end.
 
-handle_trace(
-  {trace, Pid, call, {gleam_erlang_ffi, select, [_Selector, Within]}}, State
-) when is_integer(Within) ->
-    record_timed_call(Pid, Within, State);
-handle_trace(
-  {trace, Pid, return_from, {gleam_erlang_ffi, select, 2}, {error, nil}},
-  State
-) ->
-    record_timed_return(Pid, true, State);
-handle_trace(
-  {trace, Pid, return_from, {gleam_erlang_ffi, select, 2}, _Result}, State
-) ->
-    record_timed_return(Pid, false, State);
-handle_trace(
-  {trace, Pid, call, {gleam_erlang_ffi, select, Arguments}}, State
-) when is_list(Arguments), length(Arguments) =:= 1 ->
-    record_unbounded_call(Pid, State);
-handle_trace(
-  {trace, Pid, return_from, {gleam_erlang_ffi, select, 1}, _Result}, State
-) ->
-    record_unbounded_return(Pid, State);
-handle_trace({trace, Pid, exit, _Reason}, State) ->
-    case maps:is_key(Pid, maps:get(pid_roles, State)) of
-        true -> State#{unexpected_exits := maps:get(unexpected_exits, State) + 1};
-        false -> State
+handle_trace({idle_scalar, Pid, Operation, Class}, State)
+        when is_map_key(Pid, map_get(pid_roles, State)),
+             (Operation =:= enter orelse Operation =:= message orelse Operation =:= timeout),
+             (Class =:= zero orelse Class =:= short orelse Class =:= second
+              orelse Class =:= long orelse Class =:= unbounded) ->
+    Counted = State#{events_received := maps:get(events_received, State) + 1},
+    case {Operation, Class} of
+        {enter, unbounded} -> record_unbounded_call(Pid, Counted);
+        {enter, _} -> record_timed_call(Pid, class_timeout(Class), Counted);
+        {message, unbounded} -> record_unbounded_return(Pid, Counted);
+        {timeout, unbounded} -> Counted#{sync_failed := true};
+        {message, _} -> record_timed_return(Pid, false, Counted);
+        {timeout, _} -> record_timed_return(Pid, true, Counted)
     end;
-handle_trace(_Message, State) ->
-    State.
+handle_trace(_Message, State) -> State#{sync_failed := true}.
 
+class_timeout(zero) -> 0;
+class_timeout(short) -> 100;
+class_timeout(second) -> 1000;
+class_timeout(long) -> 2000.
 record_timed_call(Pid, Within, State) ->
     Stats = maps:get(stats, State),
     case maps:find(Pid, Stats) of
         error -> State;
         {ok, Stat} ->
+            Missing = maps:get(current_wait_class, Stat) =/= no_wait
+                orelse maps:get(current_forever_wait, Stat),
             Class = wait_class(Within),
             Next = Stat#{
                 timed_calls := maps:get(timed_calls, Stat) + 1,
                 Class := maps:get(Class, Stat) + 1,
                 current_wait_class := Class
             },
-            State#{stats := Stats#{Pid := Next}}
+            State#{stats := Stats#{Pid := Next},
+                sync_failed => maps:get(sync_failed, State, false) orelse Missing}
     end.
 
 record_timed_return(Pid, TimedOut, State) ->
@@ -286,11 +428,14 @@ record_unbounded_call(Pid, State) ->
     case maps:find(Pid, Stats) of
         error -> State;
         {ok, Stat} ->
+            Missing = maps:get(current_wait_class, Stat) =/= no_wait
+                orelse maps:get(current_forever_wait, Stat),
             Next = Stat#{
                 forever_calls := maps:get(forever_calls, Stat) + 1,
                 current_forever_wait := true
             },
-            State#{stats := Stats#{Pid := Next}}
+            State#{stats := Stats#{Pid := Next},
+                sync_failed => maps:get(sync_failed, State, false) orelse Missing}
     end.
 
 record_unbounded_return(Pid, State) ->
@@ -325,48 +470,23 @@ timeout_class(wait_long_calls) -> timeout_long_returns;
 timeout_class(no_wait) -> timeout_unclassified_returns.
 
 synchronize(State) ->
-    Pids = maps:keys(maps:get(pid_roles, State)),
-    {References, RequestedAll} = delivery_references(Pids, [], true),
-    Deadline = erlang:monotonic_time(millisecond)
-        + ?SYNC_TIMEOUT_MILLISECONDS,
-    await_delivery(References, State, Deadline, RequestedAll).
+    Handle = maps:get(observer, State),
+    Paused = http3_idle_observer:pause(Handle),
+    Snapshot = http3_idle_observer:snapshot(Handle),
+    Valid = Paused andalso maps:get(events_dropped, Snapshot) =:= 0
+        andalso maps:get(invalid_events, Snapshot) =:= 0,
+    Deadline = erlang:monotonic_time(millisecond) + ?SYNC_TIMEOUT_MILLISECONDS,
+    await_delivery(maps:get(events_sent, Snapshot), State, Deadline, Valid).
 
-delivery_references([], References, RequestedAll) ->
-    {References, RequestedAll};
-delivery_references([Pid | Rest], References, RequestedAll) ->
-    try erlang:trace_delivered(Pid) of
-        Reference ->
-            delivery_references(
-                Rest, [{Pid, Reference} | References], RequestedAll
-            )
-    catch
-        _Class:_Reason ->
-            delivery_references(Rest, References, false)
-    end.
-
-await_delivery([], State, _Deadline, RequestedAll) ->
-    {RequestedAll, State};
-await_delivery(References, State, Deadline, RequestedAll) ->
+await_delivery(Target, State, _Deadline, Valid)
+        when map_get(events_received, State) =:= Target -> {Valid, State};
+await_delivery(Target, State, Deadline, Valid) ->
     Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
-        {trace_delivered, Pid, Reference} ->
-            await_delivery(
-                lists:delete({Pid, Reference}, References),
-                State,
-                Deadline,
-                RequestedAll
-            );
-        Message ->
-            await_delivery(
-                References,
-                handle_trace(Message, State),
-                Deadline,
-                RequestedAll
-            )
-    after Remaining ->
-        {false, State}
+        {idle_scalar, _, _, _} = Message ->
+            await_delivery(Target, handle_trace(Message, State), Deadline, Valid)
+    after Remaining -> {false, State}
     end.
-
 build_evidence(State, Ended, MinimumMilliseconds) ->
     Owner = maps:get(owner, State),
     Started = maps:get(started_milliseconds, State, Ended),
@@ -401,6 +521,8 @@ build_evidence(State, Ended, MinimumMilliseconds) ->
         Liveness
     ),
     Evidence0#{
+        <<"observer">> => (http3_idle_observer:snapshot(maps:get(observer, State)))#{
+            events_received => maps:get(events_received, State)},
         <<"quiescence_confirmed">> => true,
         <<"quiescence_maximum_attempts">> =>
             maps:get(quiescence_maximum_attempts, State),
@@ -569,61 +691,11 @@ numeric_stat_keys() ->
         forever_boundary_message_returns
     ].
 
-install_trace_patterns() ->
-    case code:ensure_loaded(gleam_erlang_ffi) of
-        {module, gleam_erlang_ffi} ->
-            MatchSpecification = [{'_', [], [{return_trace}]}],
-            try
-                _ = erlang:trace_pattern(
-                    {gleam_erlang_ffi, select, 1},
-                    MatchSpecification,
-                    [local]
-                ),
-                _ = erlang:trace_pattern(
-                    {gleam_erlang_ffi, select, 2},
-                    MatchSpecification,
-                    [local]
-                ),
-                ok
-            catch
-                _Class:_Reason ->
-                    uninstall_trace_patterns(),
-                    error
-            end;
-        _ -> error
-    end.
-
-uninstall_trace_patterns() ->
-    _ = erlang:trace_pattern(
-        {gleam_erlang_ffi, select, 1}, false, [local]
-    ),
-    _ = erlang:trace_pattern(
-        {gleam_erlang_ffi, select, 2}, false, [local]
-    ),
-    ok.
-
-enable_tracing([], _Collector, Traced) ->
-    {ok, Traced};
-enable_tracing([Pid | Rest], Collector, Traced) ->
-    try erlang:trace(Pid, true, [call, procs, {tracer, Collector}]) of
-        1 -> enable_tracing(Rest, Collector, [Pid | Traced]);
-        _ -> {error, Traced}
-    catch
-        _Class:_Reason -> {error, Traced}
-    end.
-
-disable_tracing(Pids) ->
-    lists:foreach(fun(Pid) ->
-        try erlang:trace(Pid, false, [call, procs]) of
-            _ -> ok
-        catch
-            _Class:_Reason -> ok
-        end
-    end, Pids).
-
 actor_snapshot(Root) ->
     PidRoles = current_expected_actors(Root),
     Counts = role_counts(PidRoles),
+    update_diagnostic(topology, [#{label => Label, observed => bounded_counter(maps:get(Label, Counts, 0))}
+        || {Label, _} <- expected_roles()]),
     case lists:all(fun({Label, Expected}) ->
         maps:get(Label, Counts, 0) =:= Expected
     end, expected_roles()) of
@@ -634,16 +706,28 @@ actor_snapshot(Root) ->
 current_expected_actors(Root) ->
     Expected = maps:from_list(expected_roles()),
     maps:from_list(lists:filtermap(fun(Pid) ->
-        case descendant_of(Pid, Root, 64) of
-            false -> false;
-            true ->
-                Label = safe_label(Pid),
-                case maps:is_key(Label, Expected) of
-                    true -> {true, {Pid, Label}};
-                    false -> false
-                end
+        Label = safe_label(Pid),
+        case maps:is_key(Label, Expected) andalso
+                (descendant_of(Pid, Root, 64) orelse monitored_client_of(Pid, Label, Root)) of
+            true -> {true, {Pid, Label}};
+            false -> false
         end
     end, erlang:processes())).
+
+%% The connection race retires its setup supervisor after publishing a winner.
+%% That actor's historical parent can no longer establish its subtree. Follow
+%% only the existing QUIC client's lifetime monitor to its live HTTP/3 owner;
+%% unrelated labelled actors are never admitted by a global label match.
+monitored_client_of(Pid, <<"quic_core.client">>, Root) ->
+    case erlang:process_info(Pid, monitors) of
+        {monitors, Monitors} ->
+            Owners = lists:usort([Owner || {process, Owner} <- Monitors,
+                is_pid(Owner), safe_label(Owner) =:= <<"http3.client">>,
+                descendant_of(Owner, Root, 64)]),
+            length(Owners) =:= 1;
+        _ -> false
+    end;
+monitored_client_of(_, _, _) -> false.
 
 descendant_of(Pid, Root, _Remaining) when Pid =:= Root ->
     true;

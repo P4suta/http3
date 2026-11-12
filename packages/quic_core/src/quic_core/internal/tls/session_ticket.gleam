@@ -10,7 +10,7 @@ import quic_core/internal/tls/hello
 import quic_core/internal/tls/key_schedule
 import quic_core/internal/tls/message_body
 
-const format_version = 1
+const format_version = 2
 
 const maximum_lifetime_seconds = 604_800
 
@@ -20,11 +20,13 @@ const u32_modulus = 0x1_0000_0000
 
 const maximum_timestamp = 0x7fff_ffff_ffff_ffff
 
-const associated_data = <<"quic_core tls ticket", 1>>
+const associated_data = <<"quic_core tls ticket", 2>>
 
-const client_export_version = 1
+const client_export_version = 2
 
-const client_export_associated_data = <<"quic_core client ticket export", 1>>
+const client_export_associated_data = <<"quic_core client ticket export", 2>>
+
+const maximum_application_context_bytes = 4096
 
 /// Authenticated server-side state recovered from an opaque ticket.
 pub type Claims {
@@ -39,6 +41,7 @@ pub type Claims {
     alpn: BitArray,
     quic_version: Int,
     remembered_transport_parameters: BitArray,
+    remembered_application_context: BitArray,
     permit_early_data: Bool,
   )
 }
@@ -57,6 +60,7 @@ pub type ClientTicket {
     alpn: BitArray,
     quic_version: Int,
     remembered_transport_parameters: BitArray,
+    application_context: BitArray,
     permit_early_data: Bool,
   )
 }
@@ -75,6 +79,7 @@ pub type Error {
   Expired
   InvalidEarlyData
   InvalidTransportParameters
+  InvalidApplicationContext
   CryptoFailure(crypto.Error)
 }
 
@@ -92,6 +97,38 @@ pub fn issue(
   remembered_transport_parameters remembered_transport_parameters: BitArray,
   permit_early_data permit_early_data: Bool,
 ) -> Result(message_body.NewSessionTicket, Error) {
+  issue_with_application_context(
+    ticket_key:,
+    issued_at_milliseconds:,
+    lifetime_seconds:,
+    resumption_master_secret:,
+    algorithm:,
+    cipher_suite:,
+    server_name:,
+    alpn:,
+    quic_version:,
+    remembered_transport_parameters:,
+    remembered_application_context: <<>>,
+    permit_early_data:,
+  )
+}
+
+/// Issue a ticket carrying one bounded opaque application compatibility context.
+/// The TLS layer authenticates the bytes but assigns no semantics.
+pub fn issue_with_application_context(
+  ticket_key ticket_key: BitArray,
+  issued_at_milliseconds issued_at_milliseconds: Int,
+  lifetime_seconds lifetime_seconds: Int,
+  resumption_master_secret resumption_master_secret: BitArray,
+  algorithm algorithm: crypto.HashAlgorithm,
+  cipher_suite cipher_suite: hello.CipherSuite,
+  server_name server_name: String,
+  alpn alpn: BitArray,
+  quic_version quic_version: Int,
+  remembered_transport_parameters remembered_transport_parameters: BitArray,
+  remembered_application_context remembered_application_context: BitArray,
+  permit_early_data permit_early_data: Bool,
+) -> Result(message_body.NewSessionTicket, Error) {
   use Nil <- result.try(validate_ticket_key(ticket_key))
   use Nil <- result.try(validate_policy(
     issued_at_milliseconds,
@@ -102,6 +139,9 @@ pub fn issue(
     alpn,
     quic_version,
     remembered_transport_parameters,
+  ))
+  use Nil <- result.try(validate_application_context(
+    remembered_application_context,
   ))
   use ticket_nonce <- result.try(crypto.secure_random(8) |> map_crypto_result)
   use age_bytes <- result.try(crypto.secure_random(4) |> map_crypto_result)
@@ -126,6 +166,7 @@ pub fn issue(
       alpn:,
       quic_version:,
       remembered_transport_parameters:,
+      remembered_application_context:,
       permit_early_data:,
     )
   use plaintext <- result.try(encode_claims(claims))
@@ -211,6 +252,7 @@ pub fn store(
         alpn:,
         quic_version:,
         remembered_transport_parameters:,
+        application_context: <<>>,
         permit_early_data:,
       ))
     }
@@ -321,6 +363,21 @@ pub fn remembered_parameters(ticket ticket: ClientTicket) -> BitArray {
   ticket.remembered_transport_parameters
 }
 
+/// Return opaque application compatibility state retained with this ticket.
+pub fn application_context(ticket ticket: ClientTicket) -> BitArray {
+  ticket.application_context
+}
+
+/// Attach bounded opaque application state before a ticket is offered or persisted.
+/// The ticket remains immutable and all existing origin bindings are preserved.
+pub fn with_application_context(
+  ticket: ClientTicket,
+  context: BitArray,
+) -> Result(ClientTicket, Error) {
+  use Nil <- result.try(validate_application_context(context))
+  Ok(ClientTicket(..ticket, application_context: context))
+}
+
 /// Return the QUIC version identifier cryptographically bound to this ticket.
 pub fn quic_version(ticket ticket: ClientTicket) -> Int {
   ticket.quic_version
@@ -353,6 +410,8 @@ pub fn export_client(
   unix_milliseconds: Int,
 ) -> Result(BitArray, Error) {
   use Nil <- result.try(validate_ticket_key(storage_key))
+  use Nil <- result.try(validate_timestamp(now_milliseconds))
+  use Nil <- result.try(validate_timestamp(unix_milliseconds))
   let ClientTicket(
     identity,
     received_at,
@@ -365,6 +424,7 @@ pub fn export_client(
     alpn,
     quic_version,
     remembered_transport_parameters,
+    application_context,
     permit_early_data,
   ) = ticket
   let age = now_milliseconds - received_at
@@ -392,6 +452,7 @@ pub fn export_client(
           alpn,
           quic_version,
           remembered_transport_parameters,
+          application_context,
           permit_early_data,
         )),
       )
@@ -428,6 +489,8 @@ pub fn import_client(
   unix_milliseconds: Int,
 ) -> Result(ClientTicket, Error) {
   use Nil <- result.try(validate_ticket_key(storage_key))
+  use Nil <- result.try(validate_timestamp(now_milliseconds))
+  use Nil <- result.try(validate_timestamp(unix_milliseconds))
   use Nil <- result.try(require_byte_aligned(stored))
   use plaintext <- result.try(decrypt_client_export(storage_key, stored))
   case plaintext {
@@ -469,6 +532,7 @@ fn restore_client(
     alpn,
     quic_version,
     remembered_transport_parameters,
+    application_context,
     permit_early_data,
   ) = claims
   use <- bool.guard(
@@ -487,6 +551,7 @@ fn restore_client(
     alpn,
     quic_version,
     remembered_transport_parameters,
+    application_context,
     permit_early_data,
   ))
 }
@@ -508,6 +573,7 @@ fn encode_claims(claims: Claims) -> Result(BitArray, Error) {
     alpn,
     quic_version,
     remembered_transport_parameters,
+    remembered_application_context,
     permit_early_data,
   ) = claims
   use suite <- result.try(cipher_to_wire(cipher_suite, algorithm))
@@ -516,6 +582,8 @@ fn encode_claims(claims: Claims) -> Result(BitArray, Error) {
   let alpn_length = bit_array.byte_size(alpn)
   let psk_length = bit_array.byte_size(pre_shared_key)
   let parameters_length = bit_array.byte_size(remembered_transport_parameters)
+  let application_context_length =
+    bit_array.byte_size(remembered_application_context)
   let flags = case permit_early_data {
     True -> 1
     False -> 0
@@ -535,6 +603,8 @@ fn encode_claims(claims: Claims) -> Result(BitArray, Error) {
     alpn:bits,
     parameters_length:size(16),
     remembered_transport_parameters:bits,
+    application_context_length:size(16),
+    remembered_application_context:bits,
   >>)
 }
 
@@ -596,50 +666,61 @@ fn decode_claims_alpn(
       ))
       case parameters_and_rest {
         <<parameters_length:size(16), parameter_value_and_rest:bits>> -> {
-          use #(parameters, trailing) <- result.try(take(
+          use #(parameters, context_and_rest) <- result.try(take(
             parameter_value_and_rest,
             parameters_length,
           ))
-          case
-            trailing,
-            bit_array.to_string(name),
-            cipher_from_wire(suite_identifier)
-          {
-            <<>>, Ok(server_name), Ok(#(cipher_suite, algorithm)) -> {
-              let permit_early_data = flags == 1
+          case context_and_rest {
+            <<context_length:size(16), context_value_and_rest:bits>> -> {
+              use #(application_context, trailing) <- result.try(take(
+                context_value_and_rest,
+                context_length,
+              ))
               case
-                flags == 0 || flags == 1,
-                bit_array.byte_size(pre_shared_key)
-                == crypto.hash_length(algorithm),
-                validate_policy(
-                  issued_at,
-                  lifetime,
-                  algorithm,
-                  cipher_suite,
-                  server_name,
-                  alpn,
-                  quic_version,
-                  parameters,
-                )
+                trailing,
+                bit_array.to_string(name),
+                cipher_from_wire(suite_identifier)
               {
-                True, True, Ok(Nil) ->
-                  Ok(Claims(
-                    issued_at_milliseconds: issued_at,
-                    lifetime_seconds: lifetime,
-                    age_add:,
-                    pre_shared_key:,
-                    algorithm:,
-                    cipher_suite:,
-                    server_name:,
-                    alpn:,
-                    quic_version:,
-                    remembered_transport_parameters: parameters,
-                    permit_early_data:,
-                  ))
+                <<>>, Ok(server_name), Ok(#(cipher_suite, algorithm)) -> {
+                  let permit_early_data = flags == 1
+                  case
+                    flags == 0 || flags == 1,
+                    bit_array.byte_size(pre_shared_key)
+                    == crypto.hash_length(algorithm),
+                    validate_policy(
+                      issued_at,
+                      lifetime,
+                      algorithm,
+                      cipher_suite,
+                      server_name,
+                      alpn,
+                      quic_version,
+                      parameters,
+                    ),
+                    validate_application_context(application_context)
+                  {
+                    True, True, Ok(Nil), Ok(Nil) ->
+                      Ok(Claims(
+                        issued_at_milliseconds: issued_at,
+                        lifetime_seconds: lifetime,
+                        age_add:,
+                        pre_shared_key:,
+                        algorithm:,
+                        cipher_suite:,
+                        server_name:,
+                        alpn:,
+                        quic_version:,
+                        remembered_transport_parameters: parameters,
+                        remembered_application_context: application_context,
+                        permit_early_data:,
+                      ))
+                    _, _, _, _ -> Error(InvalidTicket)
+                  }
+                }
                 _, _, _ -> Error(InvalidTicket)
               }
             }
-            _, _, _ -> Error(InvalidTicket)
+            _ -> Error(InvalidTicket)
           }
         }
         _ -> Error(InvalidTicket)
@@ -714,6 +795,16 @@ fn validate_timestamp(timestamp: Int) -> Result(Nil, Error) {
   case timestamp >= 0 && timestamp <= maximum_timestamp {
     True -> Ok(Nil)
     False -> Error(InvalidTimestamp)
+  }
+}
+
+fn validate_application_context(context: BitArray) -> Result(Nil, Error) {
+  case
+    bit_array.bit_size(context) % 8 == 0
+    && bit_array.byte_size(context) <= maximum_application_context_bytes
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidApplicationContext)
   }
 }
 

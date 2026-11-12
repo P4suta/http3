@@ -66,20 +66,9 @@ trap 'rm -rf -- "$audit_temp"' EXIT
 
 gleam build --warnings-as-errors
 
-if ! dialyzer \
-	--build_plt \
-	--apps erts kernel stdlib crypto asn1 public_key ssl compiler \
-	syntax_tools parsetools inets runtime_tools mnesia \
-	--output_plt "$audit_temp/otp.plt" \
-	>"$audit_temp/plt.log" 2>&1; then
-	sed -n '1,240p' "$audit_temp/plt.log"
-	exit 1
-fi
-
-dialyzer \
-	--plt "$audit_temp/otp.plt" \
-	--no_check_plt \
-	--fullpath \
+escript scripts/ffi_analysis.escript --self-test
+escript scripts/ffi_analysis.escript plt "$audit_temp/otp.plt"
+escript scripts/ffi_analysis.escript analyze "$audit_temp/otp.plt" \
 	"${production_ffi_beams[@]}"
 
 escript scripts/http3_ffi_xref.escript

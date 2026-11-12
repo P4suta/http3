@@ -232,7 +232,7 @@ class AdvancedProtocol(QuicConnectionProtocol):
                 [
                     (b":status", b"200"),
                     (b"content-type", b"application/octet-stream"),
-                    (b"x-interop-peer", b"aioquic-1.3.0"),
+                    (b"x-interop-peer", b"aioquic-1.7.0"),
                 ],
             )
             request["response_started"] = True
@@ -260,7 +260,7 @@ class AdvancedProtocol(QuicConnectionProtocol):
                 [
                     (b":status", b"200"),
                     (b"content-type", b"application/octet-stream"),
-                    (b"x-interop-peer", b"aioquic-1.3.0"),
+                    (b"x-interop-peer", b"aioquic-1.7.0"),
                 ],
             )
         self.http.send_data(stream_id, body, end_stream=True)

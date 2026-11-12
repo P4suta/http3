@@ -20,7 +20,7 @@ import (
 	"github.com/quic-go/quic-go/qlog"
 )
 
-const peerName = "quic-go-v0.61.0"
+const peerName = "quic-go-v0.64.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

@@ -44,9 +44,8 @@ pub type SendPoll {
 
 /// Payload-free send-side state for bounded development diagnostics.
 ///
-/// This deliberately reports byte counts and lifecycle flags only. It is
-/// useful when a live stream stops making progress without retaining or
-/// exposing any application bytes.
+/// This deliberately reports byte counts and lifecycle flags only.
+/// It is useful when a live stream stops making progress without retaining or exposing any application bytes.
 pub type SendProgress {
   SendProgress(
     identifier: Int,
@@ -259,11 +258,12 @@ pub fn reset_send(
   case
     stream_id.can_send(state.identifier, state.local_endpoint)
     && application_error_code >= 0
-    && application_error_code <= varint.maximum
+    && application_error_code <= varint.maximum,
+    send_finished(state)
   {
-    False -> Error(InvalidInput)
-    True if state.send_reset -> Error(SendClosed)
-    True ->
+    False, _ -> Error(InvalidInput)
+    True, True -> Error(SendClosed)
+    True, False ->
       Ok(#(
         State(
           ..state,
@@ -311,8 +311,8 @@ pub fn send_progress(state: State) -> SendProgress {
 
 /// Return whether one transport poll can produce stream output.
 ///
-/// This deliberately mirrors `poll_send` without polling or copying stream
-/// state. Retransmissions, fresh bytes (including flow-control-blocked bytes),
+/// This deliberately mirrors `poll_send` without polling or copying stream state.
+/// Retransmissions, fresh bytes (including flow-control-blocked bytes),
 /// and an unsent FIN keep the stream active; bytes only awaiting an ACK do not.
 pub fn has_pending_output(state: State) -> Bool {
   stream_id.can_send(state.identifier, state.local_endpoint)
@@ -324,9 +324,7 @@ pub fn has_pending_output(state: State) -> Bool {
   }
 }
 
-/// Return the MAX_STREAM_DATA value currently advertised on this stream, so a
-/// connection whose credit advertisements were held back by the endpoint
-/// memory budget can re-state them once the hold lifts.
+/// Return the MAX_STREAM_DATA value currently advertised on this stream, so a connection whose credit advertisements were held back by the endpoint memory budget can re-state them once the hold lifts.
 pub fn advertised_receive_limit(state: State) -> Int {
   flow_control.receiver_limit(state.receiver)
 }
@@ -336,9 +334,25 @@ pub fn next_send_offset(state: State) -> Int {
   state.next_send_offset
 }
 
-/// Return whether FIN was acknowledged or local sending was reset.
+/// Return whether all stream data and FIN were acknowledged without a reset.
+pub fn send_acknowledged(state: State) -> Bool {
+  !state.send_reset
+  && state.fin_acknowledged
+  && state.unacknowledged_send_bytes == 0
+}
+
+/// Return whether all data and FIN were acknowledged or local sending was reset.
 pub fn send_finished(state: State) -> Bool {
-  state.fin_acknowledged || state.send_reset
+  send_acknowledged(state) || state.send_reset
+}
+
+/// A reset or completed application read closes receiving.
+/// Late frames may still be checked for conflicting final sizes, but cannot reopen delivery.
+pub fn receive_closed(state: State) -> Bool {
+  case state.receive_status {
+    ReceiveResetPending(_) | ReceiveTerminal -> True
+    ReceiveOpen | ReceiveFin -> False
+  }
 }
 
 /// Return whether every direction available to the local endpoint is closed.
@@ -458,16 +472,23 @@ fn receive_valid_reset(
     True,
   ))
   use discarded <- result.try(discard_reassembly(with_final))
-  Ok(#(
-    State(
-      ..state,
-      receiver: receiver,
-      reassembler: discarded,
-      highest_received: maximum(state.highest_received, final_size),
-      receive_status: ReceiveResetPending(application_error_code),
-    ),
-    newly_received,
-  ))
+  // Validate final size before retaining an existing terminal outcome.
+  // Both Reset Read and Data Read are terminal under RFC 9000 section 3.2.
+  // Keep a pending reset's first code too, so duplicates do not replace its cause.
+  case receive_closed(state) {
+    True -> Ok(#(state, 0))
+    False ->
+      Ok(#(
+        State(
+          ..state,
+          receiver: receiver,
+          reassembler: discarded,
+          highest_received: maximum(state.highest_received, final_size),
+          receive_status: ReceiveResetPending(application_error_code),
+        ),
+        newly_received,
+      ))
+  }
 }
 
 fn receive_credit(

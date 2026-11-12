@@ -1,8 +1,8 @@
 //// Role-neutral HTTP/3 orchestration over an opaque QUIC resource adapter.
 ////
-//// This module owns HTTP/3, QPACK, and incremental parsing only. The caller
-//// supplies closures over its public `quic_core/client` or
-//// `quic_core/server` connection and stream values. No socket, packet, TLS,
+//// This module owns HTTP/3, QPACK, and incremental parsing only.
+//// The caller supplies closures over its public `quic_core/client` or `quic_core/server` connection and stream values.
+//// No socket, packet, TLS,
 //// recovery, or QUIC actor type crosses this boundary.
 
 import gleam/bit_array
@@ -11,13 +11,18 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/failure as runtime_failure
 import http3/internal/native/connection_state as http3_state
 import http3/internal/native/control
 import http3/internal/native/datagram
 import http3/internal/native/drain
 import http3/internal/native/frame
 import http3/internal/native/frame_parser
+import http3/internal/native/message_stream
+import http3/internal/native/origin
 import http3/internal/native/priority
+import http3/internal/native/push
+import http3/internal/native/settings_memory
 import http3/internal/native/stream_registry
 import http3/internal/qpack/header.{type Header}
 import http3/internal/qpack/instruction
@@ -34,7 +39,7 @@ const maximum_instruction_parser_bytes = 65_552
 type FrameKind {
   ControlFrames
   RequestFrames
-  PushFrames
+  PushFrames(push_id: Int)
 }
 
 type Input {
@@ -42,10 +47,8 @@ type Input {
   Framed(FrameKind, frame_parser.State)
   Instructions(instruction_stream.State)
   Ignored
-  /// A locally aborted stream can still have bytes already pulled by its
-  /// public-core reader. Retain a bounded tombstone until FIN/reset so those
-  /// ordered deliveries remain stream-local instead of becoming a connection
-  /// `MissingInput` failure.
+  /// A locally aborted stream can still have bytes already pulled by its public-core reader.
+  /// Retain a bounded tombstone until FIN/reset so those ordered deliveries remain stream-local instead of becoming a connection `MissingInput` failure.
   Discarded
 }
 
@@ -61,8 +64,7 @@ pub type ResourceError {
 
 /// The only QUIC operations HTTP/3 is permitted to perform.
 ///
-/// `connection` is chosen by the role-specific adapter and may contain only
-/// public opaque QUIC handles plus its bounded stream registry.
+/// `connection` is chosen by the role-specific adapter and may contain only public opaque QUIC handles plus its bounded stream registry.
 pub type Resource(connection) {
   Resource(
     open_bidirectional: fn(connection) ->
@@ -81,6 +83,34 @@ pub type Resource(connection) {
 /// Semantic events emitted after QPACK and HTTP validation.
 pub type Event {
   Http3Event(http3_state.Event)
+  DataFrameParsed(stream_id: Int, payload_bytes: Int)
+  MessageStreamWasRejected(
+    target: MessageStreamTarget,
+    stream_id: Int,
+    application_error_code: Int,
+  )
+}
+
+/// The application object which owns one peer message stream.
+///
+/// Request streams use their QUIC stream ID.
+/// Push streams are exposed to the client by Push ID, so retain both identities while the protocol state still has the authenticated preface available.
+pub type MessageStreamTarget {
+  RequestStream
+  PushStream(push_id: Int)
+}
+
+/// Result of applying one active peer-stream delivery.
+///
+/// A malformed or incomplete HTTP message is a successful connection transition which has aborted only its owning stream.
+/// All other peer protocol failures remain an `Error` so the connection owner can apply their connection-level code.
+pub type ActiveStreamReceive(connection) {
+  StreamReceived(State(connection))
+  MessageStreamAborted(
+    state: State(connection),
+    target: MessageStreamTarget,
+    application_error_code: Int,
+  )
 }
 
 /// Resource, HTTP/3, or bounded incremental-parser failure.
@@ -94,19 +124,42 @@ pub type Error {
   InstructionParserFailure(instruction_stream.Kind, instruction_stream.Error)
 }
 
-/// Map failures caused by authenticated peer bytes to registered HTTP/3 or
-/// QPACK application close codes. Local resource failures return `None` so a
-/// socket, actor, or credit failure is never misreported as peer misconduct.
+/// Map connection-scoped failures caused by authenticated peer bytes to registered HTTP/3 or QPACK application close codes.
+///
+/// H3_MESSAGE_ERROR and H3_REQUEST_INCOMPLETE are deliberately excluded: RFC 9114 section 4.1 makes both stream errors.
+/// `receive_active_stream` owns those transitions before a role adapter can close the connection.
 pub fn peer_application_error_code(error: Error) -> Option(Int) {
   case error {
     ResourceFailure(_) -> None
+    FrameParserFailure(error) -> frame_parser_application_error_code(error)
     InstructionParserFailure(instruction_stream.EncoderStream, _) -> Some(0x201)
     InstructionParserFailure(instruction_stream.DecoderStream, _) -> Some(0x202)
     Http3Failure(http3_state.QpackDecompressionFailure(_)) -> Some(0x200)
     Http3Failure(http3_state.QpackEncoderStreamFailure(_)) -> Some(0x201)
     Http3Failure(http3_state.QpackDecoderStreamFailure(_)) -> Some(0x202)
-    Http3Failure(http3_state.ControlFailure(control.InvalidSetting(_))) ->
-      Some(0x109)
+    Http3Failure(http3_state.ControlFailure(error)) ->
+      Some(control_application_error_code(error))
+    Http3Failure(http3_state.ZeroRttSettingsIncompatible)
+    | Http3Failure(http3_state.SettingsMemoryFailure(_)) -> Some(0x109)
+    Http3Failure(http3_state.InvalidStreamId(_)) -> Some(0x108)
+    Http3Failure(http3_state.RequestRejected(_)) -> Some(0x10b)
+    Http3Failure(http3_state.InvalidMessageFraming)
+    | Http3Failure(http3_state.HeaderFailure(_)) -> None
+    Http3Failure(http3_state.MessageFailure(error)) ->
+      case message_stream_application_error_code(error) {
+        0x10d | 0x10e -> None
+        code -> Some(code)
+      }
+    Http3Failure(http3_state.PushFailure(error)) ->
+      case push_application_error_code(error) {
+        0x10e -> None
+        code -> Some(code)
+      }
+    Http3Failure(http3_state.DrainFailure(drain.InvalidRequestId(_)))
+    | Http3Failure(http3_state.DrainFailure(drain.InvalidPushId(_)))
+    | Http3Failure(http3_state.DrainFailure(drain.IncreasingGoAwayIdentifier))
+    | Http3Failure(http3_state.DrainFailure(drain.DuplicateIdentifier(_))) ->
+      Some(0x108)
     Http3Failure(http3_state.FrameUnexpected) -> Some(0x105)
     Http3Failure(http3_state.PriorityFailure(priority.InvalidElementId(_))) ->
       Some(0x108)
@@ -118,6 +171,8 @@ pub fn peer_application_error_code(error: Error) -> Option(Int) {
       Some(0x33)
     Http3Failure(http3_state.StreamRegistryFailure(error)) ->
       case error {
+        stream_registry.PushIdNotAllowed(_)
+        | stream_registry.DuplicatePushId(_) -> Some(0x108)
         stream_registry.DuplicateControlStream
         | stream_registry.DuplicateQpackEncoderStream
         | stream_registry.DuplicateQpackDecoderStream -> Some(0x103)
@@ -125,7 +180,141 @@ pub fn peer_application_error_code(error: Error) -> Option(Int) {
         _ -> Some(0x103)
       }
     InvalidPeerStream(_) | PrefaceLimitExceeded -> Some(0x103)
-    MissingInput(_) | Http3Failure(_) | FrameParserFailure(_) -> Some(0x101)
+    MissingInput(_) | Http3Failure(_) -> Some(0x101)
+  }
+}
+
+/// Return the stream-level code for malformed or incomplete peer messages.
+///
+/// Frame placement errors such as DATA before final HEADERS are intentionally absent and continue through `peer_application_error_code` as connection H3_FRAME_UNEXPECTED failures.
+/// Missing final HEADERS is also absent because its code depends on the receiving role: an incomplete request received by a server is H3_REQUEST_INCOMPLETE, while an incomplete response received by a client is H3_MESSAGE_ERROR.
+pub fn peer_stream_application_error_code(error: Error) -> Option(Int) {
+  case error {
+    Http3Failure(http3_state.InvalidMessageFraming)
+    | Http3Failure(http3_state.HeaderFailure(_)) -> Some(0x10e)
+    Http3Failure(http3_state.MessageFailure(error)) ->
+      case error {
+        message_stream.MissingFinalHeaders -> None
+        message_stream.InformationalRequestHeaders
+        | message_stream.DuplicateFinalHeaders
+        | message_stream.TrailersBeforeFinalHeaders
+        | message_stream.ContentLengthExceeded(_, _)
+        | message_stream.ContentLengthMismatch(_, _) -> Some(0x10e)
+        _ -> None
+      }
+    Http3Failure(http3_state.PushFailure(error)) ->
+      case error {
+        push.InvalidPromisedRequest(_)
+        | push.UnsafePromisedRequest
+        | push.PromisedRequestRejected(_) -> Some(0x10e)
+        _ -> None
+      }
+    _ -> None
+  }
+}
+
+fn control_application_error_code(error: control.Error) -> Int {
+  case error {
+    control.MissingSettings -> 0x10a
+    control.DuplicateSettings | control.FrameUnexpected -> 0x105
+    control.InvalidSetting(_) -> 0x109
+    control.InvalidGoAwayIdentifier(_)
+    | control.IncreasingGoAwayIdentifier
+    | control.PushControlFromServer
+    | control.PushIdDecreased -> 0x108
+  }
+}
+
+fn message_stream_application_error_code(error: message_stream.Error) -> Int {
+  case error {
+    message_stream.DataBeforeFinalHeaders
+    | message_stream.DuplicateTrailers
+    | message_stream.HeadersAfterTrailers
+    | message_stream.DataAfterTrailers
+    | message_stream.HeadersAfterConnect -> 0x105
+    message_stream.MissingFinalHeaders -> 0x10d
+    message_stream.BodyLimitExceeded(_) -> 0x107
+    message_stream.InformationalRequestHeaders
+    | message_stream.DuplicateFinalHeaders
+    | message_stream.TrailersBeforeFinalHeaders
+    | message_stream.ContentLengthExceeded(_, _)
+    | message_stream.ContentLengthMismatch(_, _) -> 0x10e
+    message_stream.FrameAfterFinished
+    | message_stream.ConnectBeforeFinalHeaders
+    | message_stream.NonByteAligned -> 0x101
+  }
+}
+
+fn push_application_error_code(error: push.Error) -> Int {
+  case error {
+    push.InvalidPromisedRequest(_)
+    | push.UnsafePromisedRequest
+    | push.PromisedRequestRejected(_) -> 0x10e
+    push.PushIdDecreased
+    | push.PushIdNotAllowed(_)
+    | push.InvalidRequestStream(_)
+    | push.InvalidPushStream(_)
+    | push.DuplicatePushStream(_) -> 0x108
+    push.InconsistentDuplicatePromise(_) -> 0x101
+    push.InvalidConfiguration
+    | push.PushLimitExceeded(_)
+    | push.MissingPush(_)
+    | push.AlreadyTerminal(_)
+    | push.InvalidTime -> 0x101
+  }
+}
+
+fn frame_parser_application_error_code(
+  error: frame_parser.Error,
+) -> Option(Int) {
+  case error {
+    frame_parser.InvalidConfiguration
+    | frame_parser.NonByteAligned
+    | frame_parser.FrameFailure(frame.InvalidLimits)
+    | frame_parser.FrameFailure(frame.NonByteAligned)
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.InvalidLimit))
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.NonByteAligned)) ->
+      None
+    frame_parser.BufferLimitExceeded(_)
+    | frame_parser.FrameFailure(frame.PayloadLimitExceeded(_))
+    | frame_parser.FrameFailure(frame.FieldSectionLimitExceeded(_))
+    | frame_parser.FrameFailure(frame.SettingsLimitExceeded(_))
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.TooManyOrigins(_)))
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.OriginTooLong(_))) ->
+      Some(0x107)
+    frame_parser.FrameFailure(frame.ProhibitedHttp2FrameType(_)) -> Some(0x105)
+    frame_parser.FrameFailure(frame.DuplicateSetting(_))
+    | frame_parser.FrameFailure(frame.ProhibitedSetting(_)) -> Some(0x109)
+    frame_parser.TruncatedFrame
+    | frame_parser.FrameFailure(frame.Truncated)
+    | frame_parser.FrameFailure(frame.InvalidFrame)
+    | frame_parser.FrameFailure(frame.IntegerFailure(_))
+    | frame_parser.FrameFailure(frame.OriginFailure(_)) -> Some(0x106)
+  }
+}
+
+/// Preserve the configured resource and its bound independently of the wire close code.
+/// Malformed peer bytes and local parser misuse remain distinct.
+pub fn frame_parser_runtime_failure(
+  error: frame_parser.Error,
+) -> runtime_failure.Failure {
+  case error {
+    frame_parser.BufferLimitExceeded(maximum) ->
+      runtime_failure.Limit(runtime_failure.Buffer, maximum)
+    frame_parser.FrameFailure(frame.PayloadLimitExceeded(maximum))
+    | frame_parser.FrameFailure(frame.FieldSectionLimitExceeded(maximum))
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.OriginTooLong(
+        maximum,
+      ))) -> runtime_failure.Limit(runtime_failure.Frame, maximum)
+    frame_parser.FrameFailure(frame.SettingsLimitExceeded(maximum))
+    | frame_parser.FrameFailure(frame.OriginFailure(origin.TooManyOrigins(
+        maximum,
+      ))) -> runtime_failure.Limit(runtime_failure.Queue, maximum)
+    _ ->
+      case frame_parser_application_error_code(error) {
+        None -> runtime_failure.Http3(runtime_failure.Local, None)
+        Some(code) -> runtime_failure.Http3(runtime_failure.Peer, Some(code))
+      }
   }
 }
 
@@ -473,10 +662,35 @@ pub fn abort_stream(
     abort(state.connection, stream_id, application_error_code)
     |> map_resource_result,
   )
-  Ok(
+  retire_aborted_stream(State(..state, connection: connection), stream_id)
+}
+
+/// Abort only the local send direction after peer STOP_SENDING.
+///
+/// This deliberately leaves the peer-to-local direction registered so bytes already authorized by the peer, and its terminal FIN or reset, retain their ordered HTTP/3 meaning.
+pub fn observe_send_stopped(
+  state: State(connection),
+  stream_id: Int,
+) -> Result(State(connection), Error) {
+  use http3 <- result.try(
+    http3_state.observe_send_stopped(state.http3, stream_id)
+    |> map_http3_result,
+  )
+  Ok(State(..state, http3: http3))
+}
+
+/// Complete local HTTP/3 cancellation after both QUIC directions are terminal.
+pub fn retire_aborted_stream(
+  state: State(connection),
+  stream_id: Int,
+) -> Result(State(connection), Error) {
+  use http3 <- result.try(
+    http3_state.abort_stream(state.http3, stream_id) |> map_http3_result,
+  )
+  flush_qpack(
     State(
       ..state,
-      connection: connection,
+      http3: http3,
       inputs: case dict.has_key(state.inputs, stream_id) {
         True -> dict.insert(state.inputs, stream_id, Discarded)
         False -> state.inputs
@@ -495,6 +709,22 @@ pub fn peer_settings_received(state: State(connection)) -> Bool {
   http3_state.peer_settings_received(state.http3)
 }
 
+/// Return only authenticated peer settings, excluding ticket memory.
+pub fn peer_settings_snapshot(
+  state: State(connection),
+) -> Result(Option(settings_memory.Snapshot), Error) {
+  http3_state.peer_settings_snapshot(state.http3) |> map_http3_result
+}
+
+/// Mark this connection's attempted 0-RTT as authenticated and accepted.
+pub fn accept_zero_rtt(
+  state: State(connection),
+) -> Result(State(connection), Error) {
+  http3_state.accept_zero_rtt(state.http3)
+  |> map_http3_result
+  |> result.map(fn(http3) { State(..state, http3: http3) })
+}
+
 /// Return the largest HTTP Datagram application payload for a request stream.
 pub fn maximum_http_datagram_size(
   state: State(connection),
@@ -508,8 +738,7 @@ pub fn maximum_http_datagram_size(
   http_datagram_payload_size(state, stream_id, maximum_datagram_size)
 }
 
-/// Return the payload ceiling that survives ACK debt and path fallback for an
-/// active HTTP Datagram association.
+/// Return the payload ceiling that survives ACK debt and path fallback for an active HTTP Datagram association.
 pub fn guaranteed_http_datagram_size(
   state: State(connection),
   stream_id: Int,
@@ -522,8 +751,7 @@ pub fn guaranteed_http_datagram_size(
   http_datagram_payload_size(state, stream_id, guaranteed_datagram_size)
 }
 
-/// Return the lifetime-stable payload ceiling for an admitted Extended CONNECT
-/// request before its successful response makes the association active.
+/// Return the lifetime-stable payload ceiling for an admitted Extended CONNECT request before its successful response makes the association active.
 pub fn prospective_guaranteed_http_datagram_size(
   state: State(connection),
   stream_id: Int,
@@ -657,6 +885,7 @@ pub fn close_drained(
 }
 
 /// Register one peer-initiated public QUIC stream before reading it.
+/// Repeated registration keeps the stream's parser state.
 pub fn register_peer_stream(
   state: State(connection),
   identifier: Int,
@@ -683,6 +912,70 @@ pub fn receive_stream(
   }
 }
 
+/// Apply a public-core stream delivery with RFC 9114 message-error scope.
+///
+/// Malformed request, response, trailer, PUSH_PROMISE, and pushed-response semantics abort their usable directions with H3_MESSAGE_ERROR.
+/// A server receiving a request that ends before final HEADERS uses H3_REQUEST_INCOMPLETE; incomplete responses received by a client use H3_MESSAGE_ERROR.
+/// The connection state is returned as usable.
+/// A terminal delivery removes the discard tombstone because no later FIN can arrive.
+pub fn receive_active_stream(
+  state: State(connection),
+  identifier: Int,
+  bytes: BitArray,
+  finished: Bool,
+  now_ms: Int,
+) -> Result(ActiveStreamReceive(connection), Error) {
+  use input <- result.try(
+    dict.get(state.inputs, identifier)
+    |> result.replace_error(MissingInput(identifier)),
+  )
+  let target = message_stream_target(input, bytes)
+  case receive_stream(state, identifier, bytes, finished, now_ms) {
+    Ok(state) -> Ok(StreamReceived(state))
+    Error(error) ->
+      case peer_message_stream_error_code(state, target, error) {
+        None -> Error(error)
+        Some(code) -> {
+          use state <- result.try(abort_stream(state, identifier, code))
+          let state = case finished {
+            True ->
+              State(..state, inputs: dict.delete(state.inputs, identifier))
+            False -> state
+          }
+          Ok(MessageStreamAborted(state, target, code))
+        }
+      }
+  }
+}
+
+fn peer_message_stream_error_code(
+  state: State(connection),
+  target: MessageStreamTarget,
+  error: Error,
+) -> Option(Int) {
+  case error {
+    Http3Failure(http3_state.MessageFailure(message_stream.MissingFinalHeaders)) ->
+      case http3_state.role(state.http3), target {
+        http3_state.Server, RequestStream -> Some(0x10d)
+        _, _ -> Some(0x10e)
+      }
+    _ -> peer_stream_application_error_code(error)
+  }
+}
+
+fn message_stream_target(input: Input, bytes: BitArray) -> MessageStreamTarget {
+  case input {
+    Framed(PushFrames(push_id), _) -> PushStream(push_id)
+    AwaitingPreface(buffered) ->
+      case stream_registry.decode_preface(<<buffered:bits, bytes:bits>>) {
+        Ok(stream_registry.Preface(stream_registry.Push(push_id), _)) ->
+          PushStream(push_id)
+        _ -> RequestStream
+      }
+    _ -> RequestStream
+  }
+}
+
 /// Forget a reset input; the role adapter retains the authoritative code.
 pub fn receive_reset(
   state: State(connection),
@@ -698,7 +991,7 @@ pub fn receive_reset(
       Ok(State(..state, inputs: dict.delete(state.inputs, identifier)))
     Some(Ignored) | Some(Instructions(_)) | Some(Framed(ControlFrames, _)) ->
       close_unidirectional(state, identifier)
-    Some(Framed(RequestFrames, _)) | Some(Framed(PushFrames, _)) -> {
+    Some(Framed(RequestFrames, _)) | Some(Framed(PushFrames(_), _)) -> {
       use http3 <- result.try(
         http3_state.receive_stream_reset(state.http3, identifier)
         |> map_http3_result,
@@ -788,10 +1081,9 @@ fn register_decoded_input(
     http3_state.Server -> stream_id.Server
   }
   case initiator == local, direction, dict.has_key(state.inputs, identifier) {
-    True, _, _ -> Ok(state)
-    False, stream_id.Unidirectional, _ ->
+    True, _, _ | False, _, True -> Ok(state)
+    False, stream_id.Unidirectional, False ->
       Ok(put_input(state, identifier, AwaitingPreface(<<>>)))
-    False, stream_id.Bidirectional, True -> Ok(state)
     False, stream_id.Bidirectional, False ->
       case http3_state.role(state.http3), initiator {
         http3_state.Server, stream_id.Client -> {
@@ -842,14 +1134,29 @@ fn feed_preface(
       }
     Error(error) -> Error(Http3Failure(error))
     Ok(#(http3, kind, remaining)) -> {
-      use input <- result.try(input_for_kind(state, kind))
-      feed_input(
-        put_input(State(..state, http3: http3), identifier, input),
-        identifier,
-        input,
-        remaining,
-        now_ms,
-      )
+      let state = State(..state, http3: http3)
+      let cancelled = case kind {
+        stream_registry.Push(push_id) ->
+          http3_state.push_cancelled(http3, push_id)
+        _ -> False
+      }
+      case cancelled {
+        True -> {
+          let state = put_input(state, identifier, Discarded)
+          use state <- result.try(abort_stream(state, identifier, 0x10c))
+          feed_input(state, identifier, Discarded, remaining, now_ms)
+        }
+        False -> {
+          use input <- result.try(input_for_kind(state, kind))
+          feed_input(
+            put_input(state, identifier, input),
+            identifier,
+            input,
+            remaining,
+            now_ms,
+          )
+        }
+      }
     }
   }
 }
@@ -862,9 +1169,9 @@ fn input_for_kind(
     stream_registry.Control ->
       new_frame_parser(state)
       |> result.map(fn(parser) { Framed(ControlFrames, parser) })
-    stream_registry.Push(_) ->
+    stream_registry.Push(push_id) ->
       new_frame_parser(state)
-      |> result.map(fn(parser) { Framed(PushFrames, parser) })
+      |> result.map(fn(parser) { Framed(PushFrames(push_id), parser) })
     stream_registry.QpackEncoder ->
       new_instruction_parser(instruction_stream.EncoderStream)
       |> result.map(Instructions)
@@ -905,9 +1212,21 @@ fn parse_frames(
         kind,
         incoming,
       ))
-      use state <- result.try(
-        flush_qpack(add_http3_events(State(..state, http3: http3), events)),
-      )
+      use state <- result.try(add_http3_events(
+        State(..state, http3: http3),
+        events,
+      ))
+      use state <- result.try(flush_qpack(state))
+      let state = case frame_parser.completed_data_frame(parser) {
+        None -> state
+        Some(bytes) ->
+          State(
+            ..state,
+            events: list.append(state.events, [
+              DataFrameParsed(identifier, bytes),
+            ]),
+          )
+      }
       parse_frames(state, identifier, kind, parser)
     }
   }
@@ -925,7 +1244,7 @@ fn receive_http3_frame(
     RequestFrames ->
       http3_state.receive_request_frame(state, identifier, incoming)
       |> map_http3_result
-    PushFrames ->
+    PushFrames(_) ->
       http3_state.receive_push_stream_frame(state, identifier, incoming)
       |> map_http3_result
   }
@@ -971,7 +1290,11 @@ fn apply_instruction(
         http3_state.receive_qpack_encoder_instruction(state.http3, incoming)
         |> map_http3_result,
       )
-      flush_qpack(add_http3_events(State(..state, http3: http3), events))
+      use state <- result.try(add_http3_events(
+        State(..state, http3: http3),
+        events,
+      ))
+      flush_qpack(state)
     }
     instruction_stream.DecoderInstruction(incoming) -> {
       use http3 <- result.try(
@@ -1000,6 +1323,11 @@ fn finish_input(
   input: Input,
 ) -> Result(State(connection), Error) {
   case input {
+    // A peer is allowed to open an otherwise unused unidirectional stream and finish it without sending a stream-type varint.
+    // Once any preface byte has arrived, however, FIN leaves a truncated type and remains a connection error.
+    // Keep reset handling separate: receive_reset/2 owns that contract.
+    AwaitingPreface(<<>>) ->
+      Ok(State(..state, inputs: dict.delete(state.inputs, identifier)))
     AwaitingPreface(_) -> Error(PrefaceLimitExceeded)
     Instructions(parser) ->
       instruction_stream.finish(parser)
@@ -1027,10 +1355,19 @@ fn finish_framed(
   case kind {
     RequestFrames -> {
       use #(http3, events) <- result.try(
-        http3_state.receive_request_finish(state.http3, identifier)
-        |> map_http3_result,
+        case http3_state.receive_request_finish(state.http3, identifier) {
+          Error(http3_state.MissingTransaction(missing))
+            if missing == identifier
+          ->
+            Error(
+              Http3Failure(http3_state.MessageFailure(
+                message_stream.MissingFinalHeaders,
+              )),
+            )
+          outcome -> outcome |> map_http3_result
+        },
       )
-      flush_qpack(add_http3_events(
+      use state <- result.try(add_http3_events(
         State(
           ..state,
           http3: http3,
@@ -1038,8 +1375,9 @@ fn finish_framed(
         ),
         events,
       ))
+      flush_qpack(state)
     }
-    ControlFrames | PushFrames -> close_unidirectional(state, identifier)
+    ControlFrames | PushFrames(_) -> close_unidirectional(state, identifier)
   }
 }
 
@@ -1051,16 +1389,16 @@ fn close_unidirectional(
     http3_state.close_peer_unidirectional_stream(state.http3, identifier)
     |> map_http3_result,
   )
-  Ok(add_http3_events(
+  add_http3_events(
     State(..state, http3: http3, inputs: dict.delete(state.inputs, identifier)),
     events,
-  ))
+  )
 }
 
 fn new_frame_parser(
   state: State(connection),
 ) -> Result(frame_parser.State, Error) {
-  frame_parser.new(
+  frame_parser.new_streaming(
     frame.Limits(
       maximum_payload_bytes: state.maximum_frame_payload_bytes,
       maximum_field_section_bytes: state.maximum_field_section_bytes,
@@ -1068,6 +1406,7 @@ fn new_frame_parser(
       maximum_origin_entries: 256,
     ),
     state.maximum_frame_payload_bytes + maximum_stream_read_bytes + 16,
+    maximum_stream_read_bytes,
   )
   |> map_frame_parser_result
 }
@@ -1094,8 +1433,66 @@ fn put_input(
 fn add_http3_events(
   state: State(connection),
   events: List(http3_state.Event),
-) -> State(connection) {
-  add_events(state, list.map(events, fn(event) { Http3Event(event) }))
+) -> Result(State(connection), Error) {
+  use state <- result.try(apply_push_rejection_advisories(state, events))
+  use #(state, converted) <- result.try(convert_http3_events(state, events, []))
+  Ok(add_events(state, converted))
+}
+
+fn convert_http3_events(
+  state: State(connection),
+  events: List(http3_state.Event),
+  converted_reversed: List(Event),
+) -> Result(#(State(connection), List(Event)), Error) {
+  case events {
+    [] -> Ok(#(state, list.reverse(converted_reversed)))
+    [http3_state.MessageStreamRejected(stream_id, target, code), ..rest] -> {
+      let Resource(abort:, ..) = state.resource
+      use connection <- result.try(
+        abort(state.connection, stream_id, code) |> map_resource_result,
+      )
+      let inputs = case dict.has_key(state.inputs, stream_id) {
+        True -> dict.insert(state.inputs, stream_id, Discarded)
+        False -> state.inputs
+      }
+      let target = case target {
+        http3_state.RequestMessage -> RequestStream
+        http3_state.PushMessage(push_id) -> PushStream(push_id)
+      }
+      convert_http3_events(
+        State(..state, connection: connection, inputs: inputs),
+        rest,
+        [
+          MessageStreamWasRejected(target, stream_id, code),
+          ..converted_reversed
+        ],
+      )
+    }
+    [event, ..rest] ->
+      convert_http3_events(state, rest, [
+        Http3Event(event),
+        ..converted_reversed
+      ])
+  }
+}
+
+fn apply_push_rejection_advisories(
+  state: State(connection),
+  events: List(http3_state.Event),
+) -> Result(State(connection), Error) {
+  case events {
+    [] -> Ok(state)
+    [http3_state.PushPromiseRejected(push_id, _), ..rest] -> {
+      use state <- result.try(
+        case http3_state.push_cancelled(state.http3, push_id) {
+          True -> Ok(state)
+          False -> cancel_push(state, push_id)
+        },
+      )
+      apply_push_rejection_advisories(state, rest)
+    }
+    [_, ..rest] -> apply_push_rejection_advisories(state, rest)
+  }
 }
 
 fn add_events(

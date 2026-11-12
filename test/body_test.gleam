@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleeunit
 import http/body
@@ -12,6 +13,7 @@ pub fn empty_body_is_known_replayable_and_complete_test() -> Nil {
   let value = body.empty()
 
   assert body.known_length(value) == Some(0)
+  assert !body.may_have_trailers(value)
   assert body.is_replayable(value)
   let assert Ok(body.Done(completed)) = body.read(value, 16)
   assert body.trailers(completed) == Some([])
@@ -19,6 +21,7 @@ pub fn empty_body_is_known_replayable_and_complete_test() -> Nil {
 
 pub fn bytes_are_pulled_in_bounded_chunks_and_replayed_test() -> Nil {
   let value = body.from_bytes(<<1, 2, 3, 4, 5>>)
+  assert !body.may_have_trailers(value)
 
   let assert Ok(body.Data(<<1, 2>>, second)) = body.read(value, 2)
   let assert Ok(body.Data(<<3, 4>>, third)) = body.read(second, 2)
@@ -38,6 +41,7 @@ pub fn in_memory_body_preserves_trailers_across_replay_test() -> Nil {
     ])
 
   assert body.trailers(value) == None
+  assert body.may_have_trailers(value)
   assert body.known_length(value) == Some(8)
   assert body.is_replayable(value)
   let assert Ok(#(<<"complete":utf8>>, trailers)) = body.read_all(value, 8)
@@ -152,4 +156,25 @@ fn chunks(values: List(BitArray), trailers: body.Headers) -> body.Pull {
       [first, ..rest] -> Ok(body.PullData(first, chunks(rest, trailers)))
     }
   })
+}
+
+pub fn known_empty_pull_can_have_trailers_without_being_consumed_test() -> Nil {
+  let pulled = process.new_subject()
+  let assert Ok(source) =
+    body.from_pull(
+      body.pull(fn(_) {
+        process.send(pulled, Nil)
+        Ok(body.PullEnd([#("x-complete", "yes")]))
+      }),
+      Some(0),
+      None,
+      fn() { Nil },
+    )
+  assert body.known_length(source) == Some(0)
+  assert body.may_have_trailers(source)
+  assert process.receive(pulled, within: 0) == Error(Nil)
+  let assert Ok(body.Done(completed)) = body.read(source, 1)
+  assert body.may_have_trailers(completed)
+  assert body.trailers(completed) == Some([#("x-complete", "yes")])
+  assert process.receive(pulled, within: 0) == Ok(Nil)
 }

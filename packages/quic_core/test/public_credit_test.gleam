@@ -1,43 +1,27 @@
 //// Credit-bounded router-to-connection delivery over real UDP.
 ////
-//// The listener routes every inbound datagram to the connection actor that
-//// owns the destination connection ID. That hand-off is credit bounded: the
-//// listener sends one connection at most one message per relay batch, that
-//// message carries only what the connection's remaining window admits --
-//// `datagram_credit` datagrams and `byte_credit` bytes -- whatever exceeds
-//// the window is dropped and counted for that connection alone, and the
-//// actor's acknowledgement of what it consumed refills the window.
+//// The listener routes every inbound datagram to the connection actor that owns the destination connection ID.
+//// That hand-off is credit bounded: the listener sends one connection at most one message per relay batch, that message carries only what the connection's remaining window admits -- `datagram_credit` datagrams and `byte_credit` bytes -- whatever exceeds the window is dropped and counted for that connection alone, and the actor's acknowledgement of what it consumed refills the window.
 ////
-//// These tests pin the observable consequences over real UDP. A peer that
-//// floods one connection's ID leaves that actor's mailbox inside the window
-//// in both units, and leaves one whole batch's admitted share in a single
-//// message rather than one message per datagram. A flood of datagrams too
-//// large for the datagram half to bind first is held under the byte half. The
-//// flooded connection's dropped-datagram counter rises while an unrelated
-//// connection's stays at zero. And because QUIC is loss tolerant, the
-//// connection whose window the drops shut still completes a bounded exchange
-//// once its owner reads again.
+//// These tests pin the observable consequences over real UDP.
+//// A peer that floods one connection's ID leaves that actor's mailbox inside the window in both units, and leaves one whole batch's admitted share in a single message rather than one message per datagram.
+//// A flood of datagrams too large for the datagram half to bind first is held under the byte half.
+//// The flooded connection's dropped-datagram counter rises while an unrelated connection's stays at zero.
+//// And because QUIC is loss tolerant, the connection whose window the drops shut still completes a bounded exchange once its owner reads again.
 ////
-//// The window is bounded from below as well. The relay hands the listener a
-//// whole batch of up to `relay_batch` datagrams in one message, and the
-//// listener routes that batch -- and may route the next one -- before any
-//// `Consumed` acknowledgement refills a window mid-batch. A window narrower
-//// than two full batches therefore sheds part of a burst that a perfectly
-//// healthy connection is keeping up with: throughput lost for loss recovery
-//// to repair, rather than a peer held to its share. A connection whose owner
-//// reads the burst as it arrives must lose nothing.
+//// The window is bounded from below as well.
+//// The relay hands the listener a whole batch of up to `relay_batch` datagrams in one message, and the listener routes that batch -- and may route the next one -- before any `Consumed` acknowledgement refills a window mid-batch.
+//// A window narrower than two full batches therefore sheds part of a burst that a perfectly healthy connection is keeping up with: throughput lost for loss recovery to repair, rather than a peer held to its share.
+//// A connection whose owner reads the burst as it arrives must lose nothing.
 ////
-//// Two tests carry that lower bound, and it is worth being exact about what
-//// each one pins. One reads the shipped window straight out of the listener
-//// and the batch size straight out of the relay, so the `at least two whole
-//// batches` requirement binds the numbers production actually uses. The
-//// other is behavioural: a connection whose owner keeps reading takes the two
-//// whole relay batches that floor demands, sent back to back with no flow
-//// control in the way, without its drop counter ever leaving zero.
+//// Two tests carry that lower bound, and it is worth being exact about what each one pins.
+//// One reads the shipped window straight out of the listener and the batch size straight out of the relay, so the `at least two whole batches` requirement binds the numbers production actually uses.
+//// The other is behavioural: a connection whose owner keeps reading takes the two whole relay batches that floor demands, sent back to back with no flow control in the way, without its drop counter ever leaving zero.
 
 import gleam/bit_array
 import gleam/erlang/process.{type Pid}
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleeunit/should
@@ -54,19 +38,31 @@ import quic_core/server
 @external(erlang, "quic_core_test_ffi", "fixture")
 fn fixture(name: String) -> Result(BitArray, Nil)
 
+pub type TestSpecification
+
+@external(erlang, "quic_core_test_ffi", "bounded_test")
+fn bounded_test(milliseconds: Int, run: fn() -> Nil) -> TestSpecification
+
 /// The process behind one opaque public handle, found by its fixed role label.
 @external(erlang, "quic_core_test_ffi", "labelled_pid")
 fn labelled_pid(handle: handle, label: String) -> Result(Pid, Nil)
 
-/// The number of messages waiting in one connection actor's mailbox -- the
-/// backlog the router's per-connection credit window must bound.
+/// Hold this actor until the listener reports an actual credit refusal.
+/// The observation is one positive scalar count, with no trace arguments.
+@external(erlang, "quic_core_test_ffi", "hold_credit_until_drop")
+fn hold_credit_until_drop(
+  listener: Pid,
+  actor: Pid,
+  milliseconds: Int,
+  action: fn() -> a,
+) -> #(a, Result(Int, Nil))
+
+/// The number of messages waiting in one connection actor's mailbox -- the backlog the router's per-connection credit window must bound.
 @external(erlang, "quic_core_test_ffi", "mailbox_length")
 fn mailbox_length(actor: Pid) -> Result(Int, Nil)
 
-/// One actor's mailbox as the delivery window sees it: the number of messages
-/// waiting, and for every message carrying routed datagrams, how many
-/// datagrams it carries and how many bytes they total. Both are read in one
-/// call, so the message view and the datagram view cannot drift apart.
+/// One actor's mailbox as the delivery window sees it: the number of messages waiting, and for every message carrying routed datagrams, how many datagrams it carries and how many bytes they total.
+/// Both are read in one call, so the message view and the datagram view cannot drift apart.
 @external(erlang, "quic_core_test_ffi", "mailbox_deliveries")
 fn mailbox_deliveries(actor: Pid) -> Result(#(Int, List(#(Int, Int))), Nil)
 
@@ -74,19 +70,15 @@ fn mailbox_deliveries(actor: Pid) -> Result(#(Int, List(#(Int, Int))), Nil)
 @external(erlang, "quic_core_test_ffi", "maximum_relay_batch")
 fn maximum_relay_batch() -> Int
 
-/// The connection ID the listener routes to one actor, taken from a bounded
-/// trace of what that actor receives. A connection whose owner keeps reading
-/// never leaves a routed datagram waiting in its mailbox, so the trace -- not
-/// a mailbox poll -- is what makes the read an observation rather than a race.
+/// The connection ID the listener routes to one actor, taken from a bounded trace of what that actor receives.
+/// A connection whose owner keeps reading never leaves a routed datagram waiting in its mailbox, so the trace -- not a mailbox poll -- is what makes the read an observation rather than a race.
 @external(erlang, "quic_core_test_ffi", "traced_routed_connection_id")
 fn traced_routed_connection_id(actor: Pid, bound: Int) -> Result(BitArray, Nil)
 
 /// The fixed diagnostic label every per-connection actor must carry.
 const connection_label = "quic_core.connection"
 
-/// The datagram half of the router's per-connection delivery window, read
-/// from the listener that ships it rather than copied here, so every bound in
-/// this module binds the value production actually uses.
+/// The datagram half of the router's per-connection delivery window, read from the listener that ships it rather than copied here, so every bound in this module binds the value production actually uses.
 fn datagram_credit() -> Int {
   server_worker.delivery_window().0
 }
@@ -96,50 +88,31 @@ fn byte_credit() -> Int {
   server_worker.delivery_window().1
 }
 
-/// The relay's maximum batch: the most datagrams the socket relay hands the
-/// listener in one message, mirrored from `MAXIMUM_RELAY_BATCH` in
-/// quic_core_udp_ffi.erl and pinned below against the value the relay itself
-/// reports. The listener routes a whole batch in one step and cannot refill a
-/// window part way through it.
+/// The relay's maximum batch: the most datagrams the socket relay hands the listener in one message, mirrored from `MAXIMUM_RELAY_BATCH` in quic_core_udp_ffi.erl and pinned below against the value the relay itself reports.
+/// The listener routes a whole batch in one step and cannot refill a window part way through it.
 const relay_batch = 64
 
-/// How many whole relay batches the delivery window has to span. This is the
-/// requirement the shipped window is held to, not a copy of it: the listener
-/// can route a second batch before the first batch's `Consumed` is handled,
-/// so a window narrower than this many batches sheds part of a burst that its
-/// connection is keeping up with.
+/// How many whole relay batches the delivery window has to span.
+/// This is the requirement the shipped window is held to, not a copy of it: the listener can route a second batch before the first batch's `Consumed` is handled,
+/// so a window narrower than this many batches sheds part of a burst that its connection is keeping up with.
 const delivery_window_batches = 2
 
-/// The healthy connection's receive buffer, which is what bounds the peer's
-/// in-flight stream bytes below the delivery window: 64 KiB is roughly 54
-/// datagrams, under one relay batch. That is deliberate, and it is also the
-/// reason the transfer phase of the healthy regression is a sanity check on
-/// real traffic rather than the pin on the window. A connection allowed more
-/// bytes in flight than the window admits is by construction outrunning the
-/// delivery window, so raising this buffer above `byte_credit` would make
-/// drops legitimate rather than exercise the window's lower bound. The pin on
-/// that lower bound is the spoofed burst below, which puts two full relay
-/// batches on the wire at once with no flow control in the way.
+/// The healthy connection's receive buffer, which is what bounds the peer's in-flight stream bytes below the delivery window: 64 KiB is roughly 54 datagrams, under one relay batch.
+/// That is deliberate, and it is also the reason the transfer phase of the healthy regression is a sanity check on real traffic rather than the pin on the window.
+/// A connection allowed more bytes in flight than the window admits is by construction outrunning the delivery window, so raising this buffer above `byte_credit` would make drops legitimate rather than exercise the window's lower bound.
+/// The pin on that lower bound is the spoofed burst below, which puts two full relay batches on the wire at once with no flow control in the way.
 const healthy_buffer_bytes = 65_536
 
-/// How wide the healthy transfer is, in stream chunks: many relay batches'
-/// worth of datagrams in total, though flow control keeps under one batch of
-/// them in flight at a time, and few enough that the whole transfer passes
-/// the owner inside a fixed bound.
+/// How wide the healthy transfer is, in stream chunks: many relay batches' worth of datagrams in total, though flow control keeps under one batch of them in flight at a time, and few enough that the whole transfer passes the owner inside a fixed bound.
 const burst_chunks = 32
 
 const burst_drain_bound_milliseconds = 10_000
 
-/// The outer bound on the whole flow-controlled transfer, one settle longer
-/// than the deadline its reader runs under, so a stalled transfer is reported
-/// by that reader's deadline rather than by this wait.
+/// The outer bound on the whole flow-controlled transfer, one settle longer than the deadline its reader runs under, so a stalled transfer is reported by that reader's deadline rather than by this wait.
 const transfer_bound_milliseconds = 12_000
 
-/// The mailbox bound, in messages. The router sends one message per
-/// connection per relay batch and only while that connection's window is
-/// open, and every such message costs the window at least one datagram, so no
-/// more than one window of datagrams' worth of credited messages can ever be
-/// outstanding at once.
+/// The mailbox bound, in messages.
+/// The router sends one message per connection per relay batch and only while that connection's window is open, and every such message costs the window at least one datagram, so no more than one window of datagrams' worth of credited messages can ever be outstanding at once.
 /// One further message may carry a drop report for a window that was shut,
 /// and the connection's owner may have a command of its own in flight.
 const drop_report_messages = 1
@@ -156,33 +129,25 @@ const flood_window_milliseconds = 400
 
 const mailbox_poll_milliseconds = 2
 
-/// The stalled connection's server-side receive buffer, which its owner never
-/// drains, so the sender that exposes the routed connection ID stays inside
-/// flow control.
+/// The stalled connection's server-side receive buffer, which its owner never drains, so the sender that exposes the routed connection ID stays inside flow control.
 const stall_buffer_bytes = 4_194_304
 
 const cid_chunk_bytes = 16_384
 
 const cid_chunks = 512
 
-/// One spoofed short-header datagram: a short-header first byte, the routed
-/// destination connection ID, then filler. It resolves to the connection's
-/// actor without ever authenticating.
+/// One spoofed short-header datagram: a short-header first byte, the routed destination connection ID, then filler.
+/// It resolves to the connection's actor without ever authenticating.
 const junk_first_byte = 0x40
 
 const junk_filler_bytes = 1191
 
-/// An oversized spoofed datagram: 8 KiB on the wire, which loopback carries
-/// whole and the listener sockets accept without any packet-size cap. Exactly
-/// thirty-two of them fill the byte half of the window, so the byte half --
-/// not the datagram half, which would admit 192 of them, six windows' worth
-/// of bytes -- is what bounds a flood of these.
+/// An oversized spoofed datagram: 8 KiB on the wire, which loopback carries whole and the listener sockets accept without any packet-size cap.
+/// Exactly thirty-two of them fill the byte half of the window, so the byte half -- not the datagram half, which would admit 192 of them, six windows' worth of bytes -- is what bounds a flood of these.
 const oversized_junk_filler_bytes = 8183
 
-/// A legitimate preload that stays below both the 32 KiB connection credit
-/// and 256 KiB per-stream credit advertised in the handshake. Its FIN can
-/// therefore be acknowledged while the owner remains stalled; the spoofed
-/// flood that follows is the only traffic allowed to overlap recovery.
+/// A legitimate preload that stays below both the 32 KiB connection credit and 256 KiB per-stream credit advertised in the handshake.
+/// Its FIN can therefore be acknowledged while the owner remains stalled; the spoofed flood that follows is the only traffic allowed to overlap recovery.
 const quiet_flood_chunks = 1
 
 /// A bounded overflow burst: far more datagrams than one credit window admits,
@@ -194,24 +159,18 @@ const drained_mailbox = 4
 
 const drain_settle_bound_milliseconds = 10_000
 
-/// A recovered connection answers a request promptly; EUnit's own five-second
-/// test bound is the outer limit either way.
+/// A recovered connection answers a request promptly; EUnit's own five-second test bound is the outer limit either way.
 const recovery_round_trip_bound_milliseconds = 2000
 
-/// The sender's queue completion is not delivery completion. Before injecting
-/// spoofed traffic, wait separately for the stream FIN to be acknowledged so
-/// any later loss and delay belongs to the delivery-window recovery phase.
+/// The sender's queue completion is not delivery completion.
+/// Before injecting spoofed traffic, wait separately for the stream FIN to be acknowledged so any later loss and delay belongs to the delivery-window recovery phase.
 const recovery_delivery_bound_milliseconds = 30_000
 
-/// Keep the recovery drain finite while allowing a portable path that remains
-/// at QUIC's 1200-byte floor (for example when the host cannot enable
-/// Don't-Fragment for DPLPMTUD) to deliver the complete preloaded stream.
+/// Keep the recovery drain finite while allowing a portable path that remains at QUIC's 1200-byte floor (for example when the host cannot enable Don't-Fragment for DPLPMTUD) to deliver the complete preloaded stream.
 const recovery_drain_bound_milliseconds = 30_000
 
-/// This scenario deliberately fills, closes, and reopens the delivery window
-/// before starting its recovery drain. On slower hosts that setup can consume
-/// most of the normal connection lifetime, so its test-only total deadline
-/// must cover setup plus the independently bounded drain and round trip.
+/// This scenario deliberately fills, closes, and reopens the delivery window before starting its recovery drain.
+/// On slower hosts that setup can consume most of the normal connection lifetime, so its test-only total deadline must cover setup plus the independently bounded drain and round trip.
 const recovery_total_bound_milliseconds = 90_000
 
 const drain_chunk_bytes = 65_536
@@ -238,17 +197,11 @@ type Step {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn delivery_window_admits_two_full_relay_batches_test() -> Nil {
-  // The relay delivers up to `relay_batch` datagrams in one message, the
-  // listener routes that whole batch in a single step, and the next batch can
-  // be routed before the `Consumed` for the previous one is handled. A window
-  // narrower than two full batches therefore drops part of a burst its
-  // connection is keeping up with, so the window must span two of them.
+  // The relay delivers up to `relay_batch` datagrams in one message, the listener routes that whole batch in a single step, and the next batch can be routed before the `Consumed` for the previous one is handled.
+  // A window narrower than two full batches therefore drops part of a burst its connection is keeping up with, so the window must span two of them.
   assert relay_batch == maximum_relay_batch()
   assert datagram_credit() >= delivery_window_batches * maximum_relay_batch()
-  // A datagram of the 1200-byte floor every QUIC path carries (RFC 9000
-  // section 14) is the smallest a burst can be made of, so the byte half has
-  // to hold two full batches of them as well, or it shuts before the datagram
-  // half does and sheds the same healthy burst.
+  // A datagram of the 1200-byte floor every QUIC path carries (RFC 9000 section 14) is the smallest a burst can be made of, so the byte half has to hold two full batches of them as well, or it shuts before the datagram half does and sheds the same healthy burst.
   assert byte_credit() >= delivery_window_batches * maximum_relay_batch() * 1200
   Nil
 }
@@ -256,8 +209,7 @@ pub fn delivery_window_admits_two_full_relay_batches_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn healthy_connection_never_drops_a_full_batch_burst_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
-  // A long operation deadline covers the whole burst and the statistics query
-  // that follows it, so no reply ever outlives its call.
+  // A long operation deadline covers the whole burst and the statistics query that follows it, so no reply ever outlives its call.
   let deadlines = config.default_deadlines()
   let limits = healthy_limits()
   let listener = start_listener(deadlines, limits)
@@ -267,13 +219,9 @@ pub fn healthy_connection_never_drops_a_full_batch_burst_test() -> Nil {
   let healthy_peer = server.accept(listener) |> should.be_ok
   let actor = labelled_pid(healthy_peer, connection_label) |> should.be_ok
 
-  // A peer sends a flow-controlled transfer while its owner reads it as it
-  // arrives. Flow control holds it under one relay batch in flight, so this
-  // phase exercises the routed path rather than the window itself; what it
-  // has to produce is a connection that is caught up and the identifier the
-  // listener routes to it. A watcher traces the routed datagrams the actor
-  // receives, so that identifier is readable without the owner ever having to
-  // stop reading.
+  // A peer sends a flow-controlled transfer while its owner reads it as it arrives.
+  // Flow control holds it under one relay batch in flight, so this phase exercises the routed path rather than the window itself; what it has to produce is a connection that is caught up and the identifier the listener routes to it.
+  // A watcher traces the routed datagrams the actor receives, so that identifier is readable without the owner ever having to stop reading.
   let found = process.new_subject()
   let _watcher =
     spawn_identifier_watcher(actor, burst_drain_bound_milliseconds, found)
@@ -298,13 +246,9 @@ pub fn healthy_connection_never_drops_a_full_batch_burst_test() -> Nil {
     )
   let transferred_dropped = dropped_count(healthy_peer)
 
-  // The connection is now idle and its actor is keeping up, so nothing but the
-  // window itself can lose a datagram. Two whole relay batches then arrive
-  // back to back, faster than any acknowledgement can refill a window
-  // mid-burst: exactly the floor the window has to hold outright. The shipped
-  // window is wider than that floor, which is the margin that keeps a stray
-  // datagram of the peer's own -- an acknowledgement, a probe -- from tipping
-  // the assertion below.
+  // The connection is now idle and its actor is keeping up, so nothing but the window itself can lose a datagram.
+  // Two whole relay batches then arrive back to back, faster than any acknowledgement can refill a window mid-burst: exactly the floor the window has to hold outright.
+  // The shipped window is wider than that floor, which is the margin that keeps a stray datagram of the peer's own -- an acknowledgement, a probe -- from tipping the assertion below.
   let junked = process.new_subject()
   let _junker =
     spawn_burst_junker(
@@ -334,22 +278,29 @@ pub fn healthy_connection_never_drops_a_full_batch_burst_test() -> Nil {
   assert settled == Ok(Nil)
   // Every byte of the transfer arrived.
   assert received == Ok(burst_chunks * cid_chunk_bytes)
-  // And a connection that kept up with all of it lost nothing. The two counts
-  // are read separately so a regression names the phase that shed a datagram.
-  // The transfer is flow controlled below one relay batch in flight, so its
-  // count is a sanity check that real traffic under a reading owner loses
-  // nothing; the burst that follows is what pins the window's lower bound,
+  // And a connection that kept up with all of it lost nothing.
+  // The two counts are read separately so a regression names the phase that shed a datagram.
+  // The transfer is flow controlled below one relay batch in flight, so its count is a sanity check that real traffic under a reading owner loses nothing; the burst that follows is what pins the window's lower bound,
   // because it puts three whole batches on the wire at once.
   assert transferred_dropped == Ok(0)
   assert dropped == Ok(0)
   assert stopped == Ok(server.Stopped)
 }
 
-// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
-pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
+// nolint: unused_exports, trailing_underscore -- EUnit requires the descriptor generator suffix.
+pub fn flooded_connection_actor_mailbox_stays_within_credit_test_() -> TestSpecification {
+  bounded_test(60_000, flooded_connection_actor_mailbox_stays_within_credit)
+}
+
+fn flooded_connection_actor_mailbox_stays_within_credit() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
+  // Cold OTP 28 VMs under the two-CPU hostile gate can need over four seconds to authenticate TLS.
+  // Setup retains the library's finite default deadlines;
+  // the pressure operation still has its original two-second bound.
   let deadlines =
-    config.uniform_deadlines(operation_bound_milliseconds) |> should.be_ok
+    config.default_deadlines()
+    |> config.with_deadline(failure.Operation, operation_bound_milliseconds)
+    |> should.be_ok
   let limits = stalled_limits()
   let listener = start_listener(deadlines, limits)
   let port = server.port(listener) |> should.be_ok
@@ -359,8 +310,8 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
   let stalled_peer = server.accept(listener) |> should.be_ok
   let actor = labelled_pid(stalled_peer, connection_label) |> should.be_ok
 
-  // Arm the receive trace before a sender starts. CID discovery must not rely
-  // on catching one transient datagram in an otherwise bounded mailbox.
+  // Arm the receive trace before a sender starts.
+  // CID discovery must not rely on catching one transient datagram in an otherwise bounded mailbox.
   let found = process.new_subject()
   let _watcher =
     spawn_identifier_watcher(actor, drain_settle_bound_milliseconds, found)
@@ -373,8 +324,7 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
     process.receive(found, within: drain_settle_bound_milliseconds)
     |> result.flatten
 
-  // A peer floods that connection ID with spoofed short-header datagrams for a
-  // fixed window; the router must never grow the actor's mailbox without bound.
+  // A peer floods that connection ID with spoofed short-header datagrams for a fixed window; the router must never grow the actor's mailbox without bound.
   let junking = process.new_subject()
   let junked = process.new_subject()
   let _junker =
@@ -387,8 +337,7 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
       junked,
     )
   let junk_started = process.receive(junking, within: settle_bound_milliseconds)
-  // The sampling window opens where the junker's does: when it reports that it
-  // is about to send, not when it was asked to start.
+  // The sampling window opens where the junker's does: when it reports that it is about to send, not when it was asked to start.
   let peak =
     peak_backlog(
       actor,
@@ -414,13 +363,10 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
   // Both halves of the window bound the whole mailbox, in their own units.
   assert peak.datagrams <= datagram_credit()
   assert peak.bytes <= byte_credit()
-  // The message-count bound, in messages: every credited message costs the
-  // window at least one datagram, so no more than `datagram_credit` of them
-  // can be outstanding, plus one drop report and the owner's own commands.
+  // The message-count bound, in messages: every credited message costs the window at least one datagram, so no more than `datagram_credit` of them can be outstanding, plus one drop report and the owner's own commands.
   assert peak.messages
     <= datagram_credit() + drop_report_messages + owner_command_allowance
-  // One message per connection per batch: a single message carries a whole
-  // batch's admitted share, not one message for each routed datagram.
+  // One message per connection per batch: a single message carries a whole batch's admitted share, not one message for each routed datagram.
   assert peak.largest > 1
   assert stopped == Ok(server.Stopped)
 }
@@ -428,8 +374,7 @@ pub fn flooded_connection_actor_mailbox_stays_within_credit_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
-  // A long operation deadline lets the statistics query drain the flooded
-  // actor and consume its own reply, so a slow answer never outlives the call.
+  // A long operation deadline lets the statistics query drain the flooded actor and consume its own reply, so a slow answer never outlives the call.
   let deadlines = config.default_deadlines()
   let limits = stalled_limits()
   let listener = start_listener(deadlines, limits)
@@ -439,8 +384,7 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
   let stalled_peer = server.accept(listener) |> should.be_ok
   let actor = labelled_pid(stalled_peer, connection_label) |> should.be_ok
 
-  // A legitimate flood exposes the routed connection ID and then ends inside
-  // the stalled receive buffer, so the spoofed flood below is measured alone.
+  // A legitimate flood exposes the routed connection ID and then ends inside the stalled receive buffer, so the spoofed flood below is measured alone.
   let found = process.new_subject()
   let _watcher =
     spawn_identifier_watcher(actor, drain_settle_bound_milliseconds, found)
@@ -460,8 +404,7 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
 
-  // Every spoofed datagram is 8 KiB, so the datagram half of the window can
-  // never bind first: 192 of them would be 1.5 MiB in one mailbox.
+  // Every spoofed datagram is 8 KiB, so the datagram half of the window can never bind first: 192 of them would be 1.5 MiB in one mailbox.
   let junking = process.new_subject()
   let junked = process.new_subject()
   let _junker =
@@ -474,8 +417,7 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
       junked,
     )
   let junk_started = process.receive(junking, within: settle_bound_milliseconds)
-  // The sampling window opens where the junker's does: when it reports that it
-  // is about to send, not when it was asked to start.
+  // The sampling window opens where the junker's does: when it reports that it is about to send, not when it was asked to start.
   let peak =
     peak_backlog(
       actor,
@@ -490,8 +432,7 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
       actor,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
-  // See `await_dropped`: a drained actor is not a barrier for a count that
-  // reaches it on a later delivery.
+  // See `await_dropped`: a drained actor is not a barrier for a count that reaches it on a later delivery.
   let dropped =
     await_dropped(
       stalled_peer,
@@ -508,24 +449,15 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
   assert junk_done == Ok(Nil)
   assert settled == Ok(Nil)
   assert result.is_ok(identifier)
-  // What proves the flood happened and that the window is what held it is the
-  // drop count, not the sampler. A refused datagram is one the listener would
-  // not hand over because this connection's window had no room, so a nonzero
-  // count says the window filled and did its work. That count only grows, so
-  // reading it is a fact about the run rather than about the instant it was
-  // read.
+  // What proves the flood happened and that the window is what held it is the drop count, not the sampler.
+  // A refused datagram is one the listener would not hand over because this connection's window had no room, so a nonzero count says the window filled and did its work.
+  // That count only grows, so reading it is a fact about the run rather than about the instant it was read.
   //
-  // The peak readings below are upper bounds on the same window, taken by
-  // polling the actor's mailbox from outside. A poll can miss a mailbox that
-  // drains between two samples, so a zero reading means the sampler saw
-  // nothing, never that the bound was exceeded; asserting that it saw
-  // something would be asserting about the scheduler.
+  // The peak readings below are upper bounds on the same window, taken by polling the actor's mailbox from outside.
+  // A poll can miss a mailbox that drains between two samples, so a zero reading means the sampler saw nothing, never that the bound was exceeded; asserting that it saw something would be asserting about the scheduler.
   assert result.map(dropped, fn(count) { count > 0 }) == Ok(True)
-  // The byte half is what holds this flood. The whole mailbox never carried
-  // more than one window of bytes, which thirty-two oversized datagrams
-  // already fill, so a single message was admitted far fewer datagrams than
-  // the datagram half on its own would have let through: 192 of these would
-  // have put 1.5 MiB in one mailbox.
+  // The byte half is what holds this flood.
+  // The whole mailbox never carried more than one window of bytes, which thirty-two oversized datagrams already fill, so a single message was admitted far fewer datagrams than the datagram half on its own would have let through: 192 of these would have put 1.5 MiB in one mailbox.
   assert peak.bytes <= byte_credit()
   assert peak.largest < datagram_credit()
   assert peak.datagrams <= datagram_credit()
@@ -535,8 +467,7 @@ pub fn oversized_datagram_flood_is_bounded_by_the_byte_window_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
-  // A long operation deadline lets the statistics query drain the flooded
-  // actor and consume its own reply, so a slow answer never outlives the call.
+  // A long operation deadline lets the statistics query drain the flooded actor and consume its own reply, so a slow answer never outlives the call.
   let deadlines = config.default_deadlines()
   let limits = stalled_limits()
   let listener = start_listener(deadlines, limits)
@@ -561,16 +492,10 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
     process.receive(found, within: drain_settle_bound_milliseconds)
     |> result.flatten
 
-  // A bounded burst of spoofed datagrams overruns the connection's window.
-  let junked = process.new_subject()
-  let _junker =
-    spawn_burst_junker(
-      port,
-      result.unwrap(identifier, <<0:64>>),
-      overflow_burst,
-      junked,
-    )
-  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
+  // Sending a burst alone does not prove overflow: a fast actor can refill its window between relay batches.
+  // Hold it until the router itself has counted a refusal, then resume it before querying the public counter.
+  let #(junk_done, overflow_observed) =
+    overflow_window(listener, actor, port, result.unwrap(identifier, <<0:64>>))
   // Let the flooded actor drain so its statistics query answers promptly.
   let settled =
     await_drained(
@@ -579,18 +504,8 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
     )
 
   // Overflow is dropped for the flooded connection only.
-  //
-  // The listener counts a drop the moment it refuses one, but the connection
-  // only learns of it when a later delivery carries the count -- an ordinary
-  // one while the flood is still arriving, or the empty one the listener sends
-  // once the actor has acknowledged everything it was sent and the window has
-  // reopened. Either way the count travels a round trip that finishes after
-  // the actor's own mailbox is already empty, so a drained actor is not a
-  // barrier for it and reading straight through one reads whatever has landed
-  // so far. Wait for the count itself; the bound is what fails if the burst
-  // really did fit.
   let stalled_dropped =
-    await_dropped(
+    await_drop_report(
       stalled_peer,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
@@ -605,6 +520,7 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
 
   assert started == Ok(Nil)
   assert junk_done == Ok(Nil)
+  assert result.map(overflow_observed, fn(count) { count > 0 }) == Ok(True)
   assert settled == Ok(Nil)
   assert drained == Ok(Nil)
   assert result.is_ok(identifier)
@@ -616,10 +532,8 @@ pub fn overflow_datagrams_are_dropped_and_counted_per_connection_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
-  // The normal operation deadline lets the statistics query drain the
-  // flooded actor and consume its own reply. This multi-phase test gets a
-  // longer total lifetime so a slower host does not close an otherwise
-  // recovering connection before the separately bounded drain begins.
+  // The normal operation deadline lets the statistics query drain the flooded actor and consume its own reply.
+  // This multi-phase test gets a longer total lifetime so a slower host does not close an otherwise recovering connection before the separately bounded drain begins.
   let deadlines =
     config.with_deadline(
       config.default_deadlines(),
@@ -635,11 +549,9 @@ pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   let stalled_peer = server.accept(listener) |> should.be_ok
   let actor = labelled_pid(stalled_peer, connection_label) |> should.be_ok
 
-  // A legitimate flood its owner has not read yet, which also exposes the
-  // routed connection ID a spoofing peer needs to shut the window. Queueing
-  // the terminal FIN is not proof of peer delivery, so explicitly wait for
-  // its acknowledgement before the spoofed phase begins. The full flood fits
-  // inside the stalled receive buffer without its owner reading it.
+  // A legitimate flood its owner has not read yet, which also exposes the routed connection ID a spoofing peer needs to shut the window.
+  // Queueing the terminal FIN is not proof of peer delivery, so explicitly wait for its acknowledgement before the spoofed phase begins.
+  // The full flood fits inside the stalled receive buffer without its owner reading it.
   let found = process.new_subject()
   let _watcher =
     spawn_identifier_watcher(actor, drain_settle_bound_milliseconds, found)
@@ -665,33 +577,22 @@ pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
 
-  // A burst many windows wide shuts this connection's delivery window, so the
-  // router must drop part of it and count the drops against this connection.
-  let junked = process.new_subject()
-  let _junker =
-    spawn_burst_junker(
-      port,
-      result.unwrap(identifier, <<0:64>>),
-      overflow_burst,
-      junked,
-    )
-  let junk_done = process.receive(junked, within: 3 * settle_bound_milliseconds)
+  // Observe an actual router refusal while the actor cannot replenish its window.
+  // Recovery starts only after the guardian has resumed the actor.
+  let #(junk_done, overflow_observed) =
+    overflow_window(listener, actor, port, result.unwrap(identifier, <<0:64>>))
   let settled =
     await_drained(
       actor,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
-  // See `await_dropped`: a drained actor is not a barrier for a count that
-  // reaches it on a later delivery.
   let dropped =
-    await_dropped(
+    await_drop_report(
       stalled_peer,
       udp.monotonic_millisecond() + drain_settle_bound_milliseconds,
     )
 
-  // The owner then reads what the flood left buffered, and the connection
-  // whose window those drops shut completes a bounded round trip: the window
-  // reopened, and QUIC recovered whatever it dropped.
+  // The owner then reads what the flood left buffered, and the connection whose window those drops shut completes a bounded round trip: the window reopened, and QUIC recovered whatever it dropped.
   let drained = drain_flooded_stream(stalled_peer)
   let round_trip_started = udp.monotonic_millisecond()
   let round_trip = round_trip(stalled, stalled_peer)
@@ -707,6 +608,7 @@ pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   assert delivery_confirmed == Ok(Nil)
   assert quiet == Ok(Nil)
   assert junk_done == Ok(Nil)
+  assert result.map(overflow_observed, fn(count) { count > 0 }) == Ok(True)
   assert settled == Ok(Nil)
   // The window really did shut on this connection before the recovery.
   assert result.map(dropped, fn(count) { count > 0 }) == Ok(True)
@@ -716,13 +618,25 @@ pub fn flooded_connection_recovers_once_its_owner_reads_test() -> Nil {
   assert stopped == Ok(server.Stopped)
 }
 
+fn overflow_window(
+  listener: server.Listener,
+  actor: Pid,
+  port: Int,
+  identifier: BitArray,
+) -> #(Result(Nil, Nil), Result(Int, Nil)) {
+  let router = labelled_pid(listener, "quic_core.listener") |> should.be_ok
+  use <- hold_credit_until_drop(router, actor, 8000)
+  let junked = process.new_subject()
+  let _junker = spawn_burst_junker(port, identifier, overflow_burst, junked)
+  process.receive(junked, within: 3 * settle_bound_milliseconds)
+}
+
 fn stalled_limits() -> config.Limits {
   config.with_limit(config.default_limits(), failure.Buffer, stall_buffer_bytes)
   |> should.be_ok
 }
 
-/// Limits for a connection whose owner keeps reading: a receive buffer small
-/// enough that flow control paces the peer to what the owner consumes.
+/// Limits for a connection whose owner keeps reading: a receive buffer small enough that flow control paces the peer to what the owner consumes.
 fn healthy_limits() -> config.Limits {
   config.with_limit(
     config.default_limits(),
@@ -753,15 +667,36 @@ fn tuned_connect(
   deadlines: config.Deadlines,
   limits: config.Limits,
 ) -> client.Connection {
-  client.new("localhost", port, "sample")
-  |> should.be_ok
-  |> client.with_address_family(quic_core.Ipv4)
-  |> client.with_ca_certificates(ca_certificate)
-  |> should.be_ok
-  |> client.with_deadlines(deadlines)
-  |> client.with_limits(limits)
-  |> client.connect
-  |> should.be_ok
+  let trace = diagnostics.new_connect_trace()
+  let configuration =
+    client.new("localhost", port, "sample")
+    |> should.be_ok
+    |> client.with_address_family(quic_core.Ipv4)
+    |> client.with_ca_certificates(ca_certificate)
+    |> should.be_ok
+    |> client.with_deadlines(deadlines)
+    |> client.with_limits(limits)
+    |> client.with_connect_trace(trace)
+  let connected = client.connect(configuration)
+  let snapshot = diagnostics.connect_snapshot(trace)
+  assert snapshot.consistent
+  assert snapshot.dropped == 0
+  // The assertion retains only finite phase/outcome pairs.
+  // It identifies setup failures before mailbox-pressure observations begin and cannot retain the peer handle, endpoint, certificate or application bytes.
+  let phases =
+    list.map(snapshot.events, fn(event) { #(event.phase, event.outcome) })
+  assert phases
+    == [
+      #(diagnostics.NameResolution, diagnostics.Started),
+      #(diagnostics.NameResolution, diagnostics.Succeeded),
+      #(diagnostics.UdpOpen, diagnostics.Started),
+      #(diagnostics.UdpOpen, diagnostics.Succeeded),
+      #(diagnostics.TlsHandshake, diagnostics.Started),
+      #(diagnostics.TlsHandshake, diagnostics.Succeeded),
+      #(diagnostics.OwnershipPublication, diagnostics.Started),
+      #(diagnostics.OwnershipPublication, diagnostics.Succeeded),
+    ]
+  connected |> should.be_ok
 }
 
 fn spawn_flooder(
@@ -786,8 +721,7 @@ fn spawn_flooder(
   })
 }
 
-/// End the flooding stream when the caller asked for one that finishes, so a
-/// recovery flood the server drains reaches a real end of stream.
+/// End the flooding stream when the caller asked for one that finishes, so a recovery flood the server drains reaches a real end of stream.
 fn finish_flood(stream: client.Stream, finish: Bool) -> Nil {
   case finish {
     False -> Nil
@@ -810,15 +744,11 @@ fn flood(stream: client.Stream, chunk: BitArray, remaining: Int) -> Nil {
   }
 }
 
-/// Flood the listener's port from a socket the child process owns for a fixed
-/// window, so every stray ICMP or reply lands in that child's mailbox and dies
-/// with it rather than polluting the shared test process.
+/// Flood the listener's port from a socket the child process owns for a fixed window, so every stray ICMP or reply lands in that child's mailbox and dies with it rather than polluting the shared test process.
 /// Flood for a fixed window that begins when the flood does.
 ///
-/// The window is a duration rather than a deadline because opening the socket
-/// is not part of the flood. A deadline fixed before this process exists is
-/// spent on starting it, and a runner slow enough to spend the whole window
-/// there sends nothing and leaves the sampler beside it nothing to observe.
+/// The window is a duration rather than a deadline because opening the socket is not part of the flood.
+/// A deadline fixed before this process exists is spent on starting it, and a runner slow enough to spend the whole window there sends nothing and leaves the sampler beside it nothing to observe.
 fn spawn_windowed_junker(
   port: Int,
   identifier: BitArray,
@@ -921,8 +851,7 @@ fn junk_burst(
 
 /// The drop count a connection has been told about, once it has been told.
 ///
-/// Only ever grows, so a poll that stops at the first non-zero reading stops at
-/// a report that has genuinely landed rather than at a moment in time.
+/// Only ever grows, so a poll that stops at the first non-zero reading stops at a report that has genuinely landed rather than at a moment in time.
 fn await_dropped(peer: server.Connection, deadline: Int) -> Result(Int, Nil) {
   case dropped_count(peer) {
     Ok(0) ->
@@ -937,10 +866,8 @@ fn await_dropped(peer: server.Connection, deadline: Int) -> Result(Int, Nil) {
   }
 }
 
-/// Trace one actor's routed datagrams from a process of its own until the
-/// connection ID the listener routes to it is known, so a healthy connection
-/// exposes that identifier without its owner ever having to stall. The trace
-/// dies with the watcher, and the watcher gives up at its own bound.
+/// Trace one actor's routed datagrams from a process of its own until the connection ID the listener routes to it is known, so a healthy connection exposes that identifier without its owner ever having to stall.
+/// The trace dies with the watcher, and the watcher gives up at its own bound.
 fn spawn_identifier_watcher(
   actor: Pid,
   bound: Int,
@@ -951,10 +878,8 @@ fn spawn_identifier_watcher(
   })
 }
 
-/// The worst backlog seen in one connection actor's mailbox: the most
-/// messages, the most routed datagrams and bytes waiting across all of them,
-/// the most datagrams any single message carried, and how many messages
-/// carrying routed datagrams were seen at all.
+/// The worst backlog seen in one connection actor's mailbox: the most messages, the most routed datagrams and bytes waiting across all of them,
+/// the most datagrams any single message carried, and how many messages carrying routed datagrams were seen at all.
 type Backlog {
   Backlog(
     messages: Int,
@@ -1016,8 +941,7 @@ fn sample_backlog(sizes: List(#(Int, Int)), sample: Backlog) -> Backlog {
   }
 }
 
-/// Wait until the flooded actor has drained its backlog, so a statistics query
-/// is serviced at once and its reply never outlives the call.
+/// Wait until the flooded actor has drained its backlog, so a statistics query is serviced at once and its reply never outlives the call.
 fn await_drained(actor: Pid, deadline: Int) -> Result(Nil, Nil) {
   case mailbox_length(actor) {
     Ok(count) if count <= drained_mailbox -> Ok(Nil)
@@ -1032,8 +956,7 @@ fn await_drained(actor: Pid, deadline: Int) -> Result(Nil, Nil) {
   }
 }
 
-/// The per-connection dropped-datagram counter the router publishes through
-/// the connection diagnostics path.
+/// The per-connection dropped-datagram counter the router publishes through the connection diagnostics path.
 fn dropped_count(peer: server.Connection) -> Result(Int, Nil) {
   case server.dropped_datagrams(peer) {
     Error(_reason) -> Error(Nil)
@@ -1041,8 +964,27 @@ fn dropped_count(peer: server.Connection) -> Result(Int, Nil) {
   }
 }
 
-/// Wait for the terminal FIN to be acknowledged, preserving bounded live
-/// transport snapshots in the assertion value if forward progress stops.
+/// Draining the actor mailbox does not mean the listener has handled its Consumed acknowledgements yet.
+/// The final drop report is another message in the opposite direction, so observe its public counter before recovery.
+fn await_drop_report(
+  peer: server.Connection,
+  deadline: Int,
+) -> Result(Int, Nil) {
+  case dropped_count(peer) {
+    Ok(count) if count > 0 -> Ok(count)
+    Error(Nil) -> Error(Nil)
+    Ok(count) ->
+      case udp.monotonic_millisecond() >= deadline {
+        True -> Ok(count)
+        False -> {
+          process.sleep(20)
+          await_drop_report(peer, deadline)
+        }
+      }
+  }
+}
+
+/// Wait for the terminal FIN to be acknowledged, preserving bounded live transport snapshots in the assertion value if forward progress stops.
 fn await_send_finished(
   stream: client.Stream,
   connection: client.Connection,
@@ -1066,9 +1008,7 @@ fn await_send_finished(
   }
 }
 
-/// Read one whole incoming stream inside a fixed bound, reporting how many
-/// bytes arrived, so a caller can check a healthy transfer for completeness as
-/// well as simply drain a flood.
+/// Read one whole incoming stream inside a fixed bound, reporting how many bytes arrived, so a caller can check a healthy transfer for completeness as well as simply drain a flood.
 fn read_incoming_stream(
   peer: server.Connection,
   deadline: Int,
@@ -1099,8 +1039,7 @@ fn read_stream(
   }
 }
 
-/// Drain the flood a recovering connection still owes, discarding the byte
-/// count that only the healthy-burst test has a use for.
+/// Drain the flood a recovering connection still owes, discarding the byte count that only the healthy-burst test has a use for.
 fn drain_flooded_stream(peer: server.Connection) -> Result(Nil, Step) {
   read_incoming_stream(
     peer,

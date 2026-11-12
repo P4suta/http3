@@ -6,13 +6,17 @@
 //// HTTP/3 protocol state.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import http3/internal/native/connection_state as http3_state
+import http3/internal/native/diagnostic_code
 import http3/internal/native/drain
+import http3/internal/native/grease
+import http3/internal/native/header_semantics
 import http3/internal/native/protocol
 import http3/internal/qpack/header.{type Header}
 import quic_core
@@ -127,6 +131,7 @@ pub type Config {
     datagram_limit: Int,
     qpack_table_limit: Int,
     qpack_blocked_stream_limit: Int,
+    authority_policies: header_semantics.AuthorityPolicies,
   )
 }
 
@@ -156,6 +161,7 @@ pub type Stats {
 pub type Event {
   Http3Event(http3_state.Event)
   StreamWasReset(stream_id: Int, application_error_code: Int)
+  StreamSendCompleted(stream_id: Int, completion: core_server.SendCompletion)
   ConnectionTerminated
 }
 
@@ -170,6 +176,8 @@ pub type NetworkEvent {
     finished: Bool,
   )
   StreamReset(connection_id: Int, stream_id: Int, application_error_code: Int)
+  StreamCompletions(connection_id: Int, batch: core_server.SendCompletionBatch)
+  CompletionFeedFailed(connection_id: Int, error: core_server.Error)
   DatagramReceived(connection_id: Int, bytes: BitArray)
   CoreConnectionClosed(connection_id: Int)
 }
@@ -225,7 +233,7 @@ pub fn start(
     protocol.start(
       core_resource(),
       resource,
-      http3_config(config),
+      http3_config(config, identifier),
       config.http_datagrams,
     )
     |> result.map_error(ProtocolFailure),
@@ -240,8 +248,20 @@ pub fn start(
       application_diagnostics,
     )
   record_qlog_bootstrap(state, qlog.monotonic_milliseconds())
+  let owner = process.self()
+  let completion_feed_owner = core_server.completion_feed_owner()
   process.spawn_unlinked(fn() {
     accept_streams(identifier, connection, network)
+  })
+  process.spawn_unlinked(fn() {
+    receive_send_completions(
+      owner,
+      completion_feed_owner,
+      identifier,
+      connection,
+      network,
+      0,
+    )
   })
   case config.http_datagrams {
     True ->
@@ -265,7 +285,7 @@ pub fn receive_active(
       if identifier == state.identifier
     -> {
       let outcome =
-        protocol.receive_stream(
+        protocol.receive_active_stream(
           state.session,
           stream_id,
           bytes,
@@ -273,18 +293,30 @@ pub fn receive_active(
           qlog.monotonic_milliseconds(),
         )
       case outcome {
+        Ok(protocol.StreamReceived(session)) -> map_session(Ok(session), state)
+        Ok(protocol.MessageStreamAborted(session, _, code)) ->
+          map_session(Ok(session), state)
+          |> result.map(fn(state) {
+            State(
+              ..state,
+              events: list.append(state.events, [
+                StreamWasReset(stream_id, code),
+              ]),
+            )
+          })
         Error(protocol.Http3Failure(http3_state.RequestRejected(rejected)))
           if rejected == stream_id
         ->
           protocol.abort_stream(state.session, stream_id, request_rejected_code)
           |> map_session(state)
-        outcome -> outcome |> map_session(state)
+        Error(error) -> Error(error) |> map_session(state)
       }
     }
     StreamReset(identifier, stream_id, code) if identifier == state.identifier -> {
       use state <- result.try(
         protocol.receive_reset(state.session, stream_id) |> map_session(state),
       )
+      use state <- result.try(abort_reset_stream(state, stream_id, code))
       Ok(
         State(
           ..state,
@@ -292,6 +324,17 @@ pub fn receive_active(
         ),
       )
     }
+    StreamCompletions(identifier, batch) if identifier == state.identifier -> {
+      let core_server.SendCompletionBatch(_, events) = batch
+      let completions =
+        list.map(events, fn(event) {
+          let core_server.SendCompletionEvent(_, stream_id, outcome) = event
+          StreamSendCompleted(stream_id, outcome)
+        })
+      Ok(State(..state, events: list.append(state.events, completions)))
+    }
+    CompletionFeedFailed(identifier, error) if identifier == state.identifier ->
+      Error(CoreFailure(error))
     DatagramReceived(identifier, bytes) if identifier == state.identifier ->
       protocol.receive_datagram(state.session, bytes) |> map_session(state)
     CoreConnectionClosed(identifier) if identifier == state.identifier ->
@@ -305,14 +348,86 @@ pub fn receive_active(
   }
 }
 
+fn receive_send_completions(
+  owner: Pid,
+  completion_feed_owner: core_server.CompletionFeedOwner,
+  identifier: Int,
+  connection: core_server.Connection,
+  network: Subject(NetworkEvent),
+  cursor: Int,
+) -> Nil {
+  case process.is_alive(owner) {
+    False -> Nil
+    True ->
+      case
+        core_server.next_send_completions_until_owner_exits(
+          connection,
+          cursor,
+          60_000,
+          completion_feed_owner,
+        )
+      {
+        Ok(core_server.SendCompletionBatch(next_cursor, _) as batch) -> {
+          process.send(network, StreamCompletions(identifier, batch))
+          receive_send_completions(
+            owner,
+            completion_feed_owner,
+            identifier,
+            connection,
+            network,
+            next_cursor,
+          )
+        }
+        Error(core_server.Failure(core_failure.Timeout(core_failure.Operation))) ->
+          receive_send_completions(
+            owner,
+            completion_feed_owner,
+            identifier,
+            connection,
+            network,
+            cursor,
+          )
+        Error(core_server.Failure(core_failure.Closed(_, _))) ->
+          process.send(network, CoreConnectionClosed(identifier))
+        Error(error) ->
+          process.send(network, CompletionFeedFailed(identifier, error))
+      }
+  }
+}
+
+// A peer RESET finishes only receiving.
+// The application reports a terminal request, so finish the still-open send direction before releasing its handle.
+// A late reset may refer to a handle already retired after both directions ended.
+fn abort_reset_stream(
+  state: State,
+  stream_id: Int,
+  code: Int,
+) -> Result(State, Error) {
+  use <- bool.guard(
+    when: !dict.has_key(protocol.connection(state.session).streams, stream_id),
+    return: Ok(state),
+  )
+  use state <- result.try(abort_stream(state, stream_id, code))
+  Ok(retire_stream(state, stream_id))
+}
+
 /// Pull and clear ordered HTTP/3 and lifecycle events.
 pub fn take_events(state: State) -> #(State, List(Event)) {
   let #(session, events) = protocol.take_events(state.session)
   let events =
-    list.map(events, fn(event) {
-      let protocol.Http3Event(event) = event
-      record_http3_event(state, event)
-      Http3Event(event)
+    list.filter_map(events, fn(event) {
+      case event {
+        protocol.Http3Event(event) -> {
+          record_http3_event(state, event)
+          Ok(Http3Event(event))
+        }
+        protocol.DataFrameParsed(identifier, bytes) -> {
+          record_http3_frame_parsed(state, identifier, qlog.DataFrame, bytes)
+          Error(Nil)
+        }
+        protocol.MessageStreamWasRejected(_, identifier, code) ->
+          Ok(StreamWasReset(identifier, code))
+      }
     })
   #(
     State(..state, session: session, events: []),
@@ -381,6 +496,16 @@ pub fn stream_send_finished(
   core_server.send_finished(stream) |> result.map_error(CoreFailure)
 }
 
+/// Share an admitted stream's opaque handle with its accepted request.
+/// The handle retains no HTTP payload and lets a caller await the send direction without occupying the connection actor or consuming receive events.
+pub fn response_stream(
+  state: State,
+  stream_id: Int,
+) -> Result(core_server.Stream, Error) {
+  find_stream(protocol.connection(state.session), stream_id)
+  |> result.replace_error(InvalidInput)
+}
+
 /// Forget one fully settled public-core stream handle.
 ///
 /// HTTP/3 state and the core connection have already observed both terminal
@@ -415,6 +540,22 @@ pub fn resource_stats(
     push_transactions,
     blocked_streams,
   ))
+}
+
+/// Test-only payload-free send ownership evidence from the public core actor.
+@internal
+pub fn send_resource_stats(state: State) -> Result(#(Int, Int, Int), Error) {
+  let resource = protocol.connection(state.session)
+  core_server.send_resource_stats(resource.connection)
+  |> result.map_error(CoreFailure)
+}
+
+/// Payload-free acknowledgement barrier for an orderly HTTP/3 close.
+@internal
+pub fn application_send_settled(state: State) -> Result(Bool, Error) {
+  let resource = protocol.connection(state.session)
+  core_server.application_send_settled(resource.connection)
+  |> result.map_error(CoreFailure)
 }
 
 pub fn promise_push(
@@ -498,6 +639,15 @@ pub fn abort_stream(
   application_error_code: Int,
 ) -> Result(State, Error) {
   protocol.abort_stream(state.session, stream_id, application_error_code)
+  |> map_session(state)
+}
+
+/// Observe a core-confirmed response/send stop while preserving request input.
+pub fn observe_send_stopped(
+  state: State,
+  stream_id: Int,
+) -> Result(State, Error) {
+  protocol.observe_send_stopped(state.session, stream_id)
   |> map_session(state)
 }
 
@@ -667,6 +817,19 @@ pub fn peer_application_error_code(error: Error) -> Option(Int) {
   }
 }
 
+/// Queue one validated payload-free application diagnostic when qlog is on.
+///
+/// The connection-owned writer is bounded and asynchronous.
+/// A disabled,
+/// stopped, saturated, or failed writer cannot delay the protocol operation which produced this observation.
+pub fn record_application_error(state: State, value: Int) -> Nil {
+  case state.application_diagnostics, qlog.application_code(value) {
+    Some(sink), Ok(code) ->
+      qlog.emit_application_error(sink, qlog.monotonic_milliseconds(), code)
+    _, _ -> Nil
+  }
+}
+
 pub fn operation_failure(error: Error) -> Option(OperationFailure) {
   case error {
     ProtocolFailure(protocol.ResourceFailure(
@@ -736,28 +899,17 @@ fn record_http3_event(state: State, event: http3_state.Event) -> Nil {
     | http3_state.ResponseHeaders(stream_id, _)
     | http3_state.Trailers(stream_id, _) ->
       record_http3_frame_parsed(state, stream_id, qlog.HeadersFrame, 0)
-    http3_state.Data(stream_id, bytes) ->
-      record_http3_frame_parsed(
-        state,
-        stream_id,
-        qlog.DataFrame,
-        bit_array.byte_size(bytes),
-      )
     http3_state.PushInformationalResponse(_, stream_id, _)
     | http3_state.PushResponseHeaders(_, stream_id, _)
     | http3_state.PushTrailers(_, stream_id, _) ->
       record_http3_frame_parsed(state, stream_id, qlog.HeadersFrame, 0)
-    http3_state.PushData(_, stream_id, bytes) ->
-      record_http3_frame_parsed(
-        state,
-        stream_id,
-        qlog.DataFrame,
-        bit_array.byte_size(bytes),
-      )
-    http3_state.HttpDatagram(_, _)
+    http3_state.Data(_, _)
+    | http3_state.PushData(_, _, _)
+    | http3_state.HttpDatagram(_, _)
     | http3_state.StreamFinished(_)
     | http3_state.HeadersBlocked(_, _)
     | http3_state.PushPromised(_, _)
+    | http3_state.PushPromiseRejected(_, _)
     | http3_state.PushAwaitingPromise(_, _)
     | http3_state.PushFinished(_, _)
     | http3_state.PushCancelled(_)
@@ -765,7 +917,8 @@ fn record_http3_event(state: State, event: http3_state.Event) -> Nil {
     | http3_state.GoAwayReceived(_, _)
     | http3_state.OriginsReceived(_)
     | http3_state.PriorityChanged(_)
-    | http3_state.ExtensionFrameIgnored(_) -> Nil
+    | http3_state.ExtensionFrameIgnored(_)
+    | http3_state.MessageStreamRejected(_, _, _) -> Nil
   }
 }
 
@@ -879,7 +1032,7 @@ fn add_alternative_credentials(
   }
 }
 
-fn http3_config(config: Config) -> http3_state.Config {
+fn http3_config(config: Config, grease_sample: Int) -> http3_state.Config {
   let base = http3_state.default_config(http3_state.Server)
   let settings =
     http3_state.Settings(
@@ -887,6 +1040,7 @@ fn http3_config(config: Config) -> http3_state.Config {
       qpack_max_table_capacity: config.qpack_table_limit,
       qpack_blocked_streams: config.qpack_blocked_stream_limit,
       h3_datagram: config.http_datagrams,
+      grease_sample: grease.runtime_sample(grease_sample),
     )
   http3_state.Config(
     ..base,
@@ -895,6 +1049,7 @@ fn http3_config(config: Config) -> http3_state.Config {
     maximum_transactions: config.bidirectional_stream_limit,
     maximum_datagram_payload_bytes: config.datagram_limit,
     maximum_frame_payload_bytes: config.frame_limit,
+    authority_policies: config.authority_policies,
   )
 }
 
@@ -957,9 +1112,12 @@ fn core_resource() -> protocol.Resource(CoreResource) {
         |> result.replace_error(protocol.InvalidResourceOperation),
       )
       use Nil <- result.try(
-        core_server.reset(stream, code) |> result.map_error(map_resource_error),
+        abort_stream_directions(
+          identifier,
+          fn() { core_server.reset(stream, code) },
+          fn() { core_server.stop_sending(stream, code) },
+        ),
       )
-      let _stopped = core_server.stop_sending(stream, code)
       Ok(resource)
     },
     send_datagram: fn(resource: CoreResource, bytes: BitArray) {
@@ -1069,9 +1227,76 @@ fn map_session(
   value: Result(protocol.State(CoreResource), protocol.Error),
   state: State,
 ) -> Result(State, Error) {
-  value
-  |> result.map(fn(session) { State(..state, session: session) })
-  |> result.map_error(ProtocolFailure)
+  case value {
+    Ok(session) -> Ok(State(..state, session: session))
+    Error(error) -> {
+      record_protocol_failure(state, error)
+      Error(ProtocolFailure(error))
+    }
+  }
+}
+
+fn record_protocol_failure(state: State, error: protocol.Error) -> Nil {
+  case state.application_diagnostics {
+    None -> Nil
+    Some(sink) ->
+      list.each(diagnostic_code.protocol_errors(error), fn(value) {
+        case qlog.application_code(value) {
+          Ok(code) ->
+            qlog.emit_application_error(
+              sink,
+              qlog.monotonic_milliseconds(),
+              code,
+            )
+          Error(_) -> Nil
+        }
+      })
+  }
+}
+
+/// Abort every direction that exists from the server's point of view.
+@internal
+pub fn abort_stream_directions(
+  identifier: Int,
+  reset: fn() -> Result(Nil, core_server.Error),
+  stop: fn() -> Result(Nil, core_server.Error),
+) -> Result(Nil, protocol.ResourceError) {
+  let stream_id = quic_core.StreamId(identifier)
+  case
+    quic_core.stream_direction(stream_id),
+    quic_core.stream_initiator(stream_id)
+  {
+    quic_core.UnidirectionalStream, quic_core.ServerInitiated ->
+      abort_direction_outcome(reset())
+    quic_core.UnidirectionalStream, quic_core.ClientInitiated ->
+      abort_direction_outcome(stop())
+    quic_core.BidirectionalStream, _ -> abort_directions(reset, stop)
+  }
+}
+
+/// Abort the two bidirectional operations independently through public core.
+/// A peer cancellation can finish sending before a local GOAWAY rejection reaches this callback.
+/// That direction is already terminal; the receive direction must still be stopped, and unrelated requests remain usable.
+pub fn abort_directions(
+  reset: fn() -> Result(Nil, core_server.Error),
+  stop: fn() -> Result(Nil, core_server.Error),
+) -> Result(Nil, protocol.ResourceError) {
+  let reset_outcome = abort_direction_outcome(reset())
+  let stop_outcome = abort_direction_outcome(stop())
+  case reset_outcome, stop_outcome {
+    Error(error), _ -> Error(error)
+    Ok(Nil), Error(error) -> Error(error)
+    Ok(Nil), Ok(Nil) -> Ok(Nil)
+  }
+}
+
+fn abort_direction_outcome(
+  outcome: Result(Nil, core_server.Error),
+) -> Result(Nil, protocol.ResourceError) {
+  case outcome {
+    Ok(Nil) | Error(core_server.StreamFinished) -> Ok(Nil)
+    Error(error) -> Error(map_resource_error(error))
+  }
 }
 
 fn map_resource_error(error: core_server.Error) -> protocol.ResourceError {
@@ -1087,6 +1312,7 @@ fn map_resource_error(error: core_server.Error) -> protocol.ResourceError {
     core_server.InvalidDirection
     | core_server.InvalidOperation
     | core_server.ConcurrentOperation
+    | core_server.CompletionHistoryExceeded(_)
     | core_server.Failure(_) -> protocol.InvalidResourceOperation
   }
 }

@@ -6,7 +6,9 @@ import gleam/result
 import quic_core/internal/connection_state as transport
 import quic_core/internal/driver
 import quic_core/internal/ecn
+import quic_core/internal/local_connection_id
 import quic_core/internal/packet_space
+import quic_core/internal/runtime/budget
 import quic_core/internal/stream_state
 import quic_core/internal/tls/anti_replay
 import quic_core/internal/tls/authentication
@@ -66,24 +68,53 @@ pub fn local_connection_id(state: State) -> BitArray {
   driver.local_connection_id(state.quic)
 }
 
+/// Additional local routes permitted by both endpoint and peer limits.
+pub fn local_connection_id_capacity(state: State) -> Int {
+  transport.local_connection_id_capacity(driver.connection(state.quic))
+}
+
+/// Local-issuer scalar occupancy without identifiers or reset tokens.
+pub fn local_connection_id_snapshot(
+  state: State,
+) -> local_connection_id.Snapshot {
+  transport.local_connection_id_snapshot(driver.connection(state.quic))
+}
+
+/// Queue an identifier only after its owner has installed the receive route.
+pub fn issue_local_connection_id(
+  state: State,
+  identifier: BitArray,
+  token: BitArray,
+) -> Result(State, driver.Error) {
+  driver.update_connection(state.quic, fn(inner) {
+    transport.issue_local_connection_id(inner, identifier, token)
+  })
+  |> result.map(fn(quic) { State(..state, quic: quic) })
+}
+
 /// Stable lifecycle phase.
 pub fn phase(state: State) -> transport.Phase {
   driver.phase(state.quic)
 }
 
-/// Hold this connection's advertised receive credit inside the endpoint memory
-/// it has been granted, so growth is funded before it happens, and report every
-/// byte it keeps resident.
+pub fn local_transport_failure_code(state: State) -> Option(Int) {
+  transport.local_transport_failure_code(driver.connection(state.quic))
+}
+
+/// Hold this connection's advertised receive credit inside the endpoint memory it has been granted, so growth is funded before it happens, and report every byte it keeps resident.
 pub fn apply_memory_grant(
   state: State,
   granted_bytes: Int,
   refused: Bool,
 ) -> #(State, Int) {
   let #(connection, retained) =
-    transport.apply_memory_grant(
+    transport.apply_memory_grant_with_control_headroom(
       driver.connection(state.quic),
       granted_bytes,
       refused,
+      // The actor remeasures in ledger quanta.
+      // Preserve one such quantum for control growth between measurements instead of promising it in DATA.
+      budget.quantum(),
     )
   #(
     State(..state, quic: driver.put_connection(state.quic, connection)),
@@ -238,8 +269,8 @@ pub fn commit_datagram(
   })
 }
 
-/// Retire a prepared but unsent PMTU probe which the local socket rejected as
-/// too large. No packet, byte, flush, recovery, or congestion counter grows.
+/// Retire a prepared but unsent PMTU probe which the local socket rejected as too large.
+/// No packet, byte, flush, recovery, or congestion counter grows.
 pub fn reject_pmtu_probe(
   prepared: PreparedDatagram,
 ) -> Result(State, driver.Error) {
@@ -297,9 +328,8 @@ pub fn send_finished(
     transport.stream_send_finished(driver.connection(state.quic), identifier)
   {
     Ok(finished) -> Ok(finished)
-    // A stream is removed from transport state only after every direction
-    // available to this endpoint is terminal. An opaque handle reaching this
-    // branch therefore denotes a settled stream, not an unknown caller ID.
+    // A stream is removed from transport state only after every direction available to this endpoint is terminal.
+    // An opaque handle reaching this branch therefore denotes a settled stream, not an unknown caller ID.
     Error(transport.UnknownStream(_)) -> Ok(True)
     Error(error) -> Error(driver.ConnectionFailure(error))
   }
@@ -456,8 +486,7 @@ pub fn pmtu_probe_available(state: State) -> Bool {
   transport.pmtu_probe_available(driver.connection(state.quic))
 }
 
-/// Return the path to the 1200-byte floor after the local stack refused a
-/// datagram the connection believed the path carried.
+/// Return the path to the 1200-byte floor after the local stack refused a datagram the connection believed the path carried.
 pub fn report_pmtu_black_hole(state: State) -> State {
   State(..state, quic: driver.report_pmtu_black_hole(state.quic))
 }
@@ -546,21 +575,23 @@ pub fn refresh_server_resumption_policy(
   }
 }
 
-/// Issue one TLS session ticket from an established server connection.
-pub fn issue_session_ticket(
+/// Issue one ticket carrying bounded opaque application compatibility state.
+pub fn issue_session_ticket_with_application_context(
   state: State,
   ticket_key: BitArray,
   now: Int,
   lifetime_seconds: Int,
   permit_early_data: Bool,
+  application_context: BitArray,
 ) -> Result(State, driver.Error) {
   driver.update_connection(state.quic, fn(connection) {
-    transport.issue_session_ticket(
+    transport.issue_session_ticket_with_application_context(
       connection,
       ticket_key,
       now,
       lifetime_seconds,
       permit_early_data,
+      application_context,
     )
   })
   |> result.map(fn(quic) { State(..state, quic: quic) })

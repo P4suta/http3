@@ -88,9 +88,13 @@ The public server accepts one request head at a time per `accept` call while
 the underlying listener continues to multiplex connections and request
 streams. Multiple certificates can be configured; the TLS server selects a
 matching credential from the strict ClientHello SNI name. Graceful stop sends
-the HTTP/3 drain signal, rejects later accepts, permits active requests to
-finish,
-then closes the listener within its deadline.
+the initial HTTP/3 GOAWAY, keeps its refinement instant fixed at startup, and
+selects the final request-stream cutoff only after that instant. Network events
+are dispatched before the refinement turn, so requests which were already in
+flight when the initial GOAWAY arrived affect the final identifier. The default
+refinement interval is 100 ms and is capped strictly inside the configured
+drain deadline. Later accepts are rejected, active requests may finish, and the
+listener then closes within its finite cleanup window.
 
 ## Native QUIC runtime
 
@@ -222,6 +226,15 @@ bursty handshake datagrams, retransmits after loss or corruption, validates a
 new path before moving application traffic, and discards obsolete packet
 protection keys according to the relevant packet-space and key-update rules.
 
+The 32-connection burst regression enables qlog deliberately and retains the production 64 MiB endpoint budget.
+A live trace prepays its 1 MiB writer working set, including one terminal record, and the HTTP/3 adapter reserves one additional 16 KiB quantum in the same atomic ledger.
+The adapter reservation does not claim a second connection slot.
+Each accepted ordinary record takes one further 16 KiB ledger quantum until the file device confirms completion;
+a full ledger rejects that diagnostic record with the resource classification while transport remains live.
+The fixture must complete all 32 connections,
+drain and stop, and observe both the transport and diagnostic ledgers return to zero.
+A separate suspended-device fixture deterministically fills the remaining event budget, observes the typed refusal, resumes the device, and proves admission resumes after every charge is released.
+
 ## TLS and resumption
 
 TLS 1.3 handshake messages, extensions, transcript coordination, key schedule,
@@ -344,6 +357,15 @@ directly, so no outbound datagram needs a listener hop; the listener forwards
 each routed inbound batch to the owning actor. The server never issues
 additional local connection IDs, so routing tracks exactly one identifier per
 connection plus the pre-Retry alias.
+
+Listener shutdown monitors established and still-handshaking HTTP/3 actors before it fans out their stop signals.
+It then performs the bounded public-core listener stop and joins all actor monitors against one absolute deadline;
+connection count does not multiply a per-connection timeout.
+A final 50 ms forced-kill tail is part of that same deadline.
+The public stop wait includes the HTTP/3 drain, the core listener's published cleanup allowance, that HTTP/3 actor tail, and one 100 ms reply grace.
+Client close uses the corresponding sum of its drain, the core connection actor allowance, the qlog diagnostic-close allowance, and reply grace.
+The original absolute deadline reaches the qlog writer unchanged; its native five-second limit may shorten that boundary but cannot rebase it after a scheduler delay.
+A qlog close failure remains `QlogUnavailable`; neither adapter replaces it with an earlier outer timeout.
 
 That inbound hand-off is credit bounded per connection. The listener groups one
 relay batch by connection ID and sends one message per connection per batch,

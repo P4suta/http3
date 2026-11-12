@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http3/failure as runtime_failure
+import http3/internal/native/header_semantics
 import http3/internal/native/server_connection
 import http3/internal/native/server_worker
 import quic_core.{type AddressFamily, Ipv4, Ipv6}
@@ -17,11 +18,14 @@ const minimum_keepalive_milliseconds = 1000
 
 const maximum_keepalive_milliseconds = 29_000
 
+const minimum_unidirectional_stream_limit = 3
+
 /// Secure listener configuration with decoded runtime-owned credentials.
 pub opaque type Server {
   Server(
     default_credential: server_worker.Credential,
     alternative_credentials: List(server_worker.Credential),
+    authority_policies: header_semantics.AuthorityPolicies,
     port: Int,
     bind_address: Option(BitArray),
     timeout_milliseconds: Int,
@@ -52,6 +56,26 @@ pub opaque type Server {
     address_token_keys: Option(KeyRing),
     stateless_reset_keys: Option(KeyRing),
   )
+}
+
+/// Whether one configured custom URI scheme carries authority.
+pub type AuthorityPolicy {
+  MandatoryAuthority
+  OptionalAuthority
+  NoAuthority
+}
+
+/// A bounded custom-scheme policy passed unchanged to each connection.
+pub type AuthorityPolicies =
+  header_semantics.AuthorityPolicies
+
+/// Invalid custom-scheme policy input.
+pub type AuthorityPolicyError {
+  InvalidAuthorityScheme
+  ReservedAuthorityScheme
+  DuplicateAuthorityScheme
+  AuthoritySchemeTooLong(maximum: Int)
+  AuthorityPolicyLimitExceeded(maximum: Int)
 }
 
 /// A validated 256-bit server operational key with no secret accessor.
@@ -226,6 +250,7 @@ pub fn new(
   Ok(Server(
     default_credential,
     [],
+    header_semantics.authority_policies(),
     0,
     None,
     30_000,
@@ -256,6 +281,37 @@ pub fn new(
     None,
     None,
   ))
+}
+
+/// Construct the default fail-closed custom-scheme policy.
+pub fn authority_policies() -> AuthorityPolicies {
+  header_semantics.authority_policies()
+}
+
+/// Add one normalized custom URI scheme to a bounded policy.
+pub fn with_custom_scheme_authority_policy(
+  policies: AuthorityPolicies,
+  scheme: String,
+  policy: AuthorityPolicy,
+) -> Result(AuthorityPolicies, AuthorityPolicyError) {
+  header_semantics.with_custom_scheme_authority_policy(
+    policies,
+    scheme,
+    case policy {
+      MandatoryAuthority -> header_semantics.MandatoryAuthority
+      OptionalAuthority -> header_semantics.OptionalAuthority
+      NoAuthority -> header_semantics.NoAuthority
+    },
+  )
+  |> result.map_error(map_authority_policy_error)
+}
+
+/// Replace the prevalidated policy retained by a server configuration.
+pub fn with_authority_policies(
+  server: Server,
+  policies: AuthorityPolicies,
+) -> Server {
+  Server(..server, authority_policies: policies)
 }
 
 /// Enable 0-RTT with this listener actor's bounded replay cache.
@@ -590,7 +646,7 @@ pub fn with_unidirectional_stream_limit(
   server server: Server,
   maximum maximum: Int,
 ) -> Result(Server, ConfigurationError) {
-  case maximum > 0 {
+  case maximum >= minimum_unidirectional_stream_limit {
     True -> Ok(Server(..server, unidirectional_stream_limit: maximum))
     False -> Error(InvalidUnidirectionalStreamLimit)
   }
@@ -705,6 +761,7 @@ pub fn start(server: Server) -> Result(Listener, Error) {
     server.accept_waiter_limit,
     server.default_credential,
     server.alternative_credentials,
+    server.authority_policies,
     server.http_datagrams,
     server.keepalive_milliseconds,
     server.address_family,
@@ -717,6 +774,20 @@ pub fn start(server: Server) -> Result(Listener, Error) {
   )
   |> result.map(Listener)
   |> result.map_error(map_error)
+}
+
+fn map_authority_policy_error(
+  error: header_semantics.AuthorityPolicyError,
+) -> AuthorityPolicyError {
+  case error {
+    header_semantics.InvalidAuthorityScheme -> InvalidAuthorityScheme
+    header_semantics.ReservedAuthorityScheme -> ReservedAuthorityScheme
+    header_semantics.DuplicateAuthorityScheme -> DuplicateAuthorityScheme
+    header_semantics.AuthoritySchemeTooLong(maximum) ->
+      AuthoritySchemeTooLong(maximum)
+    header_semantics.AuthorityPolicyLimitExceeded(maximum) ->
+      AuthorityPolicyLimitExceeded(maximum)
+  }
 }
 
 fn optional_key_ring_values(ring: Option(KeyRing)) -> List(BitArray) {
@@ -827,15 +898,59 @@ pub fn peer_endpoint(request: Request) -> Result(#(BitArray, Int), Error) {
   server_worker.peer_endpoint(handle) |> result.map_error(map_error)
 }
 
+/// Compare request connection identity without exposing the connection actor.
+@internal
+pub fn same_connection(first: Request, second: Request) -> Bool {
+  let Request(first_handle) = first
+  let Request(second_handle) = second
+  server_worker.same_connection(first_handle, second_handle)
+}
+
+/// Configured per-operation duration; this does not start a read.
+@internal
+pub fn operation_timeout_milliseconds(request: Request) -> Int {
+  let Request(handle) = request
+  server_worker.operation_timeout_milliseconds(handle)
+}
+
+/// Queue one payload-free application diagnostic on this request's owner.
+@internal
+pub fn record_application_error(request: Request, code: Int) -> Nil {
+  let Request(handle) = request
+  server_worker.record_application_error(handle, code)
+}
+
 /// Pull one request-body event.
 pub fn next_event(request: Request) -> Result(RequestEvent, Error) {
   let Request(handle) = request
-  case server_worker.next_event(handle) {
+  map_next_event(server_worker.next_event(handle))
+}
+
+/// Pull using one absolute monotonic deadline across multiple events.
+@internal
+pub fn next_event_until(
+  request request: Request,
+  deadline_milliseconds deadline: Int,
+) -> Result(RequestEvent, Error) {
+  let Request(handle) = request
+  map_next_event(server_worker.next_event_until(handle, deadline))
+}
+
+fn map_next_event(
+  outcome: Result(server_worker.Event, server_worker.Error),
+) -> Result(RequestEvent, Error) {
+  case outcome {
     Ok(server_worker.Data(bytes)) -> Ok(Data(bytes))
     Ok(server_worker.Trailers(headers)) -> Ok(Trailers(headers))
     Ok(server_worker.End) -> Ok(End)
     Error(error) -> Error(map_error(error))
   }
+}
+
+/// Await the response send direction without consuming request events.
+pub fn await_response_completion(request: Request) -> Result(Nil, Error) {
+  let Request(handle) = request
+  server_worker.await_response_completion(handle) |> result.map_error(map_error)
 }
 
 /// Cancel both QUIC directions of one accepted request stream idempotently.
@@ -1033,6 +1148,40 @@ pub fn request_state_stats(
   server_worker.request_state_stats(handle) |> result.map_error(map_error)
 }
 
+/// Test-only direction and retained-event snapshot for one request.
+@internal
+pub fn request_lifecycle_stats(
+  request: Request,
+) -> Result(#(Bool, Bool, Bool, Option(Int), Int, Int, Bool), Error) {
+  let Request(handle) = request
+  server_worker.request_lifecycle_stats(handle) |> result.map_error(map_error)
+}
+
+/// Test-only payload-free snapshot of the blocking request waiters.
+@internal
+pub fn request_waiter_stats(request: Request) -> Result(#(Bool, Bool), Error) {
+  let Request(handle) = request
+  server_worker.request_waiter_stats(handle) |> result.map_error(map_error)
+}
+
+/// Test-only scalar send-buffer, pending-send, and completion-waiter counts.
+@internal
+pub fn send_resource_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int), Error) {
+  let Request(handle) = request
+  server_worker.send_resource_stats(handle) |> result.map_error(map_error)
+}
+
+/// Test-only connection-wide terminal-delivery ownership and ceilings.
+@internal
+pub fn terminal_delivery_stats(
+  request: Request,
+) -> Result(#(Int, Int, Int, Int, Int, Int), Error) {
+  let Request(handle) = request
+  server_worker.terminal_delivery_stats(handle) |> result.map_error(map_error)
+}
+
 /// Return the current non-fragmenting QUIC UDP payload size.
 pub fn maximum_transmission_unit(request: Request) -> Result(Int, Error) {
   let Request(handle) = request
@@ -1127,6 +1276,7 @@ fn map_error(error: server_worker.Error) -> Error {
       Failure(runtime_failure.Closed(runtime_failure.Local, Some(code)))
     server_worker.ProtocolError(code, _) ->
       Failure(runtime_failure.Http3(runtime_failure.Peer, Some(code)))
+    server_worker.RuntimeFailure(failure) -> Failure(failure)
     server_worker.RequestBodyTooLarge(limit) -> RequestBodyTooLarge(limit)
     server_worker.ResponseBodyTooLarge(limit) -> ResponseBodyTooLarge(limit)
     server_worker.ConsumerTooSlow(limit) -> ConsumerTooSlow(limit)

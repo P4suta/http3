@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "integration_kind": "rfc9114_launcher_gate_integration",
+  "status": "Staged",
+  "mise": {
+    "task": "rfc9114-launcher-evidence-gate",
+    "command": "python -I -B scripts/rfc9114_launcher_evidence_gate.py --lock standards/audits/rfc9114-launcher/evidence-lock.json",
+    "wired": false
+  },
+  "ci": {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "rfc9114-launcher-evidence-gate",
+    "command": "python -I -B scripts/rfc9114_launcher_evidence_gate.py --lock standards/audits/rfc9114-launcher/evidence-lock.json",
+    "artifact_paths": [
+      "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v4-ps5.1.json",
+      "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v4-ps7.6.json",
+      "build/root-validation/rfc9114-peer-error-mapping/mutations/launcher-structural-audit-v4-ps*.json"
+    ],
+    "wired": false
+  },
+  "constraints": {
+    "native_execution": "forbidden",
+    "independent_audit_before_ready": true,
+    "canonical_source_required": true
+  }
+}

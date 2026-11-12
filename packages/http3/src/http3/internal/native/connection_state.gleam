@@ -11,12 +11,14 @@ import http3/internal/native/control
 import http3/internal/native/datagram
 import http3/internal/native/drain
 import http3/internal/native/frame
+import http3/internal/native/grease
 import http3/internal/native/header_semantics
 import http3/internal/native/message_stream
 import http3/internal/native/origin
 import http3/internal/native/priority
 import http3/internal/native/priority_scheduler
 import http3/internal/native/push
+import http3/internal/native/settings_memory
 import http3/internal/native/stream_registry
 import http3/internal/qpack/decoder
 import http3/internal/qpack/encoder
@@ -40,6 +42,7 @@ pub type Settings {
     enable_connect_protocol: Bool,
     h3_datagram: Bool,
     grease: Bool,
+    grease_sample: Int,
   )
 }
 
@@ -58,6 +61,9 @@ pub type Config {
     maximum_datagram_payload_bytes: Int,
     maximum_priority_field_bytes: Int,
     drain_timeout_ms: Int,
+    authority_policies: header_semantics.AuthorityPolicies,
+    remembered_peer_settings: Option(settings_memory.Snapshot),
+    zero_rtt_accepted: Bool,
   )
 }
 
@@ -97,11 +103,25 @@ pub type Event {
   )
   PushFinished(push_id: Int, stream_id: Int)
   PushCancelled(push_id: Int)
+  PushPromiseRejected(push_id: Int, reason: push.PromiseRejection)
   PushStreamCancellationRequested(push_id: Int, stream_id: Int)
   GoAwayReceived(identifier: Int, rejected: List(Int))
   OriginsReceived(List(origin.Origin))
   PriorityChanged(priority.Update)
   ExtensionFrameIgnored(frame_type: Int)
+  /// Internal recovery evidence consumed by the role-neutral protocol adapter.
+  /// It never crosses the public client/server API boundary.
+  MessageStreamRejected(
+    stream_id: Int,
+    target: MessageStreamTarget,
+    application_error_code: Int,
+  )
+}
+
+/// Identity needed to route a delayed QPACK semantic failure back to the offending stream after the encoder-stream instruction unblocks it.
+pub type MessageStreamTarget {
+  RequestMessage
+  PushMessage(push_id: Int)
 }
 
 /// Application disposition of one structurally valid HTTP/3 Datagram.
@@ -171,6 +191,8 @@ pub opaque type State {
     quic_datagram_negotiated: Bool,
     peer_control: control.State,
     peer_settings: Option(control.Settings),
+    effective_peer_settings: settings_memory.Snapshot,
+    zero_rtt_accepted: Bool,
     peer_streams: stream_registry.State,
     qpack_encoder: encoder.State,
     qpack_decoder: decoder.State,
@@ -224,13 +246,15 @@ pub type Error {
   PriorityFailure(priority.Error)
   SchedulerFailure(priority_scheduler.Error)
   IntegerFailure(varint.Error)
+  SettingsMemoryFailure(settings_memory.Error)
+  ZeroRttSettingsIncompatible
 }
 
 /// Conservative bounded defaults suitable for a general endpoint.
 pub fn default_config(role: Role) -> Config {
   Config(
     role,
-    Settings(4096, 65_536, 16, True, False, True),
+    Settings(4096, 65_536, 16, True, False, True, 0),
     4096,
     256,
     16_777_216,
@@ -241,6 +265,9 @@ pub fn default_config(role: Role) -> Config {
     65_535,
     4096,
     30_000,
+    header_semantics.authority_policies(),
+    None,
+    False,
   )
 }
 
@@ -263,13 +290,18 @@ pub fn new(
     stream_registry.new(registry_role, config.maximum_pushes)
     |> map_registry_result,
   )
+  let effective_peer_settings =
+    option.unwrap(config.remembered_peer_settings, settings_memory.defaults())
   use qpack_encoder <- result.try(
     encoder.new(
-      0,
-      0,
-      0,
+      settings_memory.qpack_max_table_capacity(effective_peer_settings),
+      minimum(
+        settings_memory.qpack_max_table_capacity(effective_peer_settings),
+        config.preferred_qpack_table_capacity,
+      ),
+      settings_memory.qpack_blocked_streams(effective_peer_settings),
       config.maximum_fields,
-      config.settings.maximum_field_section_size,
+      settings_memory.maximum_field_section_size(effective_peer_settings),
     )
     |> map_encoder_result,
   )
@@ -297,7 +329,9 @@ pub fn new(
   use datagrams <- result.try(
     datagram.new(
       quic_datagram_negotiated,
-      False,
+      quic_datagram_negotiated
+        && config.settings.h3_datagram
+        && settings_memory.h3_datagram(effective_peer_settings),
       config.maximum_transactions,
       config.maximum_datagram_payload_bytes,
     )
@@ -312,6 +346,8 @@ pub fn new(
     quic_datagram_negotiated,
     control.new(peer_role),
     None,
+    effective_peer_settings,
+    config.zero_rtt_accepted,
     peer_streams,
     qpack_encoder,
     qpack_decoder,
@@ -334,20 +370,50 @@ pub fn role(state: State) -> Role {
   state.config.role
 }
 
+/// Return whether policy has already cancelled one Push ID.
+/// This exposes only terminal state, never the rejected promise's fields or origin.
+pub fn push_cancelled(state: State, push_id: Int) -> Bool {
+  case push.get(state.pushes, push_id) {
+    Some(push.Push(_, _, _, _, push.Cancelled)) -> True
+    _ -> False
+  }
+}
+
 /// Return whether both endpoints enabled RFC 9297 over QUIC DATAGRAM.
 pub fn datagrams_available(state: State) -> Bool {
-  case state.peer_settings {
-    Some(settings) ->
-      state.quic_datagram_negotiated
-      && state.config.settings.h3_datagram
-      && settings.h3_datagram
-    None -> False
-  }
+  state.quic_datagram_negotiated
+  && state.config.settings.h3_datagram
+  && settings_memory.h3_datagram(state.effective_peer_settings)
 }
 
 /// Return whether the peer's mandatory SETTINGS frame has been installed.
 pub fn peer_settings_received(state: State) -> Bool {
   option.is_some(state.peer_settings)
+}
+
+/// Return the authenticated peer SETTINGS when the control stream supplied it.
+/// Remembered ticket state is intentionally excluded from this observation.
+pub fn peer_settings_snapshot(
+  state: State,
+) -> Result(Option(settings_memory.Snapshot), Error) {
+  case state.peer_settings {
+    None -> Ok(None)
+    Some(settings) ->
+      control_settings_snapshot(settings)
+      |> map_settings_memory_result
+      |> result.map(Some)
+  }
+}
+
+/// Record authenticated acceptance of the connection's attempted 0-RTT data.
+/// If current SETTINGS already arrived, validate the same compatibility rule immediately; otherwise `install_peer_settings` performs it on arrival.
+pub fn accept_zero_rtt(state: State) -> Result(State, Error) {
+  use current <- result.try(peer_settings_snapshot(state))
+  use _ <- result.try(require_zero_rtt_settings_compatible(
+    state.config.remembered_peer_settings,
+    current,
+  ))
+  Ok(State(..state, zero_rtt_accepted: True))
 }
 
 /// Install the three local critical streams and produce their mandatory
@@ -471,11 +537,7 @@ pub fn receive_control_frame(
   incoming: frame.Frame,
 ) -> Result(#(State, List(Event)), Error) {
   use #(peer_control, event) <- result.try(
-    control.receive(
-      state.peer_control,
-      incoming,
-      state.quic_datagram_negotiated,
-    )
+    control.receive(state.peer_control, incoming)
     |> map_control_result,
   )
   let state = State(..state, peer_control: peer_control)
@@ -538,10 +600,11 @@ pub fn open_request(
     drain.open_request(state.drain, stream_id) |> map_drain_result,
   )
   use validated <- result.try(
-    header_semantics.validate(
+    header_semantics.validate_with_authority_policies(
       fields,
       header_semantics.RequestSection,
       peer_connect_enabled(state),
+      state.config.authority_policies,
     )
     |> map_header_result,
   )
@@ -601,11 +664,32 @@ pub fn receive_request_frame(
   incoming: frame.Frame,
 ) -> Result(#(State, List(Event)), Error) {
   use _ <- result.try(validate_request_stream(stream_id))
-  use state <- result.try(ensure_inbound_transaction(state, stream_id, incoming))
-  use transaction <- result.try(get_transaction(state, stream_id))
-  case transaction.blocked {
-    Some(_) -> queue_blocked_frame(state, stream_id, incoming)
-    None -> receive_transaction_frame(state, stream_id, transaction, incoming)
+  case
+    state.config.role,
+    dict.has_key(state.transactions, stream_id),
+    incoming
+  {
+    Server, False, frame.Unknown(frame_type, _) -> {
+      // RFC 9114 sections 4.1 and 9 permit extensions before HEADERS.
+      // Discard these bytes without admitting a request or retaining transaction state.
+      case priority.is_update_frame_type(frame_type) {
+        True -> Error(FrameUnexpected)
+        False -> Ok(#(state, [ExtensionFrameIgnored(frame_type)]))
+      }
+    }
+    _, _, _ -> {
+      use state <- result.try(ensure_inbound_transaction(
+        state,
+        stream_id,
+        incoming,
+      ))
+      use transaction <- result.try(get_transaction(state, stream_id))
+      case transaction.blocked {
+        Some(_) -> queue_blocked_frame(state, stream_id, incoming)
+        None ->
+          receive_transaction_frame(state, stream_id, transaction, incoming)
+      }
+    }
   }
 }
 
@@ -657,11 +741,16 @@ pub fn receive_stream_reset(
   state: State,
   stream_id: Int,
 ) -> Result(State, Error) {
+  let abandoned = case optional_transaction(state, stream_id) {
+    Some(Transaction(inbound_finished: finished, ..)) -> !finished
+    None -> option.is_some(optional_push_transaction(state, stream_id))
+  }
+  let qpack_decoder = case abandoned {
+    True -> decoder.abandon_stream(state.qpack_decoder, stream_id)
+    False -> decoder.cancel_stream(state.qpack_decoder, stream_id)
+  }
   let state =
-    State(
-      ..state,
-      qpack_decoder: decoder.cancel_stream(state.qpack_decoder, stream_id),
-    )
+    State(..state, qpack_decoder: qpack_decoder)
     |> drop_blocked_frames(stream_id)
   case optional_transaction(state, stream_id) {
     Some(transaction) ->
@@ -672,6 +761,51 @@ pub fn receive_stream_reset(
           reset_push_transaction(state, stream_id, transaction)
         None -> Ok(state)
       }
+  }
+}
+
+/// Complete a confirmed local cancellation of both stream directions.
+pub fn abort_stream(state: State, stream_id: Int) -> Result(State, Error) {
+  let state = case optional_transaction(state, stream_id) {
+    Some(transaction) ->
+      put_transaction(
+        state,
+        stream_id,
+        Transaction(..transaction, outbound_finished: True),
+      )
+    None -> state
+  }
+  use state <- result.try(receive_stream_reset(state, stream_id))
+  Ok(complete_drain_work(state, stream_id))
+}
+
+/// Complete only the local send direction after peer STOP_SENDING.
+///
+/// The peer may still have authenticated request bytes, including a WebSocket Close followed by FIN, in flight on the independent receive direction.
+/// Keep inbound parsing and QPACK ownership intact until that direction reaches FIN or RESET_STREAM.
+pub fn observe_send_stopped(
+  state: State,
+  stream_id: Int,
+) -> Result(State, Error) {
+  case optional_transaction(state, stream_id) {
+    None -> Ok(state)
+    Some(transaction) -> {
+      let state =
+        put_transaction(
+          state,
+          stream_id,
+          Transaction(
+            ..transaction,
+            outbound: message_stream.abort(transaction.outbound),
+            outbound_finished: True,
+          ),
+        )
+      let state = case state.config.role {
+        Server -> complete_drain_work(state, stream_id)
+        Client -> state
+      }
+      Ok(cleanup_if_complete(state, stream_id))
+    }
   }
 }
 
@@ -968,9 +1102,20 @@ pub fn promise_push(
     Server -> Ok(Nil)
     Client -> Error(WrongRole)
   })
-  use _ <- result.try(get_transaction(state, request_stream_id))
+  use transaction <- result.try(get_transaction(state, request_stream_id))
+  use associated_request <- result.try(case transaction.request_control {
+    Some(control) -> Ok(control)
+    None ->
+      Error(PushFailure(push.PromisedRequestRejected(push.OriginNotAuthorized)))
+  })
   use #(pushes, push_id) <- result.try(
-    push.allocate_promise(state.pushes, request_stream_id, request_fields)
+    push.allocate_promise_for_associated_request(
+      state.pushes,
+      request_stream_id,
+      associated_request,
+      request_fields,
+      state.config.authority_policies,
+    )
     |> map_push_result,
   )
   use drain_state <- result.try(
@@ -1018,6 +1163,7 @@ pub fn open_push_stream(
   use request_control <- result.try(require_push_request_control(
     state.pushes,
     push_id,
+    state.config.authority_policies,
   ))
   use pushes <- result.try(
     push.open_stream(state.pushes, push_id, stream_id, now_ms)
@@ -1408,26 +1554,43 @@ fn install_peer_settings(
   state: State,
   settings: control.Settings,
 ) -> Result(#(State, List(Event)), Error) {
+  use current <- result.try(
+    control_settings_snapshot(settings) |> map_settings_memory_result,
+  )
+  use _ <- result.try(case state.zero_rtt_accepted {
+    True ->
+      require_zero_rtt_settings_compatible(
+        state.config.remembered_peer_settings,
+        Some(current),
+      )
+    False -> Ok(Nil)
+  })
   let capacity =
     minimum(
       settings.qpack_max_table_capacity,
       state.config.preferred_qpack_table_capacity,
     )
-  let field_limit =
-    minimum(
-      settings.maximum_field_section_size,
-      state.config.settings.maximum_field_section_size,
-    )
-  use qpack_encoder <- result.try(
-    encoder.new(
-      settings.qpack_max_table_capacity,
-      capacity,
-      settings.qpack_blocked_streams,
-      state.config.maximum_fields,
-      field_limit,
-    )
-    |> map_encoder_result,
-  )
+  let field_limit = settings.maximum_field_section_size
+  use qpack_encoder <- result.try(case state.zero_rtt_accepted {
+    True ->
+      encoder.apply_compatible_peer_settings(
+        state.qpack_encoder,
+        settings.qpack_max_table_capacity,
+        capacity,
+        settings.qpack_blocked_streams,
+        field_limit,
+      )
+      |> map_encoder_result
+    False ->
+      encoder.new(
+        settings.qpack_max_table_capacity,
+        capacity,
+        settings.qpack_blocked_streams,
+        state.config.maximum_fields,
+        field_limit,
+      )
+      |> map_encoder_result
+  })
   use datagrams <- result.try(
     datagram.new(
       state.quic_datagram_negotiated,
@@ -1442,6 +1605,7 @@ fn install_peer_settings(
       State(
         ..state,
         peer_settings: Some(settings),
+        effective_peer_settings: current,
         qpack_encoder: qpack_encoder,
         datagrams: datagrams,
       ),
@@ -1921,10 +2085,11 @@ fn process_message_headers(
   case state.config.role, transaction.inbound_final_headers {
     Server, False -> {
       use validated <- result.try(
-        header_semantics.validate(
+        header_semantics.validate_with_authority_policies(
           fields,
           header_semantics.RequestSection,
           state.config.settings.enable_connect_protocol,
+          state.config.authority_policies,
         )
         |> map_header_result,
       )
@@ -2061,26 +2226,79 @@ fn process_push_promise(
   fields: List(Header),
 ) -> Result(#(State, List(Event)), Error) {
   use validated <- result.try(
-    header_semantics.validate(fields, header_semantics.RequestSection, False)
+    header_semantics.validate_with_authority_policies(
+      fields,
+      header_semantics.RequestSection,
+      False,
+      state.config.authority_policies,
+    )
     |> map_header_result,
   )
-  use pushes <- result.try(
-    push.promise(state.pushes, push_id, stream_id, fields) |> map_push_result,
-  )
-  let transaction = Transaction(..transaction, blocked: None)
-  use #(state, push_events) <- result.try(resume_push_after_promise(
-    put_transaction(State(..state, pushes: pushes), stream_id, transaction),
-    push_id,
-  ))
-  use #(state, request_events) <- result.try(
-    finish_after_unblock(state, stream_id, transaction, []),
-  )
-  Ok(
-    #(state, [
-      PushPromised(push_id, validated),
-      ..list.append(push_events, request_events)
-    ]),
-  )
+  use rejection <- result.try(case transaction.request_control {
+    None -> Ok(Some(push.OriginNotAuthorized))
+    Some(associated_request) ->
+      push.assess_promised_request(
+        fields,
+        associated_request,
+        state.config.authority_policies,
+      )
+      |> map_push_result
+  })
+  case rejection {
+    None -> {
+      use pushes <- result.try(
+        push.promise_with_authority_policies(
+          state.pushes,
+          push_id,
+          stream_id,
+          fields,
+          state.config.authority_policies,
+        )
+        |> map_push_result,
+      )
+      let transaction = Transaction(..transaction, blocked: None)
+      let state =
+        put_transaction(State(..state, pushes: pushes), stream_id, transaction)
+      case push_cancelled(state, push_id) {
+        True -> finish_after_unblock(state, stream_id, transaction, [])
+        False -> {
+          use #(state, push_events) <- result.try(resume_push_after_promise(
+            state,
+            push_id,
+          ))
+          use #(state, request_events) <- result.try(
+            finish_after_unblock(state, stream_id, transaction, []),
+          )
+          Ok(
+            #(state, [
+              PushPromised(push_id, validated),
+              ..list.append(push_events, request_events)
+            ]),
+          )
+        }
+      }
+    }
+    Some(reason) -> {
+      use pushes <- result.try(
+        push.remember_rejected_promise(state.pushes, push_id, stream_id, fields)
+        |> map_push_result,
+      )
+      let transaction = Transaction(..transaction, blocked: None)
+      use #(state, request_events) <- result.try(
+        finish_after_unblock(
+          put_transaction(
+            State(..state, pushes: pushes),
+            stream_id,
+            transaction,
+          ),
+          stream_id,
+          transaction,
+          [],
+        ),
+      )
+      Ok(#(state, [PushPromiseRejected(push_id, reason), ..request_events]))
+    }
+  }
 }
 
 fn open_inbound_push(
@@ -2094,6 +2312,30 @@ fn open_inbound_push(
     Client -> Ok(Nil)
     Server -> Error(WrongRole)
   })
+  case push_cancelled(state, push_id) {
+    True -> {
+      use peer_streams <- result.try(
+        stream_registry.close(state.peer_streams, stream_id)
+        |> map_registry_result,
+      )
+      Ok(#(
+        State(..state, peer_streams: peer_streams),
+        stream_registry.Push(push_id),
+        remaining,
+      ))
+    }
+    False ->
+      open_accepted_inbound_push(state, stream_id, push_id, now_ms, remaining)
+  }
+}
+
+fn open_accepted_inbound_push(
+  state: State,
+  stream_id: Int,
+  push_id: Int,
+  now_ms: Int,
+  remaining: BitArray,
+) -> Result(#(State, stream_registry.Kind, BitArray), Error) {
   use _ <- result.try(ensure_push_transaction_capacity(state, stream_id))
   use acceptance <- result.try(
     drain.receive_push(state.drain, push_id) |> map_drain_result,
@@ -2106,7 +2348,11 @@ fn open_inbound_push(
     push.open_stream(state.pushes, push_id, stream_id, now_ms)
     |> map_push_result,
   )
-  use request_control <- result.try(push_request_control(pushes, push_id))
+  use request_control <- result.try(push_request_control(
+    pushes,
+    push_id,
+    state.config.authority_policies,
+  ))
   let transaction =
     PushTransaction(
       push_id,
@@ -2396,6 +2642,7 @@ fn resume_push_entries(
       use request_control <- result.try(require_push_request_control(
         state.pushes,
         push_id,
+        state.config.authority_policies,
       ))
       let transaction =
         PushTransaction(..transaction, request_control: Some(request_control))
@@ -2445,13 +2692,25 @@ fn retry_blocked(
                     events_reversed,
                   )
                 decoder.Decoded(qpack_decoder, fields) -> {
-                  use #(state, events) <- result.try(process_decoded(
-                    State(..state, qpack_decoder: qpack_decoder),
-                    stream_id,
-                    transaction,
-                    kind,
-                    fields,
-                  ))
+                  let decoded_state =
+                    State(..state, qpack_decoder: qpack_decoder)
+                  let processed =
+                    process_decoded(
+                      decoded_state,
+                      stream_id,
+                      transaction,
+                      kind,
+                      fields,
+                    )
+                  use #(state, events) <- result.try(case processed {
+                    Ok(value) -> Ok(value)
+                    Error(error) ->
+                      recover_blocked_message_failure(
+                        decoded_state,
+                        stream_id,
+                        error,
+                      )
+                  })
                   retry_blocked(
                     state,
                     rest,
@@ -2493,12 +2752,23 @@ fn retry_blocked_push(
                 events_reversed,
               )
             decoder.Decoded(qpack_decoder, fields) -> {
-              use #(state, events) <- result.try(process_inbound_push_headers(
-                State(..state, qpack_decoder: qpack_decoder),
-                stream_id,
-                PushTransaction(..transaction, blocked: None),
-                fields,
-              ))
+              let decoded_state = State(..state, qpack_decoder: qpack_decoder)
+              let processed =
+                process_inbound_push_headers(
+                  decoded_state,
+                  stream_id,
+                  PushTransaction(..transaction, blocked: None),
+                  fields,
+                )
+              use #(state, events) <- result.try(case processed {
+                Ok(value) -> Ok(value)
+                Error(error) ->
+                  recover_blocked_message_failure(
+                    decoded_state,
+                    stream_id,
+                    error,
+                  )
+              })
               retry_blocked(
                 state,
                 remaining_streams,
@@ -2509,6 +2779,48 @@ fn retry_blocked_push(
         }
         _ -> retry_blocked(state, remaining_streams, events_reversed)
       }
+  }
+}
+
+fn recover_blocked_message_failure(
+  state: State,
+  stream_id: Int,
+  error: Error,
+) -> Result(#(State, List(Event)), Error) {
+  let target = case optional_push_transaction(state, stream_id) {
+    Some(transaction) -> PushMessage(transaction.push_id)
+    None -> RequestMessage
+  }
+  case delayed_message_stream_error_code(state.config.role, target, error) {
+    None -> Error(error)
+    Some(code) -> {
+      use state <- result.try(abort_stream(state, stream_id))
+      Ok(#(state, [MessageStreamRejected(stream_id, target, code)]))
+    }
+  }
+}
+
+fn delayed_message_stream_error_code(
+  role: Role,
+  target: MessageStreamTarget,
+  error: Error,
+) -> Option(Int) {
+  case error {
+    InvalidMessageFraming | HeaderFailure(_) -> Some(0x10e)
+    MessageFailure(message_stream.MissingFinalHeaders) ->
+      case role, target {
+        Server, RequestMessage -> Some(0x10d)
+        _, _ -> Some(0x10e)
+      }
+    MessageFailure(message_stream.InformationalRequestHeaders)
+    | MessageFailure(message_stream.DuplicateFinalHeaders)
+    | MessageFailure(message_stream.TrailersBeforeFinalHeaders)
+    | MessageFailure(message_stream.ContentLengthExceeded(_, _))
+    | MessageFailure(message_stream.ContentLengthMismatch(_, _)) -> Some(0x10e)
+    PushFailure(push.InvalidPromisedRequest(_))
+    | PushFailure(push.UnsafePromisedRequest)
+    | PushFailure(push.PromisedRequestRejected(_)) -> Some(0x10e)
+    _ -> None
   }
 }
 
@@ -2729,9 +3041,11 @@ fn local_settings_frame(settings: Settings) -> frame.Frame {
     frame.Setting(8, bool_int(settings.enable_connect_protocol)),
     frame.Setting(0x33, bool_int(settings.h3_datagram)),
   ]
-  let settings_list = case settings.grease {
-    True -> list.append(settings_list, [frame.Setting(0x21, 0)])
-    False -> settings_list
+  let settings_list = case
+    grease.setting(settings.grease, settings.grease_sample)
+  {
+    Some(setting) -> list.append(settings_list, [setting])
+    None -> settings_list
   }
   frame.Settings(settings_list)
 }
@@ -2767,9 +3081,38 @@ fn encode_decoder_instructions(
 }
 
 fn peer_connect_enabled(state: State) -> Bool {
-  case state.peer_settings {
-    Some(settings) -> settings.enable_connect_protocol
-    None -> False
+  settings_memory.enable_connect_protocol(state.effective_peer_settings)
+}
+
+fn control_settings_snapshot(
+  settings: control.Settings,
+) -> Result(settings_memory.Snapshot, settings_memory.Error) {
+  settings_memory.new(
+    settings.qpack_max_table_capacity,
+    settings.maximum_field_section_size,
+    settings.qpack_blocked_streams,
+    settings.enable_connect_protocol,
+    settings.h3_datagram,
+    settings.present,
+  )
+}
+
+fn require_zero_rtt_settings_compatible(
+  remembered: Option(settings_memory.Snapshot),
+  current: Option(settings_memory.Snapshot),
+) -> Result(Nil, Error) {
+  case remembered, current {
+    _, None -> Ok(Nil)
+    None, Some(current) ->
+      case settings_memory.compatible(settings_memory.defaults(), current) {
+        True -> Ok(Nil)
+        False -> Error(ZeroRttSettingsIncompatible)
+      }
+    Some(remembered), Some(current) ->
+      case settings_memory.compatible(remembered, current) {
+        True -> Ok(Nil)
+        False -> Error(ZeroRttSettingsIncompatible)
+      }
   }
 }
 
@@ -2847,16 +3190,18 @@ fn ensure_push_transaction_capacity(
 fn push_request_control(
   pushes: push.State,
   push_id: Int,
+  authority_policies: header_semantics.AuthorityPolicies,
 ) -> Result(Option(header_semantics.RequestControl), Error) {
   case push.get(pushes, push_id) {
     None -> Error(MissingPushPromise(push_id))
     Some(push.Push(_, None, _, _, _)) -> Ok(None)
     Some(push.Push(_, Some(fields), _, _, _)) -> {
       use validated <- result.try(
-        header_semantics.validate(
+        header_semantics.validate_with_authority_policies(
           fields,
           header_semantics.RequestSection,
           False,
+          authority_policies,
         )
         |> map_header_result,
       )
@@ -2869,8 +3214,13 @@ fn push_request_control(
 fn require_push_request_control(
   pushes: push.State,
   push_id: Int,
+  authority_policies: header_semantics.AuthorityPolicies,
 ) -> Result(header_semantics.RequestControl, Error) {
-  use control <- result.try(push_request_control(pushes, push_id))
+  use control <- result.try(push_request_control(
+    pushes,
+    push_id,
+    authority_policies,
+  ))
   case control {
     Some(value) -> Ok(value)
     None -> Error(MissingPushPromise(push_id))
@@ -3261,5 +3611,14 @@ fn map_priority_result(
   case value {
     Ok(updated) -> Ok(updated)
     Error(error) -> Error(PriorityFailure(error))
+  }
+}
+
+fn map_settings_memory_result(
+  value: Result(value, settings_memory.Error),
+) -> Result(value, Error) {
+  case value {
+    Ok(updated) -> Ok(updated)
+    Error(error) -> Error(SettingsMemoryFailure(error))
   }
 }

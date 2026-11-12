@@ -349,19 +349,22 @@ pub fn expect_continue_defers_the_request_body_until_the_100_response_test() -> 
       "POST /continue HTTP/1.1\r\nexpect: 100-continue\r\n"
       <> "connection: close\r\nHost: 127.0.0.1:"
       <> int.to_string(port)
-      <> "\r\nContent-Length: 5\r\n\r\n",
+      <> "\r\nTransfer-Encoding: chunked\r\n\r\n",
     )
   let assert Ok(#(socket, received_head)) =
     receive_exact_with_socket(socket, bit_array.byte_size(expected_head), [])
-  assert received_head == expected_head
+  let correct_head = received_head == expected_head
+  assert correct_head
   assert process.receive(pulled, within: 20) == Error(Nil)
 
   let assert Ok(Nil) =
     transport.send(socket, <<"HTTP/1.1 100 Continue\r\n\r\n":utf8>>)
   let assert Ok(Nil) = process.receive(pulled, within: 1000)
+  let expected_body = <<"5\r\nhello\r\n0\r\n\r\n":utf8>>
   let assert Ok(#(socket, received_body)) =
-    receive_exact_with_socket(socket, 5, [])
-  assert received_body == <<"hello":utf8>>
+    receive_exact_with_socket(socket, bit_array.byte_size(expected_body), [])
+  let correct_body = received_body == expected_body
+  assert correct_body
   let assert Ok(Nil) =
     transport.send(socket, <<
       "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n":utf8,

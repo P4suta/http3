@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -15,36 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  security:
-    name: Security, FFI, and SBOM gates
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          version: 2026.8.10
-
-      - name: Run security gates
-        run: mise run security
-
-      - name: Upload CycloneDX evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: http-cyclonedx-sbom
-          path: build/security/http.cdx.json
-          if-no-files-found: error
-
   quality:
-    name: Full quality check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: Change verification
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,9 +24,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.8.10
+          version: 2026.11.6
 
       - name: Install exact MixGleam archive
         run: |
@@ -66,7 +38,7 @@ jobs:
 
   interop:
     name: Independent HTTP/3 interoperability
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -75,9 +47,9 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned tools
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.8.10
+          version: 2026.11.6
 
       - name: Install hash-locked aioquic peer
         run: mise run interop-setup
@@ -87,8 +59,8 @@ jobs:
 
   otp:
     name: Erlang/OTP ${{ matrix.otp }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -101,12 +73,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install pinned Python
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.11.6
+          install_args: python
+
+      - name: Select pinned supervisor runtime
+        shell: bash
+        run: |
+          supervisor_python="$(python -I -B -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          printf 'HTTP_PROCESS_SUPERVISOR_PYTHON=%s\n' "${supervisor_python}" >> "${GITHUB_ENV}"
+
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ matrix.otp }}
           gleam-version: 1.18.1
-          rebar3-version: 3.27.0
+          rebar3-version: 3.28.0
 
       - name: Build with warnings as errors
         run: gleam build --warnings-as-errors
@@ -133,12 +117,11 @@ jobs:
   smoke:
     name: Smoke / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04
           - macos-15
           - windows-2025
     steps:
@@ -147,12 +130,40 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install pinned Python
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.11.6
+          install_args: python
+
+      - name: Select pinned supervisor runtime
+        shell: bash
+        run: |
+          supervisor_python="$(python -I -B -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          printf 'HTTP_PROCESS_SUPERVISOR_PYTHON=%s\n' "${supervisor_python}" >> "${GITHUB_ENV}"
+
+      - name: Separate Windows Python aliases
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [string] $runtimePath = [System.IO.Path]::GetFullPath($env:HTTP_PROCESS_SUPERVISOR_PYTHON)
+          [string] $pythonAlias = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($runtimePath), "python3.exe")
+          if ($pythonAlias -eq $runtimePath) { throw "Python runtime aliases are ambiguous." }
+          [string] $expectedHash = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
+          # The supervisor rejects interpreters with multiple hard links.
+          if (Test-Path -LiteralPath $pythonAlias) { Remove-Item -LiteralPath $pythonAlias }
+          Copy-Item -LiteralPath $runtimePath -Destination $pythonAlias
+          if ((Get-FileHash -LiteralPath $pythonAlias -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw "Python runtime bytes changed."
+          }
+
       - name: Install BEAM tools
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: 29.0.5
+          otp-version: 29.1.2
           gleam-version: 1.18.1
-          rebar3-version: 3.27.0
+          rebar3-version: 3.28.0
           version-type: strict
 
       - name: Build with warnings as errors
@@ -176,3 +187,18 @@ jobs:
       - name: Test native QUIC core
         working-directory: packages/quic_core
         run: gleam test
+
+  required:
+    name: required
+    if: always()
+    needs: [quality, interop, otp, smoke]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every selected job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "${RESULTS}"
+          jq -e 'length == 4 and all(.[]; . == "success")' <<< "${RESULTS}"

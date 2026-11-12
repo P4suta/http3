@@ -135,6 +135,72 @@ pub fn reset_goaway_and_informational_limits_are_typed_test() -> Nil {
     == Error(response_reader.TooManyInformational(maximum: 2))
 }
 
+pub fn no_error_reset_preserves_the_complete_response_in_one_batch_test() -> Nil {
+  let assert Ok(response_reader.Progress(state, Some(head), chunks, Some([]))) =
+    response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"201">>, [], False)),
+      connection.DataReceived(1, <<"complete">>, True, 8),
+      connection.StreamReset(1, 0),
+    ])
+  assert head.response.status == 201
+  assert chunks == [response_reader.Chunk(<<"complete">>, 8)]
+  assert response_reader.finished(state)
+}
+
+pub fn no_error_reset_preserves_completion_across_action_batches_test() -> Nil {
+  let assert Ok(response_reader.Progress(state, Some(_), _, Some([]))) =
+    response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"200">>, [], False)),
+      connection.DataReceived(1, <<"complete">>, True, 8),
+    ])
+  let assert Ok(response_reader.Progress(state, None, [], None)) =
+    response_reader.accept(state, [connection.StreamReset(1, 0)])
+  assert response_reader.finished(state)
+  assert response_reader.body_bytes_received(state) == 8
+}
+
+pub fn no_error_reset_preserves_trailers_and_empty_response_completion_test() -> Nil {
+  let assert Ok(response_reader.Progress(state, Some(_), [], Some(trailers))) =
+    response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"200">>, [], False)),
+      connection.HeadersReceived(
+        trailers_section([
+          decoder.Header(<<"x-complete">>, <<"yes">>, False),
+        ]),
+      ),
+      connection.StreamReset(1, 0),
+    ])
+  assert trailers == [#("x-complete", "yes")]
+  assert response_reader.finished(state)
+  let assert Ok(response_reader.Progress(state, Some(_), [], Some([]))) =
+    response_reader.accept(new_reader(0), [
+      connection.HeadersReceived(response_section(<<"204">>, [], True)),
+      connection.StreamReset(1, 0),
+    ])
+  assert response_reader.finished(state)
+}
+
+pub fn reset_does_not_validate_an_incomplete_or_failed_response_test() -> Nil {
+  assert response_reader.accept(new_reader(8), [connection.StreamReset(1, 0)])
+    == Error(response_reader.StreamReset(0))
+  assert response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"200">>, [], False)),
+      connection.DataReceived(1, <<"part">>, False, 4),
+      connection.StreamReset(1, 0),
+    ])
+    == Error(response_reader.StreamReset(0))
+  assert response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"200">>, [], True)),
+      connection.StreamReset(1, 8),
+    ])
+    == Error(response_reader.StreamReset(8))
+  assert response_reader.accept(new_reader(8), [
+      connection.HeadersReceived(response_section(<<"200">>, [], True)),
+      connection.StreamReset(3, 0),
+    ])
+    == Error(response_reader.UnexpectedStream(expected: 1, received: 3))
+}
+
 pub fn receive_credit_is_released_only_after_a_chunk_is_fully_consumed_test() -> Nil {
   let chunk = response_reader.Chunk(<<"body">>, 5)
   let assert Ok(response_reader.ChunkPart(

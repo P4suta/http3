@@ -1,5 +1,13 @@
 [files]
-extend-exclude = ["LICENSES/", "build/"]
+# The generated RFC dictionary contains byte-exact word fragments, not prose.
+# scripts/brotli_reference.py --check verifies it against the pinned sources.
+extend-exclude = [
+  "LICENSES/",
+  "build/",
+  "src/http_brotli_tables.hrl",
+  "test/fixtures/url-host-reference.json",
+  "test/fixtures/urlpattern-wpt.json",
+]
 
 [default.extend-words]
 gleeunit = "gleeunit"
@@ -9,3 +17,7 @@ QPACK = "QPACK"
 AIMD = "AIMD"
 # ASCII prefix in a byte-level `caf` + 0xe9 non-UTF-8 fixture.
 caf = "caf"
+
+[type.json]
+extend-glob = ["*.json"]
+extend-ignore-re = ['"source_hash": "[0-9a-f]{16}"']

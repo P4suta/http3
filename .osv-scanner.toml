@@ -2,3 +2,38 @@
 id = "GO-2026-5932"
 reason = "Interop-only quic-go reaches x/crypto/chacha20; the advisory applies to the unimported, deprecated openpgp package. Recheck when updating quic-go."
 ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2021-0145"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes atty."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0375"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes atty."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "GHSA-w9wp-h8wv-79jx"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes opentelemetry_sdk."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes paste."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes proc-macro-error."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes ttf-parser."
+ignoreUntil = 2026-11-25
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0320"
+reason = "The pinned quiche 0.29.3 Linux quiche_apps normal/build dependency graph excludes yaml-rust."
+ignoreUntil = 2026-11-25

@@ -1,0 +1,4392 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "pathname": ""
+      },
+      "id": "initial-empty",
+      "input": "",
+      "kind": "constructor",
+      "requirements": [
+        "P04"
+      ],
+      "steps": [
+        "initial-eof-rewind"
+      ]
+    },
+    {
+      "expected": {
+        "pathname": "file"
+      },
+      "id": "initial-relative",
+      "input": "file",
+      "kind": "constructor",
+      "requirements": [
+        "P04"
+      ],
+      "steps": [
+        "initial-eof-rewind"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "example.com",
+        "port": "",
+        "protocol": "https"
+      },
+      "id": "host-eof",
+      "input": "https://example.com",
+      "kind": "constructor",
+      "requirements": [
+        "P04"
+      ],
+      "steps": [
+        "protocol-authority",
+        "host-eof"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "https",
+        "search": "q"
+      },
+      "id": "host-query",
+      "input": "https://example.com?q",
+      "kind": "constructor",
+      "requirements": [
+        "P04",
+        "P06"
+      ],
+      "steps": [
+        "protocol-authority",
+        "pathname-search-hash"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "password": "p",
+        "pathname": "/p",
+        "port": "8443",
+        "protocol": "https",
+        "search": "q",
+        "username": "u"
+      },
+      "id": "credentials",
+      "input": "https://u\\:p@example.com:8443/p?q#h",
+      "kind": "constructor",
+      "requirements": [
+        "P05",
+        "P06"
+      ],
+      "steps": [
+        "username-password",
+        "port-end",
+        "pathname-search-hash"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "example.com",
+        "port": "",
+        "protocol": "https",
+        "username": ""
+      },
+      "id": "credentials-empty",
+      "input": "https://@example.com:",
+      "kind": "constructor",
+      "requirements": [
+        "P05"
+      ],
+      "steps": [
+        "username-password",
+        "port-end"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "q@example.com",
+        "password": "p",
+        "pathname": "/p",
+        "port": "",
+        "protocol": "https",
+        "username": "u"
+      },
+      "id": "password-repeated-at",
+      "input": "https://u\\:p@q@example.com/p",
+      "kind": "constructor",
+      "requirements": [
+        "P05"
+      ],
+      "steps": [
+        "username-password"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "[\\:\\:1]",
+        "pathname": "/p",
+        "port": "8443",
+        "protocol": "https"
+      },
+      "id": "ipv6-brackets",
+      "input": "https://[\\:\\:1]:8443/p",
+      "kind": "constructor",
+      "requirements": [
+        "P05"
+      ],
+      "steps": [
+        "ipv6-brackets",
+        "port-end"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "search": "q"
+      },
+      "id": "search-only",
+      "input": "?q#h",
+      "kind": "constructor",
+      "requirements": [
+        "P06"
+      ],
+      "steps": [
+        "pathname-search-hash"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h"
+      },
+      "id": "hash-only",
+      "input": "#h",
+      "kind": "constructor",
+      "requirements": [
+        "P06"
+      ],
+      "steps": [
+        "pathname-search-hash"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "pathname": "/{a?b}/tail",
+        "search": ""
+      },
+      "id": "group-delimiter",
+      "input": "/{a?b}/tail#h",
+      "kind": "constructor",
+      "requirements": [
+        "P06"
+      ],
+      "steps": [
+        "group-boundary"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "pathname": "/:file?query",
+        "search": ""
+      },
+      "id": "optional-name",
+      "input": "/:file?query#h",
+      "kind": "constructor",
+      "requirements": [
+        "P06"
+      ],
+      "steps": [
+        "optional-modifier"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "example.com",
+        "pathname": "/p",
+        "port": "",
+        "protocol": "https"
+      },
+      "id": "escaped-scheme",
+      "input": "https\\://example.com/p",
+      "kind": "constructor",
+      "requirements": [
+        "P04",
+        "P07"
+      ],
+      "steps": [
+        "protocol-authority",
+        "lenient-delimiter"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-literal-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-literal-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-path-segment-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-segment-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-path-full-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": 47,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-literal-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-literal-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-segment-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-hostname-segment-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-hostname-full-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": 46,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-literal-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-literal-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{a}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-segment-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "primitive-generic-segment-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-segment-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{:x}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-none-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-none-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-none-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-none-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-none-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-?-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-?-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-?-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-?-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-?-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}?",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-+-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-+-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-+-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-+-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-+-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}+",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-*-0",
+      "input": "",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-*-1",
+      "input": "a",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-*-2",
+      "input": "aa",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-*-3",
+      "input": "a/b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "primitive-generic-full-*-4",
+      "input": "a.b",
+      "kind": "component",
+      "pattern": "{(.*)}*",
+      "prefix": -1,
+      "requirements": [
+        "P08",
+        "P09"
+      ],
+      "separator": -1,
+      "steps": [
+        "part-modifier-options",
+        "finite-primitive-language"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "prefix-suffix-empty",
+      "input": "",
+      "kind": "component",
+      "pattern": "{p:x-q}*",
+      "prefix": 47,
+      "requirements": [
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "prefix-suffix-repetition"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "prefix-suffix-one",
+      "input": "pA-q",
+      "kind": "component",
+      "pattern": "{p:x-q}*",
+      "prefix": 47,
+      "requirements": [
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "prefix-suffix-repetition"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "prefix-suffix-two",
+      "input": "pA-qpB-q",
+      "kind": "component",
+      "pattern": "{p:x-q}*",
+      "prefix": 47,
+      "requirements": [
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "prefix-suffix-repetition"
+      ]
+    },
+    {
+      "expected": "not_matched",
+      "id": "prefix-suffix-bad",
+      "input": "pA",
+      "kind": "component",
+      "pattern": "{p:x-q}*",
+      "prefix": 47,
+      "requirements": [
+        "P09"
+      ],
+      "separator": 47,
+      "steps": [
+        "prefix-suffix-repetition"
+      ]
+    },
+    {
+      "expected": "invalid_pattern",
+      "id": "invalid-dangling-escape",
+      "input": "a",
+      "kind": "component",
+      "pattern": "\\",
+      "prefix": 47,
+      "requirements": [
+        "P07"
+      ],
+      "separator": 47,
+      "steps": [
+        "strict-invalid"
+      ]
+    },
+    {
+      "expected": "invalid_pattern",
+      "id": "invalid-missing-name",
+      "input": "a",
+      "kind": "component",
+      "pattern": ":",
+      "prefix": 47,
+      "requirements": [
+        "P07"
+      ],
+      "separator": 47,
+      "steps": [
+        "strict-invalid"
+      ]
+    },
+    {
+      "expected": "invalid_pattern",
+      "id": "invalid-arbitrary-regexp",
+      "input": "a",
+      "kind": "component",
+      "pattern": "(a|b)",
+      "prefix": 47,
+      "requirements": [
+        "P01",
+        "P07"
+      ],
+      "separator": 47,
+      "steps": [
+        "has-regexp-refusal",
+        "strict-invalid"
+      ]
+    },
+    {
+      "expected": "invalid_pattern",
+      "id": "invalid-duplicate-name",
+      "input": "a",
+      "kind": "component",
+      "pattern": ":a/:a",
+      "prefix": 47,
+      "requirements": [
+        "P08"
+      ],
+      "separator": 47,
+      "steps": [
+        "duplicate-name"
+      ]
+    },
+    {
+      "expected": "matched",
+      "id": "unicode-name",
+      "input": "value",
+      "kind": "component",
+      "pattern": ":é",
+      "prefix": 47,
+      "requirements": [
+        "P07"
+      ],
+      "separator": 47,
+      "steps": [
+        "unicode-name"
+      ]
+    },
+    {
+      "encoding": "protocol",
+      "expected": "https",
+      "id": "scheme-lower",
+      "input": "HTTPS",
+      "kind": "encoding",
+      "requirements": [
+        "P13"
+      ],
+      "steps": [
+        "ascii-scheme"
+      ]
+    },
+    {
+      "encoding": "protocol",
+      "expected": "",
+      "id": "scheme-empty",
+      "input": "",
+      "kind": "encoding",
+      "requirements": [
+        "P13"
+      ],
+      "steps": [
+        "empty-scheme"
+      ]
+    },
+    {
+      "encoding": "protocol",
+      "expected": "https",
+      "id": "scheme-tabs",
+      "input": "ht\ttps",
+      "kind": "encoding",
+      "requirements": [
+        "P13"
+      ],
+      "steps": [
+        "tab-preprocess",
+        "ascii-scheme"
+      ]
+    },
+    {
+      "encoding": "protocol",
+      "expected": null,
+      "id": "scheme-invalid",
+      "input": "1https",
+      "kind": "encoding",
+      "requirements": [
+        "P13"
+      ],
+      "steps": [
+        "ascii-scheme"
+      ]
+    },
+    {
+      "encoding": "userinfo",
+      "expected": "a%3Ab%40c%20%2F%C3%A9",
+      "id": "userinfo",
+      "input": "a:b@c /é",
+      "kind": "encoding",
+      "requirements": [
+        "P14"
+      ],
+      "steps": [
+        "userinfo-encode-set",
+        "utf8-bytes"
+      ]
+    },
+    {
+      "encoding": "port",
+      "expected": "443",
+      "id": "port-zero",
+      "input": "00443",
+      "kind": "encoding",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "port-only-no-default",
+        "numeric-prefix"
+      ]
+    },
+    {
+      "encoding": "port",
+      "expected": "80",
+      "id": "port-prefix",
+      "input": "80abc",
+      "kind": "encoding",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "port-only-no-default",
+        "numeric-prefix"
+      ]
+    },
+    {
+      "encoding": "port",
+      "expected": "65535",
+      "id": "port-max",
+      "input": "65535",
+      "kind": "encoding",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "port-only-no-default",
+        "numeric-prefix"
+      ]
+    },
+    {
+      "encoding": "port",
+      "expected": null,
+      "id": "port-overflow",
+      "input": "65536",
+      "kind": "encoding",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "port-only-no-default",
+        "numeric-prefix"
+      ]
+    },
+    {
+      "encoding": "port",
+      "expected": "",
+      "id": "port-empty",
+      "input": "",
+      "kind": "encoding",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "port-only-no-default"
+      ]
+    },
+    {
+      "encoding": "ipv6_pattern",
+      "expected": "[abcd:",
+      "id": "ipv6-piece",
+      "input": "[ABCD:",
+      "kind": "encoding",
+      "requirements": [
+        "P16"
+      ],
+      "steps": [
+        "ascii-fixed-piece",
+        "not-full-ipv6-parse"
+      ]
+    },
+    {
+      "encoding": "ipv6_pattern",
+      "expected": null,
+      "id": "ipv6-invalid",
+      "input": ".1]",
+      "kind": "encoding",
+      "requirements": [
+        "P16"
+      ],
+      "steps": [
+        "ascii-fixed-piece"
+      ]
+    },
+    {
+      "encoding": "opaque_path",
+      "expected": "a/../b %C3%A9",
+      "id": "opaque-dots",
+      "input": "a/../b é",
+      "kind": "encoding",
+      "requirements": [
+        "P18"
+      ],
+      "steps": [
+        "preserve-dots"
+      ]
+    },
+    {
+      "encoding": "opaque_path",
+      "expected": "a",
+      "id": "opaque-query",
+      "input": "a?b",
+      "kind": "encoding",
+      "requirements": [
+        "P18"
+      ],
+      "steps": [
+        "query-fragment-transition"
+      ]
+    },
+    {
+      "encoding": "opaque_path",
+      "expected": "a",
+      "id": "opaque-hash",
+      "input": "a#b",
+      "kind": "encoding",
+      "requirements": [
+        "P18"
+      ],
+      "steps": [
+        "query-fragment-transition"
+      ]
+    },
+    {
+      "encoding": "opaque_path",
+      "expected": "a%20",
+      "id": "opaque-space-before-hash",
+      "input": "a #b",
+      "kind": "encoding",
+      "requirements": [
+        "P18"
+      ],
+      "steps": [
+        "query-fragment-transition"
+      ]
+    },
+    {
+      "encoding": "opaque_path",
+      "expected": "a ",
+      "id": "opaque-terminal-space",
+      "input": "a ",
+      "kind": "encoding",
+      "requirements": [
+        "P18"
+      ],
+      "steps": [
+        "terminal-space"
+      ]
+    },
+    {
+      "encoding": "search",
+      "expected": "a%20b%27`?%23%C3%A9",
+      "id": "query-encode",
+      "input": "a b'`?#é",
+      "kind": "encoding",
+      "requirements": [
+        "P19"
+      ],
+      "steps": [
+        "special-query-apostrophe"
+      ]
+    },
+    {
+      "encoding": "hash",
+      "expected": "a%20b'%60?#%C3%A9",
+      "id": "hash-encode",
+      "input": "a b'`?#é",
+      "kind": "encoding",
+      "requirements": [
+        "P19"
+      ],
+      "steps": [
+        "hash-encode-set"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "ftp",
+        "search": ""
+      },
+      "id": "special-ftp",
+      "input": "ftp\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "file",
+        "search": ""
+      },
+      "id": "special-file",
+      "input": "file\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "http",
+        "search": ""
+      },
+      "id": "special-http",
+      "input": "http\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "https",
+        "search": ""
+      },
+      "id": "special-https",
+      "input": "https\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "ws",
+        "search": ""
+      },
+      "id": "special-ws",
+      "input": "ws\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "wss",
+        "search": ""
+      },
+      "id": "special-wss",
+      "input": "wss\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "six-special-schemes"
+      ]
+    },
+    {
+      "expected": {
+        "hash": "h",
+        "hostname": "example.com",
+        "pathname": "/",
+        "port": "",
+        "protocol": "https{x}?",
+        "search": ""
+      },
+      "id": "special-optional",
+      "input": "https{x}?\\:example.com#h",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "optional-pattern"
+      ]
+    },
+    {
+      "expected": {
+        "hostname": "",
+        "pathname": "opaque",
+        "port": "",
+        "protocol": "data",
+        "search": "q"
+      },
+      "id": "opaque-selection",
+      "input": "data\\:opaque?q",
+      "kind": "constructor",
+      "requirements": [
+        "P02"
+      ],
+      "steps": [
+        "opaque-selection"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://[::1]/a",
+      "expected": "matched",
+      "id": "ipv6-prefix-0",
+      "kind": "full",
+      "pattern": "https://[\\:\\:1]/*",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "three-prefixes"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://[::1]/a",
+      "expected": "matched",
+      "id": "ipv6-prefix-1",
+      "kind": "full",
+      "pattern": "https://{[\\:\\:1]}/*",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "three-prefixes"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://[::1]/a",
+      "expected": "matched",
+      "id": "ipv6-prefix-2",
+      "kind": "full",
+      "pattern": "https://\\[\\:\\:1]/*",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "three-prefixes"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://[::1]/a",
+      "expected": "invalid_pattern",
+      "id": "ipv6-split-group",
+      "kind": "full",
+      "pattern": "https://{[}\\:\\:1]/*",
+      "requirements": [
+        "P03",
+        "P06"
+      ],
+      "steps": [
+        "three-prefixes",
+        "group-boundary"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "id": "absolute-0",
+      "kind": "full",
+      "pattern": "/file",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "absolute-pathname"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "id": "absolute-1",
+      "kind": "full",
+      "pattern": "\\/file",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "absolute-pathname"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/file",
+      "expected": "matched",
+      "id": "absolute-2",
+      "kind": "full",
+      "pattern": "{/file}",
+      "requirements": [
+        "P03"
+      ],
+      "steps": [
+        "absolute-pathname"
+      ]
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base",
+      "candidate": "https://example.com/a*/(fixed)/file",
+      "expected": "matched",
+      "id": "base-escape",
+      "kind": "full",
+      "pattern": "file",
+      "requirements": [
+        "P11"
+      ],
+      "steps": [
+        "escape-base",
+        "relative-directory"
+      ]
+    },
+    {
+      "base": "https://example.com/a*/(fixed)/base",
+      "candidate": "https://example.com/anything/(fixed)/file",
+      "expected": "not_matched",
+      "id": "base-escape-negative",
+      "kind": "full",
+      "pattern": "file",
+      "requirements": [
+        "P11"
+      ],
+      "steps": [
+        "escape-base"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/dir/base?old#new",
+      "expected": "matched",
+      "id": "base-hash",
+      "kind": "full",
+      "pattern": "#new",
+      "requirements": [
+        "P11"
+      ],
+      "steps": [
+        "inherit-prefix"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "id": "default-literal",
+      "kind": "full",
+      "pattern": "https://example.com:443/*",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "default-before-encoding"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "id": "default-group-scheme",
+      "kind": "full",
+      "pattern": "{https}://example.com:443/*",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "default-before-encoding"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "id": "default-case-scheme",
+      "kind": "full",
+      "pattern": "HTTPS://example.com:443/*",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "default-before-encoding"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "id": "default-group-port",
+      "kind": "full",
+      "pattern": "https://example.com:{443}/*",
+      "requirements": [
+        "P12"
+      ],
+      "steps": [
+        "default-before-encoding"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "id": "hostname-slash",
+      "kind": "full",
+      "pattern": "https://{example.com/ignored}/*",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "nonempty-prefix"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "invalid_pattern",
+      "id": "hostname-empty-slash",
+      "kind": "full",
+      "pattern": "https://{/ignored}/*",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "empty-prefix-rejection"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "invalid_pattern",
+      "id": "hostname-empty-query",
+      "kind": "full",
+      "pattern": "https://{\\?ignored}/*",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "empty-prefix-rejection"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "invalid_pattern",
+      "id": "hostname-empty-hash",
+      "kind": "full",
+      "pattern": "https://{#ignored}/*",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "empty-prefix-rejection"
+      ]
+    },
+    {
+      "expected": null,
+      "id": "complete-host-delimiter",
+      "input": "example.com/ignored",
+      "kind": "host",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "complete-host-distinct"
+      ]
+    },
+    {
+      "expected": "example.com",
+      "id": "complete-host-normal",
+      "input": "EXAMPLE.COM",
+      "kind": "host",
+      "requirements": [
+        "P15"
+      ],
+      "steps": [
+        "complete-host-distinct"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://127.0.0.1/a",
+      "expected": "matched",
+      "id": "fixed-merge",
+      "kind": "full",
+      "pattern": "https://{127}.0.0.1/*",
+      "requirements": [
+        "P08"
+      ],
+      "steps": [
+        "fixed-merge"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/b",
+      "expected": "matched",
+      "id": "fixed-dot",
+      "kind": "full",
+      "pattern": "/a/{..}/b",
+      "requirements": [
+        "P17"
+      ],
+      "steps": [
+        "fixed-dot-merge"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/b",
+      "expected": "not_matched",
+      "id": "variable-dot",
+      "kind": "full",
+      "pattern": "/:x/../b",
+      "requirements": [
+        "P17"
+      ],
+      "steps": [
+        "variable-boundary"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "not_matched",
+      "id": "canonical-ipv6-domain",
+      "kind": "full",
+      "pattern": "https://[\\:\\:1]/*",
+      "requirements": [
+        "P20"
+      ],
+      "steps": [
+        "canonical-input-no-callback"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/upper",
+      "expected": "not_matched",
+      "id": "case-sensitive",
+      "kind": "full",
+      "pattern": "/Upper",
+      "requirements": [
+        "P20"
+      ],
+      "steps": [
+        "case-sensitive-result"
+      ]
+    },
+    {
+      "base": "https://example.com/dir/base?old#before",
+      "candidate": "https://example.com/a",
+      "expected": "matched",
+      "id": "create-match",
+      "kind": "full",
+      "pattern": "https://example.com/*",
+      "requirements": [
+        "P01"
+      ],
+      "steps": [
+        "string-create",
+        "boolean-match"
+      ]
+    },
+    {
+      "amount": -1,
+      "expected": "work_limit_exceeded",
+      "id": "budget-negative-compile",
+      "kind": "budget",
+      "operation": "compile",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-compile-credit",
+        "negative-credit"
+      ]
+    },
+    {
+      "amount": 0,
+      "expected": "work_limit_exceeded",
+      "id": "budget-zero-compile",
+      "kind": "budget",
+      "operation": "compile",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-compile-credit"
+      ]
+    },
+    {
+      "amount": 8388608,
+      "expected": "ok",
+      "id": "budget-positive-compile",
+      "kind": "budget",
+      "operation": "compile",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-compile-credit"
+      ]
+    },
+    {
+      "amount": -1,
+      "expected": "work_limit_exceeded",
+      "id": "budget-negative-match",
+      "kind": "budget",
+      "operation": "match",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-match-credit",
+        "negative-credit"
+      ]
+    },
+    {
+      "amount": 0,
+      "expected": "work_limit_exceeded",
+      "id": "budget-zero-match",
+      "kind": "budget",
+      "operation": "match",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-match-credit"
+      ]
+    },
+    {
+      "amount": 8388608,
+      "expected": "ok",
+      "id": "budget-positive-match",
+      "kind": "budget",
+      "operation": "match",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "finite-match-credit"
+      ]
+    },
+    {
+      "amount": 2048,
+      "expected": "ok",
+      "id": "budget-authored-at",
+      "kind": "budget",
+      "operation": "authored",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 2049,
+      "expected": "work_limit_exceeded",
+      "id": "budget-authored-over",
+      "kind": "budget",
+      "operation": "authored",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 16383,
+      "expected": "ok",
+      "id": "budget-derived-at",
+      "kind": "budget",
+      "operation": "derived",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 16384,
+      "expected": "work_limit_exceeded",
+      "id": "budget-derived-graph-over",
+      "kind": "budget",
+      "operation": "derived",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 8192,
+      "expected": "ok",
+      "id": "budget-encoding-at",
+      "kind": "budget",
+      "operation": "encoding",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 8193,
+      "expected": "work_limit_exceeded",
+      "id": "budget-encoding-over",
+      "kind": "budget",
+      "operation": "encoding",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 2731,
+      "expected": "work_limit_exceeded",
+      "id": "budget-encoding-expanded",
+      "kind": "budget",
+      "operation": "expanded",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 8192,
+      "expected": "ok",
+      "id": "budget-candidate-at",
+      "kind": "budget",
+      "operation": "candidate",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    },
+    {
+      "amount": 8193,
+      "expected": "work_limit_exceeded",
+      "id": "budget-candidate-over",
+      "kind": "budget",
+      "operation": "candidate",
+      "requirements": [
+        "P22"
+      ],
+      "steps": [
+        "byte-and-state-admission"
+      ]
+    }
+  ],
+  "schema": 1
+}

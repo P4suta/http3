@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "chain_kind": "rfc9114_review_application_invalidation_chain",
+  "standard": "RFC9114",
+  "current_generation": 4,
+  "entries": [
+    {
+      "generation": 1,
+      "status": "Rejected",
+      "source_record": "standards/audits/rfc9114/review-v1-invalidated.json",
+      "source_record_sha256": "97385909eb2f695b751889a0a3e5d212fb53b6193b183de8e3fdbafd22903009",
+      "failure_classifications": [
+        "pre_review_self_test_reported_ready",
+        "rendered_identity_checked_after_replace",
+        "stale_ready_survived_rejection",
+        "reviewed_sources_not_content_bound",
+        "apply_input_toctou",
+        "citation_path_and_symbol_not_validated",
+        "review_candidate_citations_not_compared",
+        "red_failure_classification_missing",
+        "rerun_command_not_executable_in_audited_environment",
+        "unexpected_failure_could_expose_local_details"
+      ]
+    },
+    {
+      "generation": 2,
+      "status": "Rejected",
+      "invalidated_tool_sha256": "adb1c3fc458580643419215562cbefef2070af5f870835426f3bf30d929e33f1",
+      "invalidated_red_report_sha256": "f6e9a131b7de93a96de651c72677e3d736bb51ad2819fa3dd5b2dd53c77c0b04",
+      "invalidated_self_test_report_sha256": "94b8eaa52845468955ad2dd63c8f5f04df1d124e112bf0badcb1bd887e5266cc",
+      "failure_classifications": [
+        "target_compare_replace_was_not_lossless_under_concurrent_writes",
+        "canonical_report_was_not_authoritative_during_partial_publication",
+        "publication_was_not_followed_by_full_identity_revalidation",
+        "self_test_inventory_was_not_an_exact_mandatory_contract",
+        "canonical_audit_inputs_and_tool_were_ignored_build_artifacts",
+        "loaded_python_code_was_not_bound_to_an_outer_snapshot"
+      ]
+    },
+    {
+      "generation": 3,
+      "status": "Rejected",
+      "audit_report": "standards/audits/rfc9114/v4/prior-v3-independent-audit/report.json",
+      "audit_report_sha256": "2e113c08bb912ac0876cead37fb8f64de34c87a37a118e2fe7a48e02632385d8",
+      "audit_manifest": "standards/audits/rfc9114/v4/prior-v3-independent-audit/evidence-manifest.json",
+      "audit_manifest_sha256": "a962f0c28423df6edd4dd02eea869f3ecac850efff3a7678cd85d6b41343ca48",
+      "audit_script": "standards/audits/rfc9114/v4/prior-v3-independent-audit/audit_static.py",
+      "audit_script_sha256": "e794b2622466ecdd3f0e753c6bcff3240374c4460ec23b4847a1c66796749e21",
+      "failure_classifications": [
+        "hardlinked_recovery_copy_is_mutable_through_target",
+        "stale_report_lock_can_preserve_old_ready",
+        "failed_rejection_publication_can_preserve_ready",
+        "mise_python_executable_hash_is_not_pinned",
+        "coordinated_mutable_artifact_substitution_is_accepted",
+        "mandatory_inventory_and_ast_contracts_are_self_defined_and_dead_code_blind",
+        "gate_self_test_inventory_can_be_empty",
+        "report_schema_and_secret_fields_are_not_closed",
+        "rejected_reports_skip_identity_and_completion_validation",
+        "audit_inputs_accept_aliases",
+        "ci_omits_recovery_bytes",
+        "ci_workflow_identity_is_not_bound",
+        "report_consumer_has_no_fresh_run_binding",
+        "no_crash_recovery_or_stale_lock_reconciliation_exists"
+      ]
+    }
+  ],
+  "replacement_required": "Generation 4 must retain ObservedRed and StaticReady evidence, pass exactly 45 application and 22 gate controls, preserve lossless crash-recovery evidence, and receive a new independent review before Ready or canonical application."
+}

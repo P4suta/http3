@@ -151,12 +151,17 @@ pub fn blocked_streams(state: State) -> List(Int) {
 pub fn cancel_stream(state: State, stream_id: Int) -> State {
   case dict.has_key(state.blocked, stream_id) {
     False -> state
-    True ->
-      queue_instruction(
-        State(..state, blocked: dict.delete(state.blocked, stream_id)),
-        instruction.StreamCancellation(stream_id),
-      )
+    True -> abandon_stream(state, stream_id)
   }
+}
+
+/// Notify the encoder when an admitted stream is abandoned, including when its field section has not arrived yet.
+/// The owning stream transition calls this once and flushes the bounded decoder feedback before further reads.
+pub fn abandon_stream(state: State, stream_id: Int) -> State {
+  queue_instruction(
+    State(..state, blocked: dict.delete(state.blocked, stream_id)),
+    instruction.StreamCancellation(stream_id),
+  )
 }
 
 fn insert_field(

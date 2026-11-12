@@ -17,6 +17,7 @@ import quic_core/internal/ecn
 import quic_core/internal/flow_control
 import quic_core/internal/initial_crypto
 import quic_core/internal/key_phase
+import quic_core/internal/local_connection_id
 import quic_core/internal/new_reno
 import quic_core/internal/pacer
 import quic_core/internal/packet_space
@@ -24,6 +25,7 @@ import quic_core/internal/path_validation
 import quic_core/internal/pmtu
 import quic_core/internal/reassembler
 import quic_core/internal/rtt
+import quic_core/internal/stream_completion
 import quic_core/internal/stream_state
 import quic_core/internal/tls/anti_replay
 import quic_core/internal/tls/authentication
@@ -38,39 +40,30 @@ import quic_core/transport_parameter
 import quic_core/varint
 import quic_core/version.{type Version}
 
-// RFC 9000 section 14: every QUIC path carries a 1200-byte datagram. It is the
-// floor DPLPMTUD starts from and the datagram unit congestion control and
-// pacing are denominated in before any larger size has been validated.
+// RFC 9000 section 14: every QUIC path carries a 1200-byte datagram.
+// It is the floor DPLPMTUD starts from and the datagram unit congestion control and pacing are denominated in before any larger size has been validated.
 const minimum_datagram_bytes = 1200
 
-// RFC 9000 section 18.2: the default max_udp_payload_size, and the largest
-// value an endpoint may advertise for what it is willing to receive.
+// RFC 9000 section 18.2: the default max_udp_payload_size, and the largest value an endpoint may advertise for what it is willing to receive.
 const maximum_udp_payload_size = 65_527
 
-// A conservative ceiling for DPLPMTUD's search. One IP datagram carries at
-// most 65_507 bytes of UDP payload, and a datagram that size leaves the host
-// no room for IP options or for the per-datagram overhead a socket adds, so
-// the search stops at 60 kilobytes instead. Every size it can validate is
-// then one a single UDP send is known to accept.
+// A conservative ceiling for DPLPMTUD's search.
+// One IP datagram carries at most 65_507 bytes of UDP payload, and a datagram that size leaves the host no room for IP options or for the per-datagram overhead a socket adds, so the search stops at 60 kilobytes instead.
+// Every size it can validate is then one a single UDP send is known to accept.
 const maximum_sendable_udp_payload = 61_440
 
-// The largest header a STREAM or CRYPTO frame writes ahead of its data: one
-// type byte plus stream identifier, offset, and length as 8-byte varints.
+// The largest header a STREAM or CRYPTO frame writes ahead of its data: one type byte plus stream identifier, offset, and length as 8-byte varints.
 const maximum_data_frame_header_bytes = 25
 
-// RFC 9000 section 16: eight bytes is the widest variable-length integer
-// encoding, and therefore the most any length or count field can cost.
+// RFC 9000 section 16: eight bytes is the widest variable-length integer encoding, and therefore the most any length or count field can cost.
 const maximum_varint_bytes = 8
 
-// What one Initial packet must be able to carry beyond its own protection: a
-// CRYPTO frame header, the acknowledgement the space owes, and enough of the
-// first flight for the handshake to advance on every packet. Reserving it is
-// what turns "the address-validation token has to fit" into a token width.
+// What one Initial packet must be able to carry beyond its own protection: a CRYPTO frame header, the acknowledgement the space owes, and enough of the first flight for the handshake to advance on every packet.
+// Reserving it is what turns "the address-validation token has to fit" into a token width.
 const minimum_initial_payload_bytes = 256
 
-// RFC 9002 section 7.7: the pacer releases this many datagrams back to back
-// before spacing takes over. The burst scales with the path, never below one
-// whole datagram.
+// RFC 9002 section 7.7: the pacer releases this many datagrams back to back before spacing takes over.
+// The burst scales with the path, never below one whole datagram.
 const pacer_burst_datagrams = 10
 
 const timer_granularity_milliseconds = 1
@@ -79,31 +72,28 @@ const maximum_crypto_buffer_bytes = 1_048_576
 
 const maximum_crypto_offset = 4_194_304
 
-// A NEW_TOKEN frame is reliable and indivisible: it cannot be split to fit a
-// packet and it cannot be dropped. Bound the token so the frame always fits
-// the 1200-byte floor a black hole can reset the path to.
+// A NEW_TOKEN frame is reliable and indivisible: it cannot be split to fit a packet and it cannot be dropped.
+// Bound the token so the frame always fits the 1200-byte floor a black hole can reset the path to.
 const maximum_address_token_bytes = 1024
 
 // The same bound for the reason phrase a caller attaches to CONNECTION_CLOSE,
 // which is reliable and indivisible for the same reasons.
 const maximum_close_reason_bytes = 1024
 
-// RFC 9000 section 20: TRANSPORT_PARAMETER_ERROR. A transport-parameter
-// failure is not attributable to a QUIC frame, so its CONNECTION_CLOSE frame
-// type is zero.
+// RFC 9000 section 20: TRANSPORT_PARAMETER_ERROR.
+// A transport-parameter failure is not attributable to a QUIC frame, so its CONNECTION_CLOSE frame type is zero.
 const transport_parameter_error_code = 0x08
 
 const version_negotiation_error_code = 0x11
 
-// RFC 9001 section 4.8 carries TLS alert descriptions in QUIC's CRYPTO_ERROR
-// range. RFC 7301 assigns no_application_protocol alert description 120.
+// RFC 9001 section 4.8 carries TLS alert descriptions in QUIC's CRYPTO_ERROR range.
+// RFC 7301 assigns no_application_protocol alert description 120.
 const no_application_protocol_error_code = 0x178
 
 const active_connection_id_limit = 4
 
-// A single minimum-size datagram can contain more than one hundred
-// PATH_CHALLENGE frames. Keep responses bounded even when acknowledgements
-// are withheld; duplicate challenges share one pending response.
+// A single minimum-size datagram can contain more than one hundred PATH_CHALLENGE frames.
+// Keep responses bounded even when acknowledgements are withheld; duplicate challenges share one pending response.
 const maximum_pending_path_responses = 64
 
 /// Endpoint role fixes stream-ID ownership and amplification behavior.
@@ -158,8 +148,8 @@ pub type ConnectionCounters {
 
 /// Payload-free send and recovery state for developer diagnostics.
 ///
-/// Stream identifiers are ordered exactly as the round-robin scheduler will
-/// visit them. The snapshot contains no frame or application payload.
+/// Stream identifiers are ordered exactly as the round-robin scheduler will visit them.
+/// The snapshot contains no frame or application payload.
 pub type SendProgress {
   SendProgress(
     connection_peer_limit: Int,
@@ -194,9 +184,8 @@ pub type StreamFrameProgress {
 
 /// Why an owner did or did not arm a pacing wake for pending output.
 ///
-/// This is deliberately payload-free. The candidate is only a byte count and
-/// the remaining fields are the bounded controller inputs needed to reproduce
-/// the decision without retaining a packet or frame.
+/// This is deliberately payload-free.
+/// The candidate is only a byte count and the remaining fields are the bounded controller inputs needed to reproduce the decision without retaining a packet or frame.
 pub type PacingWakeProgress {
   NoPacingOutput
   PacingReady(
@@ -263,15 +252,20 @@ pub type Event {
   StreamOpened(Int)
   StreamReadable(Int)
   StreamWasReset(Int, application_error_code: Int)
+  StreamSendCompleted(Int, outcome: stream_completion.Outcome)
   DatagramReceived(BitArray)
   NewTokenReceived(BitArray)
   PathValidated
   PathValidationFailed
   PersistentCongestionDetected
   PeerConnectionIdAvailable(sequence: Int, value: BitArray)
-  LocalConnectionIdRetirementRequested(sequence: Int)
+  /// One authenticated retirement removed an active local route exactly once.
+  LocalConnectionIdRetired(sequence: Int, value: BitArray)
   StatelessResetReceived
   PeerClosed(error_code: Int, reason: String)
+  PeerTransportClosed(error_code: Int, reason: String)
+  /// An authenticated protocol failure queued a redacted transport close.
+  LocalTransportFailure(error: Error, wire_code: Int)
   CryptoReceived(engine.EncryptionLevel, BitArray)
 }
 
@@ -331,10 +325,8 @@ type CongestionState {
 
 /// The sole wire response retained while this endpoint is closing.
 ///
-/// RFC 9000 section 10.2.2 forbids every other frame class in this phase. The
-/// encryption level is retained with the already-bounded frame so an
-/// authenticated peer retransmission can re-arm exactly the same response
-/// without retaining peer-controlled input or reconstructing a reason.
+/// RFC 9000 section 10.2.2 forbids every other frame class in this phase.
+/// The encryption level is retained with the already-bounded frame so an authenticated peer retransmission can re-arm exactly the same response without retaining peer-controlled input or reconstructing a reason.
 type CloseResponse {
   CloseResponse(level: engine.EncryptionLevel, frame: frame.Frame)
 }
@@ -347,9 +339,8 @@ type TlsEndpoint {
 
 /// Round-robin queue of streams that can produce transport output.
 ///
-/// Front and back stacks make dequeue and enqueue amortized O(1). The set
-/// prevents duplicate queue entries while a stream remains active; the count
-/// makes the common pending-output check independent of the number of streams.
+/// Front and back stacks make dequeue and enqueue amortized O(1).
+/// The set prevents duplicate queue entries while a stream remains active; the count makes the common pending-output check independent of the number of streams.
 type ActiveStreams {
   ActiveStreams(
     front: List(Int),
@@ -363,8 +354,7 @@ type ActiveStreams {
 pub opaque type State {
   State(
     config: Config,
-    // RFC 9369 section 4.1 keeps 0-RTT on the version that produced its
-    // resumption keys even if compatible negotiation changes Initial,
+    // RFC 9369 section 4.1 keeps 0-RTT on the version that produced its resumption keys even if compatible negotiation changes Initial,
     // Handshake, and 1-RTT packets to another version.
     zero_rtt_version: Version,
     tls_endpoint: TlsEndpoint,
@@ -405,9 +395,8 @@ pub opaque type State {
     peer_ack_delay_exponent: Int,
     peer_maximum_udp_payload_size: Int,
     peer_maximum_datagram_frame_size: Int,
-    // The server limit authenticated with the ticket and used to admit
-    // client 0-RTT DATAGRAM frames. The first fresh transport-parameter set
-    // must preserve or increase it before this guard is cleared.
+    // The server limit authenticated with the ticket and used to admit client 0-RTT DATAGRAM frames.
+    // The first fresh transport-parameter set must preserve or increase it before this guard is cleared.
     remembered_peer_maximum_datagram_frame_size: Option(Int),
     peer_grease_quic_bit: Bool,
     peer_disabled_active_migration: Bool,
@@ -419,6 +408,8 @@ pub opaque type State {
     pmtu: pmtu.State,
     path_validator: path_validation.Validator,
     peer_connection_ids: Option(connection_id.Registry),
+    local_connection_ids: Option(local_connection_id.Issuer),
+    peer_active_connection_id_limit: Int,
     pending_peer_stateless_reset_token: Option(BitArray),
     events: List(Event),
     acknowledgements_sent: Int,
@@ -429,6 +420,7 @@ pub opaque type State {
     close_deadline_milliseconds: Option(Int),
     close_response: Option(CloseResponse),
     credit_frozen: Bool,
+    memory_granted_bytes: Option(Int),
     withheld_bidirectional_streams: Int,
     withheld_unidirectional_streams: Int,
     withheld_stream_data: Set(Int),
@@ -505,8 +497,8 @@ pub type Error {
   UnknownStream(Int)
   StreamLimitFailure
   ProtocolViolation(ProtocolViolationReason)
-  /// An authenticated frame appeared at an encryption level where RFC 9000
-  /// forbids it. Only finite frame and level classes are retained.
+  /// An authenticated frame appeared at an encryption level where RFC 9000 forbids it.
+  /// Only finite frame and level classes are retained.
   FrameAtWrongEncryptionLevel(engine.EncryptionLevel, FrameKind)
   CongestionLimited
   PacingLimited(Int)
@@ -529,8 +521,7 @@ pub type Error {
 /// Stable, payload-free cause of an authenticated QUIC protocol violation.
 ///
 /// Values identify only the finite state transition which rejected input.
-/// They never retain frame contents, connection identifiers, peer-supplied
-/// numbers, TLS material, or implementation errors.
+/// They never retain frame contents, connection identifiers, peer-supplied numbers, TLS material, or implementation errors.
 pub type ProtocolViolationReason {
   PacketVersionMismatch
   KeyPhaseCandidateRejected
@@ -551,9 +542,12 @@ pub type ProtocolViolationReason {
   PathResponseQueueLimitExceeded
   HandshakeDoneStateViolation
   ServerEndpointClientConfirmation
+  NewTokenAtServer
   DatagramNotNegotiatedViolation
   DatagramFrameTooLargeViolation
   PeerConnectionIdRegistryMissing
+  LocalConnectionIdNotIssued
+  RetiredPacketDestinationConnectionId
   RemoteStreamIdentifierInvalid
   RemoteUsedLocalStream
   RemoteStreamIndexRegression
@@ -589,14 +583,10 @@ pub type FrameKind {
   DatagramFrame
 }
 
-/// Conservative bounded defaults; authenticated transport parameters raise
-/// only peer-controlled sending limits.
+/// Conservative bounded defaults; authenticated transport parameters raise only peer-controlled sending limits.
 ///
 /// Receive windows and reassembly buffers are finite resident-memory bounds.
-/// Their maximum offsets are deliberately the QUIC varint ceiling instead of
-/// a transfer quota: MAX_DATA and MAX_STREAM_DATA are monotonic lifetime
-/// offsets, so a small offset ceiling would eventually deadlock a healthy
-/// stream even when the application continuously consumes every byte.
+/// Their maximum offsets are deliberately the QUIC varint ceiling instead of a transfer quota: MAX_DATA and MAX_STREAM_DATA are monotonic lifetime offsets, so a small offset ceiling would eventually deadlock a healthy stream even when the application continuously consumes every byte.
 pub fn default_config(role: Role) -> Config {
   Config(
     role: role,
@@ -622,23 +612,17 @@ pub fn default_config(role: Role) -> Config {
     grease_quic_bit: True,
     idle_timeout_milliseconds: 30_000,
     draining_timeout_milliseconds: 3000,
-    // Fail closed: a caller that has not looked at its socket gets the
-    // 1200-byte floor every path carries. Every runtime construction site
-    // passes `udp.dont_fragment` for the socket it actually sends on, so only
-    // a connection built outside them keeps this default.
+    // Fail closed: a caller that has not looked at its socket gets the 1200-byte floor every path carries.
+    // Every runtime construction site passes `udp.dont_fragment` for the socket it actually sends on, so only a connection built outside them keeps this default.
     path_dont_fragment: False,
   )
 }
 
 /// The largest datagram DPLPMTUD may ever confirm for this connection.
 ///
-/// RFC 8899 section 3 reads an acknowledged probe as proof the path carries
-/// that size only when the probe could not have been fragmented. A socket the
-/// kernel refused the Don't-Fragment option to can have an oversized probe
-/// fragmented locally, delivered, and acknowledged, which would raise the path
-/// to a permanently fragmenting size. Without that option the ceiling is the
-/// 1200-byte floor every path carries, so discovery starts complete and the
-/// connection never sends a datagram it has not been told fits.
+/// RFC 8899 section 3 reads an acknowledged probe as proof the path carries that size only when the probe could not have been fragmented.
+/// A socket the kernel refused the Don't-Fragment option to can have an oversized probe fragmented locally, delivered, and acknowledged, which would raise the path to a permanently fragmenting size.
+/// Without that option the ceiling is the 1200-byte floor every path carries, so discovery starts complete and the connection never sends a datagram it has not been told fits.
 fn discovery_ceiling(config: Config) -> Int {
   case config.path_dont_fragment {
     False -> minimum_datagram_bytes
@@ -649,21 +633,11 @@ fn discovery_ceiling(config: Config) -> Int {
 
 /// The widest address-validation token an Initial packet may repeat.
 ///
-/// A client repeats its token in every Initial it sends (RFC 9000 section
-/// 8.1.2), and every Initial has to fit the 1200-byte floor of RFC 9000
-/// section 14.1, because that is the only size a path is known to carry before
-/// DPLPMTUD has confirmed more. An Initial payload is budgeted as the path
-/// minus `initial_packet_overhead`, so a token past this width would leave no
-/// payload to budget and build a datagram over the floor. `driver` checks both
-/// doors a token comes through - a cached one at start-up and a Retry's -
-/// against this, which is what lets the send path treat that budget as a real
-/// ceiling.
+/// A client repeats its token in every Initial it sends (RFC 9000 section 8.1.2), and every Initial has to fit the 1200-byte floor of RFC 9000 section 14.1, because that is the only size a path is known to carry before DPLPMTUD has confirmed more.
+/// An Initial payload is budgeted as the path minus `initial_packet_overhead`, so a token past this width would leave no payload to budget and build a datagram over the floor.
+/// `driver` checks both doors a token comes through - a cached one at start-up and a Retry's - against this, which is what lets the send path treat that budget as a real ceiling.
 ///
-/// This is a conservative internal ceiling, not a wire limit: RFC 9000 places
-/// no upper bound on a token, and the width is computed by charging every
-/// header field its widest encoding - twenty-byte connection IDs and 8-byte
-/// varints throughout - so a token a little past it would often still have fit
-/// the real header this connection writes.
+/// This is a conservative internal ceiling, not a wire limit: RFC 9000 places no upper bound on a token, and the width is computed by charging every header field its widest encoding - twenty-byte connection IDs and 8-byte varints throughout - so a token a little past it would often still have fit the real header this connection writes.
 pub fn maximum_initial_token_bytes() -> Int {
   minimum_datagram_bytes
   - initial_packet_overhead(0)
@@ -671,12 +645,9 @@ pub fn maximum_initial_token_bytes() -> Int {
 }
 
 /// The most protecting an Initial packet ever adds around its frame payload:
-/// everything a 0-RTT or Handshake packet pays, plus the Token Length field at
-/// its widest and the `token_bytes` of the token itself.
+/// everything a 0-RTT or Handshake packet pays, plus the Token Length field at its widest and the `token_bytes` of the token itself.
 ///
-/// RFC 9000 section 17.2.2 gives only Initial a token, and a client that was
-/// issued a large address-validation token carries it in every Initial it
-/// sends, so a caller budgeting an Initial payload has to pay for it too.
+/// RFC 9000 section 17.2.2 gives only Initial a token, and a client that was issued a large address-validation token carries it in every Initial it sends, so a caller budgeting an Initial payload has to pay for it too.
 fn initial_packet_overhead(token_bytes: Int) -> Int {
   wire_packet.maximum_long_packet_overhead()
   + maximum_varint_bytes
@@ -773,6 +744,8 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     pmtu: path_mtu,
     path_validator: path_validation.new(),
     peer_connection_ids: None,
+    local_connection_ids: None,
+    peer_active_connection_id_limit: 2,
     pending_peer_stateless_reset_token: None,
     events: [],
     acknowledgements_sent: 0,
@@ -783,6 +756,7 @@ pub fn new(config: Config, now_milliseconds: Int) -> Result(State, Error) {
     close_deadline_milliseconds: None,
     close_response: None,
     credit_frozen: False,
+    memory_granted_bytes: None,
     withheld_bidirectional_streams: 0,
     withheld_unidirectional_streams: 0,
     withheld_stream_data: set.new(),
@@ -818,8 +792,8 @@ pub fn attach_server_tls(
   }
 }
 
-/// Derive and install role-correct QUIC Initial packet keys from the original
-/// destination connection ID. TLS never supplies keys for this level.
+/// Derive and install role-correct QUIC Initial packet keys from the original destination connection ID.
+/// TLS never supplies keys for this level.
 pub fn install_initial_keys(
   state: State,
   destination_connection_id: BitArray,
@@ -857,9 +831,8 @@ pub fn install_initial_keys(
   }
 }
 
-/// Tentatively switch a client's Initial and TLS key schedule to an offered
-/// compatible version. Authenticated Version Information validates the choice
-/// before the handshake can complete.
+/// Tentatively switch a client's Initial and TLS key schedule to an offered compatible version.
+/// Authenticated Version Information validates the choice before the handshake can complete.
 pub fn negotiate_compatible_version(
   state: State,
   negotiated_version: Version,
@@ -883,8 +856,7 @@ pub fn negotiate_compatible_version(
   }
 }
 
-/// Restart Initial protection and recovery after an authenticated Retry while
-/// retaining the exact TLS ClientHello and every packet-number counter.
+/// Restart Initial protection and recovery after an authenticated Retry while retaining the exact TLS ClientHello and every packet-number counter.
 pub fn process_retry(
   state: State,
   retry_source_connection_id: BitArray,
@@ -948,8 +920,7 @@ fn process_valid_retry(
   }
 }
 
-/// Initialize the peer-issued connection-ID registry once the initial ID and
-/// authenticated stateless-reset token are both known.
+/// Initialize the peer-issued connection-ID registry once the initial ID and authenticated stateless-reset token are both known.
 pub fn initialize_peer_connection_id(
   state: State,
   initial_connection_id: BitArray,
@@ -977,10 +948,8 @@ pub fn initialize_peer_connection_id(
   }
 }
 
-/// Record the authenticated sequence-zero source connection ID. A client's
-/// reset token can arrive in TLS transport parameters before the packet driver
-/// returns the corresponding long-header source ID, so both arrival orders are
-/// supported.
+/// Record the authenticated sequence-zero source connection ID.
+/// A client's reset token can arrive in TLS transport parameters before the packet driver returns the corresponding long-header source ID, so both arrival orders are supported.
 pub fn observe_peer_initial_connection_id(
   state: State,
   initial_connection_id: BitArray,
@@ -1027,11 +996,8 @@ pub fn current_peer_connection_id(state: State) -> Result(BitArray, Error) {
 
 /// Take an unused destination connection ID for a second local address.
 ///
-/// RFC 9000 section 9.5: an endpoint must not reuse a connection ID when it
-/// sends from more than one local address, so an active migration moves to an
-/// unused identifier and asks the peer to retire the one the old path used. A
-/// peer which sees its own identifier arrive from a new address reads that as a
-/// rebinding rather than a migration, and never validates the new path.
+/// RFC 9000 section 9.5: an endpoint must not reuse a connection ID when it sends from more than one local address, so an active migration moves to an unused identifier and asks the peer to retire the one the old path used.
+/// A peer which sees its own identifier arrive from a new address reads that as a rebinding rather than a migration, and never validates the new path.
 pub fn rotate_peer_connection_id(
   state: State,
 ) -> Result(#(State, BitArray), Error) {
@@ -1050,17 +1016,17 @@ pub fn rotate_peer_connection_id(
   }
 }
 
-/// Check an undecryptable short packet for a peer stateless reset and enter
-/// draining without transmitting a response when its active token matches.
+/// Check an undecryptable short packet for a peer stateless reset and enter draining without transmitting a response when its active token matches.
 pub fn handle_stateless_reset_candidate(
   state: State,
   datagram: BitArray,
   now_milliseconds: Int,
 ) -> Result(#(State, Bool), Error) {
-  case state.peer_connection_ids, now_milliseconds >= 0 {
-    _, False -> Error(InvalidInput)
-    None, True -> Ok(#(state, False))
-    Some(registry), True -> {
+  case state.phase, state.peer_connection_ids, now_milliseconds >= 0 {
+    _, _, False -> Error(InvalidInput)
+    Closed, _, True | Draining, _, True -> Ok(#(state, False))
+    _, None, True -> Ok(#(state, False))
+    _, Some(registry), True -> {
       use matched <- result.try(
         connection_id.matches_stateless_reset(registry, datagram)
         |> map_connection_id_result,
@@ -1069,20 +1035,7 @@ pub fn handle_stateless_reset_candidate(
         False -> Ok(#(state, False))
         True ->
           Ok(#(
-            State(
-              ..state,
-              phase: Draining,
-              initial_queue: [],
-              handshake_queue: [],
-              zero_rtt_queue: [],
-              application_queue: [],
-              active_streams: active_streams_new(),
-              close_deadline_milliseconds: Some(
-                now_milliseconds + state.config.draining_timeout_milliseconds,
-              ),
-              close_response: None,
-            )
-              |> add_event(StatelessResetReceived),
+            enter_draining(state, StatelessResetReceived, now_milliseconds),
             True,
           ))
       }
@@ -1098,15 +1051,35 @@ pub fn issue_session_ticket(
   lifetime_seconds: Int,
   permit_early_data: Bool,
 ) -> Result(State, Error) {
+  issue_session_ticket_with_application_context(
+    state,
+    ticket_key,
+    now_milliseconds,
+    lifetime_seconds,
+    permit_early_data,
+    <<>>,
+  )
+}
+
+/// Ask connected server TLS to bind opaque application state into the ticket.
+pub fn issue_session_ticket_with_application_context(
+  state: State,
+  ticket_key: BitArray,
+  now_milliseconds: Int,
+  lifetime_seconds: Int,
+  permit_early_data: Bool,
+  application_context: BitArray,
+) -> Result(State, Error) {
   case state.tls_endpoint {
     ServerTlsEndpoint(server) ->
       case
-        engine.issue_new_session_ticket(
+        engine.issue_new_session_ticket_with_application_context(
           server,
           ticket_key,
           now_milliseconds,
           lifetime_seconds,
           permit_early_data,
+          application_context,
         )
       {
         Error(error) -> Error(TlsFailure(error))
@@ -1128,8 +1101,7 @@ pub fn can_issue_session_ticket(state: State) -> Bool {
   }
 }
 
-/// Replace a handshaking server's resumption policy with the listener's most
-/// recent bounded anti-replay snapshot.
+/// Replace a handshaking server's resumption policy with the listener's most recent bounded anti-replay snapshot.
 pub fn refresh_server_resumption_policy(
   state: State,
   policy: resumption.ServerPolicy,
@@ -1229,18 +1201,11 @@ pub fn prepare_packet(
   }
 }
 
-/// Widen a caller's pre-validation request to the frame data one datagram
-/// still carries on the validated path, after everything else this packet
-/// holds has been paid for: short-header and AEAD overhead, the `coalesced`
-/// bytes of the ACK frame already taken for this packet, and the data frame's
-/// own header.
+/// Widen a caller's pre-validation request to the frame data one datagram still carries on the validated path, after everything else this packet holds has been paid for: short-header and AEAD overhead, the `coalesced` bytes of the ACK frame already taken for this packet, and the data frame's own header.
 ///
-/// Only 1-RTT and 0-RTT packets are widened. DPLPMTUD raises the path MTU only
-/// once a probe of that size has been acknowledged, so the result is a
-/// datagram size the path has been observed to carry. Initial and Handshake
-/// packets keep the caller's pre-validation request, but every level is capped
-/// by the path: a caller asking for more than the path carries would otherwise
-/// build an oversized datagram at that level.
+/// Only 1-RTT and 0-RTT packets are widened.
+/// DPLPMTUD raises the path MTU only once a probe of that size has been acknowledged, so the result is a datagram size the path has been observed to carry.
+/// Initial and Handshake packets keep the caller's pre-validation request, but every level is capped by the path: a caller asking for more than the path carries would otherwise build an oversized datagram at that level.
 fn path_frame_data_bytes(
   state: State,
   level: engine.EncryptionLevel,
@@ -1252,10 +1217,8 @@ fn path_frame_data_bytes(
     + coalesced
     + maximum_data_frame_header_bytes
   let preferred = case level {
-    // Prefer a datagram the congestion window can release right now: a
-    // larger one is refused by `validate_send_budget` however long it
-    // waits. The caller's request stays the floor, so a window narrower
-    // than that behaves exactly as it did before the path grew.
+    // Prefer a datagram the congestion window can release right now: a larger one is refused by `validate_send_budget` however long it waits.
+    // The caller's request stays the floor, so a window narrower than that behaves exactly as it did before the path grew.
     engine.OneRtt | engine.ZeroRtt ->
       maximum(
         requested,
@@ -1263,11 +1226,9 @@ fn path_frame_data_bytes(
       )
     _ -> requested
   }
-  // The validated path is a hard ceiling. `pmtu` never rises above the peer's
-  // authenticated max_udp_payload_size, so a packet built to this budget is
-  // one the peer said it will receive. Only a coalesced acknowledgement can
-  // drive this below one byte, and a packet in that state gives its frame up
-  // to the acknowledgement in `fill_path_sized_packet` rather than sending it.
+  // The validated path is a hard ceiling.
+  // `pmtu` never rises above the peer's authenticated max_udp_payload_size, so a packet built to this budget is one the peer said it will receive.
+  // Only a coalesced acknowledgement can drive this below one byte, and a packet in that state gives its frame up to the acknowledgement in `fill_path_sized_packet` rather than sending it.
   maximum(1, minimum(preferred, path_mtu(state) - overhead))
 }
 
@@ -1282,16 +1243,11 @@ fn encoded_frame_bytes(value: Option(frame.Frame)) -> Result(Int, Error) {
   }
 }
 
-/// The exact encoded size of one frame the send path is about to place in a
-/// packet.
+/// The exact encoded size of one frame the send path is about to place in a packet.
 ///
-/// Frames whose payload dominates their encoding are measured from that
-/// payload and the header their type writes ahead of it, so sizing a packet
-/// never encodes a large frame only to throw the bytes away. STREAM and CRYPTO
-/// data is split to the remaining budget, so the largest header either can
-/// write is the honest bound; a DATAGRAM frame is indivisible and is measured
-/// exactly. Every other frame is small enough that encoding it is the cheapest
-/// answer.
+/// Frames whose payload dominates their encoding are measured from that payload and the header their type writes ahead of it, so sizing a packet never encodes a large frame only to throw the bytes away.
+/// STREAM and CRYPTO data is split to the remaining budget, so the largest header either can write is the honest bound; a DATAGRAM frame is indivisible and is measured exactly.
+/// Every other frame is small enough that encoding it is the cheapest answer.
 fn outgoing_frame_bytes(value: frame.Frame) -> Result(Int, Error) {
   case value {
     frame.Stream(_, _, data, _) | frame.Crypto(_, data) ->
@@ -1332,8 +1288,8 @@ pub fn commit_packet(
   }
 }
 
-/// Check recovery retention, congestion, pacing, and anti-amplification budgets
-/// before a caller transmits a protected datagram. The decision is non-mutating;
+/// Check recovery retention, congestion, pacing, and anti-amplification budgets before a caller transmits a protected datagram.
+/// The decision is non-mutating;
 /// a successful UDP send is still recorded by `commit_packet`.
 pub fn validate_send_budget(
   state: State,
@@ -1397,8 +1353,7 @@ fn validate_recovery_capacity(
   }
 }
 
-/// Encode and protect one Initial, 0-RTT, or Handshake packet from transport
-/// frames using keys owned by this connection.
+/// Encode and protect one Initial, 0-RTT, or Handshake packet from transport frames using keys owned by this connection.
 pub fn protect_long_packet(
   state: State,
   kind: wire_packet.LongKind,
@@ -1422,8 +1377,7 @@ pub fn protect_long_packet(
   )
 }
 
-/// Initiate an explicit 1-RTT key update after handshake confirmation and
-/// after the current generation has been acknowledged.
+/// Initiate an explicit 1-RTT key update after handshake confirmation and after the current generation has been acknowledged.
 pub fn initiate_key_update(
   state: State,
   now_milliseconds: Int,
@@ -1442,8 +1396,8 @@ pub fn initiate_key_update(
   Ok(install_key_phase_state(state, key_state, reset_usage: True))
 }
 
-/// Begin validation of a candidate address. The runtime keeps address values
-/// outside the protocol state and switches paths only after `PathValidated`.
+/// Begin validation of a candidate address.
+/// The runtime keeps address values outside the protocol state and switches paths only after `PathValidated`.
 pub fn begin_path_validation(
   state: State,
   challenge: BitArray,
@@ -1472,8 +1426,8 @@ pub fn begin_path_validation(
   }
 }
 
-/// Reserve the next exact DPLPMTUD datagram size. The runtime pads a PING
-/// packet to this size and commits that exact datagram through recovery.
+/// Reserve the next exact DPLPMTUD datagram size.
+/// The runtime pads a PING packet to this size and commits that exact datagram through recovery.
 pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
   case state.phase {
     Established ->
@@ -1485,8 +1439,7 @@ pub fn start_pmtu_probe(state: State) -> Result(#(State, Int), Error) {
   }
 }
 
-/// Retire an unsent DPLPMTUD probe rejected by the local non-fragmenting
-/// socket and exclude its size from the remaining search range.
+/// Retire an unsent DPLPMTUD probe rejected by the local non-fragmenting socket and exclude its size from the remaining search range.
 pub fn reject_pmtu_probe(state: State, size: Int) -> Result(State, Error) {
   case pmtu.probe_too_large(state.pmtu, size) {
     Ok(path_mtu) -> Ok(put_path_mtu(state, path_mtu))
@@ -1499,17 +1452,11 @@ pub fn path_mtu(state: State) -> Int {
   pmtu.current(state.pmtu)
 }
 
-/// Store a new DPLPMTUD state and keep the congestion controller sized from
-/// the path its datagrams are built for.
+/// Store a new DPLPMTUD state and keep the congestion controller sized from the path its datagrams are built for.
 ///
-/// RFC 9002 section 7.2 derives the minimum congestion window - twice
-/// `max_datagram_size` - and the initial window from the datagram size. A
-/// controller left at the pre-validation floor would reduce to a window
-/// narrower than one datagram the validated path carries, stalling both
-/// path-sized output and the DPLPMTUD probes that keep the path confirmed
-/// until the window regrew. Every confirmed size is a size the controllers
-/// accept, so the fallback below is unreachable; it exists only to keep this
-/// total.
+/// RFC 9002 section 7.2 derives the minimum congestion window - twice `max_datagram_size` - and the initial window from the datagram size.
+/// A controller left at the pre-validation floor would reduce to a window narrower than one datagram the validated path carries, stalling both path-sized output and the DPLPMTUD probes that keep the path confirmed until the window regrew.
+/// Every confirmed size is a size the controllers accept, so the fallback below is unreachable; it exists only to keep this total.
 fn put_path_mtu(state: State, path: pmtu.State) -> State {
   State(
     ..state,
@@ -1534,11 +1481,8 @@ fn sized_congestion(
   }
 }
 
-/// The largest datagram DPLPMTUD may probe with right now. A probe the
-/// congestion window cannot release is refused by the send budget, and one
-/// that claims the whole window starves ordinary data until it is acknowledged
-/// or declared lost, so a probe takes at most three quarters of what the
-/// window still has free and the next probe interval retries the rest.
+/// The largest datagram DPLPMTUD may probe with right now.
+/// A probe the congestion window cannot release is refused by the send budget, and one that claims the whole window starves ordinary data until it is acknowledged or declared lost, so a probe takes at most three quarters of what the window still has free and the next probe interval retries the rest.
 fn probe_allowance(state: State) -> Int {
   3 * { congestion_window(state) - bytes_in_flight(state) } / 4
 }
@@ -1548,24 +1492,19 @@ pub fn pmtu_discovery_complete(state: State) -> Bool {
   pmtu.discovery_complete(state.pmtu)
 }
 
-/// Whether one exact DPLPMTUD probe is currently awaiting acknowledgement or
-/// loss processing.
+/// Whether one exact DPLPMTUD probe is currently awaiting acknowledgement or loss processing.
 pub fn pmtu_probe_outstanding(state: State) -> Bool {
   option.is_some(pmtu.outstanding_probe(state.pmtu))
 }
 
-/// Whether congestion credit currently permits a probe larger than the
-/// confirmed path size.
+/// Whether congestion credit currently permits a probe larger than the confirmed path size.
 pub fn pmtu_probe_available(state: State) -> Bool {
   pmtu.probe_available(state.pmtu, probe_allowance(state))
 }
 
-/// Record the width of the address-validation token this endpoint writes into
-/// every Initial packet, so an Initial payload is budgeted with it paid for.
+/// Record the width of the address-validation token this endpoint writes into every Initial packet, so an Initial payload is budgeted with it paid for.
 ///
-/// The caller owns keeping this equal to the token it actually writes, and
-/// owns bounding it: `driver` accepts no token wide enough to push an Initial
-/// packet's protection past the 1200-byte floor.
+/// The caller owns keeping this equal to the token it actually writes, and owns bounding it: `driver` accepts no token wide enough to push an Initial packet's protection past the 1200-byte floor.
 pub fn set_initial_token_bytes(state: State, bytes: Int) -> State {
   case bytes >= 0 {
     False -> state
@@ -1576,6 +1515,81 @@ pub fn set_initial_token_bytes(state: State, bytes: Int) -> State {
 /// Return the next application packet number for exact-size runtime probes.
 pub fn next_application_packet_number(state: State) -> Int {
   next_packet_number_for_level(state, engine.OneRtt)
+}
+
+/// Initialize the stable source identifier before any packet is processed.
+pub fn initialize_local_connection_id(
+  state: State,
+  identifier: BitArray,
+) -> Result(State, Error) {
+  case state.local_connection_ids {
+    Some(_) -> Error(InvalidInput)
+    None -> {
+      use issuer <- result.try(
+        local_connection_id.new(identifier) |> map_connection_id_result,
+      )
+      Ok(State(..state, local_connection_ids: Some(issuer)))
+    }
+  }
+}
+
+/// Number of additional local routes permitted by both authenticated and local limits.
+pub fn local_connection_id_capacity(state: State) -> Int {
+  case state.phase, state.local_connection_ids {
+    Established, Some(issuer) ->
+      local_connection_id.available(
+        issuer,
+        state.peer_active_connection_id_limit,
+      )
+    _, _ -> 0
+  }
+}
+
+/// An endpoint must register this route before calling the wire-queue transition.
+pub fn issue_local_connection_id(
+  state: State,
+  identifier: BitArray,
+  reset_token: BitArray,
+) -> Result(State, Error) {
+  case state.phase, state.local_connection_ids {
+    Established, Some(issuer) -> {
+      use #(issuer, entry) <- result.try(
+        local_connection_id.issue(
+          issuer,
+          state.peer_active_connection_id_limit,
+          identifier,
+          reset_token,
+        )
+        |> map_connection_id_result,
+      )
+      Ok(queue_application_frame(
+        State(..state, local_connection_ids: Some(issuer)),
+        frame.NewConnectionId(entry.sequence, 0, identifier, reset_token),
+      ))
+    }
+    _, _ -> Error(ConnectionUnavailable)
+  }
+}
+
+/// Only active locally issued values may route application packets.
+pub fn accepts_local_connection_id(
+  state: State,
+  destination: BitArray,
+) -> Bool {
+  case state.local_connection_ids {
+    Some(issuer) -> local_connection_id.accepts(issuer, destination)
+    None -> False
+  }
+}
+
+/// Scalar occupancy for qualification and runtime diagnostics.
+pub fn local_connection_id_snapshot(
+  state: State,
+) -> local_connection_id.Snapshot {
+  case state.local_connection_ids {
+    Some(issuer) -> local_connection_id.snapshot(issuer)
+    None -> local_connection_id.Snapshot(0, 0, 0, 4096)
+  }
 }
 
 /// Return whether candidate-path validation is still in progress.
@@ -1593,14 +1607,13 @@ pub fn grease_quic_bit_negotiated(state: State) -> Bool {
   state.config.grease_quic_bit && state.peer_grease_quic_bit
 }
 
-/// Reset the confirmed size after repeated loss of formerly working large
-/// datagrams while preserving the configured discovery ceiling.
+/// Reset the confirmed size after repeated loss of formerly working large datagrams while preserving the configured discovery ceiling.
 pub fn report_pmtu_black_hole(state: State) -> State {
   put_path_mtu(state, pmtu.black_hole_detected(state.pmtu))
 }
 
-/// Encode and protect one 1-RTT short-header packet. The returned connection
-/// accounts for AEAD use and any automatic key update.
+/// Encode and protect one 1-RTT short-header packet.
+/// The returned connection accounts for AEAD use and any automatic key update.
 pub fn protect_short_packet(
   state: State,
   destination_connection_id: BitArray,
@@ -1637,8 +1650,8 @@ pub fn protect_short_packet(
   ))
 }
 
-/// Authenticate, decrypt, decode, and process one long-header packet. The
-/// caller records the UDP datagram exactly once before walking coalesced bytes.
+/// Authenticate, decrypt, decode, and process one long-header packet.
+/// The caller records the UDP datagram exactly once before walking coalesced bytes.
 pub fn receive_protected_long_packet(
   state: State,
   datagram: BitArray,
@@ -1699,16 +1712,29 @@ pub fn receive_protected_short_packet(
     spin,
     plaintext,
   ) = decoded
-  use frames <- result.try(
-    frame.decode_all(plaintext, short_packet_frame_limits(plaintext))
-    |> map_frame_result,
-  )
-  use state <- result.try(receive_packet(
+  let received = {
+    use frames <- result.try(
+      frame.decode_all(plaintext, short_packet_frame_limits(plaintext))
+      |> map_frame_result,
+    )
+    use Nil <- result.try(validate_local_retirements(
+      state,
+      frames,
+      Some(destination),
+    ))
+    receive_packet(
+      state,
+      engine.OneRtt,
+      packet_number,
+      frames,
+      codepoint,
+      now_milliseconds,
+    )
+  }
+  use state <- result.try(finish_authenticated_receive(
     state,
     engine.OneRtt,
-    packet_number,
-    frames,
-    codepoint,
+    received,
     now_milliseconds,
   ))
   Ok(ShortPacketReceipt(state, destination, key_phase, spin))
@@ -1772,14 +1798,12 @@ pub fn open_stream(
   }
 }
 
-/// Open the next locally initiated bidirectional stream without exporting the
-/// transport's direction type across a protocol-package boundary.
+/// Open the next locally initiated bidirectional stream without exporting the transport's direction type across a protocol-package boundary.
 pub fn open_bidirectional_stream(state: State) -> Result(#(State, Int), Error) {
   open_stream(state, stream_id.Bidirectional)
 }
 
-/// Open the next locally initiated unidirectional stream without exporting the
-/// transport's direction type across a protocol-package boundary.
+/// Open the next locally initiated unidirectional stream without exporting the transport's direction type across a protocol-package boundary.
 pub fn open_unidirectional_stream(
   state: State,
 ) -> Result(#(State, Int), Error) {
@@ -1820,9 +1844,9 @@ pub fn queue_stream(
 
 /// Store one stream and synchronize its round-robin send activity.
 ///
-/// Every stream mutation flows through this helper. Activation appends once,
-/// preserving round-robin order; deactivation removes the member immediately
-/// so deadline checks stay O(1) and a later reactivation cannot duplicate it.
+/// Every stream mutation flows through this helper.
+/// Activation appends once,
+/// preserving round-robin order; deactivation removes the member immediately so deadline checks stay O(1) and a later reactivation cannot duplicate it.
 fn put_stream(
   state: State,
   identifier: Int,
@@ -1841,11 +1865,9 @@ fn put_stream(
 
 /// Store a stream whose pending bytes cannot currently produce a frame.
 ///
-/// A stream that already reported STREAM_DATA_BLOCKED returns `SendDeferred`
-/// until MAX_STREAM_DATA raises its peer limit. Leaving it in the active queue
-/// would make that dormant stream terminate every packet poll before a later
-/// ready stream gets its round-robin turn. The MAX_STREAM_DATA path uses
-/// `put_stream`, so new credit reactivates it at the queue tail.
+/// A stream that already reported STREAM_DATA_BLOCKED returns `SendDeferred` until MAX_STREAM_DATA raises its peer limit.
+/// Leaving it in the active queue would make that dormant stream terminate every packet poll before a later ready stream gets its round-robin turn.
+/// The MAX_STREAM_DATA path uses `put_stream`, so new credit reactivates it at the queue tail.
 fn put_dormant_stream(
   state: State,
   identifier: Int,
@@ -1861,8 +1883,8 @@ fn put_dormant_stream(
 /// Abort every locally usable direction of one stream.
 ///
 /// A bidirectional request stream emits both RESET_STREAM and STOP_SENDING,
-/// immediately releases locally buffered send bytes, and asks the peer to
-/// stop its response direction. Callers provide the application error code.
+/// immediately releases locally buffered send bytes, and asks the peer to stop its response direction.
+/// Callers provide the application error code.
 pub fn abort_stream(
   state: State,
   identifier: Int,
@@ -1880,9 +1902,7 @@ pub fn abort_stream(
 
 /// Ask the peer to reset only its send direction for this stream.
 ///
-/// Unlike `abort_stream`, this queues STOP_SENDING without resetting the
-/// local send direction, so a bidirectional application protocol can reject
-/// an inbound body and still finish its outbound response.
+/// Unlike `abort_stream`, this queues STOP_SENDING without resetting the local send direction, so a bidirectional application protocol can reject an inbound body and still finish its outbound response.
 pub fn stop_sending(
   state: State,
   identifier: Int,
@@ -1919,9 +1939,8 @@ pub fn stream_buffered_send_bytes(
   }
 }
 
-/// Return whether this stream's FIN was acknowledged or its send direction
-/// was reset. This is the transport-settled condition applications need before
-/// gracefully closing a connection that has just emitted its final response.
+/// Return whether all stream data and FIN were acknowledged or sending was reset.
+/// Applications need transport settlement before gracefully closing a connection after its final response.
 pub fn stream_send_finished(
   state: State,
   identifier: Int,
@@ -1932,19 +1951,12 @@ pub fn stream_send_finished(
   }
 }
 
-/// Return the largest raw QUIC DATAGRAM payload fitting both the peer's frame
-/// limit and the currently confirmed path MTU. HTTP/3 callers must additionally
-/// subtract their quarter-stream ID.
+/// Return the largest raw QUIC DATAGRAM payload fitting both the peer's frame limit and the currently confirmed path MTU.
+/// HTTP/3 callers must additionally subtract their quarter-stream ID.
 ///
-/// This is a point-in-time bound, not a stable property of the connection. It
-/// rises as DPLPMTUD confirms a larger path and falls when the path is reset
-/// to the pre-validation floor, and it also shrinks while an acknowledgement
-/// is scheduled, because a DATAGRAM frame cannot be split and has to leave
-/// room for the ACK sharing its packet -- down to half the path when the
-/// retained ranges are at their most fragmented. A caller that queues against
-/// a remembered value can therefore be answered with `DatagramTooLarge`; the
-/// correct response is to read this again and resize, not to treat the
-/// earlier value as authoritative.
+/// This is a point-in-time bound, not a stable property of the connection.
+/// It rises as DPLPMTUD confirms a larger path and falls when the path is reset to the pre-validation floor, and it also shrinks while an acknowledgement is scheduled, because a DATAGRAM frame cannot be split and has to leave room for the ACK sharing its packet -- down to half the path when the retained ranges are at their most fragmented.
+/// A caller that queues against a remembered value can therefore be answered with `DatagramTooLarge`; the correct response is to read this again and resize, not to treat the earlier value as authoritative.
 pub fn maximum_datagram_data_size(state: State) -> Result(Int, Error) {
   case state.peer_maximum_datagram_frame_size {
     0 -> Error(DatagramNotNegotiated)
@@ -1955,15 +1967,12 @@ pub fn maximum_datagram_data_size(state: State) -> Result(Int, Error) {
   }
 }
 
-/// Return a raw QUIC DATAGRAM payload ceiling that remains valid for this
-/// connection after ACK debt grows or the validated path falls back to the
-/// mandatory 1200-byte floor.
+/// Return a raw QUIC DATAGRAM payload ceiling that remains valid for this connection after ACK debt grows or the validated path falls back to the mandatory 1200-byte floor.
 ///
-/// This is deliberately smaller than the live maximum on a healthy path. It
-/// reserves the largest ACK share queue admission can charge (half a path),
-/// the widest 1-RTT protection overhead, and the DATAGRAM frame header. Peer
-/// transport parameters are immutable after authentication, so no later
-/// connection state can reduce this bound.
+/// This is deliberately smaller than the live maximum on a healthy path.
+/// It reserves the largest ACK share queue admission can charge (half a path),
+/// the widest 1-RTT protection overhead, and the DATAGRAM frame header.
+/// Peer transport parameters are immutable after authentication, so no later connection state can reduce this bound.
 pub fn guaranteed_datagram_data_size(state: State) -> Result(Int, Error) {
   case state.peer_maximum_datagram_frame_size {
     0 -> Error(DatagramNotNegotiated)
@@ -1976,12 +1985,8 @@ pub fn guaranteed_datagram_data_size(state: State) -> Result(Int, Error) {
 
 /// The largest QUIC DATAGRAM frame this connection may queue right now.
 ///
-/// A DATAGRAM frame cannot be split (RFC 9221 section 3), so everything else
-/// the packet carrying it holds has to be paid for before the frame is built.
-/// An established connection writes a short header and coalesces the
-/// acknowledgement it owes ahead of the frame; an early datagram rides a 0-RTT
-/// long header, which is wider and never carries an acknowledgement (RFC 9000
-/// section 17.2.3).
+/// A DATAGRAM frame cannot be split (RFC 9221 section 3), so everything else the packet carrying it holds has to be paid for before the frame is built.
+/// An established connection writes a short header and coalesces the acknowledgement it owes ahead of the frame; an early datagram rides a 0-RTT long header, which is wider and never carries an acknowledgement (RFC 9000 section 17.2.3).
 fn datagram_frame_limit(state: State) -> Int {
   let overhead = case state.phase {
     Established ->
@@ -1992,14 +1997,11 @@ fn datagram_frame_limit(state: State) -> Int {
   minimum(state.peer_maximum_datagram_frame_size, path_mtu(state) - overhead)
 }
 
-/// The QUIC DATAGRAM frame width guaranteed across this connection's path and
-/// ACK state transitions.
+/// The QUIC DATAGRAM frame width guaranteed across this connection's path and ACK state transitions.
 ///
-/// Every path carries 1200 bytes. An established packet spends at most the
-/// widest short-header protection overhead plus half of its path on a
-/// coalesced ACK; a larger ACK takes its own packet. A 0-RTT long header is
-/// much smaller than that combined reservation, so the established bound is
-/// also safe when queried during an early-data attempt.
+/// Every path carries 1200 bytes.
+/// An established packet spends at most the widest short-header protection overhead plus half of its path on a coalesced ACK; a larger ACK takes its own packet.
+/// A 0-RTT long header is much smaller than that combined reservation, so the established bound is also safe when queried during an early-data attempt.
 fn guaranteed_datagram_frame_limit(state: State) -> Int {
   let floor =
     minimum_datagram_bytes
@@ -2008,14 +2010,10 @@ fn guaranteed_datagram_frame_limit(state: State) -> Int {
   minimum(state.peer_maximum_datagram_frame_size, floor)
 }
 
-/// The bytes a 1-RTT packet keeps free for the acknowledgement it is about to
-/// coalesce, and zero when none is scheduled.
+/// The bytes a 1-RTT packet keeps free for the acknowledgement it is about to coalesce, and zero when none is scheduled.
 ///
-/// A heavily fragmented range set can want more of the path than the frame
-/// sharing the packet would have left, so the reservation is capped at half of
-/// it. Past that the two simply do not share a packet: the send path measures
-/// the finished acknowledgement, gives it the packet, and the frame follows in
-/// the next one.
+/// A heavily fragmented range set can want more of the path than the frame sharing the packet would have left, so the reservation is capped at half of it.
+/// Past that the two simply do not share a packet: the send path measures the finished acknowledgement, gives it the packet, and the frame follows in the next one.
 fn coalesced_ack_reservation(state: State) -> Int {
   minimum(
     packet_space.scheduled_ack_bytes(state.application_space),
@@ -2023,8 +2021,7 @@ fn coalesced_ack_reservation(state: State) -> Int {
   )
 }
 
-/// Queue a negotiated QUIC DATAGRAM without allowing an oversized frame into
-/// the connection's bounded application queues.
+/// Queue a negotiated QUIC DATAGRAM without allowing an oversized frame into the connection's bounded application queues.
 pub fn queue_datagram(state: State, data: BitArray) -> Result(State, Error) {
   use encoded <- result.try(
     frame.encode(frame.Datagram(data)) |> map_frame_result,
@@ -2114,6 +2111,17 @@ fn abort_established_stream(
     False -> []
   }
   let state = put_stream(state, identifier, stream)
+  let state = case reset_frames {
+    [] -> state
+    _ ->
+      add_event(
+        state,
+        StreamSendCompleted(
+          identifier,
+          stream_completion.Reset(application_error_code),
+        ),
+      )
+  }
   Ok(
     queue_application_frame_list(state, list.append(reset_frames, stop_frames))
     |> cleanup_stream_if_terminal(identifier),
@@ -2126,23 +2134,23 @@ fn reset_send_direction(
   local: stream_id.Initiator,
   application_error_code: Int,
 ) -> Result(#(stream_state.State, List(frame.Frame)), Error) {
-  case stream_id.can_send(identifier, local) {
+  case
+    stream_id.can_send(identifier, local)
+    && !stream_state.send_acknowledged(stream)
+  {
     False -> Ok(#(stream, []))
     True ->
       case stream_state.reset_send(stream, application_error_code) {
         Ok(#(stream, reset)) -> Ok(#(stream, [reset]))
-        Error(_) -> Error(StreamFailure)
+        Error(error) -> Error(StreamQueueFailure(error))
       }
   }
 }
 
 /// Queue a whole batch of application frames in one append.
 ///
-/// The queue is consumed from its head, one frame per prepared packet, so it is
-/// held in send order and appended to at its tail. Appending a batch once costs
-/// a single walk of the queue rather than one walk per frame, which is what
-/// keeps a credit-hold lift proportional to the streams it restates instead of
-/// to the streams times the queue in front of them.
+/// The queue is consumed from its head, one frame per prepared packet, so it is held in send order and appended to at its tail.
+/// Appending a batch once costs a single walk of the queue rather than one walk per frame, which is what keeps a credit-hold lift proportional to the streams it restates instead of to the streams times the queue in front of them.
 fn queue_application_frame_list(
   state: State,
   frames: List(frame.Frame),
@@ -2185,12 +2193,9 @@ pub fn read_stream(
   }
 }
 
-/// A terminal phase stops wire input and output, not delivery of bytes this
-/// endpoint had already authenticated and acknowledged. Only an outcome which
-/// is already decided is handed over: no further bytes can arrive, so a pull
-/// with nothing buffered stays unavailable. The drain advertises no receive
-/// credit because RFC 9000 section 10.2.2 permits no frame beside the retained
-/// CONNECTION_CLOSE.
+/// A terminal phase stops wire input and output, not delivery of bytes this endpoint had already authenticated and acknowledged.
+/// Only an outcome which is already decided is handed over: no further bytes can arrive, so a pull with nothing buffered stays unavailable.
+/// The drain advertises no receive credit because RFC 9000 section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
 fn terminal_read_stream(
   state: State,
   identifier: Int,
@@ -2272,32 +2277,18 @@ pub fn tick(state: State, now_milliseconds: Int) -> Result(State, Error) {
 
 /// Return the earliest protocol deadline without introducing periodic polls.
 ///
-/// The owner wakes only for an ACK, recovery, validation, close, idle, or
-/// pacer-release deadline. Newly queued output is flushed by the command or
-/// network event that produced it, and congestion-blocked output resumes on an
-/// ACK or a recovery deadline.
+/// The owner wakes only for an ACK, recovery, validation, close, idle, or pacer-release deadline.
+/// Newly queued output is flushed by the command or network event that produced it, and congestion-blocked output resumes on an ACK or a recovery deadline.
 ///
-/// The pacer-release deadline is computed on every call rather than cached when
-/// a packet was sent. It is asked for only while the send path still has output
-/// to draw -- a queued frame, or a stream whose poll would emit -- so a
-/// connection holding nothing but unacknowledged bytes arms no pacing wake. It
-/// is then when the pacer would release one path-sized datagram against the
-/// congestion window and smoothed round trip this state holds at
-/// `now_milliseconds`, so a window that shrank, or a round trip that grew,
-/// since the last send pushes the wake later. A release that elapsed after the
-/// owner's previous flush is returned as an immediate deadline; otherwise the
-/// ready packet can be stranded until an unrelated ACK or PTO wakes the actor.
-/// A completely occupied congestion window is excluded from that immediate
-/// retry, because pacer credit cannot make it sendable and a zero-delay wake
-/// would spin until recovery makes room.
+/// The pacer-release deadline is computed on every call rather than cached when a packet was sent.
+/// It is asked for only while the send path still has output to draw -- a queued frame, or a stream whose poll would emit -- so a connection holding nothing but unacknowledged bytes arms no pacing wake.
+/// It is then when the pacer would release one path-sized datagram against the congestion window and smoothed round trip this state holds at `now_milliseconds`, so a window that shrank, or a round trip that grew,
+/// since the last send pushes the wake later.
+/// A release that elapsed after the owner's previous flush is returned as an immediate deadline; otherwise the ready packet can be stranded until an unrelated ACK or PTO wakes the actor.
+/// A completely occupied congestion window is excluded from that immediate retry, because pacer credit cannot make it sendable and a zero-delay wake would spin until recovery makes room.
 ///
-/// Sizing that datagram re-derives the acknowledgement this connection owes
-/// and walks only the active streams the send path would draw from, so one
-/// wakeup costs O(active streams + retained ACK ranges). Both are bounded by
-/// limits this endpoint sets and the peer cannot raise --
-/// `maximum_total_streams`, the peer stream limits it advertises, and
-/// `maximum_ack_ranges` -- so the work per wakeup has a fixed ceiling and is
-/// not worth memoising against state that changes on every packet.
+/// Sizing that datagram re-derives the acknowledgement this connection owes and walks only the active streams the send path would draw from, so one wakeup costs O(active streams + retained ACK ranges).
+/// Both are bounded by limits this endpoint sets and the peer cannot raise -- `maximum_total_streams`, the peer stream limits it advertises, and `maximum_ack_ranges` -- so the work per wakeup has a fixed ceiling and is not worth memoising against state that changes on every packet.
 pub fn next_deadline(
   state: State,
   now_milliseconds: Int,
@@ -2344,30 +2335,22 @@ pub fn phase(state: State) -> Phase {
   state.phase
 }
 
-/// Return every byte this connection keeps resident, for the endpoint's
-/// aggregate memory budget.
+/// Return every byte this connection keeps resident, for the endpoint's aggregate memory budget.
 ///
-/// The sum is deliberately the peer-controlled memory only: stream receive
-/// reassembly and delivered-but-unread bytes, unsent and retransmittable
-/// stream send buffers, the sent-packet history of all three packet spaces,
-/// and the crypto reassembly buffers. Fixed-size state -- keys, estimators,
-/// congestion and path state -- is bounded by construction and is covered by
-/// the working set the endpoint reserves when it admits the connection.
+/// The sum is deliberately the peer-controlled memory only: stream receive reassembly and delivered-but-unread bytes, unsent and retransmittable stream send buffers, the sent-packet history of all three packet spaces,
+/// and the crypto reassembly buffers.
+/// Fixed-size state -- keys, estimators,
+/// congestion and path state -- is bounded by construction and is covered by the working set the endpoint reserves when it admits the connection.
 pub fn retained_bytes(state: State) -> Int {
   let Footprint(receiving, overhead) = footprint(state)
   receiving + overhead
 }
 
-/// One walk of everything this connection holds, split at the line the memory
-/// grant cares about.
+/// One walk of everything this connection holds, split at the line the memory grant cares about.
 ///
-/// `receiving` is what advertising receive credit grows: reassembly and
-/// delivered-but-unread stream data. `overhead` is everything else -- send
-/// buffers, sent-packet histories, crypto reassembly -- which a grant has to
-/// cover before any of it is room for the peer to send into. Both are wanted
-/// on the same turn, and the walk is over every stream and every sent-packet
-/// history in three packet spaces, so it is done once and split rather than
-/// twice and summed.
+/// `receiving` is what advertising receive credit grows: reassembly and delivered-but-unread stream data.
+/// `overhead` is everything else -- send buffers, sent-packet histories, crypto reassembly -- which a grant has to cover before any of it is room for the peer to send into.
+/// Both are wanted on the same turn, and the walk is over every stream and every sent-packet history in three packet spaces, so it is done once and split rather than twice and summed.
 type Footprint {
   Footprint(receiving: Int, overhead: Int)
 }
@@ -2383,7 +2366,15 @@ fn footprint(state: State) -> Footprint {
       + packet_space.retained_bytes(state.application_space)
       + reassembler.buffered_bytes(state.initial_crypto_receive)
       + reassembler.buffered_bytes(state.handshake_crypto_receive)
-      + reassembler.buffered_bytes(state.application_crypto_receive),
+      + reassembler.buffered_bytes(state.application_crypto_receive)
+      + case state.peer_connection_ids {
+      None -> 0
+      Some(registry) -> connection_id.retained_bytes(registry)
+    }
+      + case state.local_connection_ids {
+      None -> 0
+      Some(issuer) -> local_connection_id.retained_bytes(issuer)
+    },
   )
 }
 
@@ -2403,37 +2394,39 @@ fn stream_footprint(
   }
 }
 
-/// Hold this connection's advertised receive credit inside the endpoint memory
-/// its endpoint has granted it, and report what it holds.
+/// Hold this connection's advertised receive credit inside the endpoint memory its endpoint has granted it, and report what it holds.
 ///
-/// The grant is room to grow into, not a bill for growth already taken on: the
-/// connection may have receive credit outstanding up to the granted bytes less
-/// the memory it already holds for other reasons -- send buffers, sent-packet
-/// histories, crypto reassembly -- so a peer that fills every window it has
-/// been offered still cannot take the connection past its grant.
+/// The grant is room to grow into, not a bill for growth already taken on: the connection may have receive credit outstanding up to the granted bytes less the memory it already holds for other reasons -- send buffers, sent-packet histories, crypto reassembly -- so a peer that fills every window it has been offered still cannot take the connection past its grant.
 ///
-/// Credit already advertised is never retracted, because a MAX_DATA value the
-/// peer has seen is a promise, and a peer is never punished for using credit
-/// this endpoint advertised. The hold only stops the limit rising. While it
-/// binds, MAX_STREAMS and MAX_STREAM_DATA increases are withheld too; the
-/// moment it lifts, every withheld increase is stated at once, so a peer parked
-/// behind the hold resumes without needing to consume another window first.
+/// Credit already advertised is never retracted, because a MAX_DATA value the peer has seen is a promise, and a peer is never punished for using credit this endpoint advertised.
+/// The hold only stops the limit rising.
+/// While it binds, MAX_STREAMS and MAX_STREAM_DATA increases are withheld too; the moment it lifts, every withheld increase is stated at once, so a peer parked behind the hold resumes without needing to consume another window first.
 ///
-/// The bytes returned alongside are the same walk's total, so a caller that
-/// needs both the hold applied and the footprint measured -- which is every
-/// caller -- pays for one walk rather than two.
+/// The bytes returned alongside are the same walk's total, so a caller that needs both the hold applied and the footprint measured -- which is every caller -- pays for one walk rather than two.
 pub fn apply_memory_grant(
   state: State,
   granted_bytes: Int,
   refused: Bool,
 ) -> #(State, Int) {
+  apply_memory_grant_with_control_headroom(state, granted_bytes, refused, 0)
+}
+
+/// Keep an explicitly funded control allowance out of new receive promises.
+/// The allowance remains inside this same grant; it is available for peer-ID history and transport control state between endpoint measurements.
+pub fn apply_memory_grant_with_control_headroom(
+  state: State,
+  granted_bytes: Int,
+  refused: Bool,
+  control_headroom: Int,
+) -> #(State, Int) {
   let Footprint(receiving, overhead) = footprint(state)
   let state =
     State(
       ..state,
+      memory_granted_bytes: Some(int.max(0, granted_bytes)),
       connection_receiver: flow_control.with_memory_hold(
         state.connection_receiver,
-        int.max(0, granted_bytes - overhead),
+        int.max(0, granted_bytes - overhead - int.max(0, control_headroom)),
       ),
     )
   #(settle_credit_hold(state, refused), receiving + overhead)
@@ -2441,11 +2434,8 @@ pub fn apply_memory_grant(
 
 /// Put the hold on or take it off, and state everything it withheld.
 ///
-/// Taking it off is deferred until the connection is established, because that
-/// is the only phase in which the withheld MAX_STREAMS and MAX_STREAM_DATA
-/// frames can be sent. Clearing the flag any earlier would strand the
-/// concurrency a closed stream freed until some later hold happened to lift
-/// while established, which is a silent loss of peer stream concurrency.
+/// Taking it off is deferred until the connection is established, because that is the only phase in which the withheld MAX_STREAMS and MAX_STREAM_DATA frames can be sent.
+/// Clearing the flag any earlier would strand the concurrency a closed stream freed until some later hold happened to lift while established, which is a silent loss of peer stream concurrency.
 fn settle_credit_hold(state: State, refused: Bool) -> State {
   case refused, state.credit_frozen, state.phase {
     True, _, _ -> State(..state, credit_frozen: True)
@@ -2461,8 +2451,7 @@ pub fn advertised_max_data(state: State) -> Int {
   flow_control.receiver_limit(state.connection_receiver)
 }
 
-/// The receive credit this connection has advertised and the application has
-/// not yet read: the bytes a peer may still make it hold.
+/// The receive credit this connection has advertised and the application has not yet read: the bytes a peer may still make it hold.
 pub fn outstanding_receive_credit(state: State) -> Int {
   int.max(
     0,
@@ -2484,29 +2473,21 @@ pub fn credit_growth_held(state: State) -> Bool {
   state.credit_frozen
 }
 
-/// State every credit increase that was withheld while the hold was on. The
-/// caller has already established that this connection is established.
+/// State every credit increase that was withheld while the hold was on.
+/// The caller has already established that this connection is established.
 ///
-/// All three kinds of credit are stated here, and the connection-level limit
-/// is not the least of them: it is the one the hold squeezes hardest, because
-/// the hold is applied to the connection receiver directly.
+/// All three kinds of credit are stated here, and the connection-level limit is not the least of them: it is the one the hold squeezes hardest, because the hold is applied to the connection receiver directly.
 fn restate_withheld_credit(state: State) -> State {
   let state = release_withheld_stream_credit(state, stream_id.Bidirectional)
   let state = release_withheld_stream_credit(state, stream_id.Unidirectional)
   restate_connection_receive_credit(restate_stream_receive_credit(state))
 }
 
-/// Advertise the connection-level receive credit the widened hold has made
-/// room for, with nothing of the peer's to prompt it.
+/// Advertise the connection-level receive credit the widened hold has made room for, with nothing of the peer's to prompt it.
 ///
-/// The hold is a ceiling on the connection receiver rather than a queue of
-/// withheld frames, so there is no withheld MAX_DATA to replay -- but a
-/// ceiling that stopped the limit rising has to be taken off by hand. A
-/// connection whose hold had squeezed its limit down to what the peer had
-/// already spent has left that peer with no credit at all: it cannot send, so
-/// nothing arrives, so the application is never woken to read, so a limit
-/// raised only by the next read is a limit never raised. That is a connection
-/// stalled until its idle timeout, and this is what stops it.
+/// The hold is a ceiling on the connection receiver rather than a queue of withheld frames, so there is no withheld MAX_DATA to replay -- but a ceiling that stopped the limit rising has to be taken off by hand.
+/// A connection whose hold had squeezed its limit down to what the peer had already spent has left that peer with no credit at all: it cannot send, so nothing arrives, so the application is never woken to read, so a limit raised only by the next read is a limit never raised.
+/// That is a connection stalled until its idle timeout, and this is what stops it.
 fn restate_connection_receive_credit(state: State) -> State {
   let #(receiver, advertised) =
     flow_control.advertise_pending(state.connection_receiver)
@@ -2517,8 +2498,7 @@ fn restate_connection_receive_credit(state: State) -> State {
   }
 }
 
-/// Replenish, in one MAX_STREAMS frame, every unit of peer stream concurrency
-/// whose replenishment was withheld while the hold was on.
+/// Replenish, in one MAX_STREAMS frame, every unit of peer stream concurrency whose replenishment was withheld while the hold was on.
 fn release_withheld_stream_credit(
   state: State,
   direction: stream_id.Direction,
@@ -2566,19 +2546,11 @@ fn replenish_repeatedly(
 
 /// State the per-stream receive credit the hold withheld, and only that.
 ///
-/// The set names the streams whose MAX_STREAM_DATA increase was actually
-/// withheld while the hold bound, so a stream that was never held back is not
-/// sent a frame restating a limit it already knows. Each is checked twice
-/// before a frame is queued: it must still exist, because a stream that closed
-/// under the hold owes the peer nothing, and this endpoint must be able to
-/// receive on it. RFC 9000 section 19.10 allows MAX_STREAM_DATA only for a
-/// stream the peer can send on, and a peer that receives one for a send-only
-/// stream of its own -- a locally-initiated unidirectional stream, here -- MUST
-/// close the connection with STREAM_STATE_ERROR.
+/// The set names the streams whose MAX_STREAM_DATA increase was actually withheld while the hold bound, so a stream that was never held back is not sent a frame restating a limit it already knows.
+/// Each is checked twice before a frame is queued: it must still exist, because a stream that closed under the hold owes the peer nothing, and this endpoint must be able to receive on it.
+/// RFC 9000 section 19.10 allows MAX_STREAM_DATA only for a stream the peer can send on, and a peer that receives one for a send-only stream of its own -- a locally-initiated unidirectional stream, here -- MUST close the connection with STREAM_STATE_ERROR.
 ///
-/// The whole restatement is queued in one append rather than one append per
-/// stream, so a lift costs one walk of the set and one walk of the queue rather
-/// than a walk of the queue per stream.
+/// The whole restatement is queued in one append rather than one append per stream, so a lift costs one walk of the set and one walk of the queue rather than a walk of the queue per stream.
 fn restate_stream_receive_credit(state: State) -> State {
   let local = local_initiator(state)
   let restated =
@@ -2712,14 +2684,13 @@ pub fn congestion_window(state: State) -> Int {
 
 /// Return the connection-wide exponential PTO backoff exponent.
 ///
-/// This is a bounded, payload-free recovery diagnostic. Packet spaces retain
-/// independent loss timers, but consecutive PTOs share this exponent.
+/// This is a bounded, payload-free recovery diagnostic.
+/// Packet spaces retain independent loss timers, but consecutive PTOs share this exponent.
 pub fn pto_backoff_count(state: State) -> Int {
   connection_probe_timeout_count(state)
 }
 
-/// Snapshot the connection-wide state that decides whether stream output can
-/// progress, without exposing frames, packet bytes, or cryptographic state.
+/// Snapshot the connection-wide state that decides whether stream output can progress, without exposing frames, packet bytes, or cryptographic state.
 pub fn send_progress(state: State) -> SendProgress {
   SendProgress(
     connection_peer_limit: flow_control.sender_limit(state.connection_sender),
@@ -3075,8 +3046,7 @@ fn packet_space_deadline(
   }
 }
 
-/// RFC 9002 section 6.2.2.1 keeps a client probing before it knows the server
-/// validated its address, even when no packet remains in flight.
+/// RFC 9002 section 6.2.2.1 keeps a client probing before it knows the server validated its address, even when no packet remains in flight.
 fn client_anti_deadlock_deadline(state: State) -> Result(Option(Int), Error) {
   let level = anti_deadlock_probe_level(state)
   case
@@ -3116,15 +3086,9 @@ fn anti_deadlock_probe_level(state: State) -> Option(engine.EncryptionLevel) {
 
 /// Report when the pacer would release this connection's next datagram.
 ///
-/// The reservation the pacer returns is deliberately discarded: this asks a
-/// question about the datagram the send path would build rather than claiming
-/// budget for one. The size it asks about is an upper bound on that datagram
-/// rather than the whole path: the send path commits the datagram it actually
-/// built, so a wake armed for a path-sized one would sleep through the instant
-/// a small write became sendable, while a wake armed for less than the send
-/// path builds would fire while the pacer still refuses it. `None` means no
-/// pacing wake is owed: either nothing is waiting to be sent, or the pacer
-/// would release that datagram immediately.
+/// The reservation the pacer returns is deliberately discarded: this asks a question about the datagram the send path would build rather than claiming budget for one.
+/// The size it asks about is an upper bound on that datagram rather than the whole path: the send path commits the datagram it actually built, so a wake armed for a path-sized one would sleep through the instant a small write became sendable, while a wake armed for less than the send path builds would fire while the pacer still refuses it.
+/// `None` means no pacing wake is owed: either nothing is waiting to be sent, or the pacer would release that datagram immediately.
 fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
   case pacing_wake_progress(state, now_milliseconds) {
     PacingWaiting(deadline_milliseconds: deadline, ..) -> Some(deadline)
@@ -3139,11 +3103,9 @@ fn pending_pacer_release(state: State, now_milliseconds: Int) -> Option(Int) {
 
 /// Whether an already pacing-ready retry can make congestion progress.
 ///
-/// The send path splits STREAM and CRYPTO data down to its fixed pre-path
-/// budget, so one 1200-byte unit of remaining window is sufficient regardless
-/// of a larger validated PMTU. Smaller queued control frames report their
-/// smaller candidate instead. A PTO allowance bypasses congestion in the
-/// commit path and therefore remains immediately actionable even above cwnd.
+/// The send path splits STREAM and CRYPTO data down to its fixed pre-path budget, so one 1200-byte unit of remaining window is sufficient regardless of a larger validated PMTU.
+/// Smaller queued control frames report their smaller candidate instead.
+/// A PTO allowance bypasses congestion in the commit path and therefore remains immediately actionable even above cwnd.
 fn pacing_retry_has_congestion_room(state: State) -> Bool {
   let required = minimum(minimum_datagram_bytes, pending_datagram_bytes(state))
   state.pto_probe_allowance > 0
@@ -3152,8 +3114,7 @@ fn pacing_retry_has_congestion_room(state: State) -> Bool {
 
 /// Explain the current pacing-wake decision without exposing queued data.
 ///
-/// The same decision feeds `next_deadline`, so a live actor snapshot describes
-/// the timer it actually used rather than a parallel diagnostic approximation.
+/// The same decision feeds `next_deadline`, so a live actor snapshot describes the timer it actually used rather than a parallel diagnostic approximation.
 pub fn pacing_wake_progress(
   state: State,
   now_milliseconds: Int,
@@ -3171,8 +3132,8 @@ pub fn pacing_wake_progress(
           PacingWaiting(candidate, deadline, path, window, in_flight, smoothed)
         Ok(pacer.Decision(_, pacer.SendNow)) ->
           PacingReady(candidate, path, window, in_flight, smoothed)
-        // Invalid size, controller input, or monotonic clock. No such outcome
-        // is safe to silently confuse with "nothing pending" in diagnostics.
+        // Invalid size, controller input, or monotonic clock.
+        // No such outcome is safe to silently confuse with "nothing pending" in diagnostics.
         Error(pacer.InvalidInput) ->
           PacingDecisionInvalid(candidate, path, window, in_flight, smoothed)
       }
@@ -3180,13 +3141,9 @@ pub fn pacing_wake_progress(
   }
 }
 
-/// An upper bound on the datagram the send path would build from the output
-/// waiting right now.
+/// An upper bound on the datagram the send path would build from the output waiting right now.
 ///
-/// One packet carries at most the acknowledgement this connection owes and one
-/// frame drawn from a queue or a stream, so the bound is the largest of those
-/// candidates plus what packet protection costs - and never more than the path
-/// itself, which is the ceiling every datagram is built to.
+/// One packet carries at most the acknowledgement this connection owes and one frame drawn from a queue or a stream, so the bound is the largest of those candidates plus what packet protection costs - and never more than the path itself, which is the ceiling every datagram is built to.
 fn pending_datagram_bytes(state: State) -> Int {
   let frame_bytes =
     [
@@ -3206,9 +3163,8 @@ fn pending_datagram_bytes(state: State) -> Int {
   )
 }
 
-/// The size of the frame at the head of one queue, which is the only frame the
-/// send path draws from it. A frame whose encoding fails is charged the whole
-/// pre-validation floor rather than being counted as free.
+/// The size of the frame at the head of one queue, which is the only frame the send path draws from it.
+/// A frame whose encoding fails is charged the whole pre-validation floor rather than being counted as free.
 fn queue_head_bytes(queue: List(frame.Frame)) -> Int {
   case queue {
     [] -> 0
@@ -3217,12 +3173,9 @@ fn queue_head_bytes(queue: List(frame.Frame)) -> Int {
   }
 }
 
-/// The most stream data one packet could draw: the bytes the widest sendable
-/// stream still retains, plus the header a STREAM frame writes ahead of them.
+/// The most stream data one packet could draw: the bytes the widest sendable stream still retains, plus the header a STREAM frame writes ahead of them.
 ///
-/// Retained bytes include those already sent and awaiting acknowledgement, so
-/// this over-states rather than under-states what the poll would emit, which
-/// is the side a pacing wake has to err on.
+/// Retained bytes include those already sent and awaiting acknowledgement, so this over-states rather than under-states what the poll would emit, which is the side a pacing wake has to err on.
 fn pending_stream_bytes(state: State) -> Int {
   let largest =
     list.fold(state.active_streams.front, 0, fn(largest, identifier) {
@@ -3251,11 +3204,10 @@ fn pending_stream_bytes(state: State) -> Int {
 
 /// Report whether the send path would still draw a frame from this connection.
 ///
-/// These are the two sources it draws from: the per-level frame queues, and the
-/// active-stream queue. Stream state transitions keep that queue synchronized,
-/// so bytes only awaiting acknowledgment never count as output. Acknowledgments
-/// are not paced and carry their own packet-space deadlines, so they are
-/// deliberately not counted here.
+/// These are the two sources it draws from: the per-level frame queues, and the active-stream queue.
+/// Stream state transitions keep that queue synchronized,
+/// so bytes only awaiting acknowledgment never count as output.
+/// Acknowledgments are not paced and carry their own packet-space deadlines, so they are deliberately not counted here.
 fn has_pending_output(state: State) -> Bool {
   state.initial_queue != []
   || state.handshake_queue != []
@@ -3359,6 +3311,10 @@ fn try_short_candidates(
       {
         Ok(decoded) ->
           Ok(ShortDecryption(decoded, key_phase.candidate_kind(candidate)))
+        // This error is returned only after AEAD authentication.
+        // Trying unrelated generations would erase the authenticated peer fault.
+        Error(wire_packet.InvalidReservedBits) ->
+          Error(ProtocolViolation(ReservedBitsViolation))
         Error(error) ->
           try_short_candidates(
             rest,
@@ -3609,22 +3565,113 @@ fn process_long_plaintext(
   codepoint: packet_space.ReceivedCodepoint,
   now_milliseconds: Int,
 ) -> Result(LongPacketReceipt, Error) {
-  // Long-header packets keep the fixed default budget. Initial keys are
-  // derivable from a connection ID any off-path sender can observe, so this
-  // decode is unauthenticated work; what this endpoint advertises as
-  // max_udp_payload_size must not widen it.
-  use frames <- result.try(
-    frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
-  )
-  use state <- result.try(receive_packet(
+  // Long-header packets keep the fixed default budget.
+  // Initial keys are derivable from a connection ID any off-path sender can observe, so this decode is unauthenticated work; what this endpoint advertises as max_udp_payload_size must not widen it.
+  let received = {
+    use frames <- result.try(
+      frame.decode_all(plaintext, frame.default_limits()) |> map_frame_result,
+    )
+    receive_packet(
+      state,
+      level,
+      packet_number,
+      frames,
+      codepoint,
+      now_milliseconds,
+    )
+  }
+  use state <- result.try(finish_authenticated_receive(
     state,
     level,
-    packet_number,
-    frames,
-    codepoint,
+    received,
     now_milliseconds,
   ))
   Ok(LongPacketReceipt(state, destination, source, rest))
+}
+
+/// Only call after packet protection succeeded.
+/// Invalid unauthenticated datagrams never reach this transition or acquire a response opportunity.
+pub fn reject_authenticated_packet(
+  state: State,
+  level: engine.EncryptionLevel,
+  error: Error,
+  now: Int,
+) -> Result(State, Error) {
+  finish_authenticated_receive(state, level, Error(error), now)
+}
+
+fn finish_authenticated_receive(
+  previous: State,
+  level: engine.EncryptionLevel,
+  received: Result(State, Error),
+  now: Int,
+) -> Result(State, Error) {
+  case received, previous.phase {
+    Ok(state), _ -> Ok(state)
+    // nolint: thrown_away_error -- terminal packets retain the first close reason and cannot extend its bounded lifetime.
+    Error(_), Closing | Error(_), Draining | Error(_), Closed -> Ok(previous)
+    Error(failure), _ ->
+      case transport_error_code(failure) {
+        None -> Error(failure)
+        Some(code) -> {
+          let close_level = case level {
+            engine.ZeroRtt -> engine.OneRtt
+            level -> level
+          }
+          case
+            close_handshake_transport_failure(previous, close_level, code, now)
+          {
+            Error(_) -> Error(failure)
+            Ok(closing) ->
+              Ok(add_event(closing, LocalTransportFailure(failure, code)))
+          }
+        }
+      }
+  }
+}
+
+fn transport_error_code(failure: Error) -> Option(Int) {
+  case failure {
+    FlowControlFailure -> Some(0x03)
+    StreamLimitFailure -> Some(0x04)
+    StreamQueueFailure(stream_state.FlowControlFailure) -> Some(0x03)
+    StreamQueueFailure(stream_state.FinalSizeFailure) -> Some(0x06)
+    StreamQueueFailure(stream_state.ReceiveBufferLimitExceeded(_))
+    | StreamQueueFailure(stream_state.SendBufferLimitExceeded(_)) -> Some(0x01)
+    StreamFailure | StreamQueueFailure(_) | UnknownStream(_) -> Some(0x05)
+    FrameCodecFailure(frame.FrameLimitExceeded(_))
+    | FrameCodecFailure(frame.AckRangeLimitExceeded(_))
+    | FrameCodecFailure(frame.DataLimitExceeded(_))
+    | FrameCodecFailure(frame.TokenLimitExceeded(_))
+    | FrameCodecFailure(frame.ReasonLimitExceeded(_))
+    | FrameCodecFailure(frame.InvalidLimits) -> Some(0x01)
+    FrameCodecFailure(_) -> Some(0x07)
+    ProtocolViolation(ResetStreamDirectionViolation)
+    | ProtocolViolation(StopSendingDirectionViolation)
+    | ProtocolViolation(MaxStreamDataDirectionViolation)
+    | ProtocolViolation(StreamFrameDirectionViolation)
+    | ProtocolViolation(RemoteUsedLocalStream) -> Some(0x05)
+    ConnectionIdFailure(connection_id.ActiveLimitExceeded(_)) -> Some(0x09)
+    ConnectionIdFailure(connection_id.HistoryLimitExceeded(_))
+    | ConnectionIdFailure(connection_id.HistoryMemoryExceeded) -> Some(0x01)
+    ProtocolViolation(KeyPhaseCandidateRejected) -> Some(0x0e)
+    ProtocolViolation(_)
+    | PacketSpaceFailure
+    | ConnectionIdFailure(_)
+    | FrameAtWrongEncryptionLevel(_, _) -> Some(0x0a)
+    KeyUpdateFailure(_) -> Some(0x0e)
+    _ -> None
+  }
+}
+
+/// Registered local transport close code retained for the bounded closing period.
+/// The reason text and underlying error never cross this snapshot.
+pub fn local_transport_failure_code(state: State) -> Option(Int) {
+  case state.phase, state.close_response {
+    Closing, Some(CloseResponse(_, frame.ConnectionCloseTransport(code, _, _)))
+    -> Some(code)
+    _, _ -> None
+  }
 }
 
 fn empty_keys() -> LevelKeys {
@@ -3805,8 +3852,8 @@ fn install_traffic_keys(
 ) -> Result(State, Error) {
   let state = put_traffic_keys(state, level, direction, Some(keys))
   let state = case state.config.role, level, direction {
-    // The remembered peer parameters are applied immediately before the
-    // client 0-RTT write keys. Snapshot the DATAGRAM limit at that boundary;
+    // The remembered peer parameters are applied immediately before the client 0-RTT write keys.
+    // Snapshot the DATAGRAM limit at that boundary;
     // the authenticated parameters in EncryptedExtensions are a distinct,
     // later PeerTransportParameters action.
     Client, engine.ZeroRtt, Write ->
@@ -3947,11 +3994,10 @@ fn discard_level(
   }
 }
 
-/// Remove every congestion-controlled byte whose recovery metadata becomes
-/// unusable with discarded packet-protection keys.
+/// Remove every congestion-controlled byte whose recovery metadata becomes unusable with discarded packet-protection keys.
 ///
-/// Packet-space discard and congestion accounting are one transition. Doing
-/// only the former leaves an irrecoverable flight permanently occupying cwnd,
+/// Packet-space discard and congestion accounting are one transition.
+/// Doing only the former leaves an irrecoverable flight permanently occupying cwnd,
 /// even though no future ACK can name those packets.
 fn abandon_packet_space_congestion(
   state: State,
@@ -4047,14 +4093,14 @@ fn apply_peer_parameters(
   }
 }
 
-/// Apply one authenticated peer transport-parameter set, enforcing the
-/// RFC 9221 0-RTT monotonicity rule before any remembered value can be
-/// overwritten. Absence is the protocol-defined zero and therefore also a
-/// downgrade when the ticket remembered DATAGRAM support.
+/// Apply one authenticated peer transport-parameter set, enforcing the RFC 9221 0-RTT monotonicity rule before any remembered value can be overwritten.
+/// Absence is the protocol-defined zero and therefore also a downgrade when the ticket remembered DATAGRAM support.
 fn apply_authenticated_peer_parameters(
   state: State,
   parameters: List(transport_parameter.Parameter),
 ) -> Result(State, Error) {
+  // RFC 9000 section 18.2: omission in the fresh authenticated set means two.
+  let state = State(..state, peer_active_connection_id_limit: 2)
   let current_datagram_limit = peer_datagram_limit(parameters)
   case state.remembered_peer_maximum_datagram_frame_size {
     Some(remembered) if current_datagram_limit < remembered ->
@@ -4084,6 +4130,8 @@ fn apply_peer_parameter(
   parameter: transport_parameter.Parameter,
 ) -> Result(State, Error) {
   case parameter {
+    transport_parameter.ActiveConnectionIdLimit(limit) ->
+      Ok(State(..state, peer_active_connection_id_limit: limit))
     transport_parameter.StatelessResetToken(token) ->
       case state.peer_connection_ids {
         None ->
@@ -4178,10 +4226,8 @@ fn prepare_sendable_packet(
     True, _ -> Error(SpaceUnavailable)
     False, False -> Error(MissingWriteKeys(level))
     False, True -> {
-      // RFC 9000 section 10.2.2 permits only CONNECTION_CLOSE while this
-      // endpoint is Closing. Packet-space acknowledgement state remains
-      // bounded and is discarded at the fixed close deadline, but it must
-      // never escape beside or instead of the retained close response.
+      // RFC 9000 section 10.2.2 permits only CONNECTION_CLOSE while this endpoint is Closing.
+      // Packet-space acknowledgement state remains bounded and is discarded at the fixed close deadline, but it must never escape beside or instead of the retained close response.
       use #(acked, acknowledgement) <- result.try(case state.phase {
         Closing -> Ok(#(state, None))
         _ -> take_due_ack(state, level, now_milliseconds)
@@ -4206,29 +4252,18 @@ fn prepare_sendable_packet(
   }
 }
 
-/// Fill one packet with the acknowledgement it owes and the next frame the
-/// send path draws, keeping the finished datagram inside the validated path.
+/// Fill one packet with the acknowledgement it owes and the next frame the send path draws, keeping the finished datagram inside the validated path.
 ///
-/// STREAM and CRYPTO data is split to whatever the acknowledgement leaves, so
-/// it always fits. A QUIC DATAGRAM frame is indivisible (RFC 9221 section 3)
-/// and is sized at queue time with the acknowledgement already subtracted, so
-/// it normally fits too - but the retained ranges can grow between those two
-/// moments. When the two no longer fit together the frame yields, not the
-/// acknowledgement: it stays at the head of its queue and rides the next
-/// packet, while the acknowledgement goes out now. RFC 9000 section 13.2.1
-/// bounds acknowledgement delay by max_ack_delay, and an application holding a
-/// full queue must not be able to defer one past that.
+/// STREAM and CRYPTO data is split to whatever the acknowledgement leaves, so it always fits.
+/// A QUIC DATAGRAM frame is indivisible (RFC 9221 section 3) and is sized at queue time with the acknowledgement already subtracted, so it normally fits too - but the retained ranges can grow between those two moments.
+/// When the two no longer fit together the frame yields, not the acknowledgement: it stays at the head of its queue and rides the next packet, while the acknowledgement goes out now.
+/// RFC 9000 section 13.2.1 bounds acknowledgement delay by max_ack_delay, and an application holding a full queue must not be able to defer one past that.
 ///
-/// A frame that overflows the path with no acknowledgement beside it is one
-/// the path shrank underneath, since a black hole or a validated path change
-/// resets DPLPMTUD to the 1200-byte floor. An unreliable DATAGRAM is dropped
-/// there rather than sent past the path (RFC 9221 section 5).
+/// A frame that overflows the path with no acknowledgement beside it is one the path shrank underneath, since a black hole or a validated path change resets DPLPMTUD to the 1200-byte floor.
+/// An unreliable DATAGRAM is dropped there rather than sent past the path (RFC 9221 section 5).
 ///
-/// Dropping the frame for the acknowledgement is safe at every level because
-/// the acknowledgement was already shrunk to what this level's protection
-/// leaves of the path, and protection at every level fits inside the floor:
-/// the widest is an Initial's, whose token `driver` bounds precisely so that
-/// it does.
+/// Dropping the frame for the acknowledgement is safe at every level because the acknowledgement was already shrunk to what this level's protection leaves of the path, and protection at every level fits inside the floor:
+/// the widest is an Initial's, whose token `driver` bounds precisely so that it does.
 fn fill_path_sized_packet(
   state: State,
   level: engine.EncryptionLevel,
@@ -4253,15 +4288,10 @@ fn fill_path_sized_packet(
 /// Shrink the acknowledgement owed to what one packet on this path carries,
 /// and report the bytes it encodes to.
 ///
-/// A retained range set of a few hundred widely scattered ranges encodes past
-/// the 1200-byte floor on its own, and an ACK-only packet has no other frame
-/// to yield to it. RFC 9000 section 13.2.4 lets an acknowledgement carry a
-/// subset of the retained ranges, so the oldest are dropped and stay retained
-/// for a later packet; the largest received packet number always goes out.
+/// A retained range set of a few hundred widely scattered ranges encodes past the 1200-byte floor on its own, and an ACK-only packet has no other frame to yield to it.
+/// RFC 9000 section 13.2.4 lets an acknowledgement carry a subset of the retained ranges, so the oldest are dropped and stay retained for a later packet; the largest received packet number always goes out.
 ///
-/// An acknowledgement that already fits is returned untouched, which is every
-/// acknowledgement on a healthy path: only a receive pattern scattered enough
-/// to make most gaps four-byte varints reaches the second encode.
+/// An acknowledgement that already fits is returned untouched, which is every acknowledgement on a healthy path: only a receive pattern scattered enough to make most gaps four-byte varints reaches the second encode.
 fn path_sized_acknowledgement(
   state: State,
   level: engine.EncryptionLevel,
@@ -4283,16 +4313,12 @@ fn path_sized_acknowledgement(
   }
 }
 
-/// Return the leading retained ranges whose acknowledgement encodes within
-/// `allowance` bytes.
+/// Return the leading retained ranges whose acknowledgement encodes within `allowance` bytes.
 ///
-/// RFC 9000 section 13.2.4 lets an acknowledgement carry fewer ranges than the
-/// receiver retains: the ranges it omits stay retained and ride a later
-/// acknowledgement. The newest ranges are the ones that matter for loss
-/// detection, so the oldest are the ones dropped.
+/// RFC 9000 section 13.2.4 lets an acknowledgement carry fewer ranges than the receiver retains: the ranges it omits stay retained and ride a later acknowledgement.
+/// The newest ranges are the ones that matter for loss detection, so the oldest are the ones dropped.
 ///
-/// The first range is always kept: the peer learns the largest packet number
-/// received from it, and at any allowance a packet can hold it fits.
+/// The first range is always kept: the peer learns the largest packet number received from it, and at any allowance a packet can hold it fits.
 fn ack_ranges_within(
   acknowledgement: frame.Acknowledgement,
   allowance: Int,
@@ -4301,9 +4327,8 @@ fn ack_ranges_within(
   case ranges {
     [] -> []
     [frame.AckRange(smallest, largest) as first, ..additional] -> {
-      // The Range Count field is charged at the width the full retained set
-      // encodes to. Dropping ranges can only narrow it, so a prefix chosen
-      // against this bound never encodes wider than the bound allowed.
+      // The Range Count field is charged at the width the full retained set encodes to.
+      // Dropping ranges can only narrow it, so a prefix chosen against this bound never encodes wider than the bound allowed.
       let fixed =
         1
         + varint_bytes(largest)
@@ -4316,8 +4341,7 @@ fn ack_ranges_within(
   }
 }
 
-/// Walk the ranges beyond the first in encoder order, keeping each while its
-/// gap and length varints still fit the bytes left.
+/// Walk the ranges beyond the first in encoder order, keeping each while its gap and length varints still fit the bytes left.
 fn ack_ranges_taken(
   ranges: List(frame.AckRange),
   previous_smallest: Int,
@@ -4339,8 +4363,7 @@ fn ack_ranges_taken(
   }
 }
 
-/// The three counts an ACK_ECN frame appends, or nothing when the space this
-/// acknowledgement came from has seen no marked packet.
+/// The three counts an ACK_ECN frame appends, or nothing when the space this acknowledgement came from has seen no marked packet.
 fn ecn_counts_bytes(counts: Option(frame.EcnCounts)) -> Int {
   case counts {
     None -> 0
@@ -4349,22 +4372,16 @@ fn ecn_counts_bytes(counts: Option(frame.EcnCounts)) -> Int {
   }
 }
 
-/// The encoded width of one variable-length integer, charging the widest
-/// encoding for a value no varint can hold.
+/// The encoded width of one variable-length integer, charging the widest encoding for a value no varint can hold.
 fn varint_bytes(value: Int) -> Int {
   varint.encoded_size(value) |> result.unwrap(maximum_varint_bytes)
 }
 
-/// Keep a frame the shrunken path can no longer carry only when dropping it
-/// would break the connection.
+/// Keep a frame the shrunken path can no longer carry only when dropping it would break the connection.
 ///
-/// A DATAGRAM is unreliable by definition and RFC 9221 section 5 lets one be
-/// dropped, so it is. Every other frame the send path draws is reliable and is
-/// still emitted. That is safe because none of them can be oversized here: a
-/// STREAM or CRYPTO frame was split to the budget, and the two frames whose
-/// payload a caller supplies - NEW_TOKEN and CONNECTION_CLOSE - are bounded
-/// where they enter the connection so that both fit the 1200-byte floor a
-/// black hole resets the path to.
+/// A DATAGRAM is unreliable by definition and RFC 9221 section 5 lets one be dropped, so it is.
+/// Every other frame the send path draws is reliable and is still emitted.
+/// That is safe because none of them can be oversized here: a STREAM or CRYPTO frame was split to the budget, and the two frames whose payload a caller supplies - NEW_TOKEN and CONNECTION_CLOSE - are bounded where they enter the connection so that both fit the 1200-byte floor a black hole resets the path to.
 fn keep_deliverable_frame(outgoing: Option(frame.Frame)) -> List(frame.Frame) {
   case outgoing {
     None | Some(frame.Datagram(_)) -> []
@@ -4372,12 +4389,9 @@ fn keep_deliverable_frame(outgoing: Option(frame.Frame)) -> List(frame.Frame) {
   }
 }
 
-/// Whether the frames chosen for one packet would put the finished datagram
-/// past the path once packet protection is paid for.
+/// Whether the frames chosen for one packet would put the finished datagram past the path once packet protection is paid for.
 ///
-/// Every level is measured, and a packet carrying no drawn frame at all is
-/// measured too: an acknowledgement large enough to outgrow the path on its
-/// own has no other frame beside it to yield.
+/// Every level is measured, and a packet carrying no drawn frame at all is measured too: an acknowledgement large enough to outgrow the path on its own has no other frame beside it to yield.
 fn overflows_path(
   state: State,
   level: engine.EncryptionLevel,
@@ -4395,12 +4409,9 @@ fn overflows_path(
 /// What protecting one packet at this level costs around its frames.
 ///
 /// A 1-RTT packet writes a short header; 0-RTT and Handshake write a long one.
-/// An Initial writes a long header plus the address-validation token this
-/// endpoint sends, which is why the token width is carried on the connection.
+/// An Initial writes a long header plus the address-validation token this endpoint sends, which is why the token width is carried on the connection.
 ///
-/// This is always smaller than the 1200-byte floor, and therefore smaller than
-/// any path: `driver` refuses a token - cached or Retry-issued - wide enough
-/// to break that, so every level always has payload left to budget.
+/// This is always smaller than the 1200-byte floor, and therefore smaller than any path: `driver` refuses a token - cached or Retry-issued - wide enough to break that, so every level always has payload left to budget.
 fn packet_protection_overhead(
   state: State,
   level: engine.EncryptionLevel,
@@ -4897,8 +4908,30 @@ fn commit_valid_packet(
             False -> state.last_activity_milliseconds
           },
         )
-      Ok(sent)
+      Ok(record_local_connection_ids_sent(sent, frames))
     }
+  }
+}
+
+fn record_local_connection_ids_sent(
+  state: State,
+  frames: List(frame.Frame),
+) -> State {
+  case state.local_connection_ids {
+    None -> state
+    Some(issuer) ->
+      State(
+        ..state,
+        local_connection_ids: Some(
+          list.fold(frames, issuer, fn(issuer, value) {
+            case value {
+              frame.NewConnectionId(sequence, _, _, _) ->
+                local_connection_id.record_sent(issuer, sequence)
+              _ -> issuer
+            }
+          }),
+        ),
+      )
   }
 }
 
@@ -4974,8 +5007,7 @@ fn reserve_pacing(
 }
 
 /// Ask the pacer to release one datagram against the current window and RTT.
-/// The burst scales with the path so one path-sized datagram - including the
-/// DPLPMTUD probe that proves the path - always fits inside a single burst.
+/// The burst scales with the path so one path-sized datagram - including the DPLPMTUD probe that proves the path - always fits inside a single burst.
 fn ask_pacer(
   state: State,
   datagram_bytes: Int,
@@ -4995,8 +5027,8 @@ fn ask_pacer(
   )
 }
 
-/// The congestion-controller rate input supplied to the live pacer. CUBIC can
-/// reduce this below cwnd after persistent CE at its one-datagram floor.
+/// The congestion-controller rate input supplied to the live pacer.
+/// CUBIC can reduce this below cwnd after persistent CE at its one-datagram floor.
 fn pacing_window(state: State) -> Int {
   case state.congestion {
     RenoState(reno) -> new_reno.congestion_window(reno)
@@ -5004,8 +5036,7 @@ fn pacing_window(state: State) -> Int {
   }
 }
 
-/// Ten datagrams of the largest size the path is confirmed - or is being
-/// probed - to carry.
+/// Ten datagrams of the largest size the path is confirmed - or is being probed - to carry.
 fn pacer_burst_bytes(state: State) -> Int {
   let confirmed = path_mtu(state)
   let largest = case pmtu.outstanding_probe(state.pmtu) {
@@ -5041,10 +5072,7 @@ fn frame_ack_eliciting(value: frame.Frame) -> Bool {
 
 /// Whether the anti-amplification budget permits one datagram of this size.
 ///
-/// RFC 9000 section 8.2.1 expands a path validation datagram to the floor every
-/// path carries "unless the anti-amplification limit for the path does not
-/// permit sending a datagram of this size", so the send path asks before it
-/// expands one.
+/// RFC 9000 section 8.2.1 expands a path validation datagram to the floor every path carries "unless the anti-amplification limit for the path does not permit sending a datagram of this size", so the send path asks before it expands one.
 pub fn amplification_permits(state: State, datagram_bytes: Int) -> Bool {
   amplification.can_send(state.amplification, datagram_bytes)
 }
@@ -5126,37 +5154,33 @@ fn receive_valid_packet(
   }
 }
 
-/// Ignore ordinary peer frames after a local close and re-arm only the
-/// retained close response. A peer CONNECTION_CLOSE instead moves this side
-/// to Draining, where no packets at all may be sent. The original close
-/// deadline is deliberately left unchanged, so inbound traffic cannot retain
-/// actor, socket, keys, or qlog state past the fixed bound.
+/// Ignore ordinary peer frames after a local close and re-arm only the retained close response.
+/// A peer CONNECTION_CLOSE instead moves this side to Draining, where no packets at all may be sent.
+/// The original close deadline is deliberately left unchanged, so inbound traffic cannot retain actor, socket, keys, or qlog state past the fixed bound.
 fn receive_closing_packet(
   state: State,
   frames: List(frame.Frame),
   now_milliseconds: Int,
 ) -> Result(State, Error) {
   case peer_connection_close(frames) {
-    Some(#(error_code, reason)) ->
-      Ok(enter_draining(state, error_code, reason, now_milliseconds))
+    Some(event) -> Ok(enter_draining(state, event, now_milliseconds))
     None -> Ok(rearm_close_response(state))
   }
 }
 
-fn peer_connection_close(frames: List(frame.Frame)) -> Option(#(Int, String)) {
+fn peer_connection_close(frames: List(frame.Frame)) -> Option(Event) {
   case frames {
     [] -> None
     [frame.ConnectionCloseTransport(error_code, _, reason), ..] ->
-      Some(#(error_code, reason))
+      Some(PeerTransportClosed(error_code, reason))
     [frame.ConnectionCloseApplication(error_code, reason), ..] ->
-      Some(#(error_code, reason))
+      Some(PeerClosed(error_code, reason))
     [_, ..rest] -> peer_connection_close(rest)
   }
 }
 
-/// At most one close response may wait in the bounded output queue. This
-/// naturally rate-limits responses to authenticated peer packets: another
-/// packet cannot add another response until the prior one was drawn.
+/// At most one close response may wait in the bounded output queue.
+/// This naturally rate-limits responses to authenticated peer packets: another packet cannot add another response until the prior one was drawn.
 fn rearm_close_response(state: State) -> State {
   case state.close_response {
     None -> state
@@ -5213,6 +5237,9 @@ fn frame_valid_at_level(
         | frame.DataBlocked(_)
         | frame.StreamDataBlocked(_, _)
         | frame.StreamsBlocked(_, _)
+        | frame.NewConnectionId(_, _, _, _)
+        | frame.PathChallenge(_)
+        | frame.ConnectionCloseTransport(_, _, _)
         | frame.ConnectionCloseApplication(_, _)
         | frame.Datagram(_) -> True
         _ -> False
@@ -5255,8 +5282,7 @@ fn process_frames(
   now_milliseconds: Int,
 ) -> Result(State, Error) {
   case peer_connection_close(frames) {
-    Some(#(error_code, reason)) ->
-      Ok(enter_draining(state, error_code, reason, now_milliseconds))
+    Some(event) -> Ok(enter_draining(state, event, now_milliseconds))
     None -> process_non_close_frames(state, level, frames, now_milliseconds)
   }
 }
@@ -5315,19 +5341,26 @@ fn process_frame(
       Ok(update_local_stream_limit(state, direction, limit))
     frame.PathChallenge(challenge) -> queue_path_response(state, challenge)
     frame.PathResponse(response) -> receive_path_response(state, response)
-    frame.ConnectionCloseTransport(error_code, _, reason)
-    | frame.ConnectionCloseApplication(error_code, reason) ->
-      Ok(enter_draining(state, error_code, reason, now_milliseconds))
+    frame.ConnectionCloseTransport(error_code, _, reason) ->
+      Ok(enter_draining(
+        state,
+        PeerTransportClosed(error_code, reason),
+        now_milliseconds,
+      ))
+    frame.ConnectionCloseApplication(error_code, reason) ->
+      Ok(enter_draining(state, PeerClosed(error_code, reason), now_milliseconds))
     frame.HandshakeDone -> receive_handshake_done(state)
     frame.Datagram(data) -> receive_datagram(state, data)
-    // RFC 9000 section 8.1.3 leaves it to the client whether to keep a token
-    // for a later connection. One too wide for an Initial to repeat inside the
-    // 1200-byte floor is never usable, so it is dropped here rather than
-    // stored and refused at the start of the next connection.
+    // RFC 9000 section 8.1.3 leaves it to the client whether to keep a token for a later connection.
+    // One too wide for an Initial to repeat inside the 1200-byte floor is never usable, so it is dropped here rather than stored and refused at the start of the next connection.
     frame.NewToken(token) ->
-      case bit_array.byte_size(token) <= maximum_initial_token_bytes() {
-        False -> Ok(state)
-        True -> Ok(add_event(state, NewTokenReceived(token)))
+      case state.config.role {
+        Server -> Error(ProtocolViolation(NewTokenAtServer))
+        Client ->
+          case bit_array.byte_size(token) <= maximum_initial_token_bytes() {
+            False -> Ok(state)
+            True -> Ok(add_event(state, NewTokenReceived(token)))
+          }
       }
     frame.NewConnectionId(sequence, retire_prior_to, identifier, reset_token) ->
       receive_new_connection_id(
@@ -5338,7 +5371,7 @@ fn process_frame(
         reset_token,
       )
     frame.RetireConnectionId(sequence) ->
-      Ok(add_event(state, LocalConnectionIdRetirementRequested(sequence)))
+      receive_local_retirement(state, sequence)
     frame.DataBlocked(_)
     | frame.StreamDataBlocked(_, _)
     | frame.StreamsBlocked(_, _) -> Ok(state)
@@ -5463,15 +5496,11 @@ fn handle_tls_engine_failure(
   }
 }
 
-/// Convert a peer transport-parameter failure into the wire-visible QUIC
-/// connection error required by RFC 9000 and extension specifications.
+/// Convert a peer transport-parameter failure into the wire-visible QUIC connection error required by RFC 9000 and extension specifications.
 ///
-/// A fatal handshake failure abandons every queued CRYPTO/application frame
-/// and every active stream before placing one close at the encryption level
-/// that authenticated the bad parameter. This prevents either role from
-/// leaking later handshake or application output after it has rejected the
-/// peer. ACK state is retained, so the close can still acknowledge the packet
-/// that caused it without retaining any peer-controlled diagnostic payload.
+/// A fatal handshake failure abandons every queued CRYPTO/application frame and every active stream before placing one close at the encryption level that authenticated the bad parameter.
+/// This prevents either role from leaking later handshake or application output after it has rejected the peer.
+/// ACK state is retained, so the close can still acknowledge the packet that caused it without retaining any peer-controlled diagnostic payload.
 fn close_transport_parameter_failure(
   state: State,
   level: engine.EncryptionLevel,
@@ -5598,7 +5627,7 @@ fn apply_received_stream_data(
   fin: Bool,
 ) -> Result(State, Error) {
   case stream_state.receive_data(stream, offset, data, fin) {
-    Error(_) -> Error(StreamFailure)
+    Error(error) -> Error(StreamQueueFailure(error))
     Ok(#(stream, newly_received)) ->
       case flow_control.receive(state.connection_receiver, newly_received) {
         Error(_) -> Error(FlowControlFailure)
@@ -5631,25 +5660,31 @@ fn receive_stream_reset(
             True -> Ok(state)
             False -> Error(UnknownStream(identifier))
           }
-        Ok(stream) ->
+        Ok(stream) -> {
+          let already_closed = stream_state.receive_closed(stream)
           case stream_state.receive_reset(stream, error_code, final_size) {
-            Error(_) -> Error(StreamFailure)
+            Error(error) -> Error(StreamQueueFailure(error))
             Ok(#(stream, newly_received)) ->
               case
                 flow_control.receive(state.connection_receiver, newly_received)
               {
                 Error(_) -> Error(FlowControlFailure)
-                Ok(receiver) ->
-                  Ok(
+                Ok(receiver) -> {
+                  let state =
                     put_stream(
                       State(..state, connection_receiver: receiver),
                       identifier,
                       stream,
                     )
-                    |> add_event(StreamWasReset(identifier, error_code)),
-                  )
+                  Ok(case already_closed {
+                    True -> state
+                    False ->
+                      add_event(state, StreamWasReset(identifier, error_code))
+                  })
+                }
               }
           }
+        }
       }
     }
   }
@@ -5670,17 +5705,37 @@ fn receive_stop_sending(
             True -> Ok(state)
             False -> Error(UnknownStream(identifier))
           }
-        Ok(stream) ->
-          case stream_state.reset_send(stream, error_code) {
-            Error(_) -> Error(StreamFailure)
-            Ok(#(stream, reset)) ->
-              Ok(
-                put_stream(state, identifier, stream)
-                |> queue_application_frame(reset)
-                |> cleanup_stream_if_terminal(identifier),
-              )
-          }
+        Ok(stream) -> stop_stream_sending(state, stream, identifier, error_code)
       }
+    }
+  }
+}
+
+fn stop_stream_sending(
+  state: State,
+  stream: stream_state.State,
+  identifier: Int,
+  error_code: Int,
+) -> Result(State, Error) {
+  // RFC 9000 section 3.3 permits delayed STOP_SENDING in every send state.
+  // Recovery already owns any outstanding RESET_STREAM retransmission.
+  // A duplicate must neither replace its original code nor reopen a terminal FIN.
+  case stream_state.send_finished(stream) {
+    True -> Ok(state)
+    False -> {
+      use #(stream, reset) <- result.try(
+        stream_state.reset_send(stream, error_code)
+        |> result.replace_error(StreamFailure),
+      )
+      Ok(
+        put_stream(state, identifier, stream)
+        |> queue_application_frame(reset)
+        |> add_event(StreamSendCompleted(
+          identifier,
+          stream_completion.Stopped(error_code),
+        ))
+        |> cleanup_stream_if_terminal(identifier),
+      )
     }
   }
 }
@@ -5776,12 +5831,7 @@ fn pending_path_response_state(
   }
 }
 
-fn enter_draining(
-  state: State,
-  error_code: Int,
-  reason: String,
-  now_milliseconds: Int,
-) -> State {
+fn enter_draining(state: State, event: Event, now_milliseconds: Int) -> State {
   let close_deadline_milliseconds = case
     state.phase,
     state.close_deadline_milliseconds
@@ -5800,7 +5850,7 @@ fn enter_draining(
     close_deadline_milliseconds:,
     close_response: None,
   )
-  |> add_event(PeerClosed(error_code, reason))
+  |> add_event(event)
 }
 
 fn receive_handshake_done(state: State) -> Result(State, Error) {
@@ -5845,9 +5895,8 @@ fn receive_datagram(state: State, data: BitArray) -> Result(State, Error) {
   )
   let frame_size = bit_array.byte_size(encoded)
   case negotiated, frame_size <= state.config.maximum_datagram_frame_size {
-    // These are authenticated peer violations. DatagramNotNegotiated and
-    // DatagramTooLarge remain reserved for local send API refusals, where a
-    // caller can recover by negotiating or resizing without terminating.
+    // These are authenticated peer violations.
+    // DatagramNotNegotiated and DatagramTooLarge remain reserved for local send API refusals, where a caller can recover by negotiating or resizing without terminating.
     False, _ -> Error(ProtocolViolation(DatagramNotNegotiatedViolation))
     True, False -> Error(ProtocolViolation(DatagramFrameTooLargeViolation))
     True, True -> Ok(add_event(state, DatagramReceived(data)))
@@ -5903,7 +5952,13 @@ fn receive_new_connection_id(
         )
         |> map_connection_id_result,
       )
-      let connection_id.Update(registry, retired_sequences) = update
+      let connection_id.Update(next_registry, retired_sequences) = update
+      use Nil <- result.try(reserve_peer_id_history(
+        state,
+        registry,
+        next_registry,
+      ))
+      let registry = next_registry
       let state =
         State(..state, peer_connection_ids: Some(registry))
         |> queue_retired_connection_ids(retired_sequences)
@@ -5912,6 +5967,83 @@ fn receive_new_connection_id(
           Ok(add_event(state, PeerConnectionIdAvailable(sequence, identifier)))
         False -> Ok(state)
       }
+    }
+  }
+}
+
+fn reserve_peer_id_history(
+  state: State,
+  previous: connection_id.Registry,
+  next: connection_id.Registry,
+) -> Result(Nil, Error) {
+  let growth =
+    connection_id.retained_bytes(next) - connection_id.retained_bytes(previous)
+  case state.memory_granted_bytes, growth > 0 {
+    // Repeated IDs and retirement must remain possible even under a hold.
+    _, False | None, True -> Ok(Nil)
+    Some(granted), True -> {
+      let Footprint(_, overhead) = footprint(state)
+      // Outstanding credit already includes buffered, unread application data.
+      // Its promise cannot be spent a second time on retained ID metadata.
+      case overhead + growth + outstanding_receive_credit(state) <= granted {
+        True -> Ok(Nil)
+        False -> Error(ConnectionIdFailure(connection_id.HistoryMemoryExceeded))
+      }
+    }
+  }
+}
+
+fn validate_local_retirements(
+  state: State,
+  frames: List(frame.Frame),
+  destination: Option(BitArray),
+) -> Result(Nil, Error) {
+  case frames {
+    [] -> Ok(Nil)
+    [frame.RetireConnectionId(sequence), ..rest] -> {
+      use Nil <- result.try(case state.local_connection_ids {
+        None -> Error(ProtocolViolation(LocalConnectionIdNotIssued))
+        Some(issuer) ->
+          case
+            local_connection_id.validate_retirement(
+              issuer,
+              sequence,
+              destination,
+            )
+          {
+            Ok(Nil) -> Ok(Nil)
+            Error(connection_id.InvalidConnectionId) ->
+              Error(ProtocolViolation(RetiredPacketDestinationConnectionId))
+            Error(_) -> Error(ProtocolViolation(LocalConnectionIdNotIssued))
+          }
+      })
+      validate_local_retirements(state, rest, destination)
+    }
+    [_, ..rest] -> validate_local_retirements(state, rest, destination)
+  }
+}
+
+fn receive_local_retirement(
+  state: State,
+  sequence: Int,
+) -> Result(State, Error) {
+  use Nil <- result.try(validate_local_retirements(
+    state,
+    [frame.RetireConnectionId(sequence)],
+    None,
+  ))
+  case state.local_connection_ids {
+    None -> Error(ProtocolViolation(LocalConnectionIdNotIssued))
+    Some(issuer) -> {
+      use #(issuer, retired) <- result.try(
+        local_connection_id.retire(issuer, sequence) |> map_connection_id_result,
+      )
+      let state = State(..state, local_connection_ids: Some(issuer))
+      Ok(case retired {
+        None -> state
+        Some(identifier) ->
+          add_event(state, LocalConnectionIdRetired(sequence, identifier))
+      })
     }
   }
 }
@@ -6167,8 +6299,7 @@ fn cleanup_stream_if_terminal(state: State, identifier: Int) -> State {
               state.active_streams,
               identifier,
             ),
-            // A stream that has closed owes the peer no window update, so it
-            // leaves the withheld record with everything else it held.
+            // A stream that has closed owes the peer no window update, so it leaves the withheld record with everything else it held.
             withheld_stream_data: set.delete(
               state.withheld_stream_data,
               identifier,
@@ -6185,10 +6316,8 @@ fn replenish_remote_stream_credit(state: State, identifier: Int) -> State {
     Ok(stream_id.StreamId(_, initiator, direction)) ->
       case initiator == remote_endpoint(state.config.role) {
         False -> state
-        // While the endpoint memory grant holds credit growth down, the unit
-        // of stream concurrency this closed stream freed is recorded rather
-        // than advertised: inviting the peer to open another stream is exactly
-        // the growth the endpoint has just declined to fund. Nothing is lost,
+        // While the endpoint memory grant holds credit growth down, the unit of stream concurrency this closed stream freed is recorded rather than advertised: inviting the peer to open another stream is exactly the growth the endpoint has just declined to fund.
+        // Nothing is lost,
         // because every withheld unit is replenished the moment the hold lifts.
         True ->
           case state.credit_frozen {
@@ -6266,12 +6395,9 @@ fn apply_stream_read(
   }
 }
 
-/// Account a terminal drain without advertising receive credit. The application
-/// queue is never prepared again in a terminal phase, so a MAX_DATA or
-/// MAX_STREAM_DATA queued here could only become dead state, and RFC 9000
-/// section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE. This
-/// is a separate path rather than a flag so the terminal drain cannot advertise
-/// credit at all.
+/// Account a terminal drain without advertising receive credit.
+/// The application queue is never prepared again in a terminal phase, so a MAX_DATA or MAX_STREAM_DATA queued here could only become dead state, and RFC 9000 section 10.2.2 permits no frame beside the retained CONNECTION_CLOSE.
+/// This is a separate path rather than a flag so the terminal drain cannot advertise credit at all.
 fn apply_terminal_stream_read(
   state: State,
   identifier: Int,
@@ -6320,18 +6446,12 @@ fn queue_receive_credit_updates(
   stream_limit: Option(Int),
   connection_limit: Option(Int),
 ) -> State {
-  // A per-stream increase is withheld while the endpoint memory grant holds
-  // credit growth down, and the stream it was withheld for is recorded so that
-  // the lift restates that stream and no other. The connection-level increase
-  // needs no gate of its own: the grant is applied as a ceiling on the
-  // connection receiver, so a limit it may not advertise is a limit that was
-  // never raised. What that ceiling withheld is not replayed from here either;
-  // it is taken off by `restate_connection_receive_credit` on the lift, which
-  // is what keeps a peer squeezed to zero credit from stalling for good.
+  // A per-stream increase is withheld while the endpoint memory grant holds credit growth down, and the stream it was withheld for is recorded so that the lift restates that stream and no other.
+  // The connection-level increase needs no gate of its own: the grant is applied as a ceiling on the connection receiver, so a limit it may not advertise is a limit that was never raised.
+  // What that ceiling withheld is not replayed from here either;
+  // it is taken off by `restate_connection_receive_credit` on the lift, which is what keeps a peer squeezed to zero credit from stalling for good.
   //
-  // The record is bounded by the live stream set: an entry is only ever made
-  // for a stream this endpoint just read from, it is dropped when that stream
-  // closes, and the whole set is emptied on the lift.
+  // The record is bounded by the live stream set: an entry is only ever made for a stream this endpoint just read from, it is dropped when that stream closes, and the whole set is emptied on the lift.
   let state = case stream_limit, state.credit_frozen {
     Some(limit), False ->
       queue_application_frame(state, frame.MaxStreamData(identifier, limit))
@@ -6384,10 +6504,9 @@ fn process_ack(
         acknowledged,
       ))
       let ecn.AckResult(ecn_state, newly_congestion_experienced) = ecn_result
-      // RFC 9002 section 7.8 and RFC 9438 section 4.6 define application-
-      // limited growth for the flight observed by this ACK. Snapshot it once:
-      // sequentially removing the first acknowledged packet must not suppress
-      // growth for the rest of the same full-flight ACK batch.
+      // RFC 9002 section 7.8 and RFC 9438 section 4.6 define application- limited growth for the flight observed by this ACK.
+      // Snapshot it once:
+      // sequentially removing the first acknowledged packet must not suppress growth for the rest of the same full-flight ACK batch.
       let congestion_window_fully_utilized =
         bytes_in_flight(state) >= congestion_window(state)
       let state =
@@ -6539,10 +6658,8 @@ fn acknowledged_smaller_than_probe(
 }
 
 /// Whether a sent packet has the exact shape `driver` gives a DPLPMTUD probe:
-/// a PING padded out to the size under test and nothing else. A PTO probe with
-/// any delivery work has another shape, regardless of whether a PING was also
-/// coalesced, so it keeps its ordinary congestion response even when its size
-/// happens to match.
+/// a PING padded out to the size under test and nothing else.
+/// A PTO probe with any delivery work has another shape, regardless of whether a PING was also coalesced, so it keeps its ordinary congestion response even when its size happens to match.
 fn packet_is_pmtu_probe(packet: packet_space.SentPacket) -> Bool {
   case packet.frames {
     [frame.Ping, frame.Padding(_)] -> True
@@ -6656,11 +6773,27 @@ fn acknowledge_stream_frame(
         Ok(stream) ->
           case stream_state.on_frame_acked(stream, sent) {
             Error(_) -> Error(StreamFailure)
-            Ok(stream) ->
+            Ok(updated) -> {
+              let acknowledged =
+                !stream_state.send_acknowledged(stream)
+                && stream_state.send_acknowledged(updated)
+              let state = put_stream(state, identifier, updated)
+              let state = case acknowledged {
+                True ->
+                  add_event(
+                    state,
+                    StreamSendCompleted(
+                      identifier,
+                      stream_completion.Acknowledged,
+                    ),
+                  )
+                False -> state
+              }
               Ok(
-                put_stream(state, identifier, stream)
+                state
                 |> cleanup_stream_if_terminal(identifier),
               )
+            }
           }
       }
   }
@@ -6716,9 +6849,8 @@ fn lose_pmtu_packet(
   }
 }
 
-/// Whether this lost packet is exactly the DPLPMTUD probe currently under
-/// test. RFC 9002 section 3: a probe is deliberately larger than the confirmed
-/// path, so losing one is not evidence of congestion.
+/// Whether this lost packet is exactly the DPLPMTUD probe currently under test.
+/// RFC 9002 section 3: a probe is deliberately larger than the confirmed path, so losing one is not evidence of congestion.
 fn outstanding_pmtu_probe(
   state: State,
   packet: packet_space.SentPacket,
@@ -7082,9 +7214,8 @@ fn update_ecn_timeout(state: State) -> State {
   State(..state, ecn: ecn.on_probe_timeout(state.ecn))
 }
 
-/// Queue the expired-space probe and, when possible, one probe in another
-/// packet space with in-flight data. The fixed PTO allowance is two, so this
-/// search can never create more recovery work than the reserved ledger holds.
+/// Queue the expired-space probe and, when possible, one probe in another packet space with in-flight data.
+/// The fixed PTO allowance is two, so this search can never create more recovery work than the reserved ledger holds.
 fn queue_pto_probe_frames(
   state: State,
   expired_level: engine.EncryptionLevel,
@@ -7103,10 +7234,9 @@ fn queue_pto_probe_frames(
   }
 }
 
-/// Make one packet space ready to spend a PTO allowance. New queued work is
-/// already the best probe payload. Otherwise transfer the oldest reliable
-/// outstanding frame to the send queue; only a space with no delivery work at
-/// all falls back to PING.
+/// Make one packet space ready to spend a PTO allowance.
+/// New queued work is already the best probe payload.
+/// Otherwise transfer the oldest reliable outstanding frame to the send queue; only a space with no delivery work at all falls back to PING.
 fn queue_pto_probe_frame(state: State, level: engine.EncryptionLevel) -> State {
   case level_has_ack_eliciting_output(state, level) {
     True -> state
@@ -7212,8 +7342,8 @@ fn connection_probe_timeout_count(state: State) -> Int {
 }
 
 /// A newly acknowledged ack-eliciting packet resets the shared exponent,
-/// except for a client's Initial ACK before handshake confirmation. Such an
-/// ACK does not prove the server finished validating the client's address.
+/// except for a client's Initial ACK before handshake confirmation.
+/// Such an ACK does not prove the server finished validating the client's address.
 fn synchronize_pto_after_ack(
   state: State,
   level: engine.EncryptionLevel,
@@ -7322,11 +7452,8 @@ fn switch_congestion_algorithm(
     True -> Ok(state)
     False -> {
       let in_flight = bytes_in_flight(state)
-      // The replacement controller starts on the path this connection is
-      // actually sending on. Sizing it from the configured
-      // max_udp_payload_size instead would hand a live connection an initial
-      // window of ten datagrams it has never been able to send, and would
-      // leave RFC 9002 section 7.2's window floor above every real datagram.
+      // The replacement controller starts on the path this connection is actually sending on.
+      // Sizing it from the configured max_udp_payload_size instead would hand a live connection an initial window of ten datagrams it has never been able to send, and would leave RFC 9002 section 7.2's window floor above every real datagram.
       let datagram_bytes = path_mtu(state)
       let next = case algorithm {
         NewReno ->
@@ -7360,17 +7487,11 @@ fn switch_congestion_algorithm(
 
 /// Frame-decoding limits for one decrypted 1-RTT packet.
 ///
-/// `frame.decode_all` charges PADDING one unit per byte, so a path-sized
-/// packet - a DPLPMTUD probe above all - exhausts the 4096-unit default long
-/// before its frames are decoded. The budget therefore grows to the packet's
-/// own length, which is the tightest bound that still admits a full-size
-/// packet: no frame encodes in less than one byte, so the peer can never buy
-/// more decoding work than the bytes it authenticated, and the datagram size
-/// is itself bounded by the max_udp_payload_size this endpoint advertised.
+/// `frame.decode_all` charges PADDING one unit per byte, so a path-sized packet - a DPLPMTUD probe above all - exhausts the 4096-unit default long before its frames are decoded.
+/// The budget therefore grows to the packet's own length, which is the tightest bound that still admits a full-size packet: no frame encodes in less than one byte, so the peer can never buy more decoding work than the bytes it authenticated, and the datagram size is itself bounded by the max_udp_payload_size this endpoint advertised.
 ///
-/// This applies to 1-RTT packets alone. They are protected by keys only a
-/// completed handshake yields, so the sender is an authenticated peer rather
-/// than anyone who can observe a connection ID.
+/// This applies to 1-RTT packets alone.
+/// They are protected by keys only a completed handshake yields, so the sender is an authenticated peer rather than anyone who can observe a connection ID.
 fn short_packet_frame_limits(plaintext: BitArray) -> frame.Limits {
   let defaults = frame.default_limits()
   frame.Limits(
@@ -7379,14 +7500,10 @@ fn short_packet_frame_limits(plaintext: BitArray) -> frame.Limits {
   )
 }
 
-/// Truncate a caller's reason phrase to what CONNECTION_CLOSE can carry on the
-/// smallest path this connection can fall back to.
+/// Truncate a caller's reason phrase to what CONNECTION_CLOSE can carry on the smallest path this connection can fall back to.
 ///
-/// The frame is reliable and indivisible: it cannot be split to fit a packet
-/// and it cannot be dropped, so the phrase is bounded here rather than
-/// producing an oversized datagram once a black hole resets the path to the
-/// 1200-byte floor. Truncation walks graphemes so what survives is still valid
-/// UTF-8.
+/// The frame is reliable and indivisible: it cannot be split to fit a packet and it cannot be dropped, so the phrase is bounded here rather than producing an oversized datagram once a black hole resets the path to the 1200-byte floor.
+/// Truncation walks graphemes so what survives is still valid UTF-8.
 fn bounded_reason(reason: String) -> String {
   case string.byte_size(reason) <= maximum_close_reason_bytes {
     True -> reason

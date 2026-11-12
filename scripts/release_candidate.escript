@@ -3,8 +3,24 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
-main([]) -> run();
+-include("evidence_identity.hrl").
+-include("bundle_capture.hrl").
+-include("command_capture.hrl").
+-compile({nowarn_unused_function, [{evidence_begin, 1}, {evidence_require_identity, 2},
+    {evidence_complete, 2}, {execution_runtime, 0}, {bundle_validate_capture, 3},
+    {bundle_root_files, 0}, {bundle_tree, 1}, {bundle_walk, 4},
+    {bundle_directory_components, 2}, {bundle_entries, 1}, {bundle_archive, 2}]}).
+
+main([]) -> candidate_safe(fun run/0);
+main(["--self-test"]) -> candidate_safe(fun identity_self_test/0);
 main(_) -> erlang:error(release_candidate_usage).
+
+candidate_safe(Action) ->
+    try Action() catch Class:Reason:Stack ->
+        io:format(standard_error, "release candidate failed: ~p~n",
+                  [diagnostic_failure_details(Class, Reason, Stack)]),
+        halt(1)
+    end.
 
 run() ->
     SourceCandidate = source_candidate(),
@@ -46,17 +62,24 @@ source_candidate() ->
           file:read_file(ArchivePath)} of
         {{ok, ManifestBytes}, {ok, ArchiveReportBytes}, {ok, ArchiveBytes}} ->
             try
-                Manifest = json:decode(ManifestBytes),
-                ArchiveReport = json:decode(ArchiveReportBytes),
+                Manifest = evidence_json_decode(ManifestBytes),
+                ArchiveReport = evidence_json_decode(ArchiveReportBytes),
                 SourceSha = maps:get(<<"source_sha256">>, Manifest, <<>>),
                 ArchiveSha = maps:get(<<"sha256">>, ArchiveReport, <<>>),
-                CurrentSourceSha = source_digest(),
+                CurrentIdentity = evidence_identity(),
+                CurrentSourceSha = maps:get(<<"source_sha256">>, CurrentIdentity),
                 ActualArchiveSha = hex(crypto:hash(sha256, ArchiveBytes)),
-                Valid = maps:get(<<"status">>, Manifest, undefined)
+                Valid = maps:get(<<"schema">>, Manifest, undefined) =:= 2
+                        andalso maps:get(<<"schema">>, ArchiveReport, undefined) =:= 2
+                        andalso maps:get(<<"status">>, Manifest, undefined)
                         =:= <<"Ready">>
                         andalso maps:get(<<"status">>, ArchiveReport,
                                          undefined) =:= <<"Ready">>
                         andalso SourceSha =:= CurrentSourceSha
+                        andalso maps:get(<<"evidence_identity">>, Manifest, undefined) =:= CurrentIdentity
+                        andalso maps:get(<<"evidence_identity">>, ArchiveReport, undefined) =:= CurrentIdentity
+                        andalso maps:get(<<"manifest_sha256">>, ArchiveReport, undefined)
+                            =:= hex(crypto:hash(sha256, ManifestBytes))
                         andalso ArchiveSha =:= ActualArchiveSha,
                 #{valid => Valid, source_sha256 => SourceSha,
                   archive_sha256 => ActualArchiveSha}
@@ -140,58 +163,62 @@ run_executable(Name, Args) ->
     case os:find_executable(Name) of
         false -> {unavailable, <<>>};
         Executable ->
-            Port = open_port({spawn_executable, Executable},
-                             [binary, exit_status, use_stdio, stderr_to_stdout,
-                              {args, Args}, {cd, filename:absname(".")}]),
-            {Status, Output} = collect(Port, []),
-            {Status, iolist_to_binary(lists:reverse(Output))}
-    end.
-
-source_digest() ->
-    Paths = source_paths(),
-    hex(crypto:hash(sha256,
-                    [[unicode:characters_to_binary(Path), 0, read(Path)]
-                     || Path <- Paths])).
-
-source_paths() ->
-    {ok, Entries} = file:list_dir("."),
-    lists:sort(lists:append([collect_source_path(Entry) || Entry <- Entries])).
-
-collect_source_path(Path) ->
-    case filelib:is_dir(Path) of
-        true ->
-            case excluded_source_directory(filename:basename(Path)) of
-                true -> [];
-                false ->
-                    {ok, Entries} = file:list_dir(Path),
-                    lists:append([
-                        collect_source_path(filename:join(Path, Entry))
-                        || Entry <- Entries
-                    ])
-            end;
-        false ->
-            case filelib:is_regular(Path) of
-                true -> [Path];
-                false -> []
+            case command_capture(Executable, Args, filename:absname("."),
+                                 30000, 16777216, []) of
+                {ok, Output, _Proof} -> {0, Output};
+                {error, Proof} -> {command_failure_status(Proof), <<>>}
             end
     end.
 
-excluded_source_directory(Name) ->
-    lists:member(Name, [".agents", ".claude", ".codex", ".git", ".idea",
-                        ".vscode", "_build", "audit", "build", "deps"]).
+command_failure_status(#{exit_status := Status}) when is_integer(Status) -> Status;
+command_failure_status(#{outcome := deadline}) -> 124;
+command_failure_status(#{outcome := output_limit}) -> 125;
+command_failure_status(#{outcome := reap_failed}) -> 126;
+command_failure_status(_) -> 127.
 
-read(Path) ->
-    {ok, Bytes} = file:read_file(Path),
-    Bytes.
+source_digest() ->
+    maps:get(<<"source_sha256">>, evidence_identity()).
 
-collect(Port, Output) ->
-    receive
-        {Port, {data, Bytes}} -> collect(Port, [Bytes | Output]);
-        {Port, {exit_status, Status}} -> {Status, Output}
-    after 30000 ->
-        port_close(Port),
-        {124, Output}
-    end.
+identity_self_test() ->
+    Paths = evidence_source_paths(),
+    false = lists:member("erl_crash.dump", Paths),
+    Captured = bundle_capture(Paths),
+    Directory = "build/release-candidate-self-test/run-" ++
+        binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(16))),
+    bundle_materialize(Directory, Captured),
+    bundle_with_directory(Directory, fun() ->
+        Before = source_digest(),
+        ok = file:write_file("erl_crash.dump", <<"private-crash-marker">>),
+        Before = source_digest(),
+        {"src/http.gleam", Source} = lists:keyfind("src/http.gleam", 1, Captured),
+        ok = file:write_file("src/http.gleam", [Source, <<"\n// changed authored input\n">>]),
+        true = Before =/= source_digest(),
+        ok = file:write_file("src/http.gleam", Source),
+        Before = source_digest(),
+        identity_publication_self_test(),
+        io:put_chars("release candidate identity: crash dump excluded; authored changes and mismatched publication rejected\n")
+    end).
+
+identity_publication_self_test() ->
+    Identity = evidence_identity(),
+    Manifest = #{schema => 2, status => <<"Ready">>, evidence_identity => Identity,
+        source_sha256 => maps:get(<<"source_sha256">>, Identity)},
+    ManifestBytes = iolist_to_binary(json:encode(Manifest)),
+    ArchiveBytes = <<"isolated identity fixture">>,
+    Archive = #{schema => 2, status => <<"Ready">>, evidence_identity => Identity,
+        sha256 => hex(crypto:hash(sha256, ArchiveBytes)),
+        manifest_sha256 => hex(crypto:hash(sha256, ManifestBytes))},
+    ok = filelib:ensure_dir("build/audit-bundle/manifest.json"),
+    ok = file:write_file("build/audit-bundle/manifest.json", ManifestBytes),
+    ok = file:write_file("build/audit-bundle/archive.json", json:encode(Archive)),
+    ok = file:write_file("build/audit-bundle/audit-bundle.tar", ArchiveBytes),
+    #{valid := true} = source_candidate(),
+    ok = file:write_file("build/audit-bundle/manifest.json", json:encode(Manifest#{files => []})),
+    #{valid := false} = source_candidate(),
+    ok = file:write_file("build/audit-bundle/manifest.json", ManifestBytes),
+    ok = file:write_file("build/audit-bundle/archive.json", json:encode(Archive#{evidence_identity => #{}})),
+    #{valid := false} = source_candidate(),
+    ok.
 
 hex(Binary) ->
     iolist_to_binary([io_lib:format("~2.16.0B", [Byte]) || <<Byte>> <= Binary]).

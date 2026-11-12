@@ -10,6 +10,7 @@ import quic_core/internal/tls/extension
 import quic_core/internal/tls/extension_value
 import quic_core/internal/tls/handshake
 import quic_core/internal/tls/hello
+import quic_core/internal/tls/message_body
 import quic_core/internal/tls/resumption
 import quic_core/internal/tls/session_ticket
 import quic_core/transport_parameter
@@ -66,6 +67,203 @@ pub fn completes_authenticated_client_server_handshake_test() -> Nil {
   assert has_discard(confirmation_actions, engine.Handshake)
   let assert Ok(engine.Step(_, [])) = engine.confirm_client_handshake(client)
   Nil
+}
+
+// RFC 6066 section 3 and RFC 8446 section 4.2 require a TLS 1.3 server that actually selects credentials by SNI to acknowledge it with empty extension_data in EncryptedExtensions.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn full_handshake_acknowledges_used_sni_with_empty_data_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let server_config = with_localhost_credential(server_config)
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(server, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+
+  assert matching_extension_data(
+      server_encrypted_extensions(server_actions),
+      extension.ServerName,
+    )
+    == [<<>>]
+
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  assert engine.handle_client(
+      client,
+      engine.Handshake,
+      server_flight_without_server_name(server_actions),
+    )
+    == Error(engine.AuthenticationFailure(authentication.InvalidSignature))
+  let assert Ok(engine.Step(client, finish_actions)) =
+    engine.handle_client(
+      client,
+      engine.Handshake,
+      sent_at(server_actions, engine.Handshake),
+    )
+  let assert Ok(engine.Step(server, _)) =
+    engine.handle_server(
+      server,
+      engine.Handshake,
+      sent_at(finish_actions, engine.Handshake),
+    )
+  assert engine.client_phase(client) == engine.Connected
+  assert engine.server_phase(server) == engine.Connected
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn wildcard_sni_selection_is_acknowledged_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let client_config =
+    engine.ClientConfig(..client_config, hostname: "api.example.com")
+  let server_config =
+    with_server_name_credential(server_config, "*.example.com")
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(_, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(_, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  assert matching_extension_data(
+      server_encrypted_extensions(server_actions),
+      extension.ServerName,
+    )
+    == [<<>>]
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn unused_and_absent_sni_are_not_acknowledged_test() -> Nil {
+  let #(base_client, base_server) = configs([<<"h3">>])
+  let server = with_localhost_credential(base_server)
+  list.each(
+    [
+      engine.ClientConfig(..base_client, hostname: "unused.example"),
+      engine.ClientConfig(..base_client, hostname: "127.0.0.1"),
+    ],
+    fn(client_config) {
+      let assert Ok(server) = engine.start_server(server)
+      let assert Ok(engine.Step(_, client_actions)) =
+        engine.start_client(client_config)
+      let assert Ok(engine.Step(_, server_actions)) =
+        engine.handle_server(
+          server,
+          engine.Initial,
+          sent_at(client_actions, engine.Initial),
+        )
+      assert matching_extension_data(
+          server_encrypted_extensions(server_actions),
+          extension.ServerName,
+        )
+        == []
+    },
+  )
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_nonempty_server_name_acknowledgement_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(_, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  let assert Ok(alpn) = extension_value.encode_alpn([<<"h3">>])
+  let assert Ok(parameters) =
+    transport_parameter.encode_all(
+      server_config.transport_parameters,
+      transport_parameter.Server,
+    )
+  let assert Ok(body) =
+    message_body.encode_encrypted_extensions(
+      [
+        extension.Extension(extension.ServerName, <<1>>),
+        extension.Extension(extension.ApplicationLayerProtocolNegotiation, alpn),
+        extension.Extension(extension.QuicTransportParameters, parameters),
+      ],
+      message_body.default_limits(),
+    )
+  let assert Ok(encoded) =
+    handshake.encode(
+      handshake.Message(handshake.EncryptedExtensions, body),
+      handshake.default_limits().maximum_message_length,
+    )
+  assert engine.handle_client(client, engine.Handshake, encoded)
+    == Error(engine.InvalidConfiguration)
+}
+
+// An IP-literal ClientHello intentionally carries no server_name extension, so even the otherwise valid empty acknowledgement is unsolicited.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_server_name_acknowledgement_when_sni_was_not_offered_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let client_config =
+    engine.ClientConfig(..client_config, hostname: "127.0.0.1")
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(client, client_actions)) =
+    engine.start_client(client_config)
+  let assert Ok(engine.Step(_, server_actions)) =
+    engine.handle_server(
+      server,
+      engine.Initial,
+      sent_at(client_actions, engine.Initial),
+    )
+  let assert Ok(engine.Step(client, _)) =
+    engine.handle_client(
+      client,
+      engine.Initial,
+      sent_at(server_actions, engine.Initial),
+    )
+  assert engine.handle_client(
+      client,
+      engine.Handshake,
+      server_name_acknowledgement_only(server_actions, <<>>),
+    )
+    == Error(engine.InvalidConfiguration)
+}
+
+// The parser must reject two host_name entries inside one server_name extension, rather than only rejecting duplicate top-level extension IDs.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn client_hello_rejects_duplicate_server_name_types_test() -> Nil {
+  let #(client_config, server_config) = configs([<<"h3">>])
+  let assert Ok(server) = engine.start_server(server_config)
+  let assert Ok(engine.Step(_, client_actions)) =
+    engine.start_client(client_config)
+  let duplicate_host_names = <<
+    0,
+    24,
+    0,
+    0,
+    9,
+    "a.example",
+    0,
+    0,
+    9,
+    "b.example",
+  >>
+  let encoded = replace_client_server_name(client_actions, duplicate_host_names)
+  assert engine.handle_server(server, engine.Initial, encoded)
+    == Error(
+      engine.ExtensionValueFailure(extension_value.DuplicateIdentifier(0)),
+    )
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -262,6 +460,7 @@ pub fn accepts_arbitrarily_fragmented_crypto_bytes_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_one_hello_retry_request_and_discards_initial_keys_test() -> Nil {
   let #(client_config, server_config) = configs([<<"h3">>])
+  let server_config = with_localhost_credential(server_config)
   let assert Ok(server) = engine.start_server(server_config)
   let assert Ok(engine.Step(client, client_actions)) =
     engine.start_client_with_strategy(client_config, engine.DeferredKeyShare)
@@ -286,6 +485,11 @@ pub fn completes_one_hello_retry_request_and_discards_initial_keys_test() -> Nil
       engine.Initial,
       sent_at(second_hello_actions, engine.Initial),
     )
+  assert matching_extension_data(
+      server_encrypted_extensions(server_actions),
+      extension.ServerName,
+    )
+    == [<<>>]
   let assert Ok(engine.Step(client, _)) =
     engine.handle_client(
       client,
@@ -406,6 +610,7 @@ pub fn completes_p256_hello_retry_request_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn completes_psk_resumption_and_accepts_replay_checked_early_data_test() -> Nil {
   let #(client_config, server_config) = configs([<<"h3">>])
+  let server_config = with_localhost_credential(server_config)
   let ticket_key = <<0x61:256>>
   let resumption_master_secret = <<0x72:256>>
   let issued_at = 10_000_000
@@ -463,6 +668,11 @@ pub fn completes_psk_resumption_and_accepts_replay_checked_early_data_test() -> 
     )
   assert has_read_keys(server_actions, engine.ZeroRtt)
   assert list.contains(server_actions, engine.EarlyDataAccepted)
+  assert matching_extension_data(
+      server_encrypted_extensions(server_actions),
+      extension.ServerName,
+    )
+    == []
 
   let assert Ok(engine.Step(client, _)) =
     engine.handle_client(
@@ -470,6 +680,12 @@ pub fn completes_psk_resumption_and_accepts_replay_checked_early_data_test() -> 
       engine.Initial,
       sent_at(server_actions, engine.Initial),
     )
+  assert engine.handle_client(
+      client,
+      engine.Handshake,
+      server_name_acknowledgement_only(server_actions, <<>>),
+    )
+    == Error(engine.InvalidConfiguration)
   let assert Ok(engine.Step(client, finish_actions)) =
     engine.handle_client(
       client,
@@ -870,6 +1086,26 @@ fn configs(
   #(client, server)
 }
 
+fn with_localhost_credential(
+  config: engine.ServerConfig,
+) -> engine.ServerConfig {
+  with_server_name_credential(config, "localhost")
+}
+
+fn with_server_name_credential(
+  config: engine.ServerConfig,
+  server_name: String,
+) -> engine.ServerConfig {
+  engine.ServerConfig(..config, alternative_credentials: [
+    engine.ServerCredential(
+      server_name: server_name,
+      certificate_chain: config.certificate_chain,
+      signing_key: config.signing_key,
+      signature_scheme: config.signature_scheme,
+    ),
+  ])
+}
+
 fn client_authentication_material() -> #(
   engine.ClientCredential,
   authentication.TrustStore,
@@ -988,6 +1224,107 @@ fn receive_server_flight(
     engine.Handshake,
     sent_at(server_actions, engine.Handshake),
   )
+}
+
+fn server_encrypted_extensions(
+  actions: List(engine.Action),
+) -> List(extension.Extension) {
+  let encoded = sent_at(actions, engine.Handshake)
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.EncryptedExtensions, body),
+    _,
+  )) = handshake.decode_next(encoded, handshake.default_limits())
+  let assert Ok(extensions) =
+    message_body.decode_encrypted_extensions(
+      body,
+      message_body.default_limits(),
+    )
+  extensions
+}
+
+fn server_flight_without_server_name(actions: List(engine.Action)) -> BitArray {
+  let encoded = sent_at(actions, engine.Handshake)
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.EncryptedExtensions, body),
+    rest,
+  )) = handshake.decode_next(encoded, handshake.default_limits())
+  let assert Ok(extensions) =
+    message_body.decode_encrypted_extensions(
+      body,
+      message_body.default_limits(),
+    )
+  let extensions =
+    list.filter(extensions, fn(value) { value.kind != extension.ServerName })
+  <<encoded_encrypted_extensions(extensions):bits, rest:bits>>
+}
+
+fn server_name_acknowledgement_only(
+  actions: List(engine.Action),
+  data: BitArray,
+) -> BitArray {
+  let extensions = [
+    extension.Extension(extension.ServerName, data),
+    ..server_encrypted_extensions(actions)
+  ]
+  encoded_encrypted_extensions(extensions)
+}
+
+fn encoded_encrypted_extensions(
+  extensions: List(extension.Extension),
+) -> BitArray {
+  let assert Ok(body) =
+    message_body.encode_encrypted_extensions(
+      extensions,
+      message_body.default_limits(),
+    )
+  let assert Ok(encoded) =
+    handshake.encode(
+      handshake.Message(handshake.EncryptedExtensions, body),
+      handshake.default_limits().maximum_message_length,
+    )
+  encoded
+}
+
+fn matching_extension_data(
+  extensions: List(extension.Extension),
+  expected: extension.Kind,
+) -> List(BitArray) {
+  list.filter_map(extensions, fn(value) {
+    case value.kind == expected {
+      True -> Ok(value.data)
+      False -> Error(Nil)
+    }
+  })
+}
+
+fn replace_client_server_name(
+  actions: List(engine.Action),
+  replacement: BitArray,
+) -> BitArray {
+  let encoded = sent_at(actions, engine.Initial)
+  let assert Ok(handshake.Complete(
+    handshake.Message(handshake.ClientHello, body),
+    <<>>,
+  )) = handshake.decode_next(encoded, handshake.default_limits())
+  let assert Ok(decoded) = hello.decode_client(body, hello.default_limits())
+  let extensions =
+    list.map(decoded.extensions, fn(value) {
+      case value.kind == extension.ServerName {
+        True -> extension.Extension(extension.ServerName, replacement)
+        False -> value
+      }
+    })
+  let assert Ok(body) =
+    hello.encode_client(
+      hello.ClientHello(..decoded, extensions: extensions),
+      hello.default_limits(),
+    )
+  let assert Ok(encoded) =
+    handshake.encode(
+      handshake.Message(handshake.ClientHello, body),
+      handshake.default_limits().maximum_message_length,
+    )
+  encoded
 }
 
 fn client_hello_key_share_group(

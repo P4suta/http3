@@ -11,6 +11,14 @@ fn rfc1951_full_range_vector() -> #(BitArray, BitArray)
 @external(erlang, "compression_test_ffi", "rfc1952_optional_header_vector")
 fn rfc1952_optional_header_vector() -> BitArray
 
+@external(erlang, "compression_test_ffi", "rfc8878_erratum_7297_vectors")
+fn rfc8878_erratum_7297_vectors() -> #(
+  List(BitArray),
+  BitArray,
+  List(BitArray),
+  List(BitArray),
+)
+
 pub fn main() -> Nil {
   gleeunit.main()
 }
@@ -19,6 +27,122 @@ fn payload() -> BitArray {
   bit_array.from_string(
     "the quick brown fox jumps over the lazy dog; the quick brown fox jumps over the lazy dog",
   )
+}
+
+pub fn brotli_independent_stored_stream_test() -> Nil {
+  // System.IO.Compression.BrotliStream (.NET 10, SmallestSize).
+  // This valid WBITS=22 stream differs from our WBITS=16 trivial compressor's layout.
+  let encoded = <<11, 2, 128, "hello":utf8, 3>>
+  assert compression.decode(
+      compression.Brotli,
+      encoded,
+      None,
+      compression.defaults(),
+    )
+    == Ok(<<"hello":utf8>>)
+}
+
+pub fn brotli_stored_stream_enforces_advertised_window_test() -> Nil {
+  let limits =
+    compression.Limits(..compression.defaults(), maximum_window_log: 21)
+  assert compression.decode(
+      compression.Brotli,
+      <<11, 2, 128, "hello":utf8, 3>>,
+      None,
+      limits,
+    )
+    == Error(compression.LimitExceeded)
+}
+
+pub fn dcb_fixed_window_violation_is_invalid_encoding_test() -> Nil {
+  let dictionary = <<"dictionary":utf8>>
+  let assert Ok(hash) =
+    compression.dictionary_hash(dictionary, compression.defaults())
+  let dcb_with_wbits_25 = <<0xff, 0x44, 0x43, 0x42, hash:bits, 0x11, 25>>
+
+  // RFC 9841 can represent WBITS=25 in its large-window header, but RFC 9842 fixes dcb to at most 16 MiB (WBITS=24).
+  // The configured ceiling here is 27,
+  // so this is a malformed dcb stream rather than a caller-selected refusal.
+  assert compression.decode(
+      compression.DictionaryBrotli,
+      dcb_with_wbits_25,
+      Some(dictionary),
+      compression.defaults(),
+    )
+    == Error(compression.InvalidEncoding)
+}
+
+pub fn brotli_encoder_respects_small_configured_windows_test() -> Nil {
+  [10, 11, 12, 13, 14, 15, 16]
+  |> list.each(fn(window) {
+    let limits =
+      compression.Limits(..compression.defaults(), maximum_window_log: window)
+    [<<>>, <<"small window":utf8>>]
+    |> list.each(fn(body) {
+      let assert Ok(encoded) =
+        compression.encode(compression.Brotli, body, None, limits)
+      assert compression.decode(compression.Brotli, encoded, None, limits)
+        == Ok(body)
+    })
+  })
+}
+
+pub fn brotli_independent_compressed_metablocks_test() -> Nil {
+  // Independent .NET 10 BrotliStream SmallestSize vectors, decoded by that runtime before retention.
+  // Neither vector uses our trivial encoder.
+  let phrase = <<
+    27, 87, 0, 0, 140, 148, 110, 230, 98, 132, 74, 7, 61, 88, 170, 43, 253, 173,
+    66, 209, 8, 200, 55, 180, 48, 216, 128, 3, 135, 4, 242, 23, 26, 228, 122,
+    182, 204, 46, 177, 179, 99, 178, 69, 9, 203, 195, 70, 217, 234, 15, 147, 242,
+    9, 0,
+  >>
+  assert compression.decode(
+      compression.Brotli,
+      phrase,
+      None,
+      compression.defaults(),
+    )
+    == Ok(payload())
+  let repeated = <<
+    27, 255, 4, 248, 5, 110, 192, 198, 218, 168, 112, 45, 10, 168, 5, 219, 1,
+  >>
+  assert compression.decode(
+      compression.Brotli,
+      repeated,
+      None,
+      compression.defaults(),
+    )
+    == Ok(bit_array.from_string(string.repeat("abcde", 256)))
+}
+
+pub fn brotli_static_and_raw_prefix_dictionary_reference_test() -> Nil {
+  // Google Brotli CompoundDictionaryTest.ONE_COPY, revision 4508218e7fef90fa4273286f7a415065946f2c43 (MIT).
+  let compressed = <<161, 168, 0, 192, 47, 1, 16, 196, 68, 9, 0>>
+  assert compression.decode(
+      compression.Brotli,
+      compressed,
+      None,
+      compression.defaults(),
+    )
+    == Ok(<<"alternate\" type=\"appli":utf8>>)
+  let dictionary = <<"Kot lomom kolol slona!":utf8>>
+  let assert Ok(hash) =
+    compression.dictionary_hash(dictionary, compression.defaults())
+  let dcb = <<255, 68, 67, 66, hash:bits, compressed:bits>>
+  assert compression.decode(
+      compression.DictionaryBrotli,
+      dcb,
+      Some(dictionary),
+      compression.defaults(),
+    )
+    == Ok(dictionary)
+  assert compression.decode(
+      compression.DictionaryBrotli,
+      dcb,
+      Some(<<"wrong":utf8>>),
+      compression.defaults(),
+    )
+    == Error(compression.DictionaryMismatch)
 }
 
 pub fn gzip_deflate_brotli_and_zstandard_round_trip_test() -> Nil {
@@ -483,6 +607,42 @@ pub fn brotli_trivial_stream_and_zstandard_magic_are_interoperable_test() -> Nil
   Nil
 }
 
+pub fn rfc8878_erratum_7297_four_stream_size_boundaries_test() -> Nil {
+  let #(valid, expected, regenerated_underflow, compressed_underflow) =
+    rfc8878_erratum_7297_vectors()
+
+  // One independently generated frame is expressed using each of the three four-stream size formats.
+  // This keeps the positive controls adjacent to the one-field mutations below instead of accepting rejection by accident.
+  assert list.length(valid) == 3
+  valid
+  |> list.each(fn(vector) {
+    assert compression.decode(
+        compression.Zstandard,
+        vector,
+        None,
+        compression.defaults(),
+      )
+      == Ok(expected)
+  })
+
+  // RFC 8878 erratum 7297 corrects both encoded ranges from 0..
+  // to 6...
+  // Test every underflow value in every four-stream layout.
+  // A decoder retaining the published lower bound would accept at least the regenerated-size mutations far enough to enter the four-way split with an underflow.
+  assert list.length(regenerated_underflow) == 18
+  assert list.length(compressed_underflow) == 18
+  list.append(regenerated_underflow, compressed_underflow)
+  |> list.each(fn(vector) {
+    assert compression.decode(
+        compression.Zstandard,
+        vector,
+        None,
+        compression.defaults(),
+      )
+      == Error(compression.InvalidEncoding)
+  })
+}
+
 pub fn malformed_bomb_and_non_byte_aligned_input_fail_closed_test() -> Nil {
   let expanded = bit_array.from_string(string.repeat("A", 65_536))
   let assert Ok(compressed) =
@@ -500,11 +660,20 @@ pub fn malformed_bomb_and_non_byte_aligned_input_fail_closed_test() -> Nil {
     == Error(compression.LimitExceeded)
   assert compression.decode(
       compression.Brotli,
-      <<12, 1, 0, 8, 0, 3>>,
+      <<12, 0, 0, 8>>,
       None,
       compression.defaults(),
     )
     == Error(compression.InvalidEncoding)
+  // This distinct malformed stream advertises a compressed meta-block larger than the ratio budget.
+  // Refuse that length before attempting its payload.
+  assert compression.decode(
+      compression.Brotli,
+      <<12, 1, 0, 8, 0, 3>>,
+      None,
+      compression.defaults(),
+    )
+    == Error(compression.LimitExceeded)
   assert compression.decode(
       compression.Deflate,
       <<1:size(1)>>,
@@ -512,6 +681,93 @@ pub fn malformed_bomb_and_non_byte_aligned_input_fail_closed_test() -> Nil {
       compression.defaults(),
     )
     == Error(compression.NonByteAligned)
+}
+
+pub fn secure_channel_compression_rejects_unknown_and_mixed_provenance_test() -> Nil {
+  let invalid_limits =
+    compression.Limits(..compression.defaults(), maximum_input_bytes: 0)
+  [
+    compression.Gzip,
+    compression.Deflate,
+    compression.Brotli,
+    compression.Zstandard,
+    compression.DictionaryBrotli,
+    compression.DictionaryZstandard,
+  ]
+  |> list.each(fn(coding) {
+    // Provenance is checked before limits, dictionary hashing, or codec work.
+    assert compression.encode_for_secure_channel(
+        coding,
+        <<"safe assertion value":utf8>>,
+        None,
+        invalid_limits,
+        compression.UnknownProvenance,
+      )
+      == Error(compression.UnsafeCompressionProvenance)
+    assert compression.encode_for_secure_channel(
+        coding,
+        <<"safe assertion value":utf8>>,
+        None,
+        compression.defaults(),
+        compression.MixedConfidentialAndAttackerControlled,
+      )
+      == Error(compression.UnsafeCompressionProvenance)
+  })
+}
+
+pub fn secure_channel_identity_is_safe_for_every_provenance_test() -> Nil {
+  [
+    compression.PublicContent,
+    compression.ConfidentialContent,
+    compression.AttackerControlledContent,
+    compression.MixedConfidentialAndAttackerControlled,
+    compression.UnknownProvenance,
+  ]
+  |> list.each(fn(provenance) {
+    assert compression.encode_for_secure_channel(
+        compression.Identity,
+        <<"identity":utf8>>,
+        None,
+        compression.defaults(),
+        provenance,
+      )
+      == Ok(<<"identity":utf8>>)
+  })
+}
+
+pub fn secure_channel_single_source_calls_use_separate_contexts_test() -> Nil {
+  let confidential = <<"confidential-only":utf8>>
+  let attacker_controlled = <<"attacker-controlled-only":utf8>>
+  let assert Ok(confidential_encoded) =
+    compression.encode_for_secure_channel(
+      compression.Gzip,
+      confidential,
+      None,
+      compression.defaults(),
+      compression.ConfidentialContent,
+    )
+  let assert Ok(attacker_encoded) =
+    compression.encode_for_secure_channel(
+      compression.Gzip,
+      attacker_controlled,
+      None,
+      compression.defaults(),
+      compression.AttackerControlledContent,
+    )
+  assert compression.decode(
+      compression.Gzip,
+      confidential_encoded,
+      None,
+      compression.defaults(),
+    )
+    == Ok(confidential)
+  assert compression.decode(
+      compression.Gzip,
+      attacker_encoded,
+      None,
+      compression.defaults(),
+    )
+    == Ok(attacker_controlled)
 }
 
 pub fn rfc9842_dictionary_headers_hash_and_round_trip_test() -> Nil {

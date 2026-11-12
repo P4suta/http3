@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "status": "Rejected",
+  "classification": "independent_review_false_green_v4",
+  "invalidated_at": "2026-09-13",
+  "invalidated_manifest_sha256": "e3a85fc3145c7bb48d2989858d85b7c069bea91570a37d2ebdae79fc05a5643e",
+  "actual_adversarial_red_completed_controls": 12,
+  "actual_adversarial_red_failed_controls": 10,
+  "reasons": [
+    "handler_run_allowed_in_deadline_true_branch",
+    "guardian_monitor_return_not_bound_to_terminal_expression",
+    "owner_monitor_can_be_demonitored_before_handler_start",
+    "nested_handler_state_entries_accepted",
+    "handler_down_call_can_be_unreachable_after_nonreturning_expression",
+    "success_publication_can_be_unreachable",
+    "red_failure_count_misreported",
+    "v2_replacement_path_did_not_resolve",
+    "red_and_invalidation_artifacts_not_hashed",
+    "report_completion_and_rerun_fields_not_fail_closed",
+    "release_gate_tools_not_tracked_or_ci_connected",
+    "runtime_and_configuration_identity_incomplete",
+    "adversarial_read_failure_not_safely_classified"
+  ],
+  "replacement": "build/root-validation/http1-handler-guardian-v4-static-green/evidence.json",
+  "native_execution": "prohibited_and_not_invoked"
+}

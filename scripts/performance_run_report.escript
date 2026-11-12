@@ -3,29 +3,15 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("diagnostic_failure.hrl").
+-include("json_evidence.hrl").
+-include("evidence_identity.hrl").
+-include("performance_execution.hrl").
+
 -define(PROFILE, "standards/performance-profile.json").
 -define(OUTPUT, "build/performance/current").
--define(HEADER,
-        <<"mode,iteration,warmup,concurrency,requests_per_worker,total_requests,"
-          "payload_bytes,elapsed_microseconds,requests_per_second,"
-          "processes_before,processes_after,memory_before_bytes,"
-          "memory_after_bytes,mailbox_messages_before,mailbox_messages_after,"
-          "ports_before,ports_after,network_ports_before,network_ports_after,"
-          "sockets_before,sockets_after,"
-          "runtime_milliseconds,reductions,context_switches,garbage_collections,"
-          "garbage_collected_words,io_input_bytes,io_output_bytes,"
-          "run_queue_before,run_queue_after,"
-          "client_initial_smoothed_rtt_min_us,"
-          "client_initial_smoothed_rtt_avg_us,"
-          "client_initial_smoothed_rtt_max_us,"
-          "client_final_smoothed_rtt_min_us,client_final_smoothed_rtt_avg_us,"
-          "client_final_smoothed_rtt_max_us,client_initial_cwnd_min,"
-          "client_initial_cwnd_avg,client_initial_cwnd_max,client_final_cwnd_min,"
-          "client_final_cwnd_avg,client_final_cwnd_max,"
-          "client_retransmissions_total,client_retransmissions_max,"
-          "client_packets_received_total,client_packets_sent_total,"
-          "client_batch_flushes_total,client_packets_coalesced_total,"
-          "client_connections_in_recovery,client_connections_congested">>).
+-include("performance_csv.hrl").
+-define(HEADER, ?PERFORMANCE_CSV_HEADER).
 -define(LOG_TAIL_BYTES, 16384).
 
 main(["--self-test"]) ->
@@ -43,9 +29,8 @@ guarded_self_test() ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "performance report self-test failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "performance report self-test failed: ~p~n",
+                      [diagnostic_failure_details(Class, Reason, Stacktrace)]),
             halt(1)
     end.
 
@@ -61,9 +46,8 @@ guarded_run(Mode, ExitStatusText, LogPath, StartHostPath, EndHostPath) ->
             catch
                 _:_ -> emergency_report_unavailable
             end,
-            io:format(standard_error,
-                      "~s performance report failed: ~p:~p~n~p~n",
-                      [Mode, Class, Reason, Stacktrace]),
+            io:format(standard_error, "~s performance report failed: ~p~n",
+                      [Mode, diagnostic_failure_details(Class, Reason, Stacktrace)]),
             halt(1)
     end.
 
@@ -71,13 +55,21 @@ run(ModeText, ExitStatusText, LogPath, StartHostPath, EndHostPath) ->
     Mode = list_to_binary(ModeText),
     ExitStatus = parse_nonnegative(<<"exit_status">>,
                                    list_to_binary(ExitStatusText)),
-    Log = read(LogPath),
+    Log = maps:get(csv, performance_filter_csv(read(LogPath))),
     ProfileBytes = read(?PROFILE),
-    Profile = json:decode(ProfileBytes),
+    Profile = evidence_json_decode(ProfileBytes),
     EvidenceProfile = validate_evidence_profile(Profile),
     Configuration = workload_configuration(Mode, Profile),
     Rows = parse_rows(Log, Mode),
+    Execution = performance_verify_execution(Mode, Log),
     HostEvidence = host_evidence(StartHostPath, EndHostPath),
+    Child = maps:get(<<"child">>, Execution),
+    true = maps:get(snapshot, maps:get(start, HostEvidence)) =:= maps:get(<<"host_start">>, Child),
+    true = maps:get(snapshot, maps:get('end', HostEvidence)) =:= maps:get(<<"host_end">>, Child),
+    Stem = "build/performance/current/" ++ ModeText,
+    true = LogPath =:= Stem ++ ".log",
+    true = StartHostPath =:= Stem ++ "-host-start.json",
+    true = EndHostPath =:= Stem ++ "-host-end.json",
     HostViolations = validate_host_evidence(HostEvidence),
     Violations = validate_run(ExitStatus, Rows, Configuration)
                  ++ HostViolations,
@@ -96,8 +88,8 @@ run(ModeText, ExitStatusText, LogPath, StartHostPath, EndHostPath) ->
                host => HostEvidence,
                configuration => Configuration,
                measured_median_requests_per_second => measured_median(Rows),
-               rows => Rows, violations => Violations},
-    write_report(ModeText, Report, Rows),
+               rows => Rows, violations => Violations, execution => Execution},
+    write_report(ModeText, evidence_complete(Report, maps:get(<<"evidence_identity">>, Execution)), Rows),
     case Violations of
         [] ->
             io:format("~s performance evidence: ~B rows, median ~B req/s~n",
@@ -112,7 +104,7 @@ run(ModeText, ExitStatusText, LogPath, StartHostPath, EndHostPath) ->
 
 validate_evidence_profile(Profile) ->
     Evidence = maps:get(<<"performance_evidence">>, Profile),
-    ensure(maps:get(<<"report_schema">>, Evidence) =:= 3,
+    ensure(maps:get(<<"report_schema">>, Evidence) =:= 4,
            unsupported_performance_report_schema),
     ensure(maps:get(<<"host_snapshot_schema">>, Evidence) =:= 1,
            unsupported_host_snapshot_schema),
@@ -141,8 +133,11 @@ host_evidence(StartPath, EndPath) ->
 
 host_file_evidence(Path) ->
     Bytes = read(Path),
+    Snapshot = evidence_json_decode(Bytes),
+    true = performance_host_valid(Snapshot, maps:get(<<"label">>, Snapshot)),
+    Canonical = iolist_to_binary([json:encode(Snapshot), $\n]),
     #{path => list_to_binary(Path), bytes => byte_size(Bytes),
-      sha256 => hex(crypto:hash(sha256, Bytes)), snapshot => json:decode(Bytes)}.
+      sha256 => hex(crypto:hash(sha256, Canonical)), snapshot => Snapshot}.
 
 validate_host_evidence(Evidence) ->
     Start = maps:get(snapshot, maps:get(start, Evidence)),
@@ -203,8 +198,7 @@ validate_host_probe(Name, {ok, Probe}, Label) when is_map(Probe) ->
         true -> [];
         false ->
             [#{id => <<"host-probe-invalid">>, label => Label,
-               probe => Name, status => format_term(Status),
-               reason => maps:get(<<"reason">>, Probe, <<"unspecified">>)}]
+               probe => Name, status => <<"Invalid">>, reason => <<"invalid_probe">>}]
     end;
 validate_host_probe(Name, {ok, _Probe}, Label) ->
     [#{id => <<"host-probe-shape">>, label => Label, probe => Name}].
@@ -246,102 +240,6 @@ counter_path_violation(Start, End, Path) ->
                path => join_path(Path), before => Value, 'after' => Later}];
         {_, _} -> []
     end.
-
-host_deltas(Start, End) ->
-    TotalTicks = host_delta(
-                   Start, End,
-                   [<<"cpu_accounting">>, <<"total_ticks">>]),
-    BusyTicks = host_delta(
-                  Start, End,
-                  [<<"cpu_accounting">>, <<"busy_ticks">>]),
-    #{duration_milliseconds =>
-          snapshot_integer(End, <<"captured_system_time_milliseconds">>, 0)
-          - snapshot_integer(Start,
-                             <<"captured_system_time_milliseconds">>, 0),
-      cpu_total_ticks => TotalTicks,
-      cpu_busy_ticks => BusyTicks,
-      cpu_busy_basis_points => cpu_busy_basis_points(BusyTicks, TotalTicks),
-      context_switches => host_delta(
-          Start, End,
-          [<<"cpu_accounting">>, <<"context_switches">>]),
-      processes_created => host_delta(
-          Start, End,
-          [<<"cpu_accounting">>, <<"processes_created">>]),
-      cpu_pressure_some_microseconds => pressure_delta(
-          Start, End, <<"cpu_pressure">>, <<"some">>),
-      cpu_pressure_full_microseconds => pressure_delta(
-          Start, End, <<"cpu_pressure">>, <<"full">>),
-      memory_pressure_some_microseconds => pressure_delta(
-          Start, End, <<"memory_pressure">>, <<"some">>),
-      memory_pressure_full_microseconds => pressure_delta(
-          Start, End, <<"memory_pressure">>, <<"full">>),
-      io_pressure_some_microseconds => pressure_delta(
-          Start, End, <<"io_pressure">>, <<"some">>),
-      io_pressure_full_microseconds => pressure_delta(
-          Start, End, <<"io_pressure">>, <<"full">>),
-      cgroup_cpu_usage_microseconds => host_delta(
-          Start, End,
-          [<<"cgroup_cpu_accounting">>, <<"counters">>, <<"usage_usec">>]),
-      cgroup_cpu_throttled_periods => host_delta(
-          Start, End,
-          [<<"cgroup_cpu_accounting">>, <<"counters">>,
-           <<"nr_throttled">>]),
-      cgroup_cpu_throttled_microseconds => host_delta(
-          Start, End,
-          [<<"cgroup_cpu_accounting">>, <<"counters">>,
-           <<"throttled_usec">>]),
-      memory_available_bytes_change => host_delta(
-          Start, End, [<<"memory">>, <<"available_bytes">>]),
-      load_1m_milli_start => host_probe_value(
-          Start, [<<"load_average">>, <<"load_1m_milli">>]),
-      load_1m_milli_end => host_probe_value(
-          End, [<<"load_average">>, <<"load_1m_milli">>]),
-      cpu_frequency_average_start => host_probe_value(
-          Start, [<<"cpu_frequency">>, <<"average">>]),
-      cpu_frequency_average_end => host_probe_value(
-          End, [<<"cpu_frequency">>, <<"average">>]),
-      thermal_maximum_start => host_probe_value(
-          Start, [<<"thermal">>, <<"maximum">>]),
-      thermal_maximum_end => host_probe_value(
-          End, [<<"thermal">>, <<"maximum">>])}.
-
-pressure_delta(Start, End, Probe, Kind) ->
-    host_delta(Start, End,
-               [Probe, Kind, <<"total_microseconds">>]).
-
-host_delta(Start, End, Path) ->
-    case {host_probe_value(Start, Path), host_probe_value(End, Path)} of
-        {Before, After} when is_integer(Before), is_integer(After) ->
-            After - Before;
-        {_, _} -> null
-    end.
-
-host_probe_value(Snapshot, Path) ->
-    Probes = maps:get(<<"probes">>, Snapshot, #{}),
-    nested_value(Probes, Path).
-
-nested_value(Value, []) -> Value;
-nested_value(Map, [Key | Rest]) when is_map(Map) ->
-    case maps:find(Key, Map) of
-        {ok, Value} -> nested_value(Value, Rest);
-        error -> null
-    end;
-nested_value(_Value, _Path) -> null.
-
-cpu_busy_basis_points(Busy, Total)
-        when is_integer(Busy), is_integer(Total), Total > 0,
-             Busy >= 0, Busy =< Total ->
-    Busy * 10000 div Total;
-cpu_busy_basis_points(_Busy, _Total) -> null.
-
-snapshot_integer(Snapshot, Key, Default) ->
-    case maps:get(Key, Snapshot, Default) of
-        Value when is_integer(Value) -> Value;
-        _ -> Default
-    end.
-
-join_path(Path) ->
-    iolist_to_binary(lists:join(<<"/">>, Path)).
 
 workload_configuration(Mode, Profile) ->
     Workloads = maps:get(<<"fixed_http3_workloads">>, Profile),
@@ -707,15 +605,6 @@ canonical_csv_row(Row) ->
          integer_binary(maps:get(client_connections_congested, Row))],
     [lists:join($,, Fields), $\n].
 
-bounded_log_evidence(Log, LogPath) ->
-    Size = byte_size(Log),
-    TailSize = erlang:min(Size, ?LOG_TAIL_BYTES),
-    Tail = binary:part(Log, Size - TailSize, TailSize),
-    #{path => list_to_binary(LogPath), bytes => Size,
-      sha256 => hex(crypto:hash(sha256, Log)), tail_bytes => TailSize,
-      tail_base64 => base64:encode(Tail), truncated => Size > TailSize,
-      shareable => false}.
-
 source_digest(Profile) ->
     Evidence = maps:get(<<"performance_evidence">>, Profile),
     Roots = [binary_to_list(Path)
@@ -734,45 +623,28 @@ source_digest(Profile) ->
                      || Path <- Paths])).
 
 write_emergency_report(
-  Mode, LogPath, StartHostPath, EndHostPath, Class, Reason, Stacktrace
+  Mode, _LogPath, _StartHostPath, _EndHostPath, Class, Reason, Stacktrace
 ) ->
     Path = filename:join(?OUTPUT, Mode ++ ".json"),
+    Stem = "build/performance/current/" ++ Mode,
     ok = filelib:ensure_dir(Path),
-    Report = #{schema => 3, status => <<"Failed">>,
+    Report = #{schema => 4, status => <<"Failed">>,
                mode => list_to_binary(Mode),
-               log => emergency_log_evidence(LogPath),
+               log => emergency_log_evidence(Stem ++ ".log"),
                host =>
                    #{shareable => false,
-                     start => emergency_host_evidence(StartHostPath),
-                     'end' => emergency_host_evidence(EndHostPath)},
-               runner_error => #{class => atom_to_binary(Class),
-                                 reason => format_term(Reason),
-                                 stacktrace => format_term(Stacktrace)}},
+                     start => emergency_host_evidence(Stem ++ "-host-start.json"),
+                     'end' => emergency_host_evidence(Stem ++ "-host-end.json")},
+               runner_error => diagnostic_failure_details(Class, Reason, Stacktrace)},
     ok = file:write_file(Path, [json:encode(Report), <<"\n">>]).
 
 emergency_log_evidence(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} -> bounded_log_evidence(Bytes, Path);
-        {error, Reason} ->
-            #{path => list_to_binary(Path), shareable => false,
-              status => <<"Unavailable">>, reason => atom_to_binary(Reason)}
-    end.
+    try bounded_log_evidence(read(Path), Path)
+    catch _:_ -> #{shareable => true, status => <<"Unavailable">>, reason => <<"invalid_or_missing_log">>} end.
 
 emergency_host_evidence(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} ->
-            Base = #{path => list_to_binary(Path), bytes => byte_size(Bytes),
-                     sha256 => hex(crypto:hash(sha256, Bytes))},
-            try json:decode(Bytes) of
-                Snapshot -> Base#{status => <<"Captured">>,
-                                  snapshot => Snapshot}
-            catch
-                _:_ -> Base#{status => <<"Invalid">>}
-            end;
-        {error, Reason} ->
-            #{path => list_to_binary(Path), status => <<"Unavailable">>,
-              reason => atom_to_binary(Reason)}
-    end.
+    try host_file_evidence(Path) of Host -> Host#{status => <<"Captured">>}
+    catch _:_ -> #{status => <<"Unavailable">>, reason => <<"invalid_or_missing_snapshot">>} end.
 
 self_test() ->
     Configuration = #{mode => <<"benchmark">>, warmup_runs => 1,
@@ -785,6 +657,8 @@ self_test() ->
     Log = <<"compiler noise\n", Header/binary, Warmup/binary, "\n",
             Measured/binary, "\n">>,
     Rows = parse_rows(Log, <<"benchmark">>),
+    ensure(runtime_matrix_json(Rows) =:= performance_csv_rows(maps:get(csv, performance_filter_csv(Log)), <<"benchmark">>),
+           self_test_independent_csv_projection),
     [] = validate_run(0, Rows, Configuration),
     ensure(measured_median(Rows) =:= 20, self_test_median),
     BadMailbox = fixture_row(false, 1, 2, 5, 256, 20, 1),
@@ -853,8 +727,19 @@ self_test() ->
         maps:get(id, Violation) =:= <<"host-counter-regression">>
     end, RegressedViolations), self_test_host_counter_regression),
     LogEvidence = bounded_log_evidence(<<"fixture log">>, "fixture.log"),
-    ensure(maps:get(shareable, LogEvidence) =:= false,
-           self_test_log_must_be_non_shareable),
+    PrivateLog = <<"private-endpoint-credential-body">>,
+    PrivateEvidence = bounded_log_evidence(PrivateLog, "fixture.log"),
+    ensure(binary:match(base64:decode(maps:get(tail_base64, PrivateEvidence)), PrivateLog) =:= nomatch,
+           self_test_log_private_bytes),
+    ensure(maps:get(sha256, PrivateEvidence) =/= hex(crypto:hash(sha256, PrivateLog)),
+           self_test_log_private_digest),
+    ensure(maps:get(shareable, LogEvidence) =:= true,
+           self_test_log_numeric_summary_shareable),
+    SafeRow = fixture_row(true, 1, 4, 100, 1024, 600, 0),
+    Mixed = <<PrivateLog/binary, "\n", ?HEADER/binary, "\n", SafeRow/binary, "\n", PrivateLog/binary>>,
+    #{csv := Sanitized} = performance_filter_csv(Mixed),
+    ensure(Sanitized =:= <<?HEADER/binary, "\n", SafeRow/binary, "\n">>,
+           self_test_numeric_row_preserved),
     ensure(byte_size(maps:get(sha256, LogEvidence)) =:= 64,
            self_test_log_digest),
     MissingLog = emergency_log_evidence(
@@ -947,10 +832,10 @@ format_term(Term) ->
     end.
 
 read(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} -> Bytes;
-        {error, Reason} -> erlang:error({cannot_read, Path, Reason})
-    end.
+    {ok, File} = file:open(Path, [read, binary, raw]),
+    Result = file:read(File, 1048577), ok = file:close(File),
+    case Result of {ok, Bytes} when byte_size(Bytes) =< 1048576 -> Bytes;
+        eof -> <<>>; _ -> erlang:error(performance_input_limit) end.
 
 hex(Binary) ->
     iolist_to_binary([io_lib:format("~2.16.0B", [Byte]) || <<Byte>> <= Binary]).

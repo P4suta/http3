@@ -38,6 +38,17 @@ pub type Error {
   CryptoUnavailable
 }
 
+/// Typed, finite classification of one token inspection.
+///
+/// Authentication and decoding happen before address, version, lifetime, and purpose-specific validation.
+/// This distinction is required by RFC 9000 sections 8.1.2 and 8.1.3 with verified erratum 7861: a server can act on a Retry token's purpose only after it has authenticated and decoded that purpose.
+/// Failure arms retain only finite enums; the accepted arm returns the validated token value needed by the transport.
+pub type Inspection {
+  Accepted(Token)
+  ReadableButInvalid(kind: Kind, error: Error)
+  Unreadable(error: Error)
+}
+
 /// Seal a token with a fresh 96-bit AES-256-GCM nonce.
 pub fn seal(
   key: BitArray,
@@ -113,38 +124,119 @@ pub fn open(
   now: Int,
   maximum_age: Int,
 ) -> Result(Token, Error) {
-  use Nil <- result.try(validate_open_inputs(
-    key,
-    token,
-    expected_protocol_version,
-    expected_address,
-    expected_port,
-    now,
-    maximum_age,
-  ))
-  let nonce_bits = 12 * 8
-  case token {
-    <<nonce:bits-size(nonce_bits), protected:bits>> -> {
-      use plaintext <- result.try(
-        crypto.aes_256_gcm_decrypt(key, nonce, associated_data, protected)
-        |> map_crypto_result,
-      )
-      use decoded <- result.try(decode_body(plaintext))
-      validate_decoded(
-        decoded,
+  case
+    inspect(
+      key,
+      token,
+      expected_protocol_version,
+      expected_address,
+      expected_port,
+      now,
+      maximum_age,
+    )
+  {
+    Accepted(value) -> Ok(value)
+    ReadableButInvalid(_, error) | Unreadable(error) -> Error(error)
+  }
+}
+
+/// Authenticate and decode before applying address-validation policy.
+///
+/// `ReadableButInvalid` proves that this endpoint authenticated the token and identified its purpose.
+/// `Unreadable` deliberately makes no claim about the apparent bytes of a foreign, corrupt, or unsupported token.
+pub fn inspect(
+  key: BitArray,
+  token: BitArray,
+  expected_protocol_version: Version,
+  expected_address: BitArray,
+  expected_port: Int,
+  now: Int,
+  maximum_age: Int,
+) -> Inspection {
+  case
+    validate_open_inputs(
+      key,
+      token,
+      expected_protocol_version,
+      expected_address,
+      expected_port,
+      now,
+      maximum_age,
+    )
+  {
+    Error(error) -> Unreadable(error)
+    Ok(Nil) ->
+      inspect_valid_input(
+        key,
+        token,
         expected_protocol_version,
         expected_address,
         expected_port,
         now,
         maximum_age,
       )
+  }
+}
+
+fn inspect_valid_input(
+  key: BitArray,
+  token: BitArray,
+  expected_protocol_version: Version,
+  expected_address: BitArray,
+  expected_port: Int,
+  now: Int,
+  maximum_age: Int,
+) -> Inspection {
+  let nonce_bits = 12 * 8
+  case token {
+    <<nonce:bits-size(nonce_bits), protected:bits>> -> {
+      case
+        crypto.aes_256_gcm_decrypt(key, nonce, associated_data, protected)
+        |> map_crypto_result
+        |> result.try(decode_body)
+      {
+        Error(error) -> Unreadable(error)
+        Ok(decoded) ->
+          inspect_decoded(
+            decoded,
+            expected_protocol_version,
+            expected_address,
+            expected_port,
+            now,
+            maximum_age,
+          )
+      }
     }
-    _ -> Error(Malformed)
+    _ -> Unreadable(Malformed)
   }
 }
 
 type Decoded {
   Decoded(Kind, Version, BitArray, Int, BitArray, BitArray, Int)
+}
+
+fn inspect_decoded(
+  decoded: Decoded,
+  expected_protocol_version: Version,
+  expected_address: BitArray,
+  expected_port: Int,
+  now: Int,
+  maximum_age: Int,
+) -> Inspection {
+  let Decoded(kind, _, _, _, _, _, _) = decoded
+  case
+    validate_decoded(
+      decoded,
+      expected_protocol_version,
+      expected_address,
+      expected_port,
+      now,
+      maximum_age,
+    )
+  {
+    Ok(value) -> Accepted(value)
+    Error(error) -> ReadableButInvalid(kind, error)
+  }
 }
 
 fn encode_body(

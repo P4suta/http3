@@ -9,6 +9,8 @@ import quic_core/internal/ecn
 import quic_core/internal/key_phase
 import quic_core/internal/packet_space
 import quic_core/internal/runtime/budget
+import quic_core/internal/stream_completion
+import quic_core/internal/stream_state
 import quic_core/internal/tls/authentication
 import quic_core/internal/tls/engine
 import quic_core/internal/tls/extension
@@ -29,15 +31,260 @@ fn fixture(name: String) -> Result(BitArray, Nil)
 
 const initial_destination_connection_id = <<1, 2, 3, 4, 5, 6, 7, 8>>
 
-/// RFC 9000 section 17.2: twenty bytes is the longest connection ID version 1
-/// allows, and therefore the largest short header a packet can carry.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn send_completion_waits_for_data_before_an_acknowledged_fin_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(
+      connection,
+      identifier,
+      bit_array.from_string(string.repeat("x", 1600)),
+      True,
+    )
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    first_number,
+    first,
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      first_number,
+      first,
+      1200,
+      ecn.NotEct,
+      1,
+    )
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    final_number,
+    final,
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 2)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      final_number,
+      final,
+      1200,
+      ecn.NotEct,
+      2,
+    )
+  let assert Ok(connection) =
+    acknowledges_application_packets(
+      connection,
+      0,
+      frame.AckRange(final_number, final_number),
+      100,
+    )
+  let #(connection, events) = connection_state.take_events(connection)
+  assert !list.contains(
+    events,
+    connection_state.StreamSendCompleted(
+      identifier,
+      stream_completion.Acknowledged,
+    ),
+  )
+  assert connection_state.stream_send_finished(connection, identifier)
+    == Ok(False)
+  let assert Ok(connection) =
+    acknowledges_application_packets(
+      connection,
+      1,
+      frame.AckRange(first_number, first_number),
+      101,
+    )
+  let #(_, events) = connection_state.take_events(connection)
+  assert list.contains(
+    events,
+    connection_state.StreamSendCompleted(
+      identifier,
+      stream_completion.Acknowledged,
+    ),
+  )
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn resetting_an_already_reset_stream_preserves_terminal_classification_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.abort_stream(connection, identifier, 0x10c)
+  let terminal = case
+    connection_state.abort_stream(connection, identifier, 0x10b)
+  {
+    Error(connection_state.StreamQueueFailure(stream_state.SendClosed)) -> True
+    Error(failure) -> {
+      assert failure != connection_state.StreamFailure
+      False
+    }
+    Ok(_) -> False
+  }
+  assert terminal
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn peer_stop_sending_after_local_reset_preserves_sibling_stream_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, cancelled)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(#(connection, sibling)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.abort_stream(connection, cancelled, 0x10b)
+  let received =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.StopSending(cancelled, 0x10c)],
+      packet_space.NotEct,
+      1,
+    )
+  // RFC 9000 section 3.3 permits delayed STOP_SENDING in every send state.
+  let accepted = result.is_ok(received)
+  assert accepted
+  let assert Ok(connection) = received
+  let queued =
+    connection_state.queue_stream(connection, sibling, <<"still active">>, True)
+  let healthy = result.is_ok(queued)
+  assert healthy
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn duplicate_peer_stop_sending_does_not_reset_again_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.StopSending(identifier, 0x10c)],
+      packet_space.NotEct,
+      1,
+    )
+  let received =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.StopSending(identifier, 0x10b)],
+      packet_space.NotEct,
+      2,
+    )
+  let accepted = result.is_ok(received)
+  assert accepted
+  let assert Ok(connection) = received
+  let #(_, frames) = drained_frames(connection, 3, 8)
+  assert reset_frames(frames) == [frame.ResetStream(identifier, 0x10c, 0)]
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn delayed_stop_sending_after_fin_acknowledged_keeps_clean_completion_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(connection, identifier, <<"complete">>, True)
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    sent_number,
+    sent,
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      sent_number,
+      sent,
+      1200,
+      ecn.NotEct,
+      1,
+    )
+  let assert Ok(connection) =
+    acknowledges_application_packets(
+      connection,
+      0,
+      frame.AckRange(sent_number, sent_number),
+      2,
+    )
+  assert connection_state.stream_send_finished(connection, identifier)
+    == Ok(True)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      1,
+      [frame.StopSending(identifier, 0x10c)],
+      packet_space.NotEct,
+      3,
+    )
+  let #(_, frames) = drained_frames(connection, 4, 8)
+  assert reset_frames(frames) == []
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn abort_after_acknowledged_fin_only_stops_the_receive_direction_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(#(connection, identifier)) =
+    connection_state.open_stream(connection, stream_id.Bidirectional)
+  let assert Ok(connection) =
+    connection_state.queue_stream(connection, identifier, <<"complete">>, True)
+  let assert Ok(connection_state.PacketPrepared(
+    connection,
+    engine.OneRtt,
+    number,
+    sent,
+  )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
+  let assert Ok(connection) =
+    connection_state.commit_packet(
+      connection,
+      engine.OneRtt,
+      number,
+      sent,
+      1200,
+      ecn.NotEct,
+      1,
+    )
+  let assert Ok(connection) =
+    acknowledges_application_packets(
+      connection,
+      0,
+      frame.AckRange(number, number),
+      2,
+    )
+  let assert Ok(connection) =
+    connection_state.abort_stream(connection, identifier, 0x10c)
+  let #(_, frames) = drained_frames(connection, 3, 8)
+  assert reset_frames(frames) == []
+  assert list.contains(frames, frame.StopSending(identifier, 0x10c))
+}
+
+fn reset_frames(frames: List(frame.Frame)) -> List(frame.Frame) {
+  list.filter(frames, fn(value) {
+    case value {
+      frame.ResetStream(_, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+/// RFC 9000 section 17.2: twenty bytes is the longest connection ID version 1 allows, and therefore the largest short header a packet can carry.
 const maximum_destination_connection_id = <<
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 >>
 
-/// A packet number far enough above the largest acknowledged one to force the
-/// four-byte encoding. Together with a twenty-byte destination connection ID
-/// it is the widest short header QUIC version 1 can put on a packet.
+/// A packet number far enough above the largest acknowledged one to force the four-byte encoding.
+/// Together with a twenty-byte destination connection ID it is the widest short header QUIC version 1 can put on a packet.
 const widest_packet_number = 16_777_216
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -319,8 +566,7 @@ pub fn sends_streams_round_robin_and_recovers_congestion_credit_test() -> Nil {
       20,
     )
   assert connection_state.bytes_in_flight(connection) == 0
-  // Two packets do not fill the initial ten-packet window, so RFC 9002's
-  // application-limited rule restores credit without inflating cwnd.
+  // Two packets do not fill the initial ten-packet window, so RFC 9002's application-limited rule restores credit without inflating cwnd.
   assert connection_state.congestion_window(connection) == 12_000
 }
 
@@ -342,17 +588,15 @@ pub fn cubic_ecn_reaches_one_datagram_and_then_reduces_live_send_rate_test() -> 
       False,
     )
 
-  // Every ACK newly reports one CE-marked ECT(0) packet. RFC 9438 section
-  // 4.6 requires repeated ECN congestion events to keep reducing CUBIC to one
-  // SMSS. ACK processing must therefore not grow the window immediately
-  // before applying the congestion event.
+  // Every ACK newly reports one CE-marked ECT(0) packet.
+  // RFC 9438 section 4.6 requires repeated ECN congestion events to keep reducing CUBIC to one SMSS.
+  // ACK processing must therefore not grow the window immediately before applying the congestion event.
   let #(connection, sent_number, peer_number, ce_count, send_time) =
     live_cubic_ecn_rounds(connection, 0, 0, 1, 0, 7)
   assert connection_state.congestion_window(connection) == 1200
 
-  // A further congestion event at the one-SMSS floor has to reduce the send
-  // rate even though the window itself cannot shrink. The live connection's
-  // pacer must expose that as a future release, not consume stale burst credit.
+  // A further congestion event at the one-SMSS floor has to reduce the send rate even though the window itself cannot shrink.
+  // The live connection's pacer must expose that as a future release, not consume stale burst credit.
   let ack_time = send_time + 100
   let connection =
     live_cubic_ecn_round(
@@ -368,9 +612,9 @@ pub fn cubic_ecn_reaches_one_datagram_and_then_reduces_live_send_rate_test() -> 
   let first_wait = first_release - ack_time
   assert first_wait > 0
 
-  // Persistent CE at the floor applies exponential rate backoff. After the
-  // next packet is released and acknowledged, the following release delay is
-  // strictly longer. This assertion follows the complete packet/ACK_ECN path.
+  // Persistent CE at the floor applies exponential rate backoff.
+  // After the next packet is released and acknowledged, the following release delay is strictly longer.
+  // This assertion follows the complete packet/ACK_ECN path.
   let second_ack_time = first_release + 100
   let connection =
     live_cubic_ecn_round(
@@ -479,8 +723,7 @@ pub fn new_reno_sparse_live_flight_does_not_grow_the_window_test() -> Nil {
 pub fn persistent_congestion_collapses_the_live_window_and_refreshes_min_rtt_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
 
-  // Establish the prior RTT sample RFC 9002 section 7.6.2 requires before
-  // either endpoint packet in a persistent-congestion interval is sent.
+  // Establish the prior RTT sample RFC 9002 section 7.6.2 requires before either endpoint packet in a persistent-congestion interval is sent.
   let assert Ok(connection) =
     connection_state.commit_packet(
       connection,
@@ -494,9 +737,9 @@ pub fn persistent_congestion_collapses_the_live_window_and_refreshes_min_rtt_tes
   let assert Ok(connection) =
     acknowledges_application_packets(connection, 0, frame.AckRange(0, 0), 200)
 
-  // Packets 1 and 2 are later declared lost. Their 1700 ms send-time span
-  // exceeds three current PTO bases, while acknowledged packet 3 sits after
-  // (not inside) that span. This exercises packet-space loss detection,
+  // Packets 1 and 2 are later declared lost.
+  // Their 1700 ms send-time span exceeds three current PTO bases, while acknowledged packet 3 sits after (not inside) that span.
+  // This exercises packet-space loss detection,
   // connection congestion accounting, and the live RTT estimator together.
   let assert Ok(connection) =
     connection_state.commit_packet(
@@ -581,9 +824,8 @@ pub fn drained_stream_reactivates_at_the_round_robin_tail_test() -> Nil {
       1,
     )
 
-  // The first stream left the active queue when its byte was emitted. Queueing
-  // the second stream before reactivating the first must put the second at the
-  // head and preserve the first stream's next offset when it comes around.
+  // The first stream left the active queue when its byte was emitted.
+  // Queueing the second stream before reactivating the first must put the second at the head and preserve the first stream's next offset when it comes around.
   let assert Ok(connection) =
     connection_state.queue_stream(connection, second, <<"b">>, False)
   let assert Ok(connection) =
@@ -733,8 +975,7 @@ pub fn enforces_connection_send_credit_without_consuming_stream_data_test() -> N
     0,
     [frame.DataBlocked(0)],
   )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
-  // Re-entering the send path at the same connection limit must not turn one
-  // blocked application write into an unbounded ack-eliciting packet loop.
+  // Re-entering the send path at the same connection limit must not turn one blocked application write into an unbounded ack-eliciting packet loop.
   let assert Ok(connection_state.NoPacket(connection)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
 
@@ -753,8 +994,7 @@ pub fn enforces_connection_send_credit_without_consuming_stream_data_test() -> N
     0,
     [frame.DataBlocked(4)],
   )) = connection_state.prepare_packet(connection, engine.OneRtt, 1200, 2)
-  // A higher limit rearms one notification at that new blocking offset, but
-  // aggregate credit never partially consumes the selected stream chunk.
+  // A higher limit rearms one notification at that new blocking offset, but aggregate credit never partially consumes the selected stream chunk.
   let assert Ok(connection_state.NoPacket(connection)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 1200, 2)
   let assert Ok(connection) =
@@ -849,8 +1089,8 @@ pub fn skips_a_dormant_flow_blocked_stream_for_later_ready_streams_test() -> Nil
   let assert Ok(connection) =
     connection_state.queue_stream(connection, blocked, <<"held">>, True)
 
-  // The first poll reports the zero stream-credit limit. A later poll has no
-  // new report to emit and makes this stream dormant until MAX_STREAM_DATA.
+  // The first poll reports the zero stream-credit limit.
+  // A later poll has no new report to emit and makes this stream dormant until MAX_STREAM_DATA.
   let assert Ok(connection_state.PacketPrepared(
     connection,
     engine.OneRtt,
@@ -861,8 +1101,7 @@ pub fn skips_a_dormant_flow_blocked_stream_for_later_ready_streams_test() -> Nil
     connection_state.prepare_packet(connection, engine.OneRtt, 1200, 1)
 
   // A newly ready stream must not be hidden behind that dormant queue member.
-  // This is the pure scheduler shape of a live connection whose old upload is
-  // flow-control blocked while a small new request is opened beside it.
+  // This is the pure scheduler shape of a live connection whose old upload is flow-control blocked while a small new request is opened beside it.
   let assert Ok(#(connection, ready)) =
     connection_state.open_stream(connection, stream_id.Bidirectional)
   let assert Ok(connection) =
@@ -1178,9 +1417,8 @@ pub fn validates_rebinding_and_enforces_active_migration_policy_test() -> Nil {
   assert events == [connection_state.PathValidationFailed]
 }
 
-// RFC 9000 section 21.9 and reported erratum 8875 permit load shedding when
-// excessive PATH_CHALLENGE traffic is an attack. Repeated challenges must not
-// grow the pending PATH_RESPONSE queue, and distinct challenges are bounded.
+// RFC 9000 section 21.9 and reported erratum 8875 permit load shedding when excessive PATH_CHALLENGE traffic is an attack.
+// Repeated challenges must not grow the pending PATH_RESPONSE queue, and distinct challenges are bounded.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn bounds_and_coalesces_path_challenge_responses_test() -> Nil {
   let duplicate = <<0, 1, 2, 3, 4, 5, 6, 7>>
@@ -1252,9 +1490,66 @@ fn distinct_path_challenges(
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_retirement_of_a_connection_id_never_issued_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let received =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.RetireConnectionId(7)],
+      packet_space.NotEct,
+      1,
+    )
+  let rejected = result.is_error(received)
+  assert rejected
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn retirement_cannot_acknowledge_a_connection_id_only_queued_for_send_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.initialize_local_connection_id(connection, <<0:64>>)
+  let assert Ok(connection) =
+    connection_state.issue_local_connection_id(connection, <<1:64>>, <<1:128>>)
+  let received =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.RetireConnectionId(1)],
+      packet_space.NotEct,
+      1,
+    )
+  let rejected = result.is_error(received)
+  assert rejected
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn absent_fresh_peer_cid_limit_replaces_a_remembered_limit_with_two_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.initialize_local_connection_id(connection, <<0:64>>)
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.PeerTransportParameters([
+        transport_parameter.ActiveConnectionIdLimit(4),
+      ]),
+    ])
+  assert connection_state.local_connection_id_capacity(connection) == 3
+  let assert Ok(connection) =
+    connection_state.apply_tls_actions(connection, [
+      engine.PeerTransportParameters([]),
+    ])
+  assert connection_state.local_connection_id_capacity(connection) == 1
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rotates_peer_connection_ids_and_surfaces_local_retirement_test() -> Nil {
   let replacement = <<11, 12, 13, 14, 15, 16, 17, 18>>
   let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.initialize_local_connection_id(connection, <<1:64>>)
   let assert Ok(connection) =
     connection_state.initialize_peer_connection_id(
       connection,
@@ -1268,7 +1563,7 @@ pub fn rotates_peer_connection_ids_and_surfaces_local_retirement_test() -> Nil {
       0,
       [
         frame.NewConnectionId(1, 1, replacement, <<1:128>>),
-        frame.RetireConnectionId(7),
+        frame.RetireConnectionId(0),
       ],
       packet_space.NotEct,
       1,
@@ -1279,7 +1574,7 @@ pub fn rotates_peer_connection_ids_and_surfaces_local_retirement_test() -> Nil {
   assert events
     == [
       connection_state.PeerConnectionIdAvailable(1, replacement),
-      connection_state.LocalConnectionIdRetirementRequested(7),
+      connection_state.LocalConnectionIdRetired(0, <<1:64>>),
     ]
   let assert Ok(connection_state.PacketPrepared(
     _,
@@ -1315,6 +1610,120 @@ pub fn recognizes_only_active_stateless_reset_tokens_test() -> Nil {
   assert connection_state.phase(connection) == connection_state.Draining
   let #(_, events) = connection_state.take_events(connection)
   assert events == [connection_state.StatelessResetReceived]
+}
+
+// RFC 9000 section 19.15 requires a transport PROTOCOL_VIOLATION when a peer that selected a zero-length source connection ID later sends NEW_CONNECTION_ID.
+// Exercise the typed state-machine error before the driver turns it into wire code 0x0a.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn zero_length_peer_new_connection_id_is_a_protocol_violation_test() -> Nil {
+  let assert Ok(sender) = established(connection_state.Server)
+  let assert Ok(receiver) = established(connection_state.Client)
+  let assert Ok(receiver) =
+    connection_state.observe_peer_initial_connection_id(receiver, <<>>)
+  let assert Ok(#(_, packet)) =
+    connection_state.protect_short_packet(
+      sender,
+      <<>>,
+      0,
+      False,
+      [frame.NewConnectionId(1, 0, <<1:64>>, <<1:128>>)],
+      1,
+    )
+  let assert Ok(receiver) =
+    connection_state.record_datagram_received(
+      receiver,
+      bit_array.byte_size(packet),
+      1,
+    )
+  let assert Ok(connection_state.ShortPacketReceipt(closing, <<>>, _, _)) =
+    connection_state.receive_protected_short_packet(
+      receiver,
+      packet,
+      0,
+      packet_space.NotEct,
+      1,
+    )
+  assert connection_state.local_transport_failure_code(closing) == Some(0x0a)
+}
+
+// RFC 9000 section 5.1.1 requires CONNECTION_ID_LIMIT_ERROR rather than a generic protocol failure after the atomic retirement/addition transition leaves more active peer identifiers than this endpoint advertised.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn peer_connection_id_limit_violation_closes_with_exact_wire_code_test() -> Nil {
+  let assert Ok(sender) = established(connection_state.Server)
+  let assert Ok(receiver) = established(connection_state.Client)
+  let assert Ok(receiver) =
+    connection_state.observe_peer_initial_connection_id(receiver, <<0:64>>)
+  let assert Ok(#(_, packet)) =
+    connection_state.protect_short_packet(
+      sender,
+      initial_destination_connection_id,
+      0,
+      False,
+      [
+        frame.NewConnectionId(1, 0, <<1:64>>, <<1:128>>),
+        frame.NewConnectionId(2, 0, <<2:64>>, <<2:128>>),
+        frame.NewConnectionId(3, 0, <<3:64>>, <<3:128>>),
+        frame.NewConnectionId(4, 0, <<4:64>>, <<4:128>>),
+      ],
+      1,
+    )
+  let assert Ok(receiver) =
+    connection_state.record_datagram_received(
+      receiver,
+      bit_array.byte_size(packet),
+      1,
+    )
+  let assert Ok(connection_state.ShortPacketReceipt(closing, _, _, _)) =
+    connection_state.receive_protected_short_packet(
+      receiver,
+      packet,
+      8,
+      packet_space.NotEct,
+      1,
+    )
+  assert connection_state.local_transport_failure_code(closing) == Some(0x09)
+}
+
+// RFC 9000 section 5.1.2 recommends room for at least twice the advertised active-ID limit worth of pending RETIRE_CONNECTION_ID frames.
+// The default limit is four, so retain and expose nine distinct retirements, including sequence zero, without forgetting or duplicating any.
+// The application queue deliberately emits one queued frame per packet, so drain it with a finite packet bound rather than assuming these frames are coalesced.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn tracks_twice_the_active_limit_of_pending_peer_id_retirements_test() -> Nil {
+  let assert Ok(connection) = established(connection_state.Client)
+  let assert Ok(connection) =
+    connection_state.observe_peer_initial_connection_id(connection, <<0:64>>)
+  let assert Ok(connection) =
+    connection_state.receive_packet(
+      connection,
+      engine.OneRtt,
+      0,
+      [frame.NewConnectionId(9, 9, <<9:64>>, <<9:128>>)],
+      packet_space.NotEct,
+      1,
+    )
+  let connection =
+    list.fold([1, 2, 3, 4, 5, 6, 7, 8], connection, fn(state, sequence) {
+      let assert Ok(state) =
+        connection_state.receive_packet(
+          state,
+          engine.OneRtt,
+          sequence,
+          [
+            frame.NewConnectionId(sequence, 0, <<sequence:64>>, <<sequence:128>>),
+          ],
+          packet_space.NotEct,
+          sequence + 1,
+        )
+      state
+    })
+  let #(_, frames) = drained_frames(connection, 20, 16)
+  assert list.count(frames, fn(value) {
+      case value {
+        frame.RetireConnectionId(_) -> True
+        _ -> False
+      }
+    })
+    == 9
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -1566,9 +1975,8 @@ pub fn datagram_receive_negotiation_violations_are_protocol_violations_test() ->
       maximum_datagram_frame_size: 4,
     )
   let assert Ok(connection) = established_with_config(four_bytes)
-  // Type + one-byte Length + three payload bytes exceeds the advertised
-  // four-byte frame ceiling even though the application payload alone does
-  // not. RFC 9221 measures the whole frame.
+  // Type + one-byte Length + three payload bytes exceeds the advertised four-byte frame ceiling even though the application payload alone does not.
+  // RFC 9221 measures the whole frame.
   assert connection_state.receive_packet(
       connection,
       engine.OneRtt,
@@ -1670,9 +2078,8 @@ pub fn lost_datagram_is_not_retransmitted_test() -> Nil {
       100,
     )
 
-  // Packet 0 crossed the packet-threshold loss boundary. Unlike STREAM and
-  // control frames, its DATAGRAM payload must not reappear in an application
-  // packet after that loss event.
+  // Packet 0 crossed the packet-threshold loss boundary.
+  // Unlike STREAM and control frames, its DATAGRAM payload must not reappear in an application packet after that loss event.
   let assert Ok(connection_state.NoPacket(_)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 1200, 30)
   Nil
@@ -1680,10 +2087,8 @@ pub fn lost_datagram_is_not_retransmitted_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn ignores_a_new_token_no_initial_can_repeat_test() -> Nil {
-  // A NEW_TOKEN is only worth keeping if a later connection can repeat it in
-  // an Initial that still fits the 1200-byte floor. The server chooses the
-  // width, so one past that budget is dropped on arrival rather than stored
-  // and refused at the start of the next connection.
+  // A NEW_TOKEN is only worth keeping if a later connection can repeat it in an Initial that still fits the 1200-byte floor.
+  // The server chooses the width, so one past that budget is dropped on arrival rather than stored and refused at the start of the next connection.
   let budget = connection_state.maximum_initial_token_bytes()
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(connection) =
@@ -1711,6 +2116,109 @@ pub fn ignores_a_new_token_no_initial_can_repeat_test() -> Nil {
     )
   let #(_, events) = connection_state.take_events(connection)
   assert events == [connection_state.NewTokenReceived(usable)]
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn server_rejects_new_token_once_without_retaining_it_test() -> Nil {
+  let assert Ok(server) = established(connection_state.Server)
+  let #(phase, wire_code, event_count, failure_count, token_count, close_count) =
+    observe_server_new_token_rejection(server)
+
+  // Every assertion projects only a finite enum, wire code, or counter.
+  // Neither token bytes nor the connection state can appear on failure.
+  assert phase == connection_state.Closing
+  assert wire_code == Some(0x0a)
+  assert event_count == 1
+  assert failure_count == 1
+  assert token_count == 0
+  assert close_count == 1
+}
+
+fn observe_server_new_token_rejection(
+  server: connection_state.State,
+) -> #(connection_state.Phase, Option(Int), Int, Int, Int, Int) {
+  let assert Ok(first) =
+    settle_authenticated_packet(server, 0, [frame.NewToken(<<1>>)], 1)
+  let #(first, first_events) = connection_state.take_events(first)
+  let assert Ok(second) =
+    settle_authenticated_packet(first, 1, [frame.NewToken(<<2>>)], 2)
+  let #(second, second_events) = connection_state.take_events(second)
+  let events = list.append(first_events, second_events)
+  #(
+    connection_state.phase(second),
+    connection_state.local_transport_failure_code(second),
+    list.length(events),
+    local_protocol_failure_count(events),
+    new_token_event_count(events),
+    queued_protocol_close_count(second),
+  )
+}
+
+fn settle_authenticated_packet(
+  state: connection_state.State,
+  packet_number: Int,
+  frames: List(frame.Frame),
+  now: Int,
+) -> Result(connection_state.State, connection_state.Error) {
+  case
+    connection_state.receive_packet(
+      state,
+      engine.OneRtt,
+      packet_number,
+      frames,
+      packet_space.NotEct,
+      now,
+    )
+  {
+    Ok(received) -> Ok(received)
+    Error(failure) ->
+      connection_state.reject_authenticated_packet(
+        state,
+        engine.OneRtt,
+        failure,
+        now,
+      )
+  }
+}
+
+fn local_protocol_failure_count(events: List(connection_state.Event)) -> Int {
+  events
+  |> list.filter(fn(event) {
+    case event {
+      connection_state.LocalTransportFailure(
+        connection_state.ProtocolViolation(connection_state.NewTokenAtServer),
+        0x0a,
+      ) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn new_token_event_count(events: List(connection_state.Event)) -> Int {
+  events
+  |> list.filter(fn(event) {
+    case event {
+      connection_state.NewTokenReceived(_) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn queued_protocol_close_count(state: connection_state.State) -> Int {
+  case connection_state.prepare_packet(state, engine.OneRtt, 1200, 3) {
+    Ok(connection_state.PacketPrepared(_, _, _, frames)) ->
+      frames
+      |> list.filter(fn(value) {
+        case value {
+          frame.ConnectionCloseTransport(0x0a, _, _) -> True
+          _ -> False
+        }
+      })
+      |> list.length
+    _ -> 0
+  }
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -1765,9 +2273,7 @@ pub fn closes_idles_and_converges_deterministically_test() -> Nil {
 }
 
 // RFC 9000 section 10.2.2 permits only CONNECTION_CLOSE output while closing.
-// An authenticated peer packet after the first close was sent must therefore
-// re-arm the bounded close response, rather than emitting its delayed ACK or
-// reviving any abandoned application work.
+// An authenticated peer packet after the first close was sent must therefore re-arm the bounded close response, rather than emitting its delayed ACK or reviving any abandoned application work.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn closing_replies_with_only_the_retained_connection_close_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
@@ -1861,12 +2367,8 @@ pub fn local_close_atomically_rejects_new_application_output_test() -> Nil {
     == Error(connection_state.ConnectionUnavailable)
 }
 
-// RFC 9000 section 9.5: a second local address must not send under the
-// identifier the first one used, so a migration takes an unused identifier the
-// peer supplied and asks for the previous one to be retired. A peer which sees
-// its own identifier arrive from a new address reads that as a rebinding rather
-// than a migration and never validates the new path, which is what an
-// independent peer showed before this moved with the path.
+// RFC 9000 section 9.5: a second local address must not send under the identifier the first one used, so a migration takes an unused identifier the peer supplied and asks for the previous one to be retired.
+// A peer which sees its own identifier arrive from a new address reads that as a rebinding rather than a migration and never validates the new path, which is what an independent peer showed before this moved with the path.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn migration_takes_an_unused_peer_connection_id_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
@@ -1901,11 +2403,8 @@ pub fn migration_takes_an_unused_peer_connection_id_test() -> Nil {
   assert list.contains(frames, frame.RetireConnectionId(0))
 }
 
-// A terminal phase stops wire input, not delivery of bytes this endpoint had
-// already authenticated and acknowledged. RFC 9000 section 10.2.2 still permits
-// no frame beside the retained CONNECTION_CLOSE, so the drain may not revive
-// output, and a pull with nothing buffered stays unavailable because no further
-// bytes can arrive.
+// A terminal phase stops wire input, not delivery of bytes this endpoint had already authenticated and acknowledged.
+// RFC 9000 section 10.2.2 still permits no frame beside the retained CONNECTION_CLOSE, so the drain may not revive output, and a pull with nothing buffered stays unavailable because no further bytes can arrive.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn terminal_phase_drains_acknowledged_stream_bytes_without_output_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Server)
@@ -1938,8 +2437,7 @@ pub fn terminal_phase_drains_acknowledged_stream_bytes_without_output_test() -> 
   assert frames == [frame.ConnectionCloseApplication(0x100, "done")]
 }
 
-// Once a CONNECTION_CLOSE is authenticated, no later frame in the same packet
-// may revive output or application state.
+// Once a CONNECTION_CLOSE is authenticated, no later frame in the same packet may revive output or application state.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn peer_close_short_circuits_remaining_packet_frames_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
@@ -1987,9 +2485,8 @@ pub fn application_pto_is_unarmed_before_handshake_confirmation_test() -> Nil {
       1,
     )
 
-  // RFC 9002 section 6.2.1 forbids an Application Data PTO until handshake
-  // confirmation. With no Initial/Handshake write keys, only idle expiry is
-  // armed for this deliberately isolated 0-RTT fixture.
+  // RFC 9002 section 6.2.1 forbids an Application Data PTO until handshake confirmation.
+  // With no Initial/Handshake write keys, only idle expiry is armed for this deliberately isolated 0-RTT fixture.
   assert connection_state.next_deadline(connection, 1) == Ok(Some(30_001))
 }
 
@@ -2018,9 +2515,8 @@ pub fn amplification_blocked_server_does_not_arm_a_pto_test() -> Nil {
       1,
     )
 
-  // The three-times budget is exhausted exactly. Receiving another datagram
-  // will drive the state machine directly; until then it must not wake on a
-  // PTO it cannot transmit.
+  // The three-times budget is exhausted exactly.
+  // Receiving another datagram will drive the state machine directly; until then it must not wake on a PTO it cannot transmit.
   assert connection_state.next_deadline(server, 1) == Ok(Some(30_001))
 }
 
@@ -2100,8 +2596,7 @@ pub fn client_anti_deadlock_probe_prioritizes_queued_crypto_test() -> Nil {
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn pto_probe_bypasses_a_full_window_and_remains_in_flight_test() -> Nil {
   // A server's TLS-complete transition confirms the handshake immediately;
-  // the client waits for HANDSHAKE_DONE and is covered by the pre-confirmation
-  // timer test above.
+  // the client waits for HANDSHAKE_DONE and is covered by the pre-confirmation timer test above.
   let assert Ok(connection) = established(connection_state.Server)
   let assert Ok(connection_state.PacketPrepared(
     connection,
@@ -2133,8 +2628,8 @@ pub fn pto_probe_bypasses_a_full_window_and_remains_in_flight_test() -> Nil {
   let assert Ok(Some(deadline)) = connection_state.next_deadline(connection, 0)
   assert deadline < 30_000
   let assert Ok(connection) = connection_state.tick(connection, deadline)
-  // Padding is in flight but not ack-eliciting. It cannot masquerade as a
-  // probe to bypass cwnd or consume either PTO allowance slot.
+  // Padding is in flight but not ack-eliciting.
+  // It cannot masquerade as a probe to bypass cwnd or consume either PTO allowance slot.
   assert connection_state.validate_send_budget(
       connection,
       engine.OneRtt,
@@ -2283,12 +2778,11 @@ pub fn pto_backoff_is_shared_across_packet_number_spaces_test() -> Nil {
     )
   assert connection_state.next_deadline(connection, 100) == Ok(Some(997))
 
-  // Initial expires first. That single connection-level PTO doubles every
-  // packet space; Handshake must not retain its unbacked 1097 ms deadline.
+  // Initial expires first.
+  // That single connection-level PTO doubles every packet space; Handshake must not retain its unbacked 1097 ms deadline.
   let assert Ok(connection) = connection_state.tick(connection, 997)
   assert connection_state.pto_backoff_count(connection) == 1
-  // The same PTO spends its second bounded allowance in the other in-flight
-  // packet space, so both encryption levels can be coalesced by the driver.
+  // The same PTO spends its second bounded allowance in the other in-flight packet space, so both encryption levels can be coalesced by the driver.
   let assert Ok(connection_state.PacketPrepared(
     connection,
     engine.Handshake,
@@ -2323,8 +2817,7 @@ pub fn pto_backoff_is_shared_across_packet_number_spaces_test() -> Nil {
     )
   assert connection_state.next_deadline(connection, 997) == Ok(Some(2991))
 
-  // An Initial ACK does not prove that the server completed address
-  // validation, so an unconfirmed client preserves the shared backoff.
+  // An Initial ACK does not prove that the server completed address validation, so an unconfirmed client preserves the shared backoff.
   let assert Ok(connection) =
     connection_state.receive_packet(
       connection,
@@ -2479,9 +2972,7 @@ pub fn owns_tls_handshake_and_post_handshake_ticket_end_to_end_test() -> Nil {
   assert contains_session_ticket(events)
 }
 
-// RFC 7301 section 3.2 and RFC 9001 section 4.8: a server with no shared
-// application protocol sends fatal no_application_protocol (120), represented
-// on a QUIC connection as CRYPTO_ERROR(0x100 + 120).
+// RFC 7301 section 3.2 and RFC 9001 section 4.8: a server with no shared application protocol sends fatal no_application_protocol (120), represented on a QUIC connection as CRYPTO_ERROR(0x100 + 120).
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn server_queues_crypto_error_for_alpn_mismatch_test() -> Nil {
   let #(client_config, server_config) = tls_configs()
@@ -2729,10 +3220,8 @@ pub fn client_queues_version_negotiation_close_for_authenticated_mismatch_test()
 pub fn compatible_switch_keeps_zero_rtt_on_the_original_version_test() -> Nil {
   let connection = compatible_switched_client()
 
-  // RFC 9369 section 4.1 permits the server to process original-version
-  // 0-RTT after a compatible switch, but forbids sending that data under the
-  // negotiated version. Replaying it as 1-RTT here would also risk duplicating
-  // data already accepted from the original flight.
+  // RFC 9369 section 4.1 permits the server to process original-version 0-RTT after a compatible switch, but forbids sending that data under the negotiated version.
+  // Replaying it as 1-RTT here would also risk duplicating data already accepted from the original flight.
   assert protected_long_version(connection, wire_packet.ZeroRtt)
     == version.Version1
 }
@@ -2810,8 +3299,7 @@ pub fn wakes_a_pacing_limited_connection_at_the_release_time_test() -> Nil {
     connection_state.stream_buffered_send_bytes(connection, stream)
   assert buffered > 0
 
-  // The owner must wake itself exactly when the pacer releases the next
-  // packet, not at the far later idle or probe timeout.
+  // The owner must wake itself exactly when the pacer releases the next packet, not at the far later idle or probe timeout.
   let assert Ok(Some(deadline)) =
     connection_state.next_deadline(connection, 100)
   assert deadline == release
@@ -2828,11 +3316,8 @@ pub fn ready_pacing_work_arms_an_immediate_wake_instead_of_parking_test() -> Nil
   let #(ready, _) = pacer_bound_connection()
   let now = 100
 
-  // A runtime can cross the pacer's release time after its bounded flush but
-  // before it asks for the next deadline (coverage and asynchronous trace
-  // admission deliberately make that interval observable). Pending work that
-  // is already pacing-ready must therefore produce a zero-delay wake; omitting
-  // it parks the actor until an unrelated ACK or PTO.
+  // A runtime can cross the pacer's release time after its bounded flush but before it asks for the next deadline (coverage and asynchronous trace admission deliberately make that interval observable).
+  // Pending work that is already pacing-ready must therefore produce a zero-delay wake; omitting it parks the actor until an unrelated ACK or PTO.
   let assert connection_state.PacingReady(..) =
     connection_state.pacing_wake_progress(ready, now)
   let assert Ok(Some(deadline)) = connection_state.next_deadline(ready, now)
@@ -2861,9 +3346,8 @@ pub fn congestion_blocked_ready_pacer_waits_for_recovery_test() -> Nil {
   let assert Ok(Some(deadline)) =
     connection_state.next_deadline(connection, now)
 
-  // Pacer tokens alone cannot release a full congestion window. Scheduling a
-  // zero-delay retry here would turn an ordinary congestion wait into an
-  // unbounded actor loop; its recovery timer remains the next useful wake.
+  // Pacer tokens alone cannot release a full congestion window.
+  // Scheduling a zero-delay retry here would turn an ordinary congestion wait into an unbounded actor loop; its recovery timer remains the next useful wake.
   assert deadline > now
 }
 
@@ -2910,9 +3394,8 @@ pub fn pacing_wake_diagnostics_explain_every_payload_free_decision_test() -> Nil
   assert waiting_flight == connection_state.bytes_in_flight(waiting)
   assert observed_waiting_rtt == waiting_rtt
 
-  // A regressed monotonic timestamp is not silently reported as an idle
-  // connection. The snapshot retains only the scalar controller inputs needed
-  // to distinguish that invalid decision from `NoPacingOutput`.
+  // A regressed monotonic timestamp is not silently reported as an idle connection.
+  // The snapshot retains only the scalar controller inputs needed to distinguish that invalid decision from `NoPacingOutput`.
   let assert connection_state.PacingDecisionInvalid(
     candidate_datagram_bytes: invalid_candidate,
     path_mtu: invalid_path,
@@ -2933,8 +3416,7 @@ pub fn arms_the_pacing_wake_for_a_datagram_larger_than_the_last_test() -> Nil {
   let #(connection, limited) = flush_datagrams(connection, 100, 32)
   let assert Error(connection_state.PacingLimited(release)) = limited
 
-  // A short datagram spends less than the pacer refills, so the wake it arms
-  // has to cover the next full-sized datagram rather than its own size.
+  // A short datagram spends less than the pacer refills, so the wake it arms has to cover the next full-sized datagram rather than its own size.
   let #(connection, short) = flush_sized_datagrams(connection, 300, release, 1)
   assert short == Ok(Nil)
   let #(_, refused) = flush_datagrams(connection, release, 1)
@@ -2953,8 +3435,7 @@ pub fn arms_the_pacing_wake_for_a_datagram_larger_than_the_last_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn rearms_the_pacing_wake_after_the_window_shrinks_test() -> Nil {
-  // A long round trip puts the pacing release far enough ahead that a
-  // congestion event can land between the refusal and the wake.
+  // A long round trip puts the pacing release far enough ahead that a congestion event can land between the refusal and the wake.
   let #(connection, _) = pacer_bound_connection_after(1000)
   let #(connection, limited) = flush_datagrams(connection, 1000, 32)
   let assert Error(connection_state.PacingLimited(early_release)) = limited
@@ -2962,9 +3443,7 @@ pub fn rearms_the_pacing_wake_after_the_window_shrinks_test() -> Nil {
   let assert Ok(Some(armed)) = connection_state.next_deadline(connection, 1000)
   assert armed == early_release
 
-  // The peer acknowledges only the last of the ten packets just sent, so the
-  // seven below the reordering threshold are declared lost and the congestion
-  // window halves: the pacer now refills at half the rate the refusal assumed.
+  // The peer acknowledges only the last of the ten packets just sent, so the seven below the reordering threshold are declared lost and the congestion window halves: the pacer now refills at half the rate the refusal assumed.
   let window = connection_state.congestion_window(connection)
   let assert Ok(connection) =
     connection_state.record_datagram_received(connection, 80, 1010)
@@ -2979,14 +3458,12 @@ pub fn rearms_the_pacing_wake_after_the_window_shrinks_test() -> Nil {
     )
   assert connection_state.congestion_window(connection) < window
 
-  // At the release the earlier refusal named, the pacer still refuses, and it
-  // names a strictly later one.
+  // At the release the earlier refusal named, the pacer still refuses, and it names a strictly later one.
   let #(connection, refused) = flush_datagrams(connection, early_release, 1)
   let assert Error(connection_state.PacingLimited(release)) = refused
   assert release > early_release
 
-  // The owner must wake at the release the pacer would honour now, not fall
-  // back to the far later recovery or idle deadline.
+  // The owner must wake at the release the pacer would honour now, not fall back to the far later recovery or idle deadline.
   let assert Ok(Some(deadline)) =
     connection_state.next_deadline(connection, early_release)
   assert deadline == release
@@ -3010,19 +3487,15 @@ pub fn skips_the_pacing_wake_without_pending_output_test() -> Nil {
       True,
     )
 
-  // The opening burst is ten datagrams wide and carries more than the queued
-  // bytes, so it takes every one of them and the FIN while spending the
-  // pacer's tokens. The connection is left with bytes in flight and nothing a
-  // stream poll would emit. Those unacknowledged bytes are still counted as
-  // buffered, which is exactly why a byte count cannot stand in for pending
-  // output.
+  // The opening burst is ten datagrams wide and carries more than the queued bytes, so it takes every one of them and the FIN while spending the pacer's tokens.
+  // The connection is left with bytes in flight and nothing a stream poll would emit.
+  // Those unacknowledged bytes are still counted as buffered, which is exactly why a byte count cannot stand in for pending output.
   let #(connection, drained) = flush_datagrams(connection, 0, 10)
   assert drained == Ok(Nil)
   assert connection_state.stream_buffered_send_bytes(connection, stream)
     == Ok(11_000)
 
-  // The pacer really is refusing at this instant: the same state with one byte
-  // queued on a second stream arms the release the pacer owes.
+  // The pacer really is refusing at this instant: the same state with one byte queued on a second stream arms the release the pacer owes.
   let assert Ok(#(waiting, other)) =
     connection_state.open_stream(connection, stream_id.Bidirectional)
   let assert Ok(waiting) =
@@ -3030,8 +3503,7 @@ pub fn skips_the_pacing_wake_without_pending_output_test() -> Nil {
   let assert Ok(Some(release)) = connection_state.next_deadline(waiting, 0)
   assert release > 0
 
-  // With nothing to send, no pacing wake is armed at all: the owner is left
-  // with the far later deadline the burst in flight already owes it.
+  // With nothing to send, no pacing wake is armed at all: the owner is left with the far later deadline the burst in flight already owes it.
   let assert Ok(Some(deadline)) = connection_state.next_deadline(connection, 0)
   assert deadline > release
 }
@@ -3050,9 +3522,7 @@ pub fn sizes_stream_frames_from_the_validated_path_mtu_test() -> Nil {
       False,
     )
 
-  // The send path asks for the pre-validation floor, but the validated path is
-  // what one datagram carries: a 9000-byte path has to place close to 9000
-  // bytes of stream data in the packet rather than the floor's 1200.
+  // The send path asks for the pre-validation floor, but the validated path is what one datagram carries: a 9000-byte path has to place close to 9000 bytes of stream data in the packet rather than the floor's 1200.
   let assert Ok(connection_state.PacketPrepared(
     _,
     engine.OneRtt,
@@ -3064,8 +3534,7 @@ pub fn sizes_stream_frames_from_the_validated_path_mtu_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn paces_datagrams_the_validated_path_carries_test() -> Nil {
-  // The pacer-bound fixture leaves a congestion window wide enough for one
-  // path-sized datagram and stream data still queued behind it.
+  // The pacer-bound fixture leaves a congestion window wide enough for one path-sized datagram and stream data still queued behind it.
   let #(connection, _) = pacer_bound_connection()
   let assert Ok(connection) =
     connection_state.apply_tls_actions(connection, [
@@ -3077,12 +3546,8 @@ pub fn paces_datagrams_the_validated_path_carries_test() -> Nil {
     connection_state.start_pmtu_probe(connection)
   let number = connection_state.next_application_packet_number(connection)
 
-  // The pacer's burst has to scale with the path. Fixed at ten 1200-byte
-  // datagrams it cannot hold one 16_384-byte datagram at all, so the pacer
-  // refuses the reservation as invalid input rather than releasing or delaying
-  // it: neither the probe that proves the path nor any datagram sized from it
-  // can be sent, and the pacing wake `next_deadline` asks about for a
-  // path-sized datagram is dropped for exactly the same reason.
+  // The pacer's burst has to scale with the path.
+  // Fixed at ten 1200-byte datagrams it cannot hold one 16_384-byte datagram at all, so the pacer refuses the reservation as invalid input rather than releasing or delaying it: neither the probe that proves the path nor any datagram sized from it can be sent, and the pacing wake `next_deadline` asks about for a path-sized datagram is dropped for exactly the same reason.
   let probed =
     connection_state.commit_packet(
       connection,
@@ -3113,8 +3578,7 @@ pub fn paces_datagrams_the_validated_path_carries_test() -> Nil {
     )
   assert connection_state.path_mtu(connection) == 16_384
 
-  // A datagram sized from the validated path is now ordinary output, so the
-  // send budget has to admit it instead of rejecting it out of hand.
+  // A datagram sized from the validated path is now ordinary output, so the send budget has to admit it instead of rejecting it out of hand.
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 16_384, 210)
   assert connection_state.validate_send_budget(
@@ -3129,22 +3593,16 @@ pub fn paces_datagrams_the_validated_path_carries_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn floors_the_congestion_window_at_the_validated_path_test() -> Nil {
-  // DPLPMTUD has proved the path carries 9000-byte datagrams, so that is the
-  // size ordinary output is now built at.
+  // DPLPMTUD has proved the path carries 9000-byte datagrams, so that is the size ordinary output is now built at.
   let connection = validated_path_connection()
 
-  // Two congestion events, each halving the window: the peer acknowledges only
-  // the newest packet of a flight, so every packet below the reordering
-  // threshold is declared lost.
+  // Two congestion events, each halving the window: the peer acknowledges only the newest packet of a flight, so every packet below the reordering threshold is declared lost.
   let connection = loses_a_flight(connection, 1, 1, 30)
   let connection = loses_a_flight(connection, 11, 2, 60)
 
-  // RFC 9002 section 7.2 floors the window at two maximum-sized datagrams. A
-  // controller still holding the 1200-byte pre-validation size floors it at
-  // 2400 - less than the single datagram this path carries - so path-sized
-  // output and the DPLPMTUD probes that keep the path confirmed both stall
-  // until the window regrows. The controller's maximum datagram size has to
-  // follow the validated path.
+  // RFC 9002 section 7.2 floors the window at two maximum-sized datagrams.
+  // A controller still holding the 1200-byte pre-validation size floors it at 2400 - less than the single datagram this path carries - so path-sized output and the DPLPMTUD probes that keep the path confirmed both stall until the window regrows.
+  // The controller's maximum datagram size has to follow the validated path.
   assert connection_state.congestion_window(connection) >= 18_000
   assert connection_state.validate_send_budget(
       connection,
@@ -3176,9 +3634,8 @@ pub fn full_recovery_ledger_backpressures_before_transmission_test() -> Nil {
       1,
     )
 
-  // The next ack-eliciting packet must remain queued until the peer frees a
-  // ledger entry. This refusal happens during preflight, before the caller
-  // hands the datagram to UDP.
+  // The next ack-eliciting packet must remain queued until the peer frees a ledger entry.
+  // This refusal happens during preflight, before the caller hands the datagram to UDP.
   assert connection_state.validate_send_budget(
       connection,
       engine.OneRtt,
@@ -3188,8 +3645,7 @@ pub fn full_recovery_ledger_backpressures_before_transmission_test() -> Nil {
     )
     == Error(connection_state.RecoveryLimited)
 
-  // ACK-only output is not retained, so it remains available to make the
-  // progress that can free the peer's own recovery state.
+  // ACK-only output is not retained, so it remains available to make the progress that can free the peer's own recovery state.
   assert connection_state.validate_send_budget(
       connection,
       engine.OneRtt,
@@ -3222,9 +3678,7 @@ pub fn full_recovery_ledger_backpressures_before_transmission_test() -> Nil {
 pub fn sizes_a_switched_controller_from_the_validated_path_test() -> Nil {
   let connection = validated_path_connection()
 
-  // A controller installed mid-connection starts on the path this connection
-  // is sending on, not on the configured max_udp_payload_size ceiling: ten
-  // 9000-byte datagrams bound the window it opens with.
+  // A controller installed mid-connection starts on the path this connection is sending on, not on the configured max_udp_payload_size ceiling: ten 9000-byte datagrams bound the window it opens with.
   let assert Ok(connection) =
     connection_state.set_congestion_algorithm(
       connection,
@@ -3232,15 +3686,12 @@ pub fn sizes_a_switched_controller_from_the_validated_path_test() -> Nil {
     )
   assert connection_state.congestion_window(connection) == 18_000
 
-  // And its reductions keep RFC 9002 section 7.2's floor of two path-sized
-  // datagrams.
+  // And its reductions keep RFC 9002 section 7.2's floor of two path-sized datagrams.
   let connection = loses_a_flight(connection, 1, 1, 30)
   assert connection_state.congestion_window(connection) >= 18_000
 }
 
-/// Commit a flight of ten small packets and let the peer acknowledge only the
-/// newest, so every packet below the reordering threshold is declared lost and
-/// the congestion window halves once.
+/// Commit a flight of ten small packets and let the peer acknowledge only the newest, so every packet below the reordering threshold is declared lost and the congestion window halves once.
 fn loses_a_flight(
   connection: connection_state.State,
   first_packet_number: Int,
@@ -3324,9 +3775,7 @@ fn commits_full_packets(
 pub fn keeps_a_coalesced_ack_inside_the_validated_path_test() -> Nil {
   let connection = validated_path_connection()
 
-  // A peer that drops or reorders alternate packet numbers keeps the full
-  // retained range set alive, and every retained range costs two more varints
-  // in the ACK this packet coalesces ahead of its stream data.
+  // A peer that drops or reorders alternate packet numbers keeps the full retained range set alive, and every retained range costs two more varints in the ACK this packet coalesces ahead of its stream data.
   let connection = receives_alternate_packets(connection, 256)
   let assert Ok(#(connection, stream)) =
     connection_state.open_stream(connection, stream_id.Bidirectional)
@@ -3344,10 +3793,8 @@ pub fn keeps_a_coalesced_ack_inside_the_validated_path_test() -> Nil {
     frames
   assert list.length(ranges) == 256
 
-  // The whole datagram - ACK, stream frame, header, and AEAD tag - still fits
-  // the path DPLPMTUD validated, which is never above the peer's advertised
-  // max_udp_payload_size. The header is sized by the peer's destination
-  // connection ID, so the longest one QUIC version 1 allows has to fit too.
+  // The whole datagram - ACK, stream frame, header, and AEAD tag - still fits the path DPLPMTUD validated, which is never above the peer's advertised max_udp_payload_size.
+  // The header is sized by the peer's destination connection ID, so the longest one QUIC version 1 allows has to fit too.
   assert protected_datagram_bytes(
       prepared,
       initial_destination_connection_id,
@@ -3363,11 +3810,8 @@ pub fn keeps_a_coalesced_ack_inside_the_validated_path_test() -> Nil {
     )
     <= connection_state.path_mtu(prepared)
 
-  // Stream data is budgeted against the widest header a STREAM frame can
-  // write, which leaves slack the bound above cannot see: it stays satisfied
-  // even when the header cost is guessed several bytes low. A QUIC DATAGRAM
-  // frame is sized to the byte, so one queued with no acknowledgement owed
-  // fills the path exactly and pins that cost.
+  // Stream data is budgeted against the widest header a STREAM frame can write, which leaves slack the bound above cannot see: it stays satisfied even when the header cost is guessed several bytes low.
+  // A QUIC DATAGRAM frame is sized to the byte, so one queued with no acknowledgement owed fills the path exactly and pins that cost.
   let filled = queues_a_full_datagram(validated_path_connection())
   let assert Ok(connection_state.PacketPrepared(filled, _, _, datagram_frames)) =
     connection_state.prepare_packet(filled, engine.OneRtt, 1000, 40)
@@ -3384,9 +3828,8 @@ pub fn keeps_a_coalesced_ack_inside_the_validated_path_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn keeps_the_path_at_the_floor_by_default_test() -> Nil {
-  // The default configuration says nothing about the socket it will be sent
-  // on, so it assumes the Don't-Fragment option is absent and stays on the
-  // 1200-byte floor. Every runtime passes the option its socket actually got;
+  // The default configuration says nothing about the socket it will be sent on, so it assumes the Don't-Fragment option is absent and stays on the 1200-byte floor.
+  // Every runtime passes the option its socket actually got;
   // a connection built without that answer never grows a path it cannot prove.
   let assert Ok(connection) =
     connection_state.new(
@@ -3414,11 +3857,8 @@ pub fn keeps_the_path_at_the_floor_by_default_test() -> Nil {
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn keeps_the_path_at_the_floor_without_dont_fragment_test() -> Nil {
-  // A socket the kernel would not give the Don't-Fragment option to can have
-  // an oversized probe fragmented locally, delivered, and acknowledged. RFC
-  // 8899 section 3 lets an acknowledged probe raise the path only when it
-  // could not have been fragmented, so a connection told the flag is inactive
-  // stays on the 1200-byte floor however large a probe the peer acknowledges.
+  // A socket the kernel would not give the Don't-Fragment option to can have an oversized probe fragmented locally, delivered, and acknowledged.
+  // RFC 8899 section 3 lets an acknowledged probe raise the path only when it could not have been fragmented, so a connection told the flag is inactive stays on the 1200-byte floor however large a probe the peer acknowledges.
   let assert Ok(connection) =
     connection_state.new(
       connection_state.Config(
@@ -3438,8 +3878,8 @@ pub fn keeps_the_path_at_the_floor_without_dont_fragment_test() -> Nil {
   let #(connection, _) = connection_state.take_events(connection)
   assert connection_state.path_mtu(connection) == 1200
 
-  // Either no probe is scheduled at all, or one is scheduled and its
-  // acknowledgement proves nothing. Both leave the path on the floor.
+  // Either no probe is scheduled at all, or one is scheduled and its acknowledgement proves nothing.
+  // Both leave the path on the floor.
   let floored = case connection_state.start_pmtu_probe(connection) {
     // nolint: thrown_away_error -- refusing to probe is one correct answer.
     Error(_) -> connection
@@ -3500,9 +3940,8 @@ pub fn keeps_a_handshake_packet_inside_the_smallest_path_test() -> Nil {
   // and RFC 9000 section 14.1 lets no datagram exceed it before it has.
   assert connection_state.path_mtu(connection) == 1200
 
-  // The caller asks for the whole flight in one packet. A long-header packet
-  // is built from the same queue as every other level, so the budget has to be
-  // measured against the path rather than trusted.
+  // The caller asks for the whole flight in one packet.
+  // A long-header packet is built from the same queue as every other level, so the budget has to be measured against the path rather than trusted.
   let assert Ok(connection_state.PacketPrepared(prepared, _, number, frames)) =
     connection_state.prepare_packet(connection, engine.Handshake, 65_000, 1)
   let assert Ok(packet) =
@@ -3522,20 +3961,16 @@ pub fn keeps_an_acknowledgement_only_packet_inside_the_smallest_path_test() -> N
   let assert Ok(connection) = established(connection_state.Client)
   assert connection_state.path_mtu(connection) == 1200
 
-  // A peer that drops every other block of packet numbers keeps the full
-  // retained range set alive, and a widely scattered set makes every gap
-  // varint four bytes. The acknowledgement alone then outgrows the floor,
-  // and an ACK-only packet carries no other frame for the send path to
-  // measure it beside.
+  // A peer that drops every other block of packet numbers keeps the full retained range set alive, and a widely scattered set makes every gap varint four bytes.
+  // The acknowledgement alone then outgrows the floor,
+  // and an ACK-only packet carries no other frame for the send path to measure it beside.
   let connection = receives_scattered_packets(connection, 256)
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 1000, 40)
   let assert [frame.Ack(frame.Acknowledgement(_, ranges, _))] = frames
 
-  // RFC 9000 section 13.2.4 lets an acknowledgement carry a subset of the
-  // ranges its sender retains. All 256 do not fit the floor, so the oldest
-  // stay retained for a later packet while the newest - the ones the peer's
-  // loss detection needs - go out now, largest received packet number first.
+  // RFC 9000 section 13.2.4 lets an acknowledgement carry a subset of the ranges its sender retains.
+  // All 256 do not fit the floor, so the oldest stay retained for a later packet while the newest - the ones the peer's loss detection needs - go out now, largest received packet number first.
   assert list.length(ranges) < 256
   assert list.length(ranges) > 200
   let assert [frame.AckRange(_, largest), ..] = ranges
@@ -3551,10 +3986,8 @@ pub fn keeps_an_acknowledgement_only_packet_inside_the_smallest_path_test() -> N
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn keeps_an_initial_packet_with_a_token_inside_the_smallest_path_test() -> Nil {
-  // A server-issued address-validation token rides in every Initial its
-  // client sends (RFC 9000 section 8.1.2), on top of the long header and the
-  // AEAD tag. It is the one part of a packet's overhead the peer chooses, so
-  // it is the part a budget computed without it under-counts by.
+  // A server-issued address-validation token rides in every Initial its client sends (RFC 9000 section 8.1.2), on top of the long header and the AEAD tag.
+  // It is the one part of a packet's overhead the peer chooses, so it is the part a budget computed without it under-counts by.
   let token = <<0:size(700)-unit(8)>>
   let assert Ok(connection) =
     connection_state.new(
@@ -3589,14 +4022,12 @@ pub fn keeps_an_initial_packet_with_a_token_inside_the_smallest_path_test() -> N
       frames,
     )
 
-  // The handshake still advances: the token narrows the payload rather than
-  // silencing the packet.
+  // The handshake still advances: the token narrows the payload rather than silencing the packet.
   let assert Some(_) = crypto_data(frames)
   assert bit_array.byte_size(packet) <= connection_state.path_mtu(prepared)
 }
 
-/// Receive `count` ack-eliciting packets spaced far enough apart that every
-/// retained range encodes its gap as a four-byte varint.
+/// Receive `count` ack-eliciting packets spaced far enough apart that every retained range encodes its gap as a four-byte varint.
 fn receives_scattered_packets(
   connection: connection_state.State,
   count: Int,
@@ -3615,8 +4046,7 @@ fn receives_scattered_packets(
   })
 }
 
-/// Protect one 1-RTT packet and report the size of the datagram that goes on
-/// the wire, header protection and AEAD tag included.
+/// Protect one 1-RTT packet and report the size of the datagram that goes on the wire, header protection and AEAD tag included.
 fn protected_datagram_bytes(
   connection: connection_state.State,
   destination_connection_id: BitArray,
@@ -3640,19 +4070,16 @@ pub fn decodes_a_path_sized_packet_past_the_default_frame_budget_test() -> Nil {
   let assert Ok(sender) = established(connection_state.Client)
   let assert Ok(receiver) = established(connection_state.Server)
 
-  // PADDING costs one decoding unit per byte, so a DPLPMTUD probe blows the
-  // 4096-unit default long before its two frames are decoded.
+  // PADDING costs one decoding unit per byte, so a DPLPMTUD probe blows the 4096-unit default long before its two frames are decoded.
   let receiver =
     receives_short_packet(sender, receiver, 0, [frame.Ping, frame.Padding(8000)])
 
-  // The relaxation is one unit per packet byte, not per frame, so it also has
-  // to admit a packet whose bytes are all distinct frames. No frame encodes in
-  // less than one byte, so this is the tightest bound that admits both.
+  // The relaxation is one unit per packet byte, not per frame, so it also has to admit a packet whose bytes are all distinct frames.
+  // No frame encodes in less than one byte, so this is the tightest bound that admits both.
   let receiver =
     receives_short_packet(sender, receiver, 1, list.repeat(frame.Ping, 8000))
 
-  // Both packets were decoded and both are ack-eliciting, so the receiver owes
-  // one acknowledgement covering the pair.
+  // Both packets were decoded and both are ack-eliciting, so the receiver owes one acknowledgement covering the pair.
   let assert Ok(connection_state.PacketPrepared(_, _, _, frames)) =
     connection_state.prepare_packet(receiver, engine.OneRtt, 1000, 2)
   let assert [frame.Ack(frame.Acknowledgement(_, ranges, _)), ..] = frames
@@ -3683,11 +4110,8 @@ pub fn bounds_long_header_frames_at_the_default_budget_test() -> Nil {
       engine.InstallReadKeys(engine.Handshake, keys),
     ])
 
-  // A long-header packet is unauthenticated work: Initial keys are derivable
-  // from a connection ID any off-path sender can observe, and the same decode
-  // path serves Handshake and 0-RTT. Advertising a large max_udp_payload_size
-  // must not let one buy more decoding than the fixed default budget, however
-  // many frames its plaintext holds.
+  // A long-header packet is unauthenticated work: Initial keys are derivable from a connection ID any off-path sender can observe, and the same decode path serves Handshake and 0-RTT.
+  // Advertising a large max_udp_payload_size must not let one buy more decoding than the fixed default budget, however many frames its plaintext holds.
   let assert Ok(packet) =
     connection_state.protect_long_packet(
       client,
@@ -3697,30 +4121,34 @@ pub fn bounds_long_header_frames_at_the_default_budget_test() -> Nil {
       0,
       list.repeat(frame.Ping, 4097),
     )
-  assert connection_state.receive_protected_long_packet(
+  let received =
+    connection_state.receive_protected_long_packet(
       server,
       packet,
       packet_space.NotEct,
       1,
     )
-    == Error(connection_state.FrameCodecFailure(frame.FrameLimitExceeded(4096)))
+  let assert Ok(connection_state.LongPacketReceipt(closing, _, _, _)) = received
+  assert connection_state.local_transport_failure_code(closing) == Some(0x01)
+  let #(_, events) = connection_state.take_events(closing)
+  assert events
+    == [
+      connection_state.LocalTransportFailure(
+        connection_state.FrameCodecFailure(frame.FrameLimitExceeded(4096)),
+        0x01,
+      ),
+    ]
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn keeps_acknowledging_behind_a_full_datagram_queue_test() -> Nil {
   let connection = validated_path_connection()
 
-  // A peer sending a steady ack-eliciting stream on alternate packet numbers
-  // keeps the full retained range set alive, so the acknowledgement owed here
-  // is as large as this endpoint ever builds.
+  // A peer sending a steady ack-eliciting stream on alternate packet numbers keeps the full retained range set alive, so the acknowledgement owed here is as large as this endpoint ever builds.
   let connection = receives_alternate_packets(connection, 256)
 
-  // The application writes back-to-back datagrams sized by the public
-  // `maximum_datagram_data_size`. A QUIC DATAGRAM frame cannot be split (RFC
-  // 9221 section 3), so if it were sized without room for that acknowledgement
-  // no ACK could leave this endpoint until the queue drained - unbounded delay
-  // where RFC 9000 section 13.2.1 allows max_ack_delay, and spurious probe
-  // timeouts at the peer.
+  // The application writes back-to-back datagrams sized by the public `maximum_datagram_data_size`.
+  // A QUIC DATAGRAM frame cannot be split (RFC 9221 section 3), so if it were sized without room for that acknowledgement no ACK could leave this endpoint until the queue drained - unbounded delay where RFC 9000 section 13.2.1 allows max_ack_delay, and spurious probe timeouts at the peer.
   let connection = queues_a_full_datagram(connection)
   let connection = queues_a_full_datagram(connection)
 
@@ -3728,8 +4156,7 @@ pub fn keeps_acknowledging_behind_a_full_datagram_queue_test() -> Nil {
     connection_state.prepare_packet(connection, engine.OneRtt, 1000, 40)
   let assert [frame.Ack(_), frame.Datagram(_)] = frames
 
-  // Both fit, and the finished datagram still fits the path with the widest
-  // short header QUIC version 1 allows.
+  // Both fit, and the finished datagram still fits the path with the widest short header QUIC version 1 allows.
   assert protected_datagram_bytes(
       prepared,
       maximum_destination_connection_id,
@@ -3738,8 +4165,7 @@ pub fn keeps_acknowledging_behind_a_full_datagram_queue_test() -> Nil {
     )
     <= connection_state.path_mtu(prepared)
 
-  // The second datagram follows immediately rather than being displaced by the
-  // acknowledgement that shared the first packet.
+  // The second datagram follows immediately rather than being displaced by the acknowledgement that shared the first packet.
   let assert Ok(connection_state.PacketPrepared(_, _, _, [frame.Datagram(_)])) =
     connection_state.prepare_packet(prepared, engine.OneRtt, 1000, 40)
   Nil
@@ -3749,15 +4175,11 @@ pub fn keeps_acknowledging_behind_a_full_datagram_queue_test() -> Nil {
 pub fn sends_an_acknowledgement_a_queued_datagram_crowds_out_test() -> Nil {
   let connection = validated_path_connection()
 
-  // No acknowledgement is scheduled yet, so this datagram is sized to fill the
-  // path exactly.
+  // No acknowledgement is scheduled yet, so this datagram is sized to fill the path exactly.
   let connection = queues_a_full_datagram(connection)
 
-  // The peer's traffic arrives after that frame was built, so the
-  // acknowledgement now due no longer fits beside it. The indivisible datagram
-  // is the one that waits: an acknowledgement withheld until an application
-  // queue drains has no bound at all, where RFC 9000 section 13.2.1 allows
-  // max_ack_delay.
+  // The peer's traffic arrives after that frame was built, so the acknowledgement now due no longer fits beside it.
+  // The indivisible datagram is the one that waits: an acknowledgement withheld until an application queue drains has no bound at all, where RFC 9000 section 13.2.1 allows max_ack_delay.
   let connection = receives_alternate_packets(connection, 4)
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
     connection_state.prepare_packet(connection, engine.OneRtt, 1000, 40)
@@ -3779,9 +4201,8 @@ pub fn guarantees_a_datagram_bound_across_ack_debt_and_path_reset_test() -> Nil 
   assert guaranteed > 0
   assert guaranteed < wide_maximum
 
-  // The guarantee is independent of transient ACK debt. Even the widest
-  // retained-range set this endpoint admits cannot drive the live bound below
-  // it.
+  // The guarantee is independent of transient ACK debt.
+  // Even the widest retained-range set this endpoint admits cannot drive the live bound below it.
   let indebted = receives_alternate_packets(wide, 256)
   let assert Ok(indebted_maximum) =
     connection_state.maximum_datagram_data_size(indebted)
@@ -3789,9 +4210,8 @@ pub fn guarantees_a_datagram_bound_across_ack_debt_and_path_reset_test() -> Nil 
   assert connection_state.guaranteed_datagram_data_size(indebted)
     == Ok(guaranteed)
 
-  // A black-hole response collapses a previously validated path to QUIC's
-  // 1200-byte floor. The advertised guarantee remains queueable there while
-  // the ACK and DATAGRAM still fit in the finished protected packet.
+  // A black-hole response collapses a previously validated path to QUIC's 1200-byte floor.
+  // The advertised guarantee remains queueable there while the ACK and DATAGRAM still fit in the finished protected packet.
   let collapsed = connection_state.report_pmtu_black_hole(indebted)
   assert connection_state.path_mtu(collapsed) == 1200
   assert connection_state.guaranteed_datagram_data_size(collapsed)
@@ -3818,10 +4238,8 @@ pub fn guarantees_a_datagram_bound_across_ack_debt_and_path_reset_test() -> Nil 
 pub fn keeps_an_early_datagram_inside_the_pre_validation_floor_test() -> Nil {
   let connection = zero_rtt_connection()
 
-  // A 0-RTT datagram rides a long header - version, both connection IDs, and a
-  // length field - which is far wider than the short header an established
-  // connection writes. Sizing it against the short header puts it past the
-  // 1200-byte floor every path is required to carry.
+  // A 0-RTT datagram rides a long header - version, both connection IDs, and a length field - which is far wider than the short header an established connection writes.
+  // Sizing it against the short header puts it past the 1200-byte floor every path is required to carry.
   let connection = queues_a_full_datagram(connection)
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
     connection_state.prepare_packet(connection, engine.ZeroRtt, 1200, 10)
@@ -3842,9 +4260,7 @@ pub fn keeps_an_early_datagram_inside_the_pre_validation_floor_test() -> Nil {
 pub fn bounds_a_close_reason_to_the_smallest_path_test() -> Nil {
   let assert Ok(connection) = established(connection_state.Client)
 
-  // CONNECTION_CLOSE cannot be split and cannot be dropped, so a caller's
-  // reason phrase has to be bounded where it enters the connection rather than
-  // becoming an oversized datagram on the 1200-byte floor.
+  // CONNECTION_CLOSE cannot be split and cannot be dropped, so a caller's reason phrase has to be bounded where it enters the connection rather than becoming an oversized datagram on the 1200-byte floor.
   let assert Ok(connection) =
     connection_state.close(connection, 7, string.repeat("reason ", 1000), 10)
   let assert Ok(connection_state.PacketPrepared(prepared, _, _, frames)) =
@@ -3864,17 +4280,14 @@ pub fn bounds_a_close_reason_to_the_smallest_path_test() -> Nil {
 pub fn bounds_a_new_token_to_the_smallest_path_test() -> Nil {
   let assert Ok(server) = established(connection_state.Server)
 
-  // NEW_TOKEN is indivisible and reliable, so a token too large for the
-  // 1200-byte floor is refused at the door instead of being emitted as an
-  // oversized datagram once a black hole resets the path.
+  // NEW_TOKEN is indivisible and reliable, so a token too large for the 1200-byte floor is refused at the door instead of being emitted as an oversized datagram once a black hole resets the path.
   assert connection_state.queue_new_token(server, <<0:size(1200)-unit(8)>>)
     == Error(connection_state.InvalidInput)
 
   let assert Ok(server) =
     connection_state.queue_new_token(server, <<0:size(1024)-unit(8)>>)
 
-  // HANDSHAKE_DONE was queued when the handshake completed and leaves in the
-  // packet ahead of the token.
+  // HANDSHAKE_DONE was queued when the handshake completed and leaves in the packet ahead of the token.
   let assert Ok(connection_state.PacketPrepared(
     server,
     _,
@@ -3897,9 +4310,8 @@ pub fn bounds_a_new_token_to_the_smallest_path_test() -> Nil {
 pub fn drops_a_datagram_the_path_no_longer_carries_test() -> Nil {
   let connection = queues_a_full_datagram(validated_path_connection())
 
-  // The path collapses back to the 1200-byte floor while the datagram is still
-  // queued. It cannot be split and it must not go out oversized, so RFC 9221
-  // section 5 lets it be dropped instead.
+  // The path collapses back to the 1200-byte floor while the datagram is still queued.
+  // It cannot be split and it must not go out oversized, so RFC 9221 section 5 lets it be dropped instead.
   let connection = connection_state.report_pmtu_black_hole(connection)
   assert connection_state.path_mtu(connection) == 1200
   let assert Ok(connection_state.NoPacket(connection)) =
@@ -3923,8 +4335,7 @@ pub fn drops_a_datagram_the_path_no_longer_carries_test() -> Nil {
 pub fn arms_the_pacing_wake_for_a_path_sized_datagram_test() -> Nil {
   let connection = wide_path_connection()
 
-  // Nothing is waiting to be sent, so the only deadline owed is the far later
-  // idle timeout.
+  // Nothing is waiting to be sent, so the only deadline owed is the far later idle timeout.
   let assert Ok(Some(idle)) = connection_state.next_deadline(connection, 10_001)
 
   let assert Ok(#(waiting, stream)) =
@@ -3943,9 +4354,8 @@ pub fn arms_the_pacing_wake_for_a_path_sized_datagram_test() -> Nil {
   let assert Error(connection_state.PacingLimited(release)) = limited
   assert release > 10_001
 
-  // The owner has to wake at that release rather than at the idle deadline. A
-  // burst fixed at ten 1200-byte datagrams cannot hold a 16_384-byte one at
-  // all, so the pacer refused the question and no pacing wake was armed.
+  // The owner has to wake at that release rather than at the idle deadline.
+  // A burst fixed at ten 1200-byte datagrams cannot hold a 16_384-byte one at all, so the pacer refused the question and no pacing wake was armed.
   let assert Ok(Some(deadline)) =
     connection_state.next_deadline(waiting, 10_001)
   assert deadline == release
@@ -3972,10 +4382,9 @@ pub fn paces_a_small_write_by_the_datagram_it_produces_test() -> Nil {
   let #(_, limited) = flush_sized_datagrams(waiting, 16_384, 10_001, 1)
   let assert Error(connection_state.PacingLimited(release)) = limited
 
-  // One queued byte on the same wide path produces a datagram of a few dozen
-  // bytes, not a path-sized one. The send path commits the datagram it built,
-  // so the pacer releases that small one long before the tokens a
-  // 16_384-byte datagram needs have accrued.
+  // One queued byte on the same wide path produces a datagram of a few dozen bytes, not a path-sized one.
+  // The send path commits the datagram it built,
+  // so the pacer releases that small one long before the tokens a 16_384-byte datagram needs have accrued.
   let assert Ok(#(small, identifier)) =
     connection_state.open_stream(connection, stream_id.Bidirectional)
   let assert Ok(small) =
@@ -3984,14 +4393,12 @@ pub fn paces_a_small_write_by_the_datagram_it_produces_test() -> Nil {
   assert resumed == Ok(Nil)
   assert connection_state.bytes_in_flight(sent) == 60
 
-  // Arming the wake for a path-sized datagram would have slept through that
-  // sendable instant.
+  // Arming the wake for a path-sized datagram would have slept through that sendable instant.
   let assert Ok(Some(deadline)) = connection_state.next_deadline(small, 10_001)
   assert deadline != release
 }
 
-/// Queue the largest QUIC DATAGRAM the current path and the peer's frame limit
-/// allow.
+/// Queue the largest QUIC DATAGRAM the current path and the peer's frame limit allow.
 fn queues_a_full_datagram(
   connection: connection_state.State,
 ) -> connection_state.State {
@@ -4002,8 +4409,7 @@ fn queues_a_full_datagram(
   connection
 }
 
-/// Receive `count` ack-eliciting packets on alternate packet numbers so every
-/// retained ACK range stays alive.
+/// Receive `count` ack-eliciting packets on alternate packet numbers so every retained ACK range stays alive.
 fn receives_alternate_packets(
   connection: connection_state.State,
   count: Int,
@@ -4022,13 +4428,9 @@ fn receives_alternate_packets(
   })
 }
 
-/// Drive DPLPMTUD to a validated 16_384-byte path while leaving the pacer
-/// holding less than one datagram of that size.
+/// Drive DPLPMTUD to a validated 16_384-byte path while leaving the pacer holding less than one datagram of that size.
 ///
-/// The token bucket refills at 1.25 congestion windows per round trip, so the
-/// first round trip is deliberately long: it grows the window past the probe
-/// allowance a 16_384-byte probe needs, and the probe is then acknowledged one
-/// millisecond after it was sent, before the bucket it emptied has refilled.
+/// The token bucket refills at 1.25 congestion windows per round trip, so the first round trip is deliberately long: it grows the window past the probe allowance a 16_384-byte probe needs, and the probe is then acknowledged one millisecond after it was sent, before the bucket it emptied has refilled.
 fn wide_path_connection() -> connection_state.State {
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(connection) =
@@ -4047,8 +4449,7 @@ fn wide_path_connection() -> connection_state.State {
       True,
     )
 
-  // The opening burst spends every one of the pacer's tokens and carries all
-  // the queued bytes and the FIN, so nothing is left pending behind it.
+  // The opening burst spends every one of the pacer's tokens and carries all the queued bytes and the FIN, so nothing is left pending behind it.
   let #(connection, opening) = flush_datagrams(connection, 0, 10)
   assert opening == Ok(Nil)
   let assert Ok(connection) =
@@ -4059,8 +4460,7 @@ fn wide_path_connection() -> connection_state.State {
       10_000,
     )
 
-  // The peer's authenticated ceiling puts the first probe midpoint exactly on
-  // 16_384, and the grown window leaves room to send it.
+  // The peer's authenticated ceiling puts the first probe midpoint exactly on 16_384, and the grown window leaves room to send it.
   let assert Ok(#(connection, 16_384)) =
     connection_state.start_pmtu_probe(connection)
   let number = connection_state.next_application_packet_number(connection)
@@ -4112,10 +4512,8 @@ pub fn abandons_a_lost_pmtu_probe_without_a_congestion_response_test() -> Nil {
   let connection =
     send_probe_then_lose_it(connection, [frame.Ping, frame.Padding(1)])
 
-  // RFC 9002 section 3: a probe is deliberately larger than the confirmed
-  // path, so losing one is not evidence of congestion. Its 9000 bytes leave
-  // flight - only the two unacknowledged 100-byte packets remain - and the
-  // window keeps the size the acknowledgement grew it to.
+  // RFC 9002 section 3: a probe is deliberately larger than the confirmed path, so losing one is not evidence of congestion.
+  // Its 9000 bytes leave flight - only the two unacknowledged 100-byte packets remain - and the window keeps the size the acknowledgement grew it to.
   assert connection_state.bytes_in_flight(connection) == 200
   assert connection_state.congestion_window(connection) >= 12_000
   assert connection_state.path_mtu(connection) == 1200
@@ -4127,9 +4525,8 @@ pub fn keeps_the_congestion_response_for_a_same_sized_pto_probe_test() -> Nil {
   let assert Ok(#(connection, 9000)) =
     connection_state.start_pmtu_probe(connection)
 
-  // A PTO probe carrying delivery work is not the exact PING-plus-PADDING
-  // DPLPMTUD shape. Losing one is ordinary loss even when its size happens to
-  // match the outstanding path probe, so the window still halves.
+  // A PTO probe carrying delivery work is not the exact PING-plus-PADDING DPLPMTUD shape.
+  // Losing one is ordinary loss even when its size happens to match the outstanding path probe, so the window still halves.
   let connection =
     send_probe_then_lose_it(connection, [
       frame.Ping,
@@ -4139,9 +4536,8 @@ pub fn keeps_the_congestion_response_for_a_same_sized_pto_probe_test() -> Nil {
   assert connection_state.congestion_window(connection) < 12_000
 }
 
-/// Drive DPLPMTUD to a validated 9000-byte path. The peer's authenticated
-/// ceiling puts the first probe midpoint exactly on 9000, and acknowledging
-/// that probe is what makes the size usable.
+/// Drive DPLPMTUD to a validated 9000-byte path.
+/// The peer's authenticated ceiling puts the first probe midpoint exactly on 9000, and acknowledging that probe is what makes the size usable.
 fn validated_path_connection() -> connection_state.State {
   let assert Ok(connection) = established(connection_state.Client)
   let assert Ok(connection) =
@@ -4175,9 +4571,8 @@ fn validated_path_connection() -> connection_state.State {
   connection
 }
 
-/// A client that has installed 0-RTT write keys and learned the peer's
-/// remembered transport parameters, but has not completed the handshake. Its
-/// path is still the pre-validation floor every path is required to carry.
+/// A client that has installed 0-RTT write keys and learned the peer's remembered transport parameters, but has not completed the handshake.
+/// Its path is still the pre-validation floor every path is required to carry.
 fn zero_rtt_connection() -> connection_state.State {
   let assert Ok(keys) = test_keys()
   let assert Ok(connection) =
@@ -4228,8 +4623,7 @@ fn receives_short_packet(
   receiver
 }
 
-/// Send `frames` as a 9000-byte packet, then acknowledge three later packets
-/// so the packet threshold declares it lost.
+/// Send `frames` as a 9000-byte packet, then acknowledge three later packets so the packet threshold declares it lost.
 fn send_probe_then_lose_it(
   connection: connection_state.State,
   frames: List(frame.Frame),
@@ -4237,8 +4631,7 @@ fn send_probe_then_lose_it(
   send_packet_then_lose_it(connection, frames, 9000)
 }
 
-/// Commit packet zero, then acknowledge three later packets so the packet
-/// threshold declares only packet zero lost.
+/// Commit packet zero, then acknowledge three later packets so the packet threshold declares only packet zero lost.
 fn send_packet_then_lose_it(
   connection: connection_state.State,
   frames: List(frame.Frame),
@@ -4286,9 +4679,7 @@ fn pacer_bound_connection() -> #(connection_state.State, Int) {
   pacer_bound_connection_after(100)
 }
 
-/// The same pacer-bound connection, with the opening burst acknowledged after a
-/// caller-chosen round trip so the pacing release can be placed far enough
-/// ahead to leave room for a congestion event before the wake.
+/// The same pacer-bound connection, with the opening burst acknowledged after a caller-chosen round trip so the pacing release can be placed far enough ahead to leave room for a congestion event before the wake.
 fn pacer_bound_connection_after(
   round_trip_milliseconds: Int,
 ) -> #(connection_state.State, Int) {
@@ -4303,14 +4694,12 @@ fn pacer_bound_connection_after(
       False,
     )
 
-  // The initial burst and the initial congestion window are both ten
-  // full-sized datagrams, so time zero releases exactly ten packets.
+  // The initial burst and the initial congestion window are both ten full-sized datagrams, so time zero releases exactly ten packets.
   let #(connection, opening_burst) = flush_datagrams(connection, 0, 10)
   assert opening_burst == Ok(Nil)
   assert connection_state.bytes_in_flight(connection) == 12_000
 
-  // One round trip later the peer acknowledges the burst: the congestion
-  // window grows well beyond one burst while the pacer refills at most one.
+  // One round trip later the peer acknowledges the burst: the congestion window grows well beyond one burst while the pacer refills at most one.
   let assert Ok(connection) =
     connection_state.record_datagram_received(
       connection,
@@ -4331,10 +4720,8 @@ fn pacer_bound_connection_after(
   #(connection, stream)
 }
 
-/// One established connection on a socket that carries the Don't-Fragment
-/// option, which is what lets DPLPMTUD search above the 1200-byte floor. The
-/// fail-closed default is pinned by
-/// `keeps_the_path_at_the_floor_by_default_test` instead.
+/// One established connection on a socket that carries the Don't-Fragment option, which is what lets DPLPMTUD search above the 1200-byte floor.
+/// The fail-closed default is pinned by `keeps_the_path_at_the_floor_by_default_test` instead.
 fn established(
   role: connection_state.Role,
 ) -> Result(connection_state.State, connection_state.Error) {
@@ -4626,8 +5013,7 @@ fn flush_sized_datagrams(
   }
 }
 
-/// Apply a sequence of independently timed CE congestion events through the
-/// real packet-space, ECN validator, congestion controller, and pacer path.
+/// Apply a sequence of independently timed CE congestion events through the real packet-space, ECN validator, congestion controller, and pacer path.
 fn live_cubic_ecn_rounds(
   connection: connection_state.State,
   sent_number: Int,
@@ -4715,16 +5101,12 @@ fn live_cubic_ecn_round(
 /// A memory grant wide enough that nothing in these tests is held by it.
 const ample_memory_grant = 16_777_216
 
-/// One round of the credit test: small enough that several rounds fit inside
-/// the grant, large enough that the window updates during them.
+/// One round of the credit test: small enough that several rounds fit inside the grant, large enough that the window updates during them.
 const credit_chunk_bytes = 4096
 
 const credit_rounds = 12
 
-/// The grant the credit test runs under, and it is not a number this test
-/// chose: it is exactly what a listener charges to admit one connection, so
-/// the bound asserted below is the bound a shipped server actually runs
-/// against rather than one arranged to be easy to meet.
+/// The grant the credit test runs under, and it is not a number this test chose: it is exactly what a listener charges to admit one connection, so the bound asserted below is the bound a shipped server actually runs against rather than one arranged to be easy to meet.
 fn admission_grant_bytes() -> Int {
   budget.admission_quanta() * budget.quantum()
 }
@@ -4744,8 +5126,8 @@ pub fn a_refused_connection_stops_inviting_the_peer_to_open_streams_test() -> Ni
     connection_state.apply_memory_grant(connection, 0, True)
   assert connection_state.credit_growth_held(connection) == True
 
-  // A peer using the allowance this endpoint already advertised is served
-  // exactly as before. It is never punished for credit we handed it.
+  // A peer using the allowance this endpoint already advertised is served exactly as before.
+  // It is never punished for credit we handed it.
   let assert Ok(connection) =
     connection_state.receive_packet(
       connection,
@@ -4761,8 +5143,7 @@ pub fn a_refused_connection_stops_inviting_the_peer_to_open_streams_test() -> Ni
   assert connection_state.active_stream_count(connection) == 0
   assert connection_state.phase(connection) == connection_state.Established
 
-  // What is withheld is the invitation to open another one: the allowance the
-  // closed stream freed is not advertised, and it does not grow.
+  // What is withheld is the invitation to open another one: the allowance the closed stream freed is not advertised, and it does not grow.
   let #(connection, held) = prepared_frames(connection, 20)
   assert contains_max_streams(held, frame.Unidirectional, 101) == False
   assert connection_state.advertised_stream_limit(
@@ -4790,29 +5171,23 @@ pub fn advertised_receive_credit_stays_inside_the_memory_grant_test() -> Nil {
   let assert Ok(connection) = granted_connection()
   let opening = connection_state.advertised_max_data(connection)
 
-  // The credit a server promises in its handshake, before it has asked its
-  // endpoint for a single byte of room, is credit the admission charge has
-  // already funded. A server that advertised more than this would be
-  // over-committed by the difference on every connection it ever admitted.
+  // The credit a server promises in its handshake, before it has asked its endpoint for a single byte of room, is credit the admission charge has already funded.
+  // A server that advertised more than this would be over-committed by the difference on every connection it ever admitted.
   assert opening == budget.initial_receive_credit()
   assert connection_state.outstanding_receive_credit(connection)
     <= admission_grant_bytes()
 
-  // The peer sends and the application reads, round after round, with the
-  // grant re-applied each turn exactly as the connection actor re-applies it.
+  // The peer sends and the application reads, round after round, with the grant re-applied each turn exactly as the connection actor re-applies it.
   let connection = exchange_within_grant(connection, 0, 10, credit_rounds)
 
-  // The window really did open -- so the bound below is a bound on growth that
-  // happened, not on growth that never started -- and it never opened past the
-  // room the grant funds.
+  // The window really did open -- so the bound below is a bound on growth that happened, not on growth that never started -- and it never opened past the room the grant funds.
   assert connection_state.advertised_max_data(connection) > opening
   assert connection_state.outstanding_receive_credit(connection)
     <= admission_grant_bytes()
   assert connection_state.retained_bytes(connection) <= admission_grant_bytes()
 }
 
-/// One peer send and one application read per round, checking after each that
-/// neither the credit advertised nor the memory held has left the grant.
+/// One peer send and one application read per round, checking after each that neither the credit advertised nor the memory held has left the grant.
 fn exchange_within_grant(
   connection: connection_state.State,
   offset: Int,
@@ -4835,9 +5210,7 @@ fn exchange_within_grant(
         False -> connection
         True -> send_and_read_chunk(connection, offset, now)
       }
-      // The two standing bounds, checked every round rather than only at the
-      // end: a peer that keeps filling every window it is offered still cannot
-      // take this connection past what its endpoint granted.
+      // The two standing bounds, checked every round rather than only at the end: a peer that keeps filling every window it is offered still cannot take this connection past what its endpoint granted.
       assert connection_state.outstanding_receive_credit(connection)
         <= admission_grant_bytes()
       assert connection_state.retained_bytes(connection)
@@ -4885,10 +5258,7 @@ fn credit_chunk() -> BitArray {
   <<0:size(credit_chunk_bytes)-unit(8)>>
 }
 
-/// An established server configured the way `server_transport` configures a
-/// shipped listener's connections: the connection-level receive credit it
-/// opens with is the credit its endpoint charged admission for, and the window
-/// it widens by is the step it asks its endpoint for room in.
+/// An established server configured the way `server_transport` configures a shipped listener's connections: the connection-level receive credit it opens with is the credit its endpoint charged admission for, and the window it widens by is the step it asks its endpoint for room in.
 fn granted_connection() -> Result(
   connection_state.State,
   connection_state.Error,
@@ -4931,17 +5301,14 @@ fn prepared_frames(
   }
 }
 
-/// A stream receive window narrow enough that one chunk crosses the half-window
-/// deadband, so a single read is enough to make a MAX_STREAM_DATA increase due.
+/// A stream receive window narrow enough that one chunk crosses the half-window deadband, so a single read is enough to make a MAX_STREAM_DATA increase due.
 const narrow_stream_window_bytes = 4096
 
-/// Connection-level receive credit wide enough that nothing in the restatement
-/// test is bounded by it: what that test is about is the per-stream frames.
+/// Connection-level receive credit wide enough that nothing in the restatement test is bounded by it: what that test is about is the per-stream frames.
 const narrow_connection_window_bytes = 65_536
 
-/// How many 1-RTT packets a restatement is allowed to need. The queue emits one
-/// queued frame per packet, and the whole point of the test is that only a
-/// handful of frames are owed, so this is a bound rather than an expectation.
+/// How many 1-RTT packets a restatement is allowed to need.
+/// The queue emits one queued frame per packet, and the whole point of the test is that only a handful of frames are owed, so this is a bound rather than an expectation.
 const restatement_packet_bound = 24
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -4950,9 +5317,9 @@ pub fn a_lifted_refusal_restates_only_the_credit_it_withheld_test() -> Nil {
   let #(connection, _handshake) =
     drained_frames(connection, 1, restatement_packet_bound)
 
-  // A locally-opened unidirectional stream. This endpoint can only send on it,
-  // and RFC 9000 section 19.10 makes MAX_STREAM_DATA for a stream the peer
-  // cannot send on a STREAM_STATE_ERROR the peer must close the connection on.
+  // A locally-opened unidirectional stream.
+  // This endpoint can only send on it,
+  // and RFC 9000 section 19.10 makes MAX_STREAM_DATA for a stream the peer cannot send on a STREAM_STATE_ERROR the peer must close the connection on.
   let assert Ok(#(connection, send_only)) =
     connection_state.open_stream(connection, stream_id.Unidirectional)
 
@@ -4971,14 +5338,13 @@ pub fn a_lifted_refusal_restates_only_the_credit_it_withheld_test() -> Nil {
       10,
     )
 
-  // The endpoint has no memory left for this connection, so credit growth is
-  // held down from here until it has room again.
+  // The endpoint has no memory left for this connection, so credit growth is held down from here until it has room again.
   let #(connection, _held) =
     connection_state.apply_memory_grant(connection, 0, True)
   assert connection_state.credit_growth_held(connection) == True
 
-  // Reading a whole window off the bidirectional stream would ordinarily raise
-  // that stream's limit. While the hold binds, the increase is withheld.
+  // Reading a whole window off the bidirectional stream would ordinarily raise that stream's limit.
+  // While the hold binds, the increase is withheld.
   let assert Ok(#(connection, _read)) =
     connection_state.read_stream(connection, 0, narrow_stream_window_bytes)
   let #(connection, withheld) =
@@ -4993,8 +5359,7 @@ pub fn a_lifted_refusal_restates_only_the_credit_it_withheld_test() -> Nil {
 
   // Exactly the stream whose increase was withheld, exactly once.
   assert list.count(restated, is_max_stream_data(_, 0)) == 1
-  // Never the send-only stream: this endpoint has no receive credit to state
-  // for it, and stating any would be a protocol violation.
+  // Never the send-only stream: this endpoint has no receive credit to state for it, and stating any would be a protocol violation.
   assert list.any(restated, is_max_stream_data(_, send_only)) == False
   // And never a stream whose increase was never withheld in the first place.
   assert list.any(restated, is_max_stream_data(_, 2)) == False
@@ -5024,9 +5389,7 @@ pub fn default_receive_offsets_do_not_cap_stream_lifetime_test() -> Nil {
   assert maximum_stream_final_size == varint.maximum
 }
 
-/// An established server whose receive windows are narrow enough that a single
-/// read crosses the deadband, so what a credit hold withholds is visible in one
-/// exchange rather than after a megabyte of them.
+/// An established server whose receive windows are narrow enough that a single read crosses the deadband, so what a credit hold withholds is visible in one exchange rather than after a megabyte of them.
 fn narrow_window_connection() -> Result(
   connection_state.State,
   connection_state.Error,
@@ -5056,8 +5419,7 @@ fn narrow_window_connection() -> Result(
   Ok(connection)
 }
 
-/// Every 1-RTT frame this connection has to send now, drained over at most
-/// `packets` prepared packets so the wait is bounded whatever it owes.
+/// Every 1-RTT frame this connection has to send now, drained over at most `packets` prepared packets so the wait is bounded whatever it owes.
 fn drained_frames(
   connection: connection_state.State,
   now: Int,
@@ -5088,8 +5450,7 @@ fn drain_frames(
   }
 }
 
-/// Connection-level receive credit one peer stream can fill exactly, so the
-/// peer can be driven to no credit at all inside a single exchange.
+/// Connection-level receive credit one peer stream can fill exactly, so the peer can be driven to no credit at all inside a single exchange.
 const shut_window_bytes = 8192
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -5100,15 +5461,13 @@ pub fn a_lifted_refusal_restates_the_connection_limit_test() -> Nil {
   let opening = connection_state.advertised_max_data(connection)
   assert opening == shut_window_bytes
 
-  // The endpoint has no memory left for this connection, so its advertised
-  // credit is held to what the peer has already read off.
+  // The endpoint has no memory left for this connection, so its advertised credit is held to what the peer has already read off.
   let #(connection, _held) =
     connection_state.apply_memory_grant(connection, 0, True)
   assert connection_state.credit_growth_held(connection) == True
 
-  // The peer spends every byte of connection-level credit it holds, and the
-  // application reads all of it. Under the hold none of it is handed back, so
-  // the peer is left with no credit whatsoever.
+  // The peer spends every byte of connection-level credit it holds, and the application reads all of it.
+  // Under the hold none of it is handed back, so the peer is left with no credit whatsoever.
   let assert Ok(connection) =
     connection_state.receive_packet(
       connection,
@@ -5126,11 +5485,9 @@ pub fn a_lifted_refusal_restates_the_connection_limit_test() -> Nil {
   assert connection_state.advertised_max_data(connection) == opening
   assert connection_state.outstanding_receive_credit(connection) == 0
 
-  // The lift has to hand that room on by itself. The peer cannot send, so
-  // nothing will arrive to prompt this endpoint; the application has read
-  // everything there was, so it will not read again. A connection-level limit
-  // that only the next read can raise is a limit never raised, and a
-  // connection that waits for it is a connection stalled to its idle timeout.
+  // The lift has to hand that room on by itself.
+  // The peer cannot send, so nothing will arrive to prompt this endpoint; the application has read everything there was, so it will not read again.
+  // A connection-level limit that only the next read can raise is a limit never raised, and a connection that waits for it is a connection stalled to its idle timeout.
   let #(connection, _released) =
     connection_state.apply_memory_grant(connection, ample_memory_grant, False)
   let #(connection, restated) =
@@ -5146,9 +5503,8 @@ pub fn a_refused_connection_reuses_funded_connection_credit_test() -> Nil {
   let #(connection, _handshake) =
     drained_frames(connection, 1, restatement_packet_bound)
 
-  // The endpoint cannot fund the requested growth step, but this positive
-  // grant already funds more connection-level receive credit than the peer's
-  // opening window. Stream-count and per-stream growth remain frozen.
+  // The endpoint cannot fund the requested growth step, but this positive grant already funds more connection-level receive credit than the peer's opening window.
+  // Stream-count and per-stream growth remain frozen.
   let #(connection, _held) =
     connection_state.apply_memory_grant(
       connection,
@@ -5157,9 +5513,8 @@ pub fn a_refused_connection_reuses_funded_connection_credit_test() -> Nil {
     )
   assert connection_state.credit_growth_held(connection) == True
 
-  // The peer spends the opening connection window and the application returns
-  // it. That room is already funded: re-advertising it does not grow memory or
-  // require a new endpoint grant.
+  // The peer spends the opening connection window and the application returns it.
+  // That room is already funded: re-advertising it does not grow memory or require a new endpoint grant.
   let assert Ok(connection) =
     connection_state.receive_packet(
       connection,
@@ -5192,10 +5547,7 @@ fn shut_window_chunk() -> BitArray {
   <<0:size(shut_window_bytes)-unit(8)>>
 }
 
-/// An established server whose connection-level receive credit is narrow
-/// enough for one peer stream to spend all of it in a single packet, so the
-/// state a lifted refusal has to recover from -- a peer holding no credit at
-/// all -- is reachable without a megabyte of traffic.
+/// An established server whose connection-level receive credit is narrow enough for one peer stream to spend all of it in a single packet, so the state a lifted refusal has to recover from -- a peer holding no credit at all -- is reachable without a megabyte of traffic.
 fn shut_window_connection() -> Result(
   connection_state.State,
   connection_state.Error,

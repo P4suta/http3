@@ -4,6 +4,35 @@ import quic_core/internal/stream_state
 import quic_core/stream_id
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn acknowledged_send_direction_cannot_be_reset_test() -> Nil {
+  let assert Ok(stream) =
+    stream_state.new(0, stream_id.Client, 10, 10, 30, 10, 10, 10, 30)
+  let assert Ok(stream) = stream_state.queue_send(stream, <<"done">>, True)
+  let assert Ok(stream_state.Emit(stream, sent)) =
+    stream_state.poll_send(stream, 10)
+  let assert Ok(stream) = stream_state.on_frame_acked(stream, sent)
+  assert stream_state.send_finished(stream)
+  assert stream_state.reset_send(stream, 99) == Error(stream_state.SendClosed)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn acknowledged_fin_with_missing_data_keeps_sending_open_test() -> Nil {
+  let assert Ok(stream) =
+    stream_state.new(0, stream_id.Client, 10, 10, 30, 10, 10, 10, 30)
+  let assert Ok(stream) = stream_state.queue_send(stream, <<"abcdef">>, True)
+  let assert Ok(stream_state.Emit(stream, first)) =
+    stream_state.poll_send(stream, 3)
+  let assert Ok(stream_state.Emit(stream, final)) =
+    stream_state.poll_send(stream, 3)
+  let assert Ok(stream) = stream_state.on_frame_acked(stream, final)
+  assert !stream_state.send_finished(stream)
+  let assert Ok(_) = stream_state.reset_send(stream, 99)
+  let assert Ok(stream) = stream_state.on_frame_acked(stream, first)
+  assert stream_state.send_finished(stream)
+  assert stream_state.reset_send(stream, 99) == Error(stream_state.SendClosed)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn reassembles_stream_data_and_returns_receive_credit_test() -> Nil {
   let assert Ok(stream) =
     stream_state.new(0, stream_id.Server, 10, 10, 30, 10, 10, 10, 30)

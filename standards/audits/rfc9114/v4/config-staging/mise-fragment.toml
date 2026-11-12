@@ -1,0 +1,10 @@
+# Replace the existing [tasks.rfc9114-review-audit] table atomically after the HTTP/1 configuration freeze is released.
+[tasks.rfc9114-review-audit]
+description = "Verify the anchored RFC 9114 v4 source tree, exact control inventories, and fresh split evidence"
+run = [
+  "mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py identity-capture",
+  "mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py tracked",
+  "mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py gate-self-test",
+  "mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py cycle red",
+  "mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py cycle self-test",
+]

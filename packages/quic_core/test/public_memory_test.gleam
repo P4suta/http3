@@ -92,6 +92,11 @@ fn client_connection_handle(
   connection: client.Connection,
 ) -> Result(client_worker.Connection, Nil)
 
+@external(erlang, "quic_core_test_ffi", "send_while_actor_suspended")
+fn send_while_actor_suspended(
+  stream: server.Stream,
+) -> Result(Nil, server.Error)
+
 /// Which live actor executed one traced transport boundary.
 pub type TraceEndpoint {
   ClientEndpoint
@@ -125,6 +130,8 @@ pub type FrameProgressTrace {
   )
   AckReceived(endpoint: TraceEndpoint, packet_number: Int, at_milliseconds: Int)
   ConnectionTicked(endpoint: TraceEndpoint, at_milliseconds: Int)
+  /// Capture reached its fixed event bound and stopped tracing both actors.
+  TraceTruncated
 }
 
 /// Exact API-boundary timing for one failed four-byte exchange.
@@ -666,9 +673,9 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
   // remainder parks, so that partial progress must retain the grant as its
   // binding cause and end on its own deadline as a transient overload rather
   // than as a bare operation timeout.
-  let before_blocked = send_buffer_grant_snapshot(stalled.peer)
+  let before_blocked = memory_grant_snapshot(stalled.peer)
   let blocked = send_until_refused(outgoing, blocked_send_quanta)
-  let after_blocked = send_buffer_grant_snapshot(stalled.peer)
+  let after_blocked = memory_grant_snapshot(stalled.peer)
 
   // Backpressure, not truncation: the connection that could not be funded is
   // still there -- a write was held back, not a connection destroyed -- what
@@ -698,6 +705,12 @@ pub fn endpoint_memory_backpressures_instead_of_truncating_test() -> Nil {
       before_blocked,
       after_blocked,
     )
+  let snapshot = after_blocked |> should.be_ok
+  let assert Some(expired) = snapshot.last_send_deadline
+  assert expired.held_by_grant == True
+  assert expired.remaining_bytes > 0
+  assert expired.observed_at_milliseconds >= expired.deadline_milliseconds
+  assert snapshot.pending_sends == []
   assert alive == True
   assert delivered >= quantum_bytes
   assert retained == True
@@ -922,6 +935,36 @@ pub fn one_grant_bounds_every_parallel_write_together_test() -> Nil {
     )
     == True
   assert alive == True
+  assert stopped == Ok(server.Stopped)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn expired_send_never_commits_after_actor_resumes_test() -> Nil {
+  let ca_certificate = fixture("ca.pem") |> should.be_ok
+  let deadlines = bounded_deadlines()
+  let limits = pressing_limits(1)
+  let listener = start_listener(deadlines, limits)
+  let port = server.port(listener) |> should.be_ok
+  let pair = admitted(listener, port, ca_certificate, deadlines, limits)
+  let stream = server.open_bidirectional(pair.peer) |> should.be_ok
+
+  // The actor cannot see the first command until its synchronous caller has expired.
+  // The fresh send is queued behind it and must be the only payload the peer receives, proving expiry closes transport admission as well.
+  let expired = send_while_actor_suspended(stream)
+  let accepted = server.send_and_finish(stream, <<"accepted":utf8>>)
+  let received = {
+    use incoming <- result.try(client.accept_stream(pair.connection))
+    client.receive(incoming.stream, 1024)
+  }
+  let snapshot = memory_grant_snapshot(pair.peer)
+  close_pairs([pair])
+  let stopped = server.stop(listener)
+
+  assert expired == Error(server.Failure(failure.Timeout(failure.Operation)))
+  assert accepted == Ok(Nil)
+  assert received == Ok(client.Data(<<"accepted":utf8>>, True))
+  let snapshot = snapshot |> should.be_ok
+  assert snapshot.pending_sends == []
   assert stopped == Ok(server.Stopped)
 }
 
@@ -1150,7 +1193,6 @@ fn refusal(outcome: Result(client.Connection, client.Error)) -> Bool {
   case outcome {
     Error(client.Failure(failure.Limit(failure.EndpointMemory, _maximum))) ->
       True
-    Error(client.Failure(failure.Closed(failure.Peer, Some(2)))) -> True
     Error(client.Failure(failure.Quic(failure.Peer, Some(2)))) -> True
     _other -> False
   }

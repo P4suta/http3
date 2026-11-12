@@ -25,6 +25,26 @@ pub fn round_trips_sni_alpn_and_versions_test() -> Nil {
     == Ok(extension_value.Tls13)
 }
 
+// RFC 6066 section 3 forbids two ServerName entries with the same NameType.
+// Keep the complete bounded wire value here so this cannot accidentally become a test of a different duplicate-extension rule.
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn rejects_duplicate_host_name_entries_with_typed_error_test() -> Nil {
+  let duplicate_host_names = <<
+    0,
+    24,
+    0,
+    0,
+    9,
+    "a.example",
+    0,
+    0,
+    9,
+    "b.example",
+  >>
+  assert extension_value.decode_server_name(duplicate_host_names)
+    == Error(extension_value.DuplicateIdentifier(0))
+}
+
 // RFC 7301 section 3.1: protocol names are non-empty, untruncated byte
 // strings, and the enclosing vector length is exact.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.

@@ -1,0 +1,601 @@
+{
+  "schema": 5,
+  "phases": {
+    "semantic": [
+      {
+        "name": "guardian_current_source",
+        "type": "source",
+        "expected": true
+      },
+      {
+        "name": "scanner_current_source",
+        "type": "source",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::allowed_helper_exit_before_finish",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::allowed_helper_owner_demonitor",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::balanced_decoy_quarantine_dispatcher_bypass",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::balanced_decoy_terminating_dispatcher_bypass",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::cleanup_deadline_reset",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::comment_second_deadline_decoy",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::dead_second_deadline_decoy",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::delegated_run_in_first_true",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::delegated_second_run",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::guard_false_safe_down_clause_missing_live_publication",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::guard_false_safe_entry_clause_wrong_live_clause",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::handler_entry_second_deadline_removed",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::immediately_invoked_fun_run_in_first_true",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::impossible_variable_guard_safe_entry_wrong_live_clause",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::indirect_exit_before_terminal_down_finish",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::indirect_owner_demonitor_before_publication",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::indirect_throw_before_terminal_down_finish",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::matching_traffic_bypasses_quarantine_precheck",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::matching_traffic_bypasses_terminating_precheck",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::monitor_replacement_gap",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::nested_iife_second_run",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::owner_monitor_gap",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::publish_before_down",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::quarantine_pre_receive_deadline_removed",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::quarantine_retry_deadline_reset",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::relative_deadline_reset",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::run_after_entry_receive",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::run_before_entry_receive",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::run_before_second_deadline",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::run_in_first_deadline_true",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::run_in_second_deadline_true",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::spawn_then_monitor_gap",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::startup_deadline_removed",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::success_publication_after_finish",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "guardian_mutation::terminating_pre_receive_deadline_removed",
+        "type": "mutation",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::generic_atomic_good",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::generic_spawn_monitor_gap",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::generic_erlang_atomic_good",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::delegated_good",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::dead_scope_wrong_receiver_composite",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::dead_owner_scope",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::dead_state_scope",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::dead_down_scope",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::wrong_external_module",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::wrong_external_function",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::unused_exact_call",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::different_ok_binding",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::await_in_different_case_branch",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::different_guardian_spawn",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::boot_outside_guardian_closure",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::unrelated_handler_spawn_opt",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::old_non_atomic",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::different_monitor_return",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::owner_monitor_not_forwarded",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::handler_monitor_not_stored",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::handler_down_uses_other_monitor",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::down_call_in_different_clause",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::guardian_return_after_valid_decoy",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::owner_demonitor_before_handler",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::owner_demonitor_before_publication",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::nested_handler_state",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::exit_before_handler_down",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::throw_before_handler_down",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::return_before_handler_down",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::publication_in_unreachable_branch",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::lexical_decoys",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::source_drift_rejected",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::scanner_drift_rejected",
+        "type": "scanner_self",
+        "expected": true
+      },
+      {
+        "name": "scanner_self::atomic_report_readback",
+        "type": "scanner_self",
+        "expected": true
+      }
+    ],
+    "independent": [
+      {
+        "name": "independent_v4::run_before_entry_receive",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::run_after_entry_receive",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::immediately_invoked_fun_run_in_first_true",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::delegated_run_in_first_true",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::guard_false_safe_entry_clause_wrong_live_clause",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::impossible_variable_guard_safe_entry_wrong_live_clause",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::matching_traffic_bypasses_terminating_precheck",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::matching_traffic_bypasses_quarantine_precheck",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::indirect_owner_demonitor_before_publication",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::indirect_exit_before_terminal_down_finish",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::indirect_throw_before_terminal_down_finish",
+        "type": "independent_mutation",
+        "expected": true
+      },
+      {
+        "name": "independent_v4::guard_false_safe_down_clause_missing_live_publication",
+        "type": "independent_mutation",
+        "expected": true
+      }
+    ],
+    "evidence": [
+      {
+        "name": "duplicate_json_key_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "unknown_report_key_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "success_secret_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "failure_secret_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "hardlink_input_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "reparse_input_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "oversize_input_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "partial_read_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "missing_input_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "stale_input_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "tampered_report_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "snapshot_executes_exact_bytes",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "snapshot_path_drift_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "input_restore_race_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "post_readback_replacement_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "control_substitution_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "control_reorder_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "control_duplicate_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "runtime_forgery_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "runtime_version_forgery_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "unexpected_failure_redacted",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "tracked_history_exact",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "clean_checkout_inventory_exact",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "running_precedes_bootstrap_failure",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "previous_running_recovery_detected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "absolute_process_deadline_reaped",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "process_output_limit_reaped",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "manifest_candidate_blocks_ready",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "consumer_schema_is_closed",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "rejected_phase_controls_fail_closed",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "consumer_process_proof_bound",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "consumer_process_tamper_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "completed_pointer_missing_process_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "runtime_environment_override_rejected",
+        "type": "evidence",
+        "expected": true
+      },
+      {
+        "name": "noncanonical_receipt_ready_blocked",
+        "type": "evidence",
+        "expected": true
+      }
+    ]
+  }
+}

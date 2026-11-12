@@ -1,0 +1,968 @@
+{
+  "schema": 1,
+  "scope": "Selected pathname-only WPT components without regexp groups; not complete URL constructor qualification.",
+  "specification": "https://urlpattern.spec.whatwg.org/commit-snapshots/696b4029d52e5854044bac6b72cdb198cb962ed0/",
+  "wpt_revision": "0c1d19546fd4873bb9f4147f0bbf868e7b4f91b7",
+  "wpt_sha256": "db329f22a3fc666bdf85d20856cf32d1074f4e7f9b30c05ead596463cdb2f734",
+  "license": "BSD-3-Clause",
+  "copyright": "web-platform-tests contributors",
+  "reference": {
+    "name": "Node.js URLPattern",
+    "version": "v26.8.2",
+    "binary_sha256": "8a22a371fd85aecf5411636574309f6380fbc42694aaf0651a089a8ef9c44e52"
+  },
+  "vectors": [
+    {
+      "index": 0,
+      "pattern": "/foo/bar",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 1,
+      "pattern": "/foo/bar",
+      "input": "/foo/ba",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 2,
+      "pattern": "/foo/bar",
+      "input": "/foo/bar/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 3,
+      "pattern": "/foo/bar",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 29,
+      "pattern": "/foo/:bar",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 30,
+      "pattern": "/foo/([^\\/]+?)",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 31,
+      "pattern": "/foo/:bar",
+      "input": "/foo/index.html",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 32,
+      "pattern": "/foo/:bar",
+      "input": "/foo/bar/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 33,
+      "pattern": "/foo/:bar",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 34,
+      "pattern": "/foo/(.*)",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 35,
+      "pattern": "/foo/*",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 36,
+      "pattern": "/foo/(.*)",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 37,
+      "pattern": "/foo/*",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 38,
+      "pattern": "/foo/(.*)",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 39,
+      "pattern": "/foo/*",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 40,
+      "pattern": "/foo/(.*)",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 41,
+      "pattern": "/foo/*",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 42,
+      "pattern": "/foo/:bar(.*)",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 43,
+      "pattern": "/foo/:bar(.*)",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 44,
+      "pattern": "/foo/:bar(.*)",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 45,
+      "pattern": "/foo/:bar(.*)",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 46,
+      "pattern": "/foo/:bar?",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 47,
+      "pattern": "/foo/:bar?",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 48,
+      "pattern": "/foo/:bar?",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 49,
+      "pattern": "/foo/:bar?",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 50,
+      "pattern": "/foo/:bar?",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 51,
+      "pattern": "/foo/:bar+",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 52,
+      "pattern": "/foo/:bar+",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 53,
+      "pattern": "/foo/:bar+",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 54,
+      "pattern": "/foo/:bar+",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 55,
+      "pattern": "/foo/:bar+",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 56,
+      "pattern": "/foo/:bar*",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 57,
+      "pattern": "/foo/:bar*",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 58,
+      "pattern": "/foo/:bar*",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 59,
+      "pattern": "/foo/:bar*",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 60,
+      "pattern": "/foo/:bar*",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 61,
+      "pattern": "/foo/(.*)?",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 62,
+      "pattern": "/foo/*?",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 63,
+      "pattern": "/foo/(.*)?",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 64,
+      "pattern": "/foo/*?",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 65,
+      "pattern": "/foo/(.*)?",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 66,
+      "pattern": "/foo/*?",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 67,
+      "pattern": "/foo/(.*)?",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 68,
+      "pattern": "/foo/*?",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 69,
+      "pattern": "/foo/(.*)?",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 70,
+      "pattern": "/foo/*?",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 71,
+      "pattern": "/foo/(.*)?",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 72,
+      "pattern": "/foo/*?",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 73,
+      "pattern": "/foo/(.*)+",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 74,
+      "pattern": "/foo/*+",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 75,
+      "pattern": "/foo/(.*)+",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 76,
+      "pattern": "/foo/*+",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 77,
+      "pattern": "/foo/(.*)+",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 78,
+      "pattern": "/foo/*+",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 79,
+      "pattern": "/foo/(.*)+",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 80,
+      "pattern": "/foo/*+",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 81,
+      "pattern": "/foo/(.*)+",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 82,
+      "pattern": "/foo/*+",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 83,
+      "pattern": "/foo/(.*)+",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 84,
+      "pattern": "/foo/*+",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 85,
+      "pattern": "/foo/(.*)*",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 86,
+      "pattern": "/foo/**",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 87,
+      "pattern": "/foo/(.*)*",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 88,
+      "pattern": "/foo/**",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 89,
+      "pattern": "/foo/(.*)*",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 90,
+      "pattern": "/foo/**",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 91,
+      "pattern": "/foo/(.*)*",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 92,
+      "pattern": "/foo/**",
+      "input": "/foo/",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 93,
+      "pattern": "/foo/(.*)*",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 94,
+      "pattern": "/foo/**",
+      "input": "/foobar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 95,
+      "pattern": "/foo/(.*)*",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 96,
+      "pattern": "/foo/**",
+      "input": "/fo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 97,
+      "pattern": "/foo{/bar}",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 98,
+      "pattern": "/foo{/bar}",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 99,
+      "pattern": "/foo{/bar}",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 100,
+      "pattern": "/foo{/bar}",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 101,
+      "pattern": "/foo{/bar}?",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 102,
+      "pattern": "/foo{/bar}?",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 103,
+      "pattern": "/foo{/bar}?",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 104,
+      "pattern": "/foo{/bar}?",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 105,
+      "pattern": "/foo{/bar}+",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 106,
+      "pattern": "/foo{/bar}+",
+      "input": "/foo/bar/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 107,
+      "pattern": "/foo{/bar}+",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 108,
+      "pattern": "/foo{/bar}+",
+      "input": "/foo",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 109,
+      "pattern": "/foo{/bar}+",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 110,
+      "pattern": "/foo{/bar}*",
+      "input": "/foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 111,
+      "pattern": "/foo{/bar}*",
+      "input": "/foo/bar/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 112,
+      "pattern": "/foo{/bar}*",
+      "input": "/foo/bar/baz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 113,
+      "pattern": "/foo{/bar}*",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 114,
+      "pattern": "/foo{/bar}*",
+      "input": "/foo/",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 119,
+      "pattern": "(café)",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 126,
+      "pattern": "/:café",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 133,
+      "pattern": "/:℘",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 140,
+      "pattern": "/:㐀",
+      "input": "/foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 162,
+      "pattern": "/foo/bar",
+      "input": "/foo/./bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 163,
+      "pattern": "/foo/baz",
+      "input": "/foo/bar/../baz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 164,
+      "pattern": "/caf%C3%A9",
+      "input": "/café",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 165,
+      "pattern": "/café",
+      "input": "/café",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 166,
+      "pattern": "/caf%c3%a9",
+      "input": "/café",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 167,
+      "pattern": "/foo/bar",
+      "input": "foo/bar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 169,
+      "pattern": "/foo/../bar",
+      "input": "/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 186,
+      "pattern": "/(\\m)",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 187,
+      "pattern": "/foo!",
+      "input": "/foo!",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 188,
+      "pattern": "/foo\\:",
+      "input": "/foo:",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 189,
+      "pattern": "/foo\\{",
+      "input": "/foo{",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 190,
+      "pattern": "/foo\\(",
+      "input": "/foo(",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 196,
+      "pattern": "var x = 1;",
+      "input": "var x = 1;",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 265,
+      "pattern": "/:id/:id",
+      "input": "",
+      "valid": false,
+      "matched": false
+    },
+    {
+      "index": 269,
+      "pattern": ":name*",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 270,
+      "pattern": ":name+",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 271,
+      "pattern": ":name",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 299,
+      "pattern": "{:foo}(.*)",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 301,
+      "pattern": "{:foo}{(.*)}",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 302,
+      "pattern": "{:foo}{(.*)bar}",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 303,
+      "pattern": "{:foo}{bar(.*)}",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 304,
+      "pattern": "{:foo}:bar(.*)",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 305,
+      "pattern": "{:foo}?(.*)",
+      "input": "foobarbaz",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 306,
+      "pattern": "{:foo\\bar}",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 307,
+      "pattern": "{:foo\\.bar}",
+      "input": "foo.bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 309,
+      "pattern": "{:foo}bar",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 310,
+      "pattern": ":foo\\bar",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 311,
+      "pattern": ":foo{}(.*)",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 312,
+      "pattern": ":foo{}bar",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 313,
+      "pattern": ":foo{}?bar",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 314,
+      "pattern": "*{}**?",
+      "input": "foobar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 317,
+      "pattern": "*/*",
+      "input": "foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 318,
+      "pattern": "*\\/*",
+      "input": "foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 319,
+      "pattern": "*/{*}",
+      "input": "foo/bar",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 320,
+      "pattern": "*//*",
+      "input": "foo/bar",
+      "valid": true,
+      "matched": false
+    },
+    {
+      "index": 321,
+      "pattern": "/:foo.",
+      "input": "/bar.",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 322,
+      "pattern": "/:foo..",
+      "input": "/bar..",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 323,
+      "pattern": "./foo",
+      "input": "./foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 324,
+      "pattern": "../foo",
+      "input": "../foo",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 325,
+      "pattern": ":foo./",
+      "input": "bar./",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 326,
+      "pattern": ":foo../",
+      "input": "bar../",
+      "valid": true,
+      "matched": true
+    },
+    {
+      "index": 327,
+      "pattern": "/:foo\\bar",
+      "input": "/bazbar",
+      "valid": true,
+      "matched": true
+    }
+  ]
+}

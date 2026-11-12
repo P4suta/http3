@@ -1,12 +1,11 @@
 //// RFC 9458 Oblivious HTTP client, relay, and gateway primitives.
 ////
-//// Only RFC 9180 base mode with DHKEM(X25519, HKDF-SHA256) is active. The
-//// symmetric choices are HKDF-SHA256 with AES-128-GCM or ChaCha20-Poly1305.
+//// Only RFC 9180 base mode with DHKEM(X25519, HKDF-SHA256) is active.
+//// The symmetric choices are HKDF-SHA256 with AES-128-GCM or ChaCha20-Poly1305.
 //// Unsupported registry identifiers fail closed and are never substituted.
 
 import gleam/bit_array
 import gleam/list
-import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http/bhttp
@@ -24,6 +23,14 @@ const public_key_bytes = 32
 const authentication_tag_bytes = 16
 
 const request_header_bytes = 7
+
+const replay_without_expiry = -1
+
+type ContextClaim
+
+type ReplayStoreHandle
+
+type ReplayLease
 
 /// One KDF and AEAD combination advertised for a gateway key.
 pub type SymmetricAlgorithm {
@@ -50,13 +57,12 @@ pub opaque type GatewayKey {
   GatewayKey(configuration: KeyConfiguration, private_key: BitArray)
 }
 
-/// Client configuration. Normal clients generate a fresh ephemeral key for
-/// every request; deterministic clients exist solely for reproducible vectors.
+/// Client configuration.
+/// A fresh operating-system CSPRNG ephemeral key is generated for every request.
 pub opaque type Client {
   Client(
     configuration: KeyConfiguration,
     algorithm: SymmetricAlgorithm,
-    deterministic_ephemeral: Option(BitArray),
     bhttp_limits: bhttp.Limits,
     maximum_message_bytes: Int,
   )
@@ -74,16 +80,16 @@ type CryptoContext {
 
 /// Client-side response context bound to exactly one encapsulated request.
 pub opaque type ClientContext {
-  ClientContext(CryptoContext)
+  ClientContext(CryptoContext, ContextClaim)
 }
 
 /// Gateway-side response context bound to exactly one opened request.
 pub opaque type GatewayContext {
-  GatewayContext(CryptoContext)
+  GatewayContext(CryptoContext, ContextClaim)
 }
 
-/// Gateway policy and private key. The authority allowlist is exact and empty
-/// means deny all target requests.
+/// Gateway policy and private key.
+/// The authority allowlist is exact and empty means deny all target requests.
 pub opaque type Gateway {
   Gateway(
     key: GatewayKey,
@@ -93,9 +99,39 @@ pub opaque type Gateway {
   )
 }
 
-/// A finite fail-closed replay set. It never evicts live entries implicitly.
+/// A shared, concurrent, finite replay set owned by its creating process.
+///
+/// Accepted request identities do not expire in the compatibility store.
+/// Pending authentication work counts toward the same hard capacity, and is released on authentication failure, deadline, or caller termination.
 pub opaque type ReplayStore {
-  ReplayStore(maximum_entries: Int, fingerprints: List(BitArray))
+  ReplayStore(handle: ReplayStoreHandle)
+}
+
+/// A policy failure found after an Encapsulated Request was authenticated.
+///
+/// These values contain no target, request bytes, credentials, or exception data and are safe to use for finite diagnostics.
+pub type ProtectedRequestFailure {
+  MalformedRequest
+  ContinueExpectationRejected
+  TargetRejected
+}
+
+/// The result of authenticating and applying gateway policy to one request.
+///
+/// Both variants retain the one-shot response context required by RFC 9458 section 5.2.
+/// A rejected request therefore remains capable of producing an Encapsulated Response.
+pub type GatewayOpen(payload) {
+  GatewayOpened(payload: payload, response_context: GatewayContext)
+  GatewayRejected(
+    failure: ProtectedRequestFailure,
+    response_context: GatewayContext,
+  )
+}
+
+/// Integration-oriented gateway admission result.
+pub type GatewayAdmission {
+  ForwardRequest(request: bhttp.Message, response_context: GatewayContext)
+  ProtectedResponse(body: BitArray)
 }
 
 /// A relay maps one public resource to one fixed HTTPS gateway.
@@ -119,6 +155,9 @@ pub type Error {
   LimitExceeded
   ReplayDetected
   ReplayCapacityExceeded
+  ReplayStoreUnavailable
+  ContextReuseDetected
+  ContinueExpectationForbidden
   TargetNotAllowed
   DecryptionFailed
   CryptoFailure
@@ -169,8 +208,8 @@ pub fn encode_key_configuration(
   >>)
 }
 
-/// Decode a strict `application/ohttp-keys` collection. Any malformed member
-/// invalidates the complete collection to avoid client fingerprinting.
+/// Decode a strict `application/ohttp-keys` collection.
+/// Any malformed member invalidates the complete collection to avoid client fingerprinting.
 pub fn decode_key_configurations(
   bytes: BitArray,
   maximum_configurations maximum_configurations: Int,
@@ -235,30 +274,7 @@ pub fn client(
   bhttp_limits: bhttp.Limits,
   maximum_message_bytes maximum_message_bytes: Int,
 ) -> Result(Client, Error) {
-  new_client(configuration, None, bhttp_limits, maximum_message_bytes)
-}
-
-/// Create a deterministic vector client. Reusing it repeats the HPKE
-/// ephemeral key and is therefore not suitable for production traffic.
-pub fn deterministic_client(
-  configuration: KeyConfiguration,
-  ephemeral_private_key: BitArray,
-  bhttp_limits: bhttp.Limits,
-  maximum_message_bytes maximum_message_bytes: Int,
-) -> Result(Client, Error) {
-  use _ <- result.try(aligned(ephemeral_private_key))
-  use _ <- result.try(
-    case bit_array.byte_size(ephemeral_private_key) == public_key_bytes {
-      True -> Ok(Nil)
-      False -> Error(InvalidKey)
-    },
-  )
-  new_client(
-    configuration,
-    Some(ephemeral_private_key),
-    bhttp_limits,
-    maximum_message_bytes,
-  )
+  new_client(configuration, bhttp_limits, maximum_message_bytes)
 }
 
 /// Encode and encapsulate a binary HTTP request.
@@ -271,27 +287,46 @@ pub fn seal_request(
     bhttp.Request(..) -> Ok(Nil)
     bhttp.Response(..) -> Error(InvalidMessage)
   })
-  use _ <- result.try(refuse_continue_expectation(request))
+  use _ <- result.try(reject_continue_expectation(request))
   use encoded <- result.try(
     bhttp.encode(request, mode, client.bhttp_limits)
     |> result.map_error(fn(_) { InvalidMessage }),
   )
-  seal_request_bytes(client: client, request: encoded)
+  seal_request_bytes_unchecked(client, encoded)
 }
 
-/// Encapsulate already encoded `message/bhttp` request bytes.
+/// Validate and encapsulate already encoded `message/bhttp` request bytes.
+///
+/// Validation, including the OHTTP `Expect: 100-continue` prohibition, runs before a production HPKE key is derived.
 pub fn seal_request_bytes(
   client client: Client,
   request request: BitArray,
 ) -> Result(#(BitArray, ClientContext), Error) {
   use _ <- result.try(validate_message_bytes(
     request,
-    client.maximum_message_bytes,
+    client.maximum_message_bytes
+      - request_header_bytes
+      - public_key_bytes
+      - authentication_tag_bytes,
   ))
-  use ephemeral_private <- result.try(case client.deterministic_ephemeral {
-    Some(value) -> Ok(value)
-    None -> random_bytes(public_key_bytes) |> crypto_result
-  })
+  use _ <- result.try(decode_target_request(request, client.bhttp_limits))
+  seal_request_bytes_unchecked(client, request)
+}
+
+fn seal_request_bytes_unchecked(
+  client: Client,
+  request: BitArray,
+) -> Result(#(BitArray, ClientContext), Error) {
+  use _ <- result.try(validate_message_bytes(
+    request,
+    client.maximum_message_bytes
+      - request_header_bytes
+      - public_key_bytes
+      - authentication_tag_bytes,
+  ))
+  use ephemeral_private <- result.try(
+    random_bytes(public_key_bytes) |> crypto_result,
+  )
   use encapsulated_key <- result.try(
     x25519_public(ephemeral_private) |> crypto_result,
   )
@@ -327,7 +362,7 @@ pub fn seal_request_bytes(
       client.bhttp_limits,
       client.maximum_message_bytes,
     )
-  Ok(#(sealed, ClientContext(context)))
+  Ok(#(sealed, ClientContext(context, new_context_claim())))
 }
 
 /// Create a gateway with an exact HTTPS target-authority allowlist.
@@ -342,13 +377,122 @@ pub fn gateway(
   Ok(Gateway(key, allowed_authorities, bhttp_limits, maximum_message_bytes))
 }
 
-/// Create an empty finite replay set. Capacity exhaustion fails closed.
+/// Create a shared finite replay set.
+/// Capacity exhaustion fails closed.
+///
+/// The creating process owns the store.
+/// Calls after that process or the store exits return `ReplayStoreUnavailable`; a dead store is never replaced with an empty one.
 pub fn replay_store(
   maximum_entries maximum_entries: Int,
 ) -> Result(ReplayStore, Error) {
   case maximum_entries > 0 && maximum_entries <= 1_000_000 {
-    True -> Ok(ReplayStore(maximum_entries, []))
+    True ->
+      case new_replay_store(maximum_entries, replay_without_expiry) {
+        Ok(handle) -> Ok(ReplayStore(handle))
+        Error(_) -> Error(ReplayStoreUnavailable)
+      }
     False -> Error(InvalidConfiguration)
+  }
+}
+
+/// Create a shared replay set with an explicit accepted-identity retention window.
+/// Applications must choose a window consistent with their request replay policy; expiry permits an old request to be admitted again.
+pub fn replay_store_with_retention(
+  maximum_entries maximum_entries: Int,
+  retention_milliseconds retention_milliseconds: Int,
+) -> Result(ReplayStore, Error) {
+  case
+    maximum_entries > 0
+    && maximum_entries <= 1_000_000
+    && retention_milliseconds > 0
+  {
+    True ->
+      case new_replay_store(maximum_entries, retention_milliseconds) {
+        Ok(handle) -> Ok(ReplayStore(handle))
+        Error(_) -> Error(ReplayStoreUnavailable)
+      }
+    False -> Error(InvalidConfiguration)
+  }
+}
+
+/// Close a replay store.
+/// Closing an already closed or owner-terminated store is harmless.
+pub fn close_replay_store(store: ReplayStore) -> Nil {
+  let ReplayStore(handle) = store
+  let _closed = close_replay_store_handle(handle)
+  Nil
+}
+
+/// Authenticate, decode, and authorize one target request without losing the response context when policy validation fails after authenticated opening.
+pub fn open_request_detailed(
+  gateway gateway: Gateway,
+  replays replays: ReplayStore,
+  sealed sealed: BitArray,
+) -> Result(#(GatewayOpen(bhttp.Message), ReplayStore), Error) {
+  use #(plaintext, context, replays) <- result.try(open_request_bytes_unchecked(
+    gateway,
+    replays,
+    sealed,
+  ))
+  Ok(#(classify_opened_request(gateway, plaintext, context), replays))
+}
+
+/// Authenticate one encoded request and retain its response context for every failure discovered after authenticated opening.
+pub fn open_request_bytes_detailed(
+  gateway gateway: Gateway,
+  replays replays: ReplayStore,
+  sealed sealed: BitArray,
+) -> Result(#(GatewayOpen(BitArray), ReplayStore), Error) {
+  use #(plaintext, context, replays) <- result.try(open_request_bytes_unchecked(
+    gateway,
+    replays,
+    sealed,
+  ))
+  let opened = case classify_opened_request(gateway, plaintext, context) {
+    GatewayOpened(_, context) -> GatewayOpened(plaintext, context)
+    GatewayRejected(failure, context) -> GatewayRejected(failure, context)
+  }
+  Ok(#(opened, replays))
+}
+
+/// Produce a canonical, metadata-free Encapsulated Response for a failure discovered after authenticated opening.
+pub fn seal_protected_failure(
+  failure: ProtectedRequestFailure,
+  context: GatewayContext,
+) -> Result(BitArray, Error) {
+  let status = case failure {
+    MalformedRequest -> 400
+    ContinueExpectationRejected -> 417
+    TargetRejected -> 403
+  }
+  seal_response(
+    context: context,
+    response: bhttp.Response([], status, [], [], [], 0),
+    mode: bhttp.KnownLength,
+  )
+}
+
+/// Authenticate and admit an OHTTP request for an integrated gateway.
+///
+/// Pre-opening failures remain an outer HTTP error.
+/// Every post-opening policy failure is converted immediately into a canonical Encapsulated Response.
+pub fn admit_request(
+  gateway: Gateway,
+  replays: ReplayStore,
+  sealed: BitArray,
+) -> Result(#(GatewayAdmission, ReplayStore), Error) {
+  use #(opened, replays) <- result.try(open_request_detailed(
+    gateway: gateway,
+    replays: replays,
+    sealed: sealed,
+  ))
+  case opened {
+    GatewayOpened(request, context) ->
+      Ok(#(ForwardRequest(request, context), replays))
+    GatewayRejected(failure, context) -> {
+      use response <- result.try(seal_protected_failure(failure, context))
+      Ok(#(ProtectedResponse(response), replays))
+    }
   }
 }
 
@@ -358,25 +502,44 @@ pub fn open_request(
   replays replays: ReplayStore,
   sealed sealed: BitArray,
 ) -> Result(#(bhttp.Message, GatewayContext, ReplayStore), Error) {
-  use #(plaintext, context, replays) <- result.try(open_request_bytes(
-    gateway: gateway,
-    replays: replays,
-    sealed: sealed,
-  ))
-  use request <- result.try(
-    bhttp.decode(plaintext, gateway.bhttp_limits)
-    |> result.map_error(fn(_) { InvalidMessage }),
-  )
-  use _ <- result.try(refuse_continue_expectation(request))
-  use _ <- result.try(authorize_request(request, gateway.allowed_authorities))
-  Ok(#(request, context, replays))
+  case
+    open_request_detailed(gateway: gateway, replays: replays, sealed: sealed)
+  {
+    Ok(#(GatewayOpened(request, context), replays)) ->
+      Ok(#(request, context, replays))
+    Ok(#(GatewayRejected(failure, _), _)) ->
+      Error(protected_failure_error(failure))
+    Error(error) -> Error(error)
+  }
 }
 
-/// Decrypt one encapsulated request and return its response context.
+/// Decrypt, validate, and authorize one encoded request and return its context.
+///
+/// The byte-oriented API enforces the same target policy as `open_request`, so it cannot be used to bypass the gateway authority or Expect checks.
 pub fn open_request_bytes(
   gateway gateway: Gateway,
   replays replays: ReplayStore,
   sealed sealed: BitArray,
+) -> Result(#(BitArray, GatewayContext, ReplayStore), Error) {
+  case
+    open_request_bytes_detailed(
+      gateway: gateway,
+      replays: replays,
+      sealed: sealed,
+    )
+  {
+    Ok(#(GatewayOpened(plaintext, context), replays)) ->
+      Ok(#(plaintext, context, replays))
+    Ok(#(GatewayRejected(failure, _), _)) ->
+      Error(protected_failure_error(failure))
+    Error(error) -> Error(error)
+  }
+}
+
+fn open_request_bytes_unchecked(
+  gateway: Gateway,
+  replays: ReplayStore,
+  sealed: BitArray,
 ) -> Result(#(BitArray, GatewayContext, ReplayStore), Error) {
   use _ <- result.try(validate_message_bytes(
     sealed,
@@ -395,17 +558,39 @@ pub fn open_request_bytes(
       False -> Error(InvalidKey)
     },
   )
-  use fingerprint <- result.try(sha256(sealed) |> crypto_result)
-  use _ <- result.try(case list.contains(replays.fingerprints, fingerprint) {
-    True -> Error(ReplayDetected)
-    False -> Ok(Nil)
-  })
-  use _ <- result.try(
-    case list.length(replays.fingerprints) < replays.maximum_entries {
-      True -> Ok(Nil)
-      False -> Error(ReplayCapacityExceeded)
-    },
-  )
+  let ReplayStore(handle) = replays
+  use lease <- result.try(reserve_replay(handle, encapsulated_key))
+  let opened =
+    open_reserved_request(
+      gateway,
+      key_id,
+      kem_id,
+      encapsulated_key,
+      ciphertext,
+      algorithm,
+    )
+  case opened {
+    Error(error) ->
+      case replay_abort(handle, lease) {
+        True -> Error(error)
+        False -> Error(ReplayStoreUnavailable)
+      }
+    Ok(#(plaintext, context)) ->
+      case replay_commit(handle, lease) {
+        True -> Ok(#(plaintext, context, replays))
+        False -> Error(ReplayStoreUnavailable)
+      }
+  }
+}
+
+fn open_reserved_request(
+  gateway: Gateway,
+  key_id: Int,
+  kem_id: Int,
+  encapsulated_key: BitArray,
+  ciphertext: BitArray,
+  algorithm: SymmetricAlgorithm,
+) -> Result(#(BitArray, GatewayContext), Error) {
   use shared <- result.try(
     x25519_shared(gateway.key.private_key, encapsulated_key) |> crypto_result,
   )
@@ -431,10 +616,6 @@ pub fn open_request_bytes(
       Error(_) -> Error(DecryptionFailed)
     },
   )
-  use _ <- result.try(validate_message_bytes(
-    plaintext,
-    gateway.maximum_message_bytes,
-  ))
   let context =
     CryptoContext(
       hpke.exporter_secret,
@@ -443,9 +624,7 @@ pub fn open_request_bytes(
       gateway.bhttp_limits,
       gateway.maximum_message_bytes,
     )
-  let replays =
-    ReplayStore(..replays, fingerprints: [fingerprint, ..replays.fingerprints])
-  Ok(#(plaintext, GatewayContext(context), replays))
+  Ok(#(plaintext, GatewayContext(context, new_context_claim())))
 }
 
 /// Encode and encapsulate one binary HTTP response with fresh randomness.
@@ -458,47 +637,61 @@ pub fn seal_response(
     bhttp.Response(..) -> Ok(Nil)
     bhttp.Request(..) -> Error(InvalidMessage)
   })
-  let GatewayContext(crypto) = context
+  let GatewayContext(crypto, _) = context
   use encoded <- result.try(
     bhttp.encode(response, mode, crypto.bhttp_limits)
     |> result.map_error(fn(_) { InvalidMessage }),
   )
-  seal_response_bytes(context: context, response: encoded)
+  seal_response_bytes_validated(context, encoded)
 }
 
-/// Encapsulate already encoded response bytes with a fresh response nonce.
+/// Validate and encapsulate already encoded response bytes with fresh entropy.
+///
+/// A response context is claimed atomically across all copies.
+/// Exactly one caller can derive response keying material; later calls fail closed.
 pub fn seal_response_bytes(
   context context: GatewayContext,
   response response: BitArray,
 ) -> Result(BitArray, Error) {
-  let GatewayContext(crypto) = context
-  use #(_, nonce_bytes) <- result.try(aead_parameters(crypto.algorithm))
-  use response_nonce <- result.try(
-    random_bytes(response_secret_length(crypto.algorithm, nonce_bytes))
-    |> crypto_result,
-  )
-  seal_response_bytes_with_nonce(
-    context: context,
-    response: response,
-    response_nonce: response_nonce,
-  )
+  let GatewayContext(crypto, _) = context
+  use _ <- result.try(validate_message_bytes(
+    response,
+    crypto.maximum_message_bytes,
+  ))
+  use _ <- result.try(decode_response_message(response, crypto.bhttp_limits))
+  seal_response_bytes_validated(context, response)
 }
 
-/// Deterministic response sealing for RFC vectors and controlled adapters.
-/// Production callers should use `seal_response_bytes`.
-pub fn seal_response_bytes_with_nonce(
-  context context: GatewayContext,
-  response response: BitArray,
-  response_nonce response_nonce: BitArray,
+fn seal_response_bytes_validated(
+  context: GatewayContext,
+  response: BitArray,
 ) -> Result(BitArray, Error) {
-  let GatewayContext(crypto) = context
+  let GatewayContext(crypto, claim) = context
+  use #(_, nonce_bytes) <- result.try(aead_parameters(crypto.algorithm))
+  let response_nonce_bytes =
+    response_secret_length(crypto.algorithm, nonce_bytes)
+  use _ <- result.try(validate_message_bytes(
+    response,
+    crypto.maximum_message_bytes
+      - response_nonce_bytes
+      - authentication_tag_bytes,
+  ))
+  use _ <- result.try(claim_context_once(claim))
+  use response_nonce <- result.try(
+    random_bytes(response_nonce_bytes) |> crypto_result,
+  )
   use ciphertext <- result.try(protect_response(
     crypto,
     response,
     response_nonce,
     True,
   ))
-  Ok(<<response_nonce:bits, ciphertext:bits>>)
+  let sealed = <<response_nonce:bits, ciphertext:bits>>
+  use _ <- result.try(validate_message_bytes(
+    sealed,
+    crypto.maximum_message_bytes,
+  ))
+  Ok(sealed)
 }
 
 /// Decode an encapsulated response into a binary HTTP response.
@@ -506,27 +699,30 @@ pub fn open_response(
   context context: ClientContext,
   sealed sealed: BitArray,
 ) -> Result(bhttp.Message, Error) {
-  let ClientContext(crypto) = context
-  use plaintext <- result.try(open_response_bytes(
-    context: context,
-    sealed: sealed,
-  ))
-  use response <- result.try(
-    bhttp.decode(plaintext, crypto.bhttp_limits)
-    |> result.map_error(fn(_) { InvalidMessage }),
-  )
-  case response {
-    bhttp.Response(..) -> Ok(response)
-    bhttp.Request(..) -> Error(InvalidMessage)
-  }
+  let ClientContext(crypto, _) = context
+  use plaintext <- result.try(open_response_bytes_unchecked(context, sealed))
+  decode_response_message(plaintext, crypto.bhttp_limits)
 }
 
-/// Open already encoded `message/bhttp` response bytes.
+/// Open and validate already encoded `message/bhttp` response bytes.
+///
+/// A client response context is claimed atomically across all copies before authenticated decryption.
+/// A second call fails closed.
 pub fn open_response_bytes(
   context context: ClientContext,
   sealed sealed: BitArray,
 ) -> Result(BitArray, Error) {
-  let ClientContext(crypto) = context
+  let ClientContext(crypto, _) = context
+  use plaintext <- result.try(open_response_bytes_unchecked(context, sealed))
+  use _ <- result.try(decode_response_message(plaintext, crypto.bhttp_limits))
+  Ok(plaintext)
+}
+
+fn open_response_bytes_unchecked(
+  context: ClientContext,
+  sealed: BitArray,
+) -> Result(BitArray, Error) {
+  let ClientContext(crypto, claim) = context
   use _ <- result.try(validate_message_bytes(
     sealed,
     crypto.maximum_message_bytes,
@@ -537,8 +733,10 @@ pub fn open_response_bytes(
     False -> Error(InvalidMessage)
     True ->
       case sealed {
-        <<response_nonce:bytes-size(nonce_length), ciphertext:bits>> ->
+        <<response_nonce:bytes-size(nonce_length), ciphertext:bits>> -> {
+          use _ <- result.try(claim_context_once(claim))
           protect_response(crypto, ciphertext, response_nonce, False)
+        }
         _ -> Error(InvalidMessage)
       }
   }
@@ -560,8 +758,8 @@ pub fn relay(
   }
 }
 
-/// Validate and construct the relay-to-gateway request. No inbound client
-/// headers, address, connection identifier, or credentials enter this value.
+/// Validate and construct the relay-to-gateway request.
+/// No inbound client headers, address, connection identifier, or credentials enter this value.
 pub fn forward_request(
   relay relay: Relay,
   content_type content_type: String,
@@ -572,8 +770,7 @@ pub fn forward_request(
   Ok(RelayForward(relay.gateway_uri, "message/ohttp-req", body))
 }
 
-/// Validate a gateway-to-client encapsulated response without exposing relay
-/// metadata to the OHTTP payload.
+/// Validate a gateway-to-client encapsulated response without exposing relay metadata to the OHTTP payload.
 pub fn forward_response(
   content_type content_type: String,
   body body: BitArray,
@@ -587,20 +784,13 @@ pub fn forward_response(
 
 fn new_client(
   configuration: KeyConfiguration,
-  deterministic_ephemeral: Option(BitArray),
   bhttp_limits: bhttp.Limits,
   maximum_message_bytes: Int,
 ) -> Result(Client, Error) {
   use _ <- result.try(validate_configuration(configuration))
   use _ <- result.try(validate_maximum(maximum_message_bytes))
   use algorithm <- result.try(select_algorithm(configuration.algorithms))
-  Ok(Client(
-    configuration,
-    algorithm,
-    deterministic_ephemeral,
-    bhttp_limits,
-    maximum_message_bytes,
-  ))
+  Ok(Client(configuration, algorithm, bhttp_limits, maximum_message_bytes))
 }
 
 fn validate_configuration(
@@ -948,48 +1138,6 @@ fn maximum(first: Int, second: Int) -> Int {
   }
 }
 
-/// Refuse a message carrying a 100-continue expectation.
-///
-/// RFC 9458 section 5.1: an encapsulated exchange carries one request and one
-/// response, so there is no way to convey the interim response the expectation
-/// asks for. A client does not construct one, and a gateway handed one answers
-/// with an error rather than forwarding it to the target.
-///
-/// A gateway that needs to encapsulate that answer opens the request with
-/// `open_request_bytes`, which hands back the response context as soon as
-/// decapsulation succeeds, and decodes the message itself.
-fn refuse_continue_expectation(message: bhttp.Message) -> Result(Nil, Error) {
-  let headers = case message {
-    bhttp.Request(_, _, _, _, headers, _, _, _) -> headers
-    bhttp.Response(_, _, headers, _, _, _) -> headers
-  }
-  case list.any(headers, expects_continue) {
-    True -> Error(InvalidMessage)
-    False -> Ok(Nil)
-  }
-}
-
-/// Whether one field is an `Expect` carrying the `100-continue` expectation.
-///
-/// The field is a comma-separated list and each member may carry parameters,
-/// so the token is compared on its own rather than searched for in the text:
-/// `not-100-continue` is a different expectation and is left alone.
-fn expects_continue(field: bhttp.Field) -> Bool {
-  case string.lowercase(field.name), bit_array.to_string(field.value) {
-    "expect", Ok(value) ->
-      value
-      |> string.lowercase
-      |> string.split(on: ",")
-      |> list.any(fn(expectation) {
-        case string.split_once(expectation, on: ";") {
-          Ok(#(name, _)) -> string.trim(name) == "100-continue"
-          Error(Nil) -> string.trim(expectation) == "100-continue"
-        }
-      })
-    _, _ -> False
-  }
-}
-
 fn authorize_request(
   request: bhttp.Message,
   allowed_authorities: List(String),
@@ -1001,6 +1149,347 @@ fn authorize_request(
         False -> Error(TargetNotAllowed)
       }
     _ -> Error(TargetNotAllowed)
+  }
+}
+
+fn classify_opened_request(
+  gateway: Gateway,
+  plaintext: BitArray,
+  context: GatewayContext,
+) -> GatewayOpen(bhttp.Message) {
+  case decode_target_request(plaintext, gateway.bhttp_limits) {
+    Ok(request) ->
+      case
+        result.is_ok(authorize_request(request, gateway.allowed_authorities))
+      {
+        True -> GatewayOpened(request, context)
+        False -> GatewayRejected(TargetRejected, context)
+      }
+    Error(ContinueExpectationForbidden) ->
+      GatewayRejected(ContinueExpectationRejected, context)
+    Error(failure) -> GatewayRejected(classify_decode_failure(failure), context)
+  }
+}
+
+fn classify_decode_failure(failure: Error) -> ProtectedRequestFailure {
+  case failure {
+    ContinueExpectationForbidden -> ContinueExpectationRejected
+    InvalidConfiguration
+    | InvalidMessage
+    | InvalidMediaType
+    | InvalidRelay
+    | InvalidKey
+    | UnsupportedAlgorithm
+    | NonByteAligned
+    | LimitExceeded
+    | ReplayDetected
+    | ReplayCapacityExceeded
+    | ReplayStoreUnavailable
+    | ContextReuseDetected
+    | TargetNotAllowed
+    | DecryptionFailed
+    | CryptoFailure -> MalformedRequest
+  }
+}
+
+fn protected_failure_error(failure: ProtectedRequestFailure) -> Error {
+  case failure {
+    MalformedRequest -> InvalidMessage
+    ContinueExpectationRejected -> ContinueExpectationForbidden
+    TargetRejected -> TargetNotAllowed
+  }
+}
+
+fn reserve_replay(
+  handle: ReplayStoreHandle,
+  encapsulated_key: BitArray,
+) -> Result(ReplayLease, Error) {
+  case replay_reserve(handle, encapsulated_key) {
+    Ok(lease) -> Ok(lease)
+    Error(1) -> Error(ReplayDetected)
+    Error(2) -> Error(ReplayCapacityExceeded)
+    Error(_) -> Error(ReplayStoreUnavailable)
+  }
+}
+
+fn reject_continue_expectation(request: bhttp.Message) -> Result(Nil, Error) {
+  case request {
+    bhttp.Request(_, _, _, _, headers, _, _, _) ->
+      case has_continue_expectation(headers) {
+        Ok(True) -> Error(ContinueExpectationForbidden)
+        Ok(False) -> Ok(Nil)
+        Error(_) -> Error(InvalidMessage)
+      }
+    bhttp.Response(..) -> Error(InvalidMessage)
+  }
+}
+
+fn decode_target_request(
+  encoded: BitArray,
+  limits: bhttp.Limits,
+) -> Result(bhttp.Message, Error) {
+  use request <- result.try(
+    bhttp.decode(encoded, limits)
+    |> result.map_error(fn(_) { InvalidMessage }),
+  )
+  use _ <- result.try(case request {
+    bhttp.Request(..) -> Ok(Nil)
+    bhttp.Response(..) -> Error(InvalidMessage)
+  })
+  use _ <- result.try(reject_continue_expectation(request))
+  Ok(request)
+}
+
+fn decode_response_message(
+  encoded: BitArray,
+  limits: bhttp.Limits,
+) -> Result(bhttp.Message, Error) {
+  use response <- result.try(
+    bhttp.decode(encoded, limits)
+    |> result.map_error(fn(_) { InvalidMessage }),
+  )
+  case response {
+    bhttp.Response(..) -> Ok(response)
+    bhttp.Request(..) -> Error(InvalidMessage)
+  }
+}
+
+fn claim_context_once(claim: ContextClaim) -> Result(Nil, Error) {
+  case claim_context(claim) {
+    True -> Ok(Nil)
+    False -> Error(ContextReuseDetected)
+  }
+}
+
+fn has_continue_expectation(headers: List(bhttp.Field)) -> Result(Bool, Nil) {
+  case headers {
+    [] -> Ok(False)
+    [bhttp.Field(name, value), ..rest] -> {
+      case string.lowercase(name) {
+        "expect" -> {
+          use found <- result.try(parse_expectation_members(value))
+          case found {
+            True -> Ok(True)
+            False -> has_continue_expectation(rest)
+          }
+        }
+        _ -> has_continue_expectation(rest)
+      }
+    }
+  }
+}
+
+fn parse_expectation_members(bytes: BitArray) -> Result(Bool, Nil) {
+  let bytes = drop_expect_ows(bytes)
+  case bytes {
+    <<>> -> Ok(False)
+    <<44, rest:bits>> -> parse_expectation_members(rest)
+    _ -> {
+      use #(rest, is_continue) <- result.try(parse_expectation_name(
+        bytes,
+        0,
+        True,
+      ))
+      case is_continue {
+        True -> Ok(True)
+        False -> parse_expectation_suffix(rest)
+      }
+    }
+  }
+}
+
+fn parse_expectation_name(
+  bytes: BitArray,
+  length: Int,
+  matches_continue: Bool,
+) -> Result(#(BitArray, Bool), Nil) {
+  case bytes {
+    <<byte, rest:bits>> ->
+      case token_byte(byte) {
+        True ->
+          parse_expectation_name(
+            rest,
+            length + 1,
+            matches_continue
+              && ascii_lower_byte(byte) == continue_name_byte(length),
+          )
+        False -> finish_expectation_name(bytes, length, matches_continue)
+      }
+    <<>> -> finish_expectation_name(bytes, length, matches_continue)
+    _ -> Error(Nil)
+  }
+}
+
+fn finish_expectation_name(
+  rest: BitArray,
+  length: Int,
+  matches_continue: Bool,
+) -> Result(#(BitArray, Bool), Nil) {
+  case length > 0 {
+    True -> Ok(#(rest, matches_continue && length == 12))
+    False -> Error(Nil)
+  }
+}
+
+fn parse_expectation_suffix(bytes: BitArray) -> Result(Bool, Nil) {
+  case bytes {
+    <<>> -> Ok(False)
+    <<44, rest:bits>> -> parse_expectation_members(rest)
+    <<61, rest:bits>> -> {
+      use rest <- result.try(parse_expectation_value(rest))
+      parse_expectation_parameters(rest)
+    }
+    <<byte, _:bits>> if byte == 9 || byte == 32 -> {
+      let rest = drop_expect_ows(bytes)
+      case rest {
+        <<>> -> Ok(False)
+        <<44, tail:bits>> -> parse_expectation_members(tail)
+        _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+fn parse_expectation_value(bytes: BitArray) -> Result(BitArray, Nil) {
+  case bytes {
+    <<34, rest:bits>> -> parse_expectation_quoted(rest)
+    _ -> consume_expectation_token(bytes, 0)
+  }
+}
+
+fn consume_expectation_token(
+  bytes: BitArray,
+  length: Int,
+) -> Result(BitArray, Nil) {
+  case bytes {
+    <<byte, rest:bits>> ->
+      case token_byte(byte) {
+        True -> consume_expectation_token(rest, length + 1)
+        False -> finish_expectation_token(bytes, length)
+      }
+    <<>> -> finish_expectation_token(bytes, length)
+    _ -> Error(Nil)
+  }
+}
+
+fn finish_expectation_token(
+  rest: BitArray,
+  length: Int,
+) -> Result(BitArray, Nil) {
+  case length > 0 {
+    True -> Ok(rest)
+    False -> Error(Nil)
+  }
+}
+
+fn parse_expectation_quoted(bytes: BitArray) -> Result(BitArray, Nil) {
+  case bytes {
+    <<34, rest:bits>> -> Ok(rest)
+    <<92, byte, rest:bits>> ->
+      case quoted_pair_byte(byte) {
+        True -> parse_expectation_quoted(rest)
+        False -> Error(Nil)
+      }
+    <<byte, rest:bits>> ->
+      case quoted_text_byte(byte) {
+        True -> parse_expectation_quoted(rest)
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn parse_expectation_parameters(bytes: BitArray) -> Result(Bool, Nil) {
+  let bytes = drop_expect_ows(bytes)
+  case bytes {
+    <<>> -> Ok(False)
+    <<44, rest:bits>> -> parse_expectation_members(rest)
+    <<59, rest:bits>> -> {
+      let rest = drop_expect_ows(rest)
+      case rest {
+        <<>> -> Ok(False)
+        <<44, tail:bits>> -> parse_expectation_members(tail)
+        <<59, _:bits>> -> parse_expectation_parameters(rest)
+        _ -> {
+          use rest <- result.try(consume_expectation_token(rest, 0))
+          case rest {
+            <<61, value:bits>> -> {
+              use rest <- result.try(parse_expectation_value(value))
+              parse_expectation_parameters(rest)
+            }
+            _ -> Error(Nil)
+          }
+        }
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+fn drop_expect_ows(bytes: BitArray) -> BitArray {
+  case bytes {
+    <<byte, rest:bits>> if byte == 9 || byte == 32 -> drop_expect_ows(rest)
+    _ -> bytes
+  }
+}
+
+fn token_byte(byte: Int) -> Bool {
+  { byte >= 48 && byte <= 57 }
+  || { byte >= 65 && byte <= 90 }
+  || { byte >= 97 && byte <= 122 }
+  || byte == 33
+  || byte == 35
+  || byte == 36
+  || byte == 37
+  || byte == 38
+  || byte == 39
+  || byte == 42
+  || byte == 43
+  || byte == 45
+  || byte == 46
+  || byte == 94
+  || byte == 95
+  || byte == 96
+  || byte == 124
+  || byte == 126
+}
+
+fn quoted_text_byte(byte: Int) -> Bool {
+  byte == 9
+  || byte == 32
+  || byte == 33
+  || { byte >= 35 && byte <= 91 }
+  || { byte >= 93 && byte <= 126 }
+  || byte >= 128
+}
+
+fn quoted_pair_byte(byte: Int) -> Bool {
+  byte == 9 || byte == 32 || { byte >= 33 && byte <= 126 } || byte >= 128
+}
+
+fn continue_name_byte(index: Int) -> Int {
+  case index {
+    0 -> 49
+    1 -> 48
+    2 -> 48
+    3 -> 45
+    4 -> 99
+    5 -> 111
+    6 -> 110
+    7 -> 116
+    8 -> 105
+    9 -> 110
+    10 -> 117
+    11 -> 101
+    _ -> -1
+  }
+}
+
+fn ascii_lower_byte(byte: Int) -> Int {
+  case byte >= 65 && byte <= 90 {
+    True -> byte + 32
+    False -> byte
   }
 }
 
@@ -1096,6 +1585,12 @@ fn crypto_result(value: Result(value, Nil)) -> Result(value, Error) {
 @external(erlang, "http_ohttp_ffi", "x25519_public")
 fn x25519_public(private_key: BitArray) -> Result(BitArray, Nil)
 
+@external(erlang, "http_ohttp_ffi", "new_context_claim")
+fn new_context_claim() -> ContextClaim
+
+@external(erlang, "http_ohttp_ffi", "claim_context")
+fn claim_context(claim: ContextClaim) -> Bool
+
 @external(erlang, "http_ohttp_ffi", "x25519_shared")
 fn x25519_shared(
   private_key: BitArray,
@@ -1131,5 +1626,23 @@ fn aead_open(
   ciphertext: BitArray,
 ) -> Result(BitArray, Nil)
 
-@external(erlang, "http_ohttp_ffi", "sha256")
-fn sha256(input: BitArray) -> Result(BitArray, Nil)
+@external(erlang, "http_ohttp_ffi", "new_replay_store")
+fn new_replay_store(
+  maximum_entries: Int,
+  retention_milliseconds: Int,
+) -> Result(ReplayStoreHandle, Nil)
+
+@external(erlang, "http_ohttp_ffi", "replay_reserve")
+fn replay_reserve(
+  store: ReplayStoreHandle,
+  encapsulated_key: BitArray,
+) -> Result(ReplayLease, Int)
+
+@external(erlang, "http_ohttp_ffi", "replay_commit")
+fn replay_commit(store: ReplayStoreHandle, lease: ReplayLease) -> Bool
+
+@external(erlang, "http_ohttp_ffi", "replay_abort")
+fn replay_abort(store: ReplayStoreHandle, lease: ReplayLease) -> Bool
+
+@external(erlang, "http_ohttp_ffi", "close_replay_store")
+fn close_replay_store_handle(store: ReplayStoreHandle) -> Bool

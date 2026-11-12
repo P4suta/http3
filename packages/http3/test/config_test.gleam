@@ -1,3 +1,4 @@
+import gleeunit/should
 import http3/config
 import http3/failure
 
@@ -11,6 +12,8 @@ pub fn defaults_are_finite_and_match_public_body_bounds_test() -> Nil {
   assert config.limit(limits, failure.ResponseBody) == 8_388_608
   assert config.limit(limits, failure.Buffer) == 262_144
   assert config.limit(limits, failure.Connections) == 1024
+  assert config.limit(limits, failure.BidirectionalStreams) == 100
+  assert config.limit(limits, failure.UnidirectionalStreams) == 100
 }
 
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
@@ -21,12 +24,19 @@ pub fn policy_updates_are_typed_and_zero_is_never_unlimited_test() -> Nil {
     == Error(config.InvalidDeadline(failure.Handshake, 0))
   assert config.with_limit(limits, failure.Queue, 0)
     == Error(config.InvalidLimit(failure.Queue, 0))
+  assert config.with_limit(limits, failure.UnidirectionalStreams, 1)
+    == Error(config.InvalidLimit(failure.UnidirectionalStreams, 1))
+  assert config.with_limit(limits, failure.UnidirectionalStreams, 2)
+    == Error(config.InvalidLimit(failure.UnidirectionalStreams, 2))
 
   // nolint: assert_ok_pattern -- a valid finite update is the assertion.
   let assert Ok(deadlines) =
     config.with_deadline(deadlines, failure.Handshake, 2500)
   // nolint: assert_ok_pattern -- a valid finite update is the assertion.
   let assert Ok(limits) = config.with_limit(limits, failure.Queue, 64)
+  let limits =
+    config.with_limit(limits, failure.UnidirectionalStreams, 3) |> should.be_ok
   assert config.deadline(deadlines, failure.Handshake) == 2500
   assert config.limit(limits, failure.Queue) == 64
+  assert config.limit(limits, failure.UnidirectionalStreams) == 3
 }

@@ -1,8 +1,7 @@
 //// Bounded FIFO retention for lightweight terminal handle state.
 ////
-//// Active HTTP/3 stream state is held elsewhere. This registry remembers only
-//// the most recent terminal outcomes so idempotent handle operations retain
-//// useful semantics without memory growing with the lifetime stream count.
+//// Active HTTP/3 stream state is held elsewhere.
+//// This registry remembers only the most recent terminal outcomes so idempotent handle operations retain useful semantics without memory growing with the lifetime stream count.
 
 import gleam/dict.{type Dict}
 import gleam/int

@@ -1,0 +1,9 @@
+{
+  "name": "http-ohttp-typescript-interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": "26.13.0"},
+  "dependencies": {"ohttp-ts": "0.5.1", "bhttp-ts": "0.5.3", "hpke": "1.1.8"},
+  "overrides": {"ohttp-ts": {"hpke": "1.1.8"}}
+}

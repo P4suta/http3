@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "reference_libraries": {
+    "libbrotlicommon.so.1.1.0": "a91ead095d2c80520c55a89057bbe10b031a075340442e63f44b310f93883a1b",
+    "libbrotlidec.so.1.1.0": "64d8a5019d4c294b89fde1193343ea324bbd8603652554e5545f0a01595fa2c5",
+    "libbrotlienc.so.1.1.0": "6e59301f6c3a05815ecc6cd8c56714280367da1f6737e9f077f5847d86c509f2",
+    "libzstd.so.1.5.5": "0a2128bc10841fb29e76d08d945864dfb0b6a66da5df6df5d8299197439e54bb"
+  },
+  "prefix_hex": "4cd7f0d9934792e2beabc3d3b300a491703037db08e10b47ffd3dd254d88ef6301457abacac32e86d65de90a1bfee90da68d10437ce27fb678eb33a8ffde9087c85264fb5b23906c0a408b86de1a8599994e8902981dd725c4f3eb3a2cfa4c21c493e5c2400e6b1933383d53b71fbc1553964e5fff3a17a3a8ca65e352425464",
+  "dictionary_recipe": "prefix + d padding to floor(4 * window / 5) + 1 bytes",
+  "rows": [
+    {
+      "coding": "dcb",
+      "file": "brotli-window-24.br",
+      "window_log": 24,
+      "window_bytes": 16777216,
+      "backward_distance": 16777200,
+      "dictionary_hex": "5246433938343220696e646570656e64656e7420726177207072656669782064696374696f6e617279",
+      "output_bytes": 16777328,
+      "output_sha256": "49e174619f164e491502f86c3e2a49781f5fba5794ce953c63e3579e7c0efacc",
+      "reference_decoder_verified": true,
+      "backward_reference_proof": "ordinary EUnit scalar production copy-distance trace",
+      "encoded_bytes": 172,
+      "encoded_sha256": "e437e24ecd4189abfd279f9bb4b3ce8ccde8447c5d620cff50f627382861fcc1"
+    },
+    {
+      "coding": "dcz",
+      "file": "zstd-window-23.zst",
+      "window_log": 23,
+      "window_bytes": 8388608,
+      "backward_distance": 8388608,
+      "dictionary_bytes": 6710887,
+      "dictionary_sha256": "8f9c1b21cbd19d0138206e2ce29a2253af9232417f707af532e89308022228e7",
+      "output_bytes": 1677849,
+      "output_sha256": "8ae945e9e166d70e3dd4e46e560a7dee268fd62f77279e35e50a49cf6a4f6663",
+      "reference_decoder_verified": true,
+      "missing_dictionary_rejected": true,
+      "modified_prefix_changes_result": true,
+      "decoder_cap_boundary": false,
+      "sequences": [
+        [
+          1,
+          1,
+          1677720
+        ],
+        [
+          8388608,
+          0,
+          128
+        ]
+      ],
+      "encoded_bytes": 78,
+      "encoded_sha256": "b1e49846470d514c56569fcbd52b73ff58c7e84f9e25e57eb12c929f88c8c1af"
+    },
+    {
+      "coding": "dcz",
+      "file": "zstd-window-24.zst",
+      "window_log": 24,
+      "window_bytes": 16777216,
+      "backward_distance": 16777216,
+      "dictionary_bytes": 13421773,
+      "dictionary_sha256": "0424a7f4722809f499869abd1dcfec2b5ed82cbb8b22167fde51e3f288fbaeb5",
+      "output_bytes": 3355571,
+      "output_sha256": "2dfc0bd4a0b819fbf65e5b61f539127eb56786099dc8e65b46e11899f0dc1c30",
+      "reference_decoder_verified": true,
+      "missing_dictionary_rejected": true,
+      "modified_prefix_changes_result": true,
+      "decoder_cap_boundary": false,
+      "sequences": [
+        [
+          1,
+          1,
+          3355442
+        ],
+        [
+          16777216,
+          0,
+          128
+        ]
+      ],
+      "encoded_bytes": 130,
+      "encoded_sha256": "3e2151593169914839333a3690b17106d805c43ad4918cfca15252e6da93d544"
+    },
+    {
+      "coding": "dcz",
+      "file": "zstd-window-25.zst",
+      "window_log": 25,
+      "window_bytes": 33554432,
+      "backward_distance": 33554432,
+      "dictionary_bytes": 26843546,
+      "dictionary_sha256": "9bb116c184a86fcf2fd1f4b04440e48dedf8852fb22ff57e92dd614028c0133f",
+      "output_bytes": 6711014,
+      "output_sha256": "9f9531e8be976b2dd6084b3dae8ccc95f80b7a9c9549e95479eceedcd4741cb6",
+      "reference_decoder_verified": true,
+      "missing_dictionary_rejected": true,
+      "modified_prefix_changes_result": true,
+      "decoder_cap_boundary": false,
+      "sequences": [
+        [
+          1,
+          1,
+          6710885
+        ],
+        [
+          33554432,
+          0,
+          128
+        ]
+      ],
+      "encoded_bytes": 234,
+      "encoded_sha256": "6998e5078ded0be82558cc2338eb85a3c9ed224010b3da6ec9d5a828f42b3ed5"
+    },
+    {
+      "coding": "dcz",
+      "file": "zstd-window-26.zst",
+      "window_log": 26,
+      "window_bytes": 67108864,
+      "backward_distance": 67108864,
+      "dictionary_bytes": 53687092,
+      "dictionary_sha256": "4b4e2c27b049f8aeb5f33604df72615e7b07c755d709fbdef56cca5cdb7b29ff",
+      "output_bytes": 13421900,
+      "output_sha256": "8e0643ad3f12a5dd8eddae0ad0b408080ee2c1b817e2141b9e17b2b3eb65f024",
+      "reference_decoder_verified": true,
+      "missing_dictionary_rejected": true,
+      "modified_prefix_changes_result": true,
+      "decoder_cap_boundary": false,
+      "sequences": [
+        [
+          1,
+          1,
+          13421771
+        ],
+        [
+          67108864,
+          0,
+          128
+        ]
+      ],
+      "encoded_bytes": 439,
+      "encoded_sha256": "3ce000eebfc377626544b50a265b58baf89480d6305e337100b6885151a55fb2"
+    },
+    {
+      "coding": "dcz",
+      "file": "zstd-window-27.zst",
+      "window_log": 27,
+      "window_bytes": 134217728,
+      "backward_distance": 134217728,
+      "dictionary_bytes": 107374183,
+      "dictionary_sha256": "1c8d97f107997bfb7a0dee342ebae682af8fd5922563abdf714fc3ebc4e4b6a3",
+      "output_bytes": 26843673,
+      "output_sha256": "de16b21fedd465131f684e877bf3a3f0a2dffcd2ee592341e1b285bca69dfe6b",
+      "reference_decoder_verified": true,
+      "missing_dictionary_rejected": true,
+      "modified_prefix_changes_result": true,
+      "decoder_cap_boundary": true,
+      "sequences": [
+        [
+          1,
+          1,
+          26843544
+        ],
+        [
+          134217728,
+          0,
+          128
+        ]
+      ],
+      "encoded_bytes": 847,
+      "encoded_sha256": "e427b2a995b3a176aed7a77b876a67625b3c3c42d9db27cb5ba5ff86f87f5841"
+    }
+  ]
+}

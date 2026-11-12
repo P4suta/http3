@@ -2,9 +2,11 @@
 
 The public API follows one ownership model: a configured endpoint creates an
 opaque live value, live connections create opaque streams, and every blocking
-operation has a finite deadline. Native sockets, processes, references,
-mailbox messages, TLS state, certificates, tickets, and traffic secrets never
-cross that boundary.
+operation has a finite deadline. Native sockets, raw process identities,
+references, mailbox messages, TLS state, certificates, tickets, and traffic
+secrets do not appear in public signatures or diagnostics. Supervised adapters
+represent an owner with an opaque capability whose constructor, private field,
+and identity accessor are absent from the generated package interface.
 
 ## Choose a role
 
@@ -173,6 +175,28 @@ disabled these calls return `None`. The writer serializes all producers through
 one timestamp watermark. A late-arriving observation whose captured time is
 older than the preceding accepted event is emitted at that preceding time;
 dropped events do not advance the watermark.
+
+## Coordinate a higher-level protocol adapter
+
+A protocol adapter that creates several short-lived QUIC client configurations can use `client.new_diagnostic_budget` and `client.with_diagnostic_budget` to share one finite qlog admission ledger.
+`reserve_diagnostic_memory` returns an opaque `DiagnosticReservation`; call `release_unused_diagnostic_memory` before opening begins, or call `begin_diagnostic_memory` and later `release_confirmed_diagnostic_memory` after the linked core writer closes.
+`link_diagnostic_reservation` binds that reservation to the next writer, and `diagnostic_budget_allocation` reports only the currently charged byte and connection counts.
+These values contain no path, endpoint, payload, socket,
+process identity, or filesystem handle.
+
+A server adapter can consume the bounded connection completion ring with `server.next_send_completions_until_owner_exits`.
+The owning actor first calls `server.completion_feed_owner` and passes the resulting opaque `CompletionFeedOwner` to each feed wait.
+The call has an absolute finite deadline and also ends when that owner exits.
+No raw process identity is returned, exposed through the capability, or written to diagnostics or errors.
+`server.send_resource_stats` returns only buffered-byte, pending-send, and completion-waiter counts.
+`client.application_send_settled` and `server.application_send_settled` provide the stronger payload-free barrier used after an adapter sends its final control frame and before it closes the transport.
+A client adapter constructs one absolute completion deadline from its protocol drain, the connection-specific actor share returned by `client.close_operation_allowance_milliseconds`, and `client.close_completion_allowance_milliseconds`.
+It passes that same deadline to `client.close_with_code_until`; the actor, qlog flush, cleanup-owner join,
+and result cannot each start a fresh wait.
+The qlog FFI interprets the absolute value in this same monotonic clock domain; its native limit may shorten the deadline but never rebuild it from a stale remaining duration.
+Derive a server listener's corresponding finite allowance with `server.stop_completion_allowance_milliseconds`, then pass the shared absolute boundary to `server.stop_until`.
+Stop success includes every connection's typed completion and DOWN evidence, an empty connection and endpoint-memory ledger, qlog reservation return, relay DOWN as socket-close proof, and the listener actor's own DOWN evidence.
+The listener fans out forced connection termination and reserves its final join tail inside that same boundary.
 
 ## Resume explicitly
 

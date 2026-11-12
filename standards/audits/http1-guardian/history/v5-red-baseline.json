@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "status": "Red",
+  "classification": "v4_candidate_rejected_for_v5",
+  "source_review_sha256": "6a99821082cff90986809cb0cbaa312d52179381d77c5519568cfca4cab71d3d",
+  "source_audit_sha256": "d8b759dd1f5835c573a977ddd00c6ec0a9fa25dc394acbd4965915f3e61cc8c1",
+  "source_evidence_manifest_sha256": "96f073798c3ed0716bdae18076496b54cb940828107cfaff13eb888380e07915",
+  "runtime": {
+    "implementation": "cpython",
+    "version": "3.12.14",
+    "canonical": false
+  },
+  "completed_mutations": 12,
+  "false_green_mutations": 12,
+  "expected_false_green_mutations": 0,
+  "mutations": [
+    "run_before_entry_receive",
+    "run_after_entry_receive",
+    "immediately_invoked_fun_run_in_first_true",
+    "delegated_run_in_first_true",
+    "guard_false_safe_entry_clause_wrong_live_clause",
+    "impossible_variable_guard_safe_entry_wrong_live_clause",
+    "matching_traffic_bypasses_terminating_precheck",
+    "matching_traffic_bypasses_quarantine_precheck",
+    "indirect_owner_demonitor_before_publication",
+    "indirect_exit_before_terminal_down_finish",
+    "indirect_throw_before_terminal_down_finish",
+    "guard_false_safe_down_clause_missing_live_publication"
+  ],
+  "blocker_count": 15,
+  "blockers": [
+    "handler_entry_control_flow_false_green",
+    "cleanup_deadline_starvation_false_green",
+    "monitor_lifetime_and_terminal_reachability_false_green",
+    "publication_dead_clause_false_green",
+    "control_inventory_not_exact",
+    "runtime_identity_forgeable",
+    "report_structure_and_secrecy_not_strict",
+    "unexpected_failure_leaks_traceback",
+    "hashed_code_not_executed_code",
+    "publication_and_input_races",
+    "canonical_clean_checkout_missing_inputs",
+    "red_history_not_anchored",
+    "failure_evidence_pipeline_incomplete",
+    "ci_failure_evidence_not_preserved",
+    "development_runtime_component_false_ready"
+  ],
+  "native_execution": "not_invoked",
+  "invalidation": "v4:Rejected"
+}

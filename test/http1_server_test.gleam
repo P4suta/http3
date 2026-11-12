@@ -4,7 +4,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
@@ -14,6 +14,17 @@ import http/error
 import http/internal/transport
 import http/server
 import http_test_support
+
+// A readiness failure retains only bounded phase counters and a typed cause.
+// Socket handles and received response bytes never enter the failure value.
+type ReadinessFailure {
+  ReadinessFailure(
+    cause: transport.Error,
+    phase: Option(server.Http1ListenerSnapshot),
+    received_bytes: Int,
+    elapsed_milliseconds: Int,
+  )
+}
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -79,11 +90,9 @@ pub fn malformed_framing_is_rejected_before_any_handler_runs_test() -> Nil {
 }
 
 pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
-  // RFC 9112 section 3.2.2: a server accepts the absolute form of request
-  // target even though most clients send it only to a proxy, and when it does,
-  // it ignores the Host field and uses the authority the target carries. The
-  // two cannot then disagree about which resource was asked for, which is the
-  // ambiguity a request-smuggling attempt lives in.
+  // RFC 9112 section 3.2.2: a server accepts the absolute form of request target even though most clients send it only to a proxy, and when it does,
+  // it ignores the Host field and uses the authority the target carries.
+  // The two cannot then disagree about which resource was asked for, which is the ambiguity a request-smuggling attempt lives in.
   let seen = process.new_subject()
   let handler = fn(request: Request(body.Body), _) {
     process.send(seen, #(
@@ -111,8 +120,7 @@ pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
   assert process.receive(seen, within: 1000)
     == Ok(#("target.example", Some(8080), "/a/b", Some("q=1")))
 
-  // An absolute form with no path is the root, and an authority with no port
-  // keeps the port unstated rather than inventing one.
+  // An absolute form with no path is the root, and an authority with no port keeps the port unstated rather than inventing one.
   let assert Ok(rooted) = transport.connect("127.0.0.1", port, 1000, 1000)
   let assert Ok(Nil) =
     transport.send(
@@ -126,8 +134,7 @@ pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
   assert process.receive(seen, within: 1000)
     == Ok(#("target.example", None, "/", None))
 
-  // The scheme has to be the one this listener serves: a secured target on a
-  // cleartext connection is not a request this server can answer.
+  // The scheme has to be the one this listener serves: a secured target on a cleartext connection is not a request this server can answer.
   let assert Ok(mismatched) = transport.connect("127.0.0.1", port, 1000, 1000)
   let assert Ok(Nil) =
     transport.send(
@@ -141,8 +148,7 @@ pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
   assert string.starts_with(refused_text, "HTTP/1.1 400 Bad Request\r\n")
   assert process.receive(seen, within: 20) == Error(Nil)
 
-  // An absolute form whose authority does not parse is refused rather than
-  // falling back to the Host field.
+  // An absolute form whose authority does not parse is refused rather than falling back to the Host field.
   let assert Ok(bad) = transport.connect("127.0.0.1", port, 1000, 1000)
   let assert Ok(Nil) =
     transport.send(
@@ -160,10 +166,9 @@ pub fn an_absolute_form_request_target_is_accepted_test() -> Nil {
 }
 
 pub fn a_response_carries_a_date_the_server_generated_test() -> Nil {
-  // RFC 9110 section 6.6.1: an origin server with a clock sends a Date field in
-  // every 2xx, 3xx, and 4xx response. The handler does not have to remember to:
-  // the server adds one when the response it was given carries none, in the
-  // preferred format section 5.6.7 names.
+  // RFC 9110 section 6.6.1: an origin server with a clock sends a Date field in every 2xx, 3xx, and 4xx response.
+  // The handler does not have to remember to:
+  // the server adds one when the response it was given carries none, in the preferred format section 5.6.7 names.
   let handler = fn(request: Request(body.Body), _) {
     case request.path {
       "/own" ->
@@ -189,8 +194,7 @@ pub fn a_response_carries_a_date_the_server_generated_test() -> Nil {
   assert string.ends_with(value, " GMT")
   assert string.contains(value, ",")
 
-  // A handler that set its own Date keeps it: the server adds one, it does not
-  // replace one.
+  // A handler that set its own Date keeps it: the server adds one, it does not replace one.
   let assert Ok(own) = one_request(port, "/own")
   assert string.contains(own, "date: Tue, 20 Apr 2021 02:07:55 GMT\r\n")
   // Exactly one, so the server added none beside the handler's.
@@ -217,10 +221,8 @@ fn one_request(port: Int, path: String) -> Result(String, Nil) {
 }
 
 pub fn an_overlong_request_target_is_a_414_test() -> Nil {
-  // RFC 9112 section 3: a server that receives a request target longer than any
-  // URI it wishes to parse answers 414 rather than the 400 every other framing
-  // failure gets. The bound is the configured line bound, because the other two
-  // parts of a request line are a method token and a fixed version string.
+  // RFC 9112 section 3: a server that receives a request target longer than any URI it wishes to parse answers 414 rather than the 400 every other framing failure gets.
+  // The bound is the configured line bound, because the other two parts of a request line are a method token and a fixed version string.
   let called = process.new_subject()
   let handler = fn(_, _) {
     process.send(called, Nil)
@@ -364,8 +366,7 @@ pub fn expect_continue_is_sent_only_when_the_handler_pulls_the_body_test() -> Ni
       ),
     )
   let assert Error(transport.Timeout) = transport.read(client, 4096, 5)
-  // A timed-out active-once read closes a transport socket, so use a fresh
-  // exchange for the positive deferred-continue assertion.
+  // A timed-out active-once read closes a transport socket, so use a fresh exchange for the positive deferred-continue assertion.
   let assert Ok(client) = transport.connect("127.0.0.1", port, 1000, 1000)
   let assert Ok(Nil) =
     transport.send(
@@ -471,7 +472,15 @@ pub fn http1_listener_readiness_and_phase_snapshot_are_bounded_test() -> Nil {
       "GET /snapshot HTTP/1.1\r\nHost: example.test\r\n":utf8,
       "Connection: close\r\n\r\n":utf8,
     >>)
-  let assert Ok(#(_, received)) = read_to_end(client, [])
+  let assert Ok(#(_, received)) =
+    read_readiness_response(
+      listener,
+      client,
+      1000,
+      [],
+      0,
+      transport.monotonic_millisecond(),
+    )
   let assert Ok(text) = bit_array.to_string(received)
   assert string.starts_with(text, "HTTP/1.1 204 No Content\r\n")
 
@@ -511,6 +520,45 @@ pub fn http1_listener_readiness_and_phase_snapshot_are_bounded_test() -> Nil {
   assert stopped.state == server.Stopped
   let assert Ok(Nil) = server.stop(executor)
   Nil
+}
+
+pub fn http1_readiness_failure_identifies_a_blocked_handler_test() -> Nil {
+  let entered = process.new_subject()
+  let handler = fn(_, _) {
+    let released = process.new_subject()
+    process.send(entered, released)
+    let _release = process.receive(released, within: 5000)
+    Ok(response.Response(status: 204, headers: [], body: body.empty()))
+  }
+  let #(executor, listener, port) = cleartext_server(handler)
+  let assert Ok(client) = transport.connect("127.0.0.1", port, 1000, 1000)
+  let assert Ok(Nil) =
+    transport.send(client, <<
+      "GET /blocked HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n":utf8,
+    >>)
+  let assert Ok(released) = process.receive(entered, within: 1000)
+  let observed =
+    read_readiness_response(
+      listener,
+      client,
+      20,
+      [],
+      0,
+      transport.monotonic_millisecond(),
+    )
+  process.send(released, Nil)
+  stop_server(listener, executor)
+  let assert Error(ReadinessFailure(cause, phase, bytes, elapsed)) = observed
+  assert cause == transport.Timeout
+  assert bytes == 0
+  assert elapsed >= 20
+  let assert Some(phase) = phase
+  assert phase.consistent
+  assert phase.accepted_connections == 1
+  assert phase.started_connections == 1
+  assert phase.parsed_request_heads == 1
+  assert phase.handler_dispatches == 1
+  assert phase.handler_completions == 0
 }
 
 pub fn http1_listener_phase_snapshot_is_atomic_under_race_test() -> Nil {
@@ -1005,10 +1053,8 @@ pub fn http1_resource_ceilings_refuse_every_value_outside_their_range_test() -> 
 }
 
 pub fn every_status_line_carries_its_registered_reason_phrase_test() -> Nil {
-  // RFC 9112 section 4: the reason phrase is what follows the status code on
-  // the status line. Each status this server writes a phrase for is asked for
-  // in turn, and a status it has no phrase for still produces a well formed
-  // status line with an empty one.
+  // RFC 9112 section 4: the reason phrase is what follows the status code on the status line.
+  // Each status this server writes a phrase for is asked for in turn, and a status it has no phrase for still produces a well formed status line with an empty one.
   let expected = [
     #(200, "OK"),
     #(201, "Created"),
@@ -1067,4 +1113,36 @@ pub fn every_status_line_carries_its_registered_reason_phrase_test() -> Nil {
   })
 
   stop_server(listener, executor)
+}
+
+fn read_readiness_response(
+  listener: server.Listener,
+  socket: transport.Socket,
+  timeout: Int,
+  reversed: List(BitArray),
+  received_bytes: Int,
+  started: Int,
+) -> Result(#(transport.Socket, BitArray), ReadinessFailure) {
+  case transport.read(socket, 4096, timeout) {
+    Error(cause) ->
+      Error(ReadinessFailure(
+        cause:,
+        phase: server.http1_listener_snapshot(listener)
+          |> result.map(Some)
+          |> result.unwrap(None),
+        received_bytes:,
+        elapsed_milliseconds: transport.monotonic_millisecond() - started,
+      ))
+    Ok(transport.ReadEnd(socket)) ->
+      Ok(#(socket, reversed |> list.reverse |> bit_array.concat))
+    Ok(transport.ReadData(bytes, socket)) ->
+      read_readiness_response(
+        listener,
+        socket,
+        timeout,
+        [bytes, ..reversed],
+        received_bytes + bit_array.byte_size(bytes),
+        started,
+      )
+  }
 }

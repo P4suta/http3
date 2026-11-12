@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/list
 import gleam/result
 import gleeunit
 import http/internal/transport
@@ -72,6 +73,39 @@ pub fn invalid_addresses_ports_deadlines_and_payloads_are_typed_test() -> Nil {
   assert transport.local_endpoint(listener) != Error(transport.InvalidInput)
   let assert Ok(Nil) = transport.stop(listener)
   Nil
+}
+
+pub fn unfinished_trace_record_never_claims_success_or_blocks_later_work_test() -> Nil {
+  let diagnostics = http_test_support.transport_orphaned_trace()
+  let observed = transport.diagnostics_snapshot(diagnostics)
+  assert !observed.consistent
+  assert list.all(observed.events, fn(event) {
+    event.outcome == transport.Pending
+  })
+  let assert Ok(listener) = transport.listen(<<127, 0, 0, 1>>, 0, 8, 1000)
+  let assert Ok(#(_, port)) = transport.local_endpoint(listener)
+  let connected =
+    transport.connect_with_diagnostics(
+      "127.0.0.1",
+      port,
+      1000,
+      1000,
+      1500,
+      1000,
+      diagnostics,
+    )
+  let result = case connected {
+    Ok(socket) -> transport.close(socket)
+    Error(failure) -> Error(failure)
+  }
+  let assert Ok(Nil) = transport.stop(listener)
+  assert result == Ok(Nil)
+  let after_connect = transport.diagnostics_snapshot(diagnostics)
+  assert !after_connect.consistent
+  assert list.any(after_connect.events, fn(event) {
+    event.step == transport.ConnectionCompleted
+    && event.outcome == transport.Successful
+  })
 }
 
 fn read_exact(
@@ -261,9 +295,7 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   // other's answer. The first answer starts the Resolution Delay of section 8,
   // and a straggler is waited for only until that runs out.
   //
-  // The delays here are far apart on purpose: two seconds against fifty
-  // milliseconds, so the assertions hold with a wide margin on a loaded host
-  // rather than resting on the clock.
+  // The fixture holds late replies until collection finishes and queues ready replies before the collector resumes.
   let trace = http_test_support.family_resolution_trace
 
   // Both answer at once: nothing is delayed, and both are present.
@@ -272,12 +304,11 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   assert four
   assert elapsed < 500
 
-  // The AAAA answer never arrives. Sequential lookups would have cost the whole
-  // two seconds before the A answer was even asked for; here the A answer is
-  // already in and the wait ends with the Resolution Delay.
+  // An unfinished AAAA query cannot hold the ready A reply beyond the Resolution Delay.
   let #(elapsed, six, four) = trace(2000, 0, 0)
   assert !six
   assert four
+  assert elapsed >= 50
   assert elapsed < 500
 
   // The same in the other direction, which is the case that matters least but
@@ -285,9 +316,10 @@ pub fn both_address_families_are_asked_for_at_once_test() -> Nil {
   let #(elapsed, six, four) = trace(0, 2000, 0)
   assert six
   assert !four
+  assert elapsed >= 50
   assert elapsed < 500
 
-  // A straggler inside the Resolution Delay is still taken.
+  // Both queued replies remain observable regardless of their order.
   let #(_, six, four) = trace(10, 0, 0)
   assert six
   assert four

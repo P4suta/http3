@@ -5,9 +5,15 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import http3/failure as runtime_failure
+import http3/internal/application_headers
 import http3/internal/native/client_connection
 import http3/internal/native/connection_state as http3_state
+import http3/internal/native/diagnostic_code
+import http3/internal/native/error_code
 import http3/internal/native/header_semantics
+import http3/internal/native/protocol
+import http3/internal/qlog_admission
 import http3/internal/qpack/header.{type Header, Header}
 import quic_core.{type AddressFamily, type Version}
 import quic_core/diagnostics
@@ -50,6 +56,9 @@ pub type Config {
     quic_version: Version,
     keepalive_milliseconds: Int,
     qlog_directory: String,
+    connect_port: Int,
+    connect_trace: Option(diagnostics.ConnectTrace),
+    qlog_reservation: Option(qlog_admission.Reservation),
   )
 }
 
@@ -72,6 +81,7 @@ pub type Error {
   TlsHandshakeFailed
   QuicTransportFailed
   CoreFailure(core_failure.Failure)
+  RuntimeFailure(runtime_failure.Failure)
   Http3ProtocolFailed
   Http3OperationFailed
   PeerClosed
@@ -117,10 +127,16 @@ fn send_connected(
   body: BitArray,
   total_deadline: Int,
 ) -> Result(Response, Error) {
-  case open_qlog(config.qlog_directory, config.telemetry_limit) {
-    Error(_) -> {
-      client_connection.close(connection, 0x100, "qlog unavailable")
-      Error(QlogUnavailable)
+  case client_connection.application_diagnostics(connection) {
+    Error(error) -> {
+      client_connection.close(
+        connection,
+        error_code.runtime_greased_no_error(
+          diagnostics.monotonic_milliseconds(),
+        ),
+        "",
+      )
+      Error(map_connection_error(error))
     }
     Ok(writer) ->
       send_with_qlog(config, connection, headers, body, total_deadline, writer)
@@ -133,9 +149,9 @@ fn send_with_qlog(
   headers: List(Header),
   body: BitArray,
   total_deadline: Int,
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
 ) -> Result(Response, Error) {
-  record_qlog_bootstrap(writer, connection)
+  record_qlog_bootstrap(writer)
   let outcome =
     request(
       connection,
@@ -147,11 +163,18 @@ fn send_with_qlog(
       config.keepalive_milliseconds,
       writer,
     )
-  client_connection.close(connection, 0, "one-shot complete")
-  case outcome, close_qlog(writer) {
+  let close_code = case outcome {
+    Error(RuntimeFailure(runtime_failure.Http3(runtime_failure.Peer, Some(code)))) ->
+      code
+    Error(RuntimeFailure(runtime_failure.Limit(_, _))) -> 0x107
+    _ ->
+      error_code.runtime_greased_no_error(diagnostics.monotonic_milliseconds())
+  }
+  let closed = client_connection.close_result(connection, close_code)
+  case outcome, closed {
     outcome, Ok(Nil) -> outcome
     Error(error), Error(_) -> Error(error)
-    Ok(_), Error(_) -> Error(QlogUnavailable)
+    Ok(_), Error(error) -> Error(map_connection_error(error))
   }
 }
 
@@ -187,9 +210,11 @@ fn connection_config(
     qpack_table_limit: default_qpack_table_limit,
     qpack_blocked_stream_limit: default_qpack_blocked_stream_limit,
     telemetry_limit: config.telemetry_limit,
-    // The one-shot adapter owns the sole writer so it can add HTTP/3 events
-    // to the same trace as its redacted QUIC counter observations.
-    qlog_directory: "",
+    // Core admits and owns the sole trace before connection work starts.
+    qlog_directory: config.qlog_directory,
+    connect_port: config.connect_port,
+    connect_trace: config.connect_trace,
+    qlog_reservation: config.qlog_reservation,
   )
 }
 
@@ -201,7 +226,7 @@ fn request(
   total_deadline: Int,
   operation_timeout_milliseconds: Int,
   keepalive_milliseconds: Int,
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
 ) -> Result(Response, Error) {
   let remaining = remaining_milliseconds(total_deadline)
   case remaining <= 0 {
@@ -249,7 +274,7 @@ fn send_request_body(
   connection: client_connection.State,
   stream_id: Int,
   body: BitArray,
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
 ) -> Result(client_connection.State, Error) {
   let size = bit_array.byte_size(body)
   case size {
@@ -288,7 +313,7 @@ fn collect_response(
   timeout_error: Error,
   keepalive_milliseconds: Int,
   next_keepalive_milliseconds: Int,
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
 ) -> Result(Response, Error) {
   let #(connection, events) = client_connection.take_events(connection)
   record_response_events(writer, events)
@@ -319,7 +344,7 @@ fn collect_response(
       )
       use protocol_deadline <- result.try(
         client_connection.next_deadline(connection, now)
-        |> result.map_error(map_connection_error),
+        |> result.map_error(fn(error) { record_connection_error(writer, error) }),
       )
       use connection <- result.try(
         client_connection.pump(
@@ -332,7 +357,7 @@ fn collect_response(
             now,
           ),
         )
-        |> result.map_error(map_connection_error),
+        |> result.map_error(fn(error) { record_connection_error(writer, error) }),
       )
       collect_response(
         connection,
@@ -349,83 +374,61 @@ fn collect_response(
   }
 }
 
-fn open_qlog(
-  directory: String,
-  telemetry_limit: Int,
-) -> Result(Option(diagnostics.Writer), diagnostics.Error) {
-  case directory {
-    "" -> Ok(None)
-    _ ->
-      diagnostics.open(
-        directory,
-        diagnostics.Client,
-        diagnostics.monotonic_milliseconds(),
-        telemetry_limit,
-      )
-      |> result.map(Some)
+// nolint: thrown_away_error -- Invalid optional diagnostic codes must never replace the primary protocol failure; all emitted codes come from the fixed taxonomy.
+fn record_connection_error(
+  writer: Option(diagnostics.ApplicationSink),
+  error: client_connection.Error,
+) -> Error {
+  case writer {
+    None -> Nil
+    Some(writer) ->
+      list.each(diagnostic_code.connection_errors(error), fn(value) {
+        case diagnostics.application_code(value) {
+          Error(_) -> Nil
+          Ok(code) ->
+            diagnostics.emit_application_error(
+              writer,
+              diagnostics.monotonic_milliseconds(),
+              code,
+            )
+        }
+      })
   }
+  map_connection_error(error)
 }
 
-/// Reconstruct only bounded facts already authenticated before the one-shot
-/// writer could be opened. Packet events are representative observations, not
-/// byte or identifier-bearing replays of the completed handshake.
-fn record_qlog_bootstrap(
-  writer: Option(diagnostics.Writer),
-  connection: client_connection.State,
-) -> Nil {
+/// Record only HTTP/3 setup; core owns its transport observations.
+fn record_qlog_bootstrap(writer: Option(diagnostics.ApplicationSink)) -> Nil {
   case writer {
     None -> Nil
     Some(writer) -> {
       let now = diagnostics.monotonic_milliseconds()
-      diagnostics.connection_started(writer, now)
-      let client_connection.Stats(received, sent, _, _, _, _, _, _) =
-        client_connection.stats(connection)
-      case received > 0 {
-        True -> {
-          diagnostics.datagrams_received(writer, now, 1)
-          diagnostics.packet_received(writer, now, diagnostics.UnknownPacket, 0)
-        }
-        False -> Nil
-      }
-      case sent > 0 {
-        True -> {
-          diagnostics.datagrams_sent(writer, now, 1)
-          diagnostics.packet_sent(writer, now, diagnostics.UnknownPacket, 0)
-        }
-        False -> Nil
-      }
-      diagnostics.key_updated(writer, now, diagnostics.ClientOneRttSecret)
-      diagnostics.key_updated(writer, now, diagnostics.ServerOneRttSecret)
-      diagnostics.key_discarded(writer, now, diagnostics.ClientHandshakeSecret)
-      diagnostics.key_discarded(writer, now, diagnostics.ServerHandshakeSecret)
-      diagnostics.recovery_metrics(
+      diagnostics.emit_http3_parameters_set(
         writer,
         now,
-        client_connection.path_stats(connection),
+        diagnostics.LocalInitiator,
       )
-      diagnostics.congestion_state_updated(
+      diagnostics.emit_http3_parameters_set(
         writer,
         now,
-        diagnostics.ApplicationLimited,
+        diagnostics.RemoteInitiator,
       )
-      diagnostics.http3_parameters_set(writer, now, diagnostics.LocalInitiator)
-      diagnostics.http3_parameters_set(writer, now, diagnostics.RemoteInitiator)
-      diagnostics.http3_stream_type_set(
+      diagnostics.emit_http3_stream_type_set(
         writer,
         now,
-        2,
+        quic_core.StreamId(2),
         diagnostics.ControlStream,
       )
-      diagnostics.http3_stream_type_set(
+      diagnostics.emit_http3_stream_type_set(
         writer,
         now,
-        6,
+        quic_core.StreamId(6),
         diagnostics.QpackEncoderStream,
       )
-      diagnostics.http3_stream_type_set(
+      diagnostics.emit_http3_stream_type_set(
         writer,
         now,
-        10,
+        quic_core.StreamId(10),
         diagnostics.QpackDecoderStream,
       )
     }
@@ -433,7 +436,7 @@ fn record_qlog_bootstrap(
 }
 
 fn record_response_events(
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
   events: List(client_connection.Event),
 ) -> Nil {
   case events {
@@ -456,12 +459,12 @@ fn record_response_events(
             diagnostics.HeadersFrame,
             0,
           )
-        client_connection.Http3Event(http3_state.Data(stream_id, bytes)) ->
+        client_connection.DataFrameParsed(stream_id, payload_bytes) ->
           record_http3_frame_parsed(
             writer,
             stream_id,
             diagnostics.DataFrame,
-            bit_array.byte_size(bytes),
+            payload_bytes,
           )
         client_connection.Http3Event(http3_state.GoAwayReceived(_, _)) ->
           record_http3_frame_parsed(writer, 3, diagnostics.GoAwayFrame, 0)
@@ -472,10 +475,12 @@ fn record_response_events(
   }
 }
 
-fn record_remote_http3_parameters(writer: Option(diagnostics.Writer)) -> Nil {
+fn record_remote_http3_parameters(
+  writer: Option(diagnostics.ApplicationSink),
+) -> Nil {
   case writer {
     Some(writer) ->
-      diagnostics.http3_parameters_set(
+      diagnostics.emit_http3_parameters_set(
         writer,
         diagnostics.monotonic_milliseconds(),
         diagnostics.RemoteInitiator,
@@ -485,16 +490,16 @@ fn record_remote_http3_parameters(writer: Option(diagnostics.Writer)) -> Nil {
 }
 
 fn record_http3_stream_type(
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
   stream_id: Int,
   stream_type: diagnostics.Http3StreamType,
 ) -> Nil {
   case writer {
     Some(writer) ->
-      diagnostics.http3_stream_type_set(
+      diagnostics.emit_http3_stream_type_set(
         writer,
         diagnostics.monotonic_milliseconds(),
-        stream_id,
+        quic_core.StreamId(stream_id),
         stream_type,
       )
     None -> Nil
@@ -502,17 +507,17 @@ fn record_http3_stream_type(
 }
 
 fn record_http3_frame_created(
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
   stream_id: Int,
   frame_type: diagnostics.Http3FrameType,
   payload_bytes: Int,
 ) -> Nil {
   case writer {
     Some(writer) ->
-      diagnostics.http3_frame_created(
+      diagnostics.emit_http3_frame_created(
         writer,
         diagnostics.monotonic_milliseconds(),
-        stream_id,
+        quic_core.StreamId(stream_id),
         frame_type,
         payload_bytes,
       )
@@ -521,36 +526,21 @@ fn record_http3_frame_created(
 }
 
 fn record_http3_frame_parsed(
-  writer: Option(diagnostics.Writer),
+  writer: Option(diagnostics.ApplicationSink),
   stream_id: Int,
   frame_type: diagnostics.Http3FrameType,
   payload_bytes: Int,
 ) -> Nil {
   case writer {
     Some(writer) ->
-      diagnostics.http3_frame_parsed(
+      diagnostics.emit_http3_frame_parsed(
         writer,
         diagnostics.monotonic_milliseconds(),
-        stream_id,
+        quic_core.StreamId(stream_id),
         frame_type,
         payload_bytes,
       )
     None -> Nil
-  }
-}
-
-fn close_qlog(
-  writer: Option(diagnostics.Writer),
-) -> Result(Nil, diagnostics.Error) {
-  case writer {
-    None -> Ok(Nil)
-    Some(writer) -> {
-      diagnostics.connection_closed(
-        writer,
-        diagnostics.monotonic_milliseconds(),
-      )
-      diagnostics.close(writer)
-    }
   }
 }
 
@@ -640,6 +630,13 @@ fn encode_headers(
 fn decode_headers(
   fields: List(Header),
 ) -> Result(List(#(String, String)), Error) {
+  decode_headers_raw(fields)
+  |> result.map(application_headers.combine_cookie_fields)
+}
+
+fn decode_headers_raw(
+  fields: List(Header),
+) -> Result(List(#(String, String)), Error) {
   case fields {
     [] -> Ok([])
     [Header(name, value, _), ..rest] -> {
@@ -650,7 +647,7 @@ fn decode_headers(
         bit_array.to_string(value)
         |> result.replace_error(InvalidHeaderEncoding),
       )
-      use rest <- result.try(decode_headers(rest))
+      use rest <- result.try(decode_headers_raw(rest))
       Ok([#(name, value), ..rest])
     }
   }
@@ -761,6 +758,10 @@ fn map_connection_error(error: client_connection.Error) -> Error {
     client_connection.TlsHandshakeFailed -> TlsHandshakeFailed
     client_connection.QuicTransportFailed(_) -> QuicTransportFailed
     client_connection.CoreFailure(failure) -> CoreFailure(failure)
+    client_connection.Http3OperationFailed(
+      _,
+      protocol.FrameParserFailure(error),
+    ) -> RuntimeFailure(protocol.frame_parser_runtime_failure(error))
     client_connection.Http3OperationFailed(_, _) -> Http3OperationFailed
     client_connection.PeerClosed -> PeerClosed
     client_connection.MigrationUnavailable -> QuicTransportFailed

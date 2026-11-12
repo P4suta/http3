@@ -8,8 +8,12 @@ and HTTP/1.1 and HTTP/2 runtimes belong to `http`.
 
 > [!WARNING]
 > This package is unpublished, unaudited, and not a release candidate. The
-> public-only QUIC boundary and aggregate resource admission are implemented;
-> complete standards mapping, coverage, the full peer/platform matrix,
+> public-only QUIC boundary, server aggregate admission, and per-connection
+> diagnostic startup allowances are implemented. Client copies retain a bounded
+> diagnostic byte and connection-slot reservation across attempts and origins.
+> Unconfirmed cleanup remains charged; automatic capacity recovery and a shared
+> client budget for all dynamic allocations remain open. Complete standards
+> mapping, coverage, the full peer/platform matrix,
 > performance, canonical-source qualification, and independent audit remain
 > open. The narrower pinned live qlog profile is implemented and passing; that
 > does not close the remaining standards-event inventory.
@@ -22,6 +26,17 @@ public configuration.
 The package has no Wisp runtime dependency. Applications and adapters can
 connect through standard request/response values and the public streaming
 contract owned by `http`.
+
+## Certificate service identity
+
+DNS-ID and IP-ID are mandatory to implement for the HTTP/3 client.
+SRV-ID and URI-ID are unsupported.
+A DNS request origin supplies DNS-ID and TLS SNI; an IP-literal origin supplies IP-ID.
+In either case the request origin supplies HTTP authority, pool identity, and ticket identity.
+An exact address or alternate destination port changes only the UDP connect target.
+Applications currently supply internationalized origins as canonical ASCII A-labels.
+Presented DNS-ID wildcards must cover exactly one whole left-most label; the dual-provider adversarial qualification remains an open release gate.
+The repository-wide [certificate identity profile](../../docs/CERTIFICATE_IDENTITY.md) defines the shared HTTP/1.1, HTTP/2, HTTP/3, and QUIC boundary.
 
 ## Development
 

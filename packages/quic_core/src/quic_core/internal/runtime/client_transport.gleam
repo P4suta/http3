@@ -2,7 +2,7 @@
 
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
-import gleam/erlang/process.{type Pid, type Subject}
+import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -12,8 +12,12 @@ import quic_core/internal/connection_state as transport
 import quic_core/internal/crypto
 import quic_core/internal/driver
 import quic_core/internal/ecn
-import quic_core/internal/process_label
+import quic_core/internal/local_connection_id
+import quic_core/internal/runtime/connect_trace
 import quic_core/internal/runtime/connection
+import quic_core/internal/runtime/connection_race
+import quic_core/internal/runtime/destination_order
+import quic_core/internal/runtime/happy_eyeballs
 import quic_core/internal/runtime/path_gate
 import quic_core/internal/stream_state
 import quic_core/internal/tls/authentication
@@ -28,26 +32,21 @@ import quic_core/version.{type Version}
 
 const maximum_packets_per_flush = 64
 
-// Pre-validation floor for one packet's frame payload. The send path widens it
-// to whatever DPLPMTUD has validated for the current path.
+// Pre-validation floor for one packet's frame payload.
+// The send path widens it to whatever DPLPMTUD has validated for the current path.
 const maximum_frame_data_bytes = 1000
 
 const connection_id_bytes = 8
 
-const connection_attempt_delay_milliseconds = 250
-
-// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint
-// is willing to receive, and its default is 65_527. Sending stays governed by
-// DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
+// RFC 9000 section 18.2: max_udp_payload_size is a limit on what this endpoint is willing to receive, and its default is 65_527.
+// Sending stays governed by DPLPMTUD, which starts at the 1200-byte floor and probes every larger size.
 const maximum_udp_payload_size = 65_527
 
 /// Validated client transport policy.
 pub type Config {
   Config(
-    /// The process this connection is being established for. Establishment
-    /// blocks, so the owner has to be watched from inside those waits: without
-    /// it an abandoned attempt keeps its candidate sockets until the handshake
-    /// deadline, long after anything could still use the connection.
+    /// The process this connection is being established for.
+    /// Establishment blocks, so the owner has to be watched from inside those waits: without it an abandoned attempt keeps its candidate sockets until the handshake deadline, long after anything could still use the connection.
     owner: Pid,
     hostname: String,
     port: Int,
@@ -70,6 +69,8 @@ pub type Config {
     unidirectional_stream_limit: Int,
     stream_buffer_limit: Int,
     datagram_limit: Int,
+    connect_port: Int,
+    connect_trace: Option(connect_trace.Context),
   )
 }
 
@@ -81,6 +82,8 @@ pub opaque type State {
     previous_socket: Option(udp.Socket),
     version: Version,
     application_protocol: BitArray,
+    connect_trace: Option(connect_trace.Context),
+    tls_observed: Bool,
   )
 }
 
@@ -95,64 +98,211 @@ pub type Error {
   TotalTimeout
   TlsHandshakeFailed
   QuicFailure(driver.Error)
-  /// The peer closed the connection during the handshake, with the close code
-  /// it named when one was carried.
+  /// The peer closed the connection during the handshake, with the close code it named when one was carried.
   PeerClosed(code: Option(Int))
+  PeerTransportClosed(code: Int)
   MigrationUnavailable
+  LocalConnectionIdUnavailable
   VersionNegotiationReceived(List(Version))
   VersionNegotiationFailed
-  /// The process this connection was being established for exited first, so
-  /// the attempt was abandoned rather than completed or timed out.
+  /// The process this connection was being established for exited first, so the attempt was abandoned rather than completed or timed out.
   OwnerGone
-}
-
-type CandidateDecision {
-  Select(Subject(Result(State, Error)))
-  Cancel
-}
-
-type RaceEvent {
-  CandidateEvent(CandidateMessage)
-  OwnerExited
-}
-
-type CandidateMessage {
-  CandidateReady(Pid, Subject(CandidateDecision))
-  CandidateFailed(Error)
 }
 
 /// Resolve, race, authenticate, and establish one generic QUIC connection.
 pub fn connect(config: Config) -> Result(State, Error) {
+  connect_owned(
+    config,
+    None,
+    udp.monotonic_millisecond() + config.total_timeout_milliseconds,
+  )
+}
+
+/// Establish inside the public bootstrap's already admitted supervisor.
+pub fn connect_in(
+  config: Config,
+  group: udp.WorkGroup,
+  deadline: Int,
+) -> Result(State, Error) {
+  connect_owned(config, Some(group), deadline)
+}
+
+fn connect_owned(
+  config: Config,
+  group: Option(udp.WorkGroup),
+  deadline: Int,
+) -> Result(State, Error) {
   use Nil <- result.try(validate(config))
-  let deadline = udp.monotonic_millisecond() + config.total_timeout_milliseconds
-  use addresses <- result.try(case config.connect_address {
+  let now = udp.monotonic_millisecond()
+  let #(ipv4, ipv6) = resolved_families(config)
+  connect_trace.record(config.connect_trace, 1, case config.connect_address {
+    Some(_) -> 5
+    None -> 1
+  })
+  let policy =
+    connection_race.Policy(
+      config.owner,
+      ipv4,
+      ipv6,
+      int.min(deadline, now + config.dns_timeout_milliseconds),
+      deadline,
+    )
+  let operations =
+    connection_race.Operations(
+      resolve: fn(family) { resolve_family(config, family) },
+      dial: fn(candidate, ordinal, confirm) {
+        connect_address(
+          Config(
+            ..config,
+            connect_trace: connect_trace.candidate(
+              config.connect_trace,
+              ordinal,
+            ),
+          ),
+          candidate.address,
+          deadline,
+          confirm,
+        )
+      },
+      adopt: adopt_candidate,
+      discard: discard_state,
+      compare: destination_order.compare,
+      prefer_error: fn(previous, incoming) {
+        case
+          candidate_error_priority(incoming)
+          > candidate_error_priority(previous)
+        {
+          True -> incoming
+          False -> previous
+        }
+      },
+      abandon: fn(ordinal) {
+        connect_trace.abandon(connect_trace.candidate(
+          config.connect_trace,
+          ordinal,
+        ))
+      },
+      resolution: fn(family, outcome) {
+        case config.connect_address {
+          Some(_) -> Nil
+          None ->
+            connect_trace.resolution(config.connect_trace, family, outcome)
+        }
+      },
+      // NameResolution ends when the first candidate becomes eligible to dial.
+      // It does not claim that both asynchronous DNS queries succeeded.
+      eligible: fn() {
+        case config.connect_address {
+          Some(_) -> Nil
+          None -> connect_trace.record(config.connect_trace, 1, 2)
+        }
+      },
+      spawn: fn(group, kind, work) {
+        udp.spawn_work(group, kind, work) |> result.replace_error(Nil)
+      },
+      cleanup: fn(group, owns_group, owner_alive) {
+        case owns_group, owner_alive {
+          _, False -> udp.stop_work_group_after_owner_exit(group)
+          True, True -> udp.stop_work_group(group)
+          False, True -> udp.quiesce_work_group(group)
+        }
+        |> result.replace_error(Nil)
+      },
+    )
+  let outcome =
+    case group {
+      None -> connection_race.run(policy, operations)
+      Some(group) -> connection_race.run_in(group, policy, operations)
+    }
+    |> result.map_error(race_error)
+  case outcome {
+    Ok(state) -> {
+      connect_trace.record(state.connect_trace, 4, 1)
+      // The socket is now held by the connection actor; the bootstrap owner observes publication separately when it receives that actor's handle.
+      Ok(state)
+    }
+    Error(error) -> {
+      connect_trace.fail_resolution_if_pending(config.connect_trace)
+      Error(error)
+    }
+  }
+}
+
+fn resolved_families(config: Config) -> #(Bool, Bool) {
+  case config.connect_address {
+    Some(bytes) -> #(
+      bit_array.byte_size(bytes) == 4,
+      bit_array.byte_size(bytes) == 16,
+    )
+    None ->
+      case config.address_family {
+        Ipv4 -> #(True, False)
+        Ipv6 -> #(False, True)
+        DualStack -> #(True, True)
+      }
+  }
+}
+
+fn resolve_family(
+  config: Config,
+  family: happy_eyeballs.Family,
+) -> Result(List(destination_order.Candidate), Error) {
+  let addresses = case config.connect_address {
     Some(bytes) ->
       udp.address_from_bytes(bytes)
       |> result.map(fn(address) { [address] })
       |> result.replace_error(InvalidInput)
     None ->
-      case
-        udp.resolve_with_timeout(
-          config.hostname,
-          udp_address_family(config.address_family),
-          int.min(
-            config.dns_timeout_milliseconds,
-            config.total_timeout_milliseconds,
-          ),
-        )
-      {
-        Ok(addresses) -> Ok(addresses)
-        Error(udp.Timeout) -> Error(DnsTimeout)
-        Error(_) -> Error(ResolutionFailed)
-      }
-  })
-  connect_addresses(config, addresses, deadline, None)
+      udp.resolve(config.hostname, case family {
+        happy_eyeballs.Ipv4 -> udp.Ipv4
+        happy_eyeballs.Ipv6 -> udp.Ipv6
+      })
+      |> result.replace_error(ResolutionFailed)
+  }
+  use addresses <- result.try(addresses)
+  Ok(
+    addresses
+    |> list.take(16)
+    |> list.map(fn(address) {
+      destination_order.observe(address, config.connect_port)
+    }),
+  )
+}
+
+fn adopt_candidate(state: State, owner: Pid) -> Result(State, Error) {
+  case udp.transfer_owner(state.socket, owner) {
+    Ok(Nil) -> Ok(state)
+    Error(_) -> Error(SocketUnavailable)
+  }
+}
+
+fn race_error(error: connection_race.Failure(Error)) -> Error {
+  case error {
+    connection_race.Rejected(error) -> error
+    connection_race.ResolutionFailed -> ResolutionFailed
+    connection_race.DnsTimeout -> DnsTimeout
+    connection_race.TotalTimeout -> TotalTimeout
+    connection_race.OwnerGone -> OwnerGone
+    connection_race.WorkerLost | connection_race.CleanupFailed(_) ->
+      SocketUnavailable
+  }
 }
 
 /// Pull and clear ordered transport events.
-pub fn take_events(state: State) -> #(State, List(transport.Event)) {
+pub fn take_events(
+  state: State,
+) -> Result(#(State, List(transport.Event)), Error) {
+  let state = observe_tls(state)
   let #(next, events) = connection.take_events(state.connection)
-  #(settle_migration(State(..state, connection: next), events), events)
+  use state <- result.try(settle_migration(
+    State(..state, connection: next),
+    events,
+  ))
+  Ok(#(state, events))
+}
+
+pub fn local_transport_failure_code(state: State) -> Option(Int) {
+  connection.local_transport_failure_code(state.connection)
 }
 
 /// Advance protocol timers and flush bounded output.
@@ -163,8 +313,8 @@ pub fn drive(state: State) -> Result(State, Error) {
   )
   let state = State(..state, connection: next)
   case connection.phase(next) {
-    // Reaching the fixed terminal bound is successful progress. There is no
-    // packet space left to flush; the owning actor now releases the sockets.
+    // Reaching the fixed terminal bound is successful progress.
+    // There is no packet space left to flush; the owning actor now releases the sockets.
     transport.Closed | transport.Draining -> Ok(state)
     transport.Handshaking | transport.Established | transport.Closing ->
       flush(state, now, maximum_packets_per_flush)
@@ -205,15 +355,28 @@ pub fn receive_active(state: State, message: Dynamic) -> Result(State, Error) {
         Some(_) -> path_gate.Candidate
         None -> path_gate.Active
       })
+    // An unauthenticated ICMP advisory cannot discard already authenticated bytes or restart path/operation deadlines.
+    // The actor rearms active-once reception and normal QUIC recovery determines whether the path works.
+    Error(udp.UnverifiedPathError) -> Ok(state)
     Error(udp.InvalidInput) ->
       case state.previous_socket {
         None -> Error(InvalidInput)
-        Some(socket) ->
-          udp.receive_active(socket, message)
-          |> result.replace_error(InvalidInput)
-          |> result.try(process_received_datagram(state, _, path_gate.Active))
+        Some(socket) -> receive_previous_path(state, socket, message)
       }
     Error(_) -> Error(SocketUnavailable)
+  }
+}
+
+fn receive_previous_path(
+  state: State,
+  socket: udp.Socket,
+  message: Dynamic,
+) -> Result(State, Error) {
+  case udp.receive_active(socket, message) {
+    Ok(datagram) -> process_received_datagram(state, datagram, path_gate.Active)
+    Error(udp.UnverifiedPathError) -> Ok(state)
+    // A value from another selector source is unrelated to either socket.
+    Error(_) -> Error(InvalidInput)
   }
 }
 
@@ -251,8 +414,7 @@ pub fn buffered_send_bytes(
   |> result.map_error(QuicFailure)
 }
 
-/// Return whether this stream's FIN is acknowledged or its send direction
-/// has been reset, without exposing transport mutation state.
+/// Return whether this stream's FIN is acknowledged or its send direction has been reset, without exposing transport mutation state.
 pub fn send_finished(state: State, identifier: Int) -> Result(Bool, Error) {
   connection.send_finished(state.connection, identifier)
   |> result.map_error(QuicFailure)
@@ -332,12 +494,23 @@ pub fn set_congestion_control(
 
 /// Begin migration from a fresh local UDP path.
 pub fn migrate(state: State) -> Result(State, Error) {
+  migrate_at(state, udp.monotonic_millisecond())
+}
+
+/// Deterministic clock entry for migration fault tests; normal callers use `migrate`, which supplies the same monotonic clock as packet/timer work.
+pub fn migrate_at(state: State, now: Int) -> Result(State, Error) {
   case
     state.previous_socket,
     connection.active_migration_available(state.connection)
   {
     Some(_), _ | _, False -> Error(MigrationUnavailable)
     None, True -> {
+      // A new local address must use an unused peer-issued identifier.
+      // Refuse before allocating a socket when the peer has supplied no spare.
+      use rotated <- result.try(
+        connection.rotate_peer_connection_id(state.connection)
+        |> result.replace_error(MigrationUnavailable),
+      )
       use challenge <- result.try(
         crypto.secure_random(8) |> result.replace_error(MigrationUnavailable),
       )
@@ -345,30 +518,7 @@ pub fn migrate(state: State) -> Result(State, Error) {
         open_for_peer(connection.peer(state.connection))
         |> result.replace_error(MigrationUnavailable),
       )
-      // RFC 9000 section 9.5: a second local address must not send under the
-      // identifier the first one used. A peer which sees its own identifier
-      // arrive from a new address reads that as a rebinding rather than a
-      // migration and never validates the new path, which is what an
-      // independent peer showed. The identifier therefore moves with the path
-      // whenever the peer has supplied an unused one.
-      //
-      // When it has not, the attempt continues on the current identifier as it
-      // did before. Section 9.5 asks for a refusal there instead, and that is
-      // the right end state, but this endpoint issues no identifiers of its
-      // own: refusing would make migration impossible between two of these
-      // endpoints while leaving the reuse in place for every peer that does
-      // issue them. Issuing identifiers is what closes it.
-      let rotated =
-        connection.rotate_peer_connection_id(state.connection)
-        |> result.unwrap(state.connection)
-      case
-        connection.begin_path_validation(
-          rotated,
-          challenge,
-          True,
-          udp.monotonic_millisecond(),
-        )
-      {
+      case connection.begin_path_validation(rotated, challenge, True, now) {
         Error(_) -> {
           let _ = udp.close(socket)
           Error(MigrationUnavailable)
@@ -390,6 +540,40 @@ pub fn migrate(state: State) -> Result(State, Error) {
 /// Current path diagnostics.
 pub fn path_stats(state: State) -> transport.PathSnapshot {
   connection.path_stats(state.connection)
+}
+
+/// Bounded local-issuer occupancy without identifiers or reset tokens.
+pub fn local_connection_id_snapshot(
+  state: State,
+) -> local_connection_id.Snapshot {
+  connection.local_connection_id_snapshot(state.connection)
+}
+
+/// Fill only authenticated peer capacity, bounded by the local active/history limits.
+/// The private socket accepts every active identifier directly, so no external routing registration is required before queuing NEW_CONNECTION_ID.
+pub fn replenish_local_connection_ids(state: State) -> Result(State, Error) {
+  case connection.local_connection_id_capacity(state.connection) > 0 {
+    False -> Ok(state)
+    True -> {
+      use identifier <- result.try(
+        crypto.secure_random(connection_id_bytes)
+        |> result.replace_error(LocalConnectionIdUnavailable),
+      )
+      use token <- result.try(
+        crypto.secure_random(16)
+        |> result.replace_error(LocalConnectionIdUnavailable),
+      )
+      use next <- result.try(
+        connection.issue_local_connection_id(
+          state.connection,
+          identifier,
+          token,
+        )
+        |> result.map_error(QuicFailure),
+      )
+      replenish_local_connection_ids(State(..state, connection: next))
+    }
+  }
 }
 
 /// Runtime-owned counters.
@@ -454,10 +638,8 @@ pub fn probe_path_mtu(state: State, now: Int) -> Result(State, Error) {
           ecn.NotEct,
         ))
       {
-        // The socket sets Don't-Fragment, so the kernel refuses a probe the
-        // local interface cannot carry whole. Exclude this unsent size while
-        // retaining the already confirmed path; resetting only the floor and
-        // retrying the same ceiling would create an endless probe loop.
+        // The socket sets Don't-Fragment, so the kernel refuses a probe the local interface cannot carry whole.
+        // Exclude this unsent size while retaining the already confirmed path; resetting only the floor and retrying the same ceiling would create an endless probe loop.
         udp.PathTooSmall ->
           connection.reject_pmtu_probe(prepared)
           |> result.map(fn(next) { State(..state, connection: next) })
@@ -502,10 +684,8 @@ pub fn phase(state: State) -> transport.Phase {
 
 /// Enter the finite QUIC closing period without releasing either live path.
 ///
-/// The owning actor emits the first CONNECTION_CLOSE before acknowledging the
-/// public close call, then keeps these sockets available until the transport's
-/// fixed close deadline. This split is what lets a lost first close be
-/// answered when the peer retransmits.
+/// The owning actor emits the first CONNECTION_CLOSE before acknowledging the public close call, then keeps these sockets available until the transport's fixed close deadline.
+/// This split is what lets a lost first close be answered when the peer retransmits.
 pub fn begin_close(
   state: State,
   application_error_code: Int,
@@ -531,235 +711,60 @@ pub fn release(state: State) -> Nil {
 
 /// Best-effort emergency close followed by unconditional socket cleanup.
 ///
-/// Normal public local closes use `begin_close` and retain the actor through
-/// Closing. Failure paths use this operation because their owner can no longer
-/// safely drive protocol state.
+/// Normal public local closes use `begin_close` and retain the actor through Closing.
+/// Failure paths use this operation because their owner can no longer safely drive protocol state.
 pub fn close(state: State, application_error_code: Int, reason: String) -> Nil {
+  connect_trace.abandon(state.connect_trace)
   let now = udp.monotonic_millisecond()
   let state = begin_close(state, application_error_code, reason)
   let _ = flush(state, now, 4)
   release(state)
 }
 
-fn settle_migration(state: State, events: List(transport.Event)) -> State {
+fn settle_migration(
+  state: State,
+  events: List(transport.Event),
+) -> Result(State, Error) {
   case state.previous_socket {
-    None -> state
+    None -> Ok(state)
     Some(previous_socket) -> {
       let validated = list.contains(events, transport.PathValidated)
       let failed = list.contains(events, transport.PathValidationFailed)
       case validated, failed {
         True, _ -> {
           let _ = udp.close(previous_socket)
-          State(..state, previous_socket: None)
+          Ok(State(..state, previous_socket: None))
         }
         False, True -> {
           let _ = udp.close(state.socket)
-          State(..state, socket: previous_socket, previous_socket: None)
+          // The candidate consumed its identifier on a different local address.
+          // Returning to the old socket therefore needs another unused identifier; it cannot reuse the candidate's identifier.
+          resume_previous_socket(state, previous_socket)
         }
-        False, False -> state
+        False, False -> Ok(state)
       }
     }
   }
 }
 
-fn connect_addresses(
-  config: Config,
-  addresses: List(udp.Address),
-  deadline: Int,
-  last_error: Option(Error),
-) -> Result(State, Error) {
-  case addresses, remaining_milliseconds(deadline) {
-    _, remaining if remaining <= 0 -> Error(TotalTimeout)
-    [], _ -> Error(option_error(last_error, SocketUnavailable))
-    [address], _ -> connect_address(config, address, deadline, False)
-    [_, _, ..], _ -> race_addresses(config, addresses, deadline)
-  }
-}
-
-fn race_addresses(
-  config: Config,
-  addresses: List(udp.Address),
-  deadline: Int,
-) -> Result(State, Error) {
-  let results = process.new_subject()
-  let racer = process.self()
-  let candidates =
-    spawn_candidates(config, addresses, deadline, racer, results, 0, [])
-  let monitor = process.monitor(config.owner)
-  let selector =
-    process.new_selector()
-    |> process.select_map(results, CandidateEvent)
-    |> process.select_specific_monitor(monitor, fn(_) { OwnerExited })
-  let outcome =
-    await_candidate(
-      selector,
-      candidates,
-      list.length(candidates),
-      deadline,
-      None,
-    )
-  process.demonitor_process(monitor)
-  outcome
-}
-
-fn spawn_candidates(
-  config: Config,
-  addresses: List(udp.Address),
-  deadline: Int,
-  owner: Pid,
-  results: Subject(CandidateMessage),
-  index: Int,
-  reversed: List(Pid),
-) -> List(Pid) {
-  case addresses {
-    [] -> list.reverse(reversed)
-    [address, ..rest] -> {
-      let candidate =
-        process.spawn_unlinked(fn() {
-          process_label.set(process_label.ConnectCandidate)
-          process.sleep(index * connection_attempt_delay_milliseconds)
-          run_candidate(config, address, deadline, owner, results)
-        })
-      spawn_candidates(config, rest, deadline, owner, results, index + 1, [
-        candidate,
-        ..reversed
-      ])
-    }
-  }
-}
-
-fn run_candidate(
-  config: Config,
-  address: udp.Address,
-  deadline: Int,
-  owner: Pid,
-  results: Subject(CandidateMessage),
-) -> Nil {
-  case connect_address(config, address, deadline, True) {
-    Error(error) -> process.send(results, CandidateFailed(error))
-    Ok(state) -> offer_candidate(state, deadline, owner, results)
-  }
-}
-
-fn offer_candidate(
+fn resume_previous_socket(
   state: State,
-  deadline: Int,
-  owner: Pid,
-  results: Subject(CandidateMessage),
-) -> Nil {
-  let decision = process.new_subject()
-  process.send(results, CandidateReady(process.self(), decision))
-  case
-    process.receive(
-      decision,
-      within: int.max(0, remaining_milliseconds(deadline)),
-    )
-  {
-    Ok(Select(completion)) -> transfer_candidate(state, owner, completion)
-    Ok(Cancel) | Error(Nil) -> discard_state(state)
-  }
-}
-
-fn transfer_candidate(
-  state: State,
-  owner: Pid,
-  completion: Subject(Result(State, Error)),
-) -> Nil {
-  case udp.transfer_owner(state.socket, owner) {
-    Ok(Nil) -> process.send(completion, Ok(state))
+  previous_socket: udp.Socket,
+) -> Result(State, Error) {
+  case connection.rotate_peer_connection_id(state.connection) {
+    Ok(next) ->
+      Ok(
+        State(
+          ..state,
+          socket: previous_socket,
+          previous_socket: None,
+          connection: next,
+        ),
+      )
     Error(_) -> {
-      discard_state(state)
-      process.send(completion, Error(SocketUnavailable))
+      let _ = udp.close(previous_socket)
+      Error(MigrationUnavailable)
     }
-  }
-}
-
-/// Wait for the first candidate to offer itself, or for the owner to go.
-///
-/// Every candidate holds an open socket while it handshakes, and it holds it
-/// for the whole connect deadline whether or not anyone is still waiting for
-/// the connection. Watching the owner here is what keeps an abandoned attempt
-/// from outliving the process that asked for it: the candidates are cancelled
-/// at once instead of finishing a handshake nothing will read.
-fn await_candidate(
-  selector: process.Selector(RaceEvent),
-  candidates: List(Pid),
-  remaining_candidates: Int,
-  deadline: Int,
-  last_error: Option(Error),
-) -> Result(State, Error) {
-  case remaining_candidates, remaining_milliseconds(deadline) {
-    0, _ -> Error(option_error(last_error, SocketUnavailable))
-    _, remaining if remaining <= 0 -> {
-      cancel_candidates(candidates, None)
-      Error(option_error(last_error, TotalTimeout))
-    }
-    _, remaining ->
-      case process.selector_receive(selector, within: remaining) {
-        Error(Nil) -> {
-          cancel_candidates(candidates, None)
-          Error(option_error(last_error, TotalTimeout))
-        }
-        Ok(OwnerExited) -> {
-          cancel_candidates(candidates, None)
-          Error(OwnerGone)
-        }
-        Ok(CandidateEvent(CandidateFailed(error))) ->
-          await_candidate(
-            selector,
-            candidates,
-            remaining_candidates - 1,
-            deadline,
-            prefer_candidate_error(last_error, error),
-          )
-        Ok(CandidateEvent(CandidateReady(candidate, decision))) ->
-          select_candidate(candidate, decision, candidates, deadline)
-      }
-  }
-}
-
-fn select_candidate(
-  candidate: Pid,
-  decision: Subject(CandidateDecision),
-  candidates: List(Pid),
-  deadline: Int,
-) -> Result(State, Error) {
-  let completion = process.new_subject()
-  process.send(decision, Select(completion))
-  case
-    process.receive(
-      completion,
-      within: int.max(0, remaining_milliseconds(deadline)),
-    )
-  {
-    Ok(Ok(state)) -> {
-      cancel_candidates(candidates, Some(candidate))
-      Ok(state)
-    }
-    Ok(Error(error)) -> {
-      cancel_candidates(candidates, None)
-      Error(error)
-    }
-    Error(Nil) -> {
-      cancel_candidates(candidates, None)
-      Error(TotalTimeout)
-    }
-  }
-}
-
-fn prefer_candidate_error(
-  current: Option(Error),
-  incoming: Error,
-) -> Option(Error) {
-  case current {
-    None -> Some(incoming)
-    Some(error) ->
-      case
-        candidate_error_priority(incoming) > candidate_error_priority(error)
-      {
-        True -> Some(incoming)
-        False -> current
-      }
   }
 }
 
@@ -767,26 +772,19 @@ fn candidate_error_priority(error: Error) -> Int {
   case error {
     TlsHandshakeFailed -> 100
     VersionNegotiationFailed | VersionNegotiationReceived(_) -> 90
-    QuicFailure(_) | PeerClosed(_) -> 80
+    QuicFailure(_)
+    | PeerClosed(_)
+    | PeerTransportClosed(_)
+    | LocalConnectionIdUnavailable -> 80
     HandshakeTimeout -> 60
     ConnectTimeout -> 50
     DnsTimeout | ResolutionFailed -> 40
     SocketUnavailable -> 30
     TotalTimeout -> 20
     MigrationUnavailable | InvalidInput -> 10
-    // Never reported by a candidate: the race ends on owner exit without
-    // preferring one candidate's reason over another.
+    // Never reported by a candidate: the race ends on owner exit without preferring one candidate's reason over another.
     OwnerGone -> 0
   }
-}
-
-fn cancel_candidates(candidates: List(Pid), winner: Option(Pid)) -> Nil {
-  list.each(candidates, fn(candidate) {
-    case winner {
-      Some(selected) if selected == candidate -> Nil
-      _ -> process.kill(candidate)
-    }
-  })
 }
 
 fn discard_state(state: State) -> Nil {
@@ -807,11 +805,17 @@ fn connect_address(
   confirm_reachability: Bool,
 ) -> Result(State, Error) {
   use peer <- result.try(
-    udp.endpoint(address, config.port) |> result.replace_error(InvalidInput),
+    udp.endpoint(address, config.connect_port)
+    |> result.replace_error(InvalidInput),
   )
-  use socket <- result.try(
-    open_for_address(address) |> result.replace_error(SocketUnavailable),
-  )
+  connect_trace.record(config.connect_trace, 2, 1)
+  let opened =
+    open_for_address(address) |> result.replace_error(SocketUnavailable)
+  connect_trace.record(config.connect_trace, 2, case opened {
+    Ok(_) -> 2
+    Error(_) -> 3
+  })
+  use socket <- result.try(opened)
   let connect_deadline =
     int.min(
       deadline,
@@ -819,31 +823,18 @@ fn connect_address(
     )
   let outcome = case remaining_milliseconds(connect_deadline) <= 0 {
     True -> Error(ConnectTimeout)
-    False ->
-      case establish(config, socket, peer, deadline) {
-        Error(error) -> Error(error)
-        Ok(state) -> {
-          let should_confirm = case config.resumption_ticket {
-            Some(ticket) ->
-              config.allow_zero_rtt
-              && session_ticket.early_data_allowed(ticket)
-              && confirm_reachability
-            None -> False
-          }
-          case should_confirm {
-            True ->
-              confirm_resumption_candidate(
-                state,
-                int.min(
-                  deadline,
-                  udp.monotonic_millisecond()
-                    + config.handshake_timeout_milliseconds,
-                ),
-              )
-            False -> Ok(state)
-          }
+    False -> {
+      connect_trace.record(config.connect_trace, 3, 1)
+      let established = establish(config, socket, peer, deadline)
+      case established {
+        Error(error) -> {
+          connect_trace.record(config.connect_trace, 3, 3)
+          Error(error)
         }
+        Ok(state) ->
+          confirm_candidate(config, state, deadline, confirm_reachability)
       }
+    }
   }
   case outcome {
     Ok(state) -> Ok(state)
@@ -851,6 +842,32 @@ fn connect_address(
       let _ = udp.close(socket)
       Error(error)
     }
+  }
+}
+
+fn confirm_candidate(
+  config: Config,
+  state: State,
+  deadline: Int,
+  confirm_reachability: Bool,
+) -> Result(State, Error) {
+  let should_confirm = case config.resumption_ticket {
+    Some(ticket) ->
+      config.allow_zero_rtt
+      && session_ticket.early_data_allowed(ticket)
+      && confirm_reachability
+    None -> False
+  }
+  case should_confirm {
+    True ->
+      confirm_resumption_candidate(
+        state,
+        int.min(
+          deadline,
+          udp.monotonic_millisecond() + config.handshake_timeout_milliseconds,
+        ),
+      )
+    False -> Ok(observe_tls(state))
   }
 }
 
@@ -966,6 +983,8 @@ fn establish_version(
       None,
       selected_version,
       first_protocol(config.application_protocols),
+      config.connect_trace,
+      False,
     )
   let early_data = case config.resumption_ticket {
     Some(ticket) ->
@@ -983,6 +1002,28 @@ fn establish_version(
         attempted_versions,
       )
   }
+}
+
+fn observe_tls(state: State) -> State {
+  case state.tls_observed, connection.phase(state.connection) {
+    False, transport.Established -> {
+      connect_trace.record(state.connect_trace, 3, 2)
+      State(..state, tls_observed: True)
+    }
+    False, transport.Closing
+    | False, transport.Draining
+    | False, transport.Closed
+    -> {
+      connect_trace.record(state.connect_trace, 3, 3)
+      State(..state, tls_observed: True)
+    }
+    _, _ -> state
+  }
+}
+
+/// Mark delivery of the actor handle to the caller after native setup.
+pub fn published(state: State) -> Nil {
+  connect_trace.record(state.connect_trace, 4, 2)
 }
 
 fn complete_handshake(
@@ -1026,8 +1067,7 @@ fn handshake(
   case phase(state), remaining_milliseconds(deadline) {
     transport.Established, _ -> Ok(state)
     // A peer that closes mid-handshake -- a server refusing this connection,
-    // say -- is reported with the code it sent rather than as a deadline this
-    // attempt would otherwise have to wait out.
+    // say -- is reported with the code it sent rather than as a deadline this attempt would otherwise have to wait out.
     transport.Closed, _ | transport.Draining, _ ->
       Error(peer_close_error(state))
     _, remaining if remaining <= 0 -> Error(HandshakeTimeout)
@@ -1045,17 +1085,19 @@ fn handshake(
   }
 }
 
-/// The close the peer named, if it named one. The events are taken from a
-/// connection this attempt is abandoning, so nothing else will read them.
+/// The close the peer named, if it named one.
+/// The events are taken from a connection this attempt is abandoning, so nothing else will read them.
 fn peer_close_error(state: State) -> Error {
-  let #(_discarded, events) = take_events(state)
-  PeerClosed(peer_close_code(events))
+  let #(_discarded, events) = connection.take_events(state.connection)
+  peer_close_code(events)
 }
 
-fn peer_close_code(events: List(transport.Event)) -> Option(Int) {
+fn peer_close_code(events: List(transport.Event)) -> Error {
   case events {
-    [] -> None
-    [transport.PeerClosed(code, _reason), ..] -> Some(code)
+    [] -> PeerClosed(None)
+    [transport.PeerClosed(code, _reason), ..] -> PeerClosed(Some(code))
+    [transport.PeerTransportClosed(code, _reason), ..] ->
+      PeerTransportClosed(code)
     [_other, ..rest] -> peer_close_code(rest)
   }
 }
@@ -1132,10 +1174,9 @@ fn flush(
 
 /// Send one prepared datagram, then commit it and continue the flush.
 ///
-/// A datagram the local stack refuses as too large is the path shrinking
-/// underneath a size DPLPMTUD had confirmed: the socket sets Don't-Fragment,
-/// so the kernel will not split it. It is dropped uncommitted, recovery
-/// retransmits its frames, and the next datagram is built for the floor.
+/// A datagram the local stack refuses as too large is the path shrinking underneath a size DPLPMTUD had confirmed: the socket sets Don't-Fragment,
+/// so the kernel will not split it.
+/// It is dropped uncommitted, recovery retransmits its frames, and the next datagram is built for the floor.
 fn send_prepared(
   state: State,
   prepared: connection.PreparedDatagram,
@@ -1284,14 +1325,6 @@ fn open_for_peer(peer: udp.Endpoint) -> Result(udp.Socket, udp.Error) {
   open_for_address(address)
 }
 
-fn udp_address_family(address_family: AddressFamily) -> udp.AddressFamily {
-  case address_family {
-    Ipv4 -> udp.Ipv4
-    Ipv6 -> udp.Ipv6
-    DualStack -> udp.Any
-  }
-}
-
 fn wait_milliseconds(
   total_deadline: Int,
   protocol_deadline: Option(Int),
@@ -1310,13 +1343,6 @@ fn remaining_milliseconds(deadline: Int) -> Int {
 
 fn same_endpoint(left: udp.Endpoint, right: udp.Endpoint) -> Bool {
   udp.endpoint_parts(left) == udp.endpoint_parts(right)
-}
-
-fn option_error(value: Option(Error), fallback: Error) -> Error {
-  case value {
-    Some(error) -> error
-    None -> fallback
-  }
 }
 
 fn discard_or_fail(state: State, error: driver.Error) -> Result(State, Error) {
@@ -1343,6 +1369,8 @@ fn validate(config: Config) -> Result(Nil, Error) {
     config.hostname != ""
     && config.port > 0
     && config.port <= 65_535
+    && config.connect_port > 0
+    && config.connect_port <= 65_535
     && config.dns_timeout_milliseconds > 0
     && config.connect_timeout_milliseconds > 0
     && config.handshake_timeout_milliseconds > 0

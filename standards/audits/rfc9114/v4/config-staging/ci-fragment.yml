@@ -1,0 +1,46 @@
+# Replace the two existing RFC 9114 quality-job steps atomically after the HTTP/1 workflow freeze is released.
+# Every command is retained even if an earlier command rejects so Running/Rejected and recovery artifacts survive.
+      - name: Capture RFC 9114 v4 review application diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py identity-capture
+          identity_exit=$?
+          mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py tracked
+          tracked_exit=$?
+          mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py gate-self-test
+          gate_exit=$?
+          mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py cycle red
+          red_exit=$?
+          mise exec python@3.12.13 -- python -I -B standards/audits/rfc9114_v4_bootstrap.py cycle self-test
+          self_test_exit=$?
+          if [ "$identity_exit" -ne 0 ] || [ "$tracked_exit" -ne 0 ] || [ "$gate_exit" -ne 0 ] || [ "$red_exit" -ne 0 ] || [ "$self_test_exit" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Preserve RFC 9114 v4 success, rejection, transaction, and recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-rfc9114-v4-review-application-${{ runner.os }}
+          path: |
+            build/root-validation/rfc9114-v4/**/report.json
+            build/root-validation/rfc9114-v4/**/report-*.json
+            build/root-validation/rfc9114-v4/**/gate-self-test.json
+            build/root-validation/rfc9114-v4/python-identity-capture.json
+            build/root-validation/rfc9114-v4/**/pending.json
+            build/root-validation/rfc9114-v4/**/done.json
+            build/root-validation/rfc9114-v4/**/abandoned.json
+            build/root-validation/rfc9114-v4/**/journal.json
+            build/root-validation/rfc9114-v4/**/reports/*.json
+            build/root-validation/rfc9114-v4/**/transaction.json
+            build/root-validation/rfc9114-v4/**/preparation-rejected.json
+            build/root-validation/rfc9114-v4/**/publication-failure.json
+            build/root-validation/rfc9114-v4/safe-fixtures/**/fixture-summary.json
+            build/root-validation/rfc9114-v4/safe-fixtures/**/original.bin
+            build/root-validation/rfc9114-v4/safe-fixtures/**/intended.bin
+            build/root-validation/rfc9114-v4/safe-fixtures/**/claimed.bin
+            build/root-validation/rfc9114-v4/safe-fixtures/**/published.bin
+            build/root-validation/rfc9114-v4/safe-fixtures/**/concurrent.bin
+          if-no-files-found: error

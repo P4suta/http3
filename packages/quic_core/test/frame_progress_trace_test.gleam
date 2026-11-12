@@ -10,6 +10,12 @@ import public_memory_test.{
   StreamCommitted,
 }
 
+pub type TraceContracts
+
+// nolint: unused_exports, trailing_underscore -- EUnit requires the descriptor generator suffix.
+@external(erlang, "quic_frame_progress_test", "contracts")
+pub fn frame_progress_runtime_contracts_test_() -> TraceContracts
+
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
 pub fn live_trace_contract_retains_metadata_without_payload_test() -> Nil {
   let sent = StreamCommitted(ClientEndpoint, 7, 4, 1024, 31, True, 99)

@@ -1,4 +1,7 @@
+import gleam/list
+import gleam/option.{None}
 import gleeunit
+import http/compression
 import http/digest
 import http/structured_fields
 
@@ -14,6 +17,62 @@ pub fn rfc9530_sha256_and_sha512_vectors_test() -> Nil {
     == Ok(
       "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:, sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:",
     )
+}
+
+pub fn rfc9530_erratum_8890_corrected_brotli_representation_test() -> Nil {
+  // Erratum 8890 corrects the first two bytes from 8B 08 to 0B 09.
+  // The digests cover the corrected Brotli-coded representation bytes.
+  let published = <<
+    139, 8, 128, 123, 34, 104, 101, 108, 108, 111, 34, 58, 32, 34, 119, 111, 114,
+    108, 100, 34, 125, 10, 3,
+  >>
+  assert compression.decode(
+      compression.Brotli,
+      published,
+      None,
+      compression.defaults(),
+    )
+    == Error(compression.InvalidEncoding)
+
+  let encoded = <<
+    11, 9, 128, 123, 34, 104, 101, 108, 108, 111, 34, 58, 32, 34, 119, 111, 114,
+    108, 100, 34, 125, 10, 3,
+  >>
+  assert compression.decode(
+      compression.Brotli,
+      encoded,
+      None,
+      compression.defaults(),
+    )
+    == Ok(<<"{\"hello\": \"world\"}\n":utf8>>)
+
+  let assert Ok(values) =
+    digest.compute_many(encoded, [digest.Sha256, digest.Sha512], 1024)
+  assert digest.serialize(values)
+    == Ok(
+      "sha-256=:d435Qo+nKZ+gLcUHn7GQtQ72hiBVAgqoLsZnZPiTGPk=:, sha-512=:db7fdBbgZMgX1Wb2MjA8zZj+rSNgfmDCEEXM8qLWfpfoNY0sCpHAzZbj09X1/7HAb7Od5Qfto4QpuBsFbUO3dQ==:",
+    )
+  assert digest.verify(encoded, values, digest.defaults()) == Ok(Nil)
+}
+
+pub fn rfc9530_active_algorithms_and_deprecated_rejection_test() -> Nil {
+  let content = <<"adversarial integrity input":utf8>>
+  let assert Ok(active) =
+    digest.compute_many(content, [digest.Sha512, digest.Sha256], 1024)
+  assert digest.verify(content, active, digest.defaults()) == Ok(Nil)
+
+  ["md5", "sha", "unixsum", "unixcksum", "adler", "crc32c"]
+  |> list.each(fn(key) {
+    let algorithm = digest.Extension(key)
+    assert digest.compute(content, algorithm, 1024)
+      == Error(digest.UnsupportedAlgorithm)
+    assert digest.verify(
+        content,
+        [digest.Digest(algorithm, <<0>>, [])],
+        digest.defaults(),
+      )
+      == Error(digest.NoAcceptableDigest)
+  })
 }
 
 pub fn parse_retains_unknown_algorithms_and_parameters_test() -> Nil {

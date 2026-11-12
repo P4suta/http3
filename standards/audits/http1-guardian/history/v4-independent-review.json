@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "audit": "http1_handler_guardian_v4_independent_review",
+  "status": "Rejected",
+  "classification": "independent_adversarial_false_green",
+  "scope": "static_only",
+  "native_execution": "prohibited_and_not_invoked",
+  "candidate_hashes_before": {
+    "scripts/spawn_monitor_contract_audit.py": "82e4d533b3618c477663dff8bff3aa8299dd9120d3fa01c9d63a5f2a926fd143",
+    "standards/audits/http1-guardian/guardian_contract_check.py": "5855d143c69aa12e2c604cfa2de700d00234c3dddc4d75c3f102bf93073d5b1c",
+    "standards/audits/http1-guardian/spawn_monitor_dataflow_contract_check.py": "55bc52795ce7904338aca386d28d8accd27682476d74f0f0ebc9cb0cdc3c5187",
+    "standards/audits/http1-guardian/adversarial_contract_check.py": "38ef68bf96bfc4438cc5fdb98af8cbf11f0d7f26b6c44c905122d68fa0f4bc4f",
+    "standards/audits/http1-guardian/manifest.json": "b7c3bbe2f2695b1232a0075680727b5b36c68710e1f24ce5ac77b53e0377ca19",
+    "standards/audits/http1-guardian/review.md": "369bcbb510c7941474346e687163c50b5af2aad4c0d4fe97bc1da171389eac2b",
+    ".mise.toml": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35"
+  },
+  "candidate_hashes_after": {
+    "scripts/spawn_monitor_contract_audit.py": "82e4d533b3618c477663dff8bff3aa8299dd9120d3fa01c9d63a5f2a926fd143",
+    "standards/audits/http1-guardian/guardian_contract_check.py": "5855d143c69aa12e2c604cfa2de700d00234c3dddc4d75c3f102bf93073d5b1c",
+    "standards/audits/http1-guardian/spawn_monitor_dataflow_contract_check.py": "55bc52795ce7904338aca386d28d8accd27682476d74f0f0ebc9cb0cdc3c5187",
+    "standards/audits/http1-guardian/adversarial_contract_check.py": "38ef68bf96bfc4438cc5fdb98af8cbf11f0d7f26b6c44c905122d68fa0f4bc4f",
+    "standards/audits/http1-guardian/manifest.json": "b7c3bbe2f2695b1232a0075680727b5b36c68710e1f24ce5ac77b53e0377ca19",
+    "standards/audits/http1-guardian/review.md": "369bcbb510c7941474346e687163c50b5af2aad4c0d4fe97bc1da171389eac2b",
+    ".mise.toml": "a715189cf527ca30e3a47f6b93b1b8f9c89021a4e020004f7e43705578746c35"
+  },
+  "verified_claims": {
+    "provided_candidate_hashes_exact": true,
+    "current_source_guardian_green": true,
+    "current_source_spawn_scanner_green": true,
+    "provisional_red_completed_controls": 19,
+    "provisional_red_failed_controls": 19,
+    "provisional_red_all_failed": true,
+    "development_runtime_version": "3.12.14",
+    "development_runtime_sha256": "dd5f8d19f6755d6491ee7c4bef2fe35ddd521334cc3ca3ed8fc93ebcadf135d0",
+    "canonical_3_12_13_release_run_invoked": false
+  },
+  "independent_mutation_summary": {
+    "completed_controls": 12,
+    "false_green_controls": 12,
+    "expected_false_green_controls": 0,
+    "names": [
+      "run_before_entry_receive",
+      "run_after_entry_receive",
+      "immediately_invoked_fun_run_in_first_true",
+      "delegated_run_in_first_true",
+      "guard_false_safe_entry_clause_wrong_live_clause",
+      "impossible_variable_guard_safe_entry_wrong_live_clause",
+      "matching_traffic_bypasses_terminating_precheck",
+      "matching_traffic_bypasses_quarantine_precheck",
+      "indirect_owner_demonitor_before_publication",
+      "indirect_exit_before_terminal_down_finish",
+      "indirect_throw_before_terminal_down_finish",
+      "guard_false_safe_down_clause_missing_live_publication"
+    ]
+  },
+  "blockers": [
+    {
+      "id": "HTTP1-V4-01",
+      "class": "handler_entry_control_flow_false_green",
+      "evidence": "Six executable Run placements outside the second deadline false branch produced no guardian or scanner finding, including code before and after receive, an immediately invoked fun, helper delegation, and dead safe first clauses.",
+      "required": "Analyze every reachable clause and expression of the live handler entry, follow invoked closures and bounded helper calls, and reject unproved clauses or suffix/prefix execution."
+    },
+    {
+      "id": "HTTP1-V4-02",
+      "class": "cleanup_deadline_starvation_false_green",
+      "evidence": "A matching-message branch can recurse directly to terminating_receive or quarantine_receive and bypass the pre-receive absolute check; both mutants produced no finding.",
+      "required": "Prove every matching branch returns through the absolute-deadline dispatcher before another receive."
+    },
+    {
+      "id": "HTTP1-V4-03",
+      "class": "monitor_lifetime_and_terminal_reachability_false_green",
+      "evidence": "Helper-indirected owner demonitor, exit, and throw operations before publication or terminal finish all produced no finding.",
+      "required": "Use a call graph or a deliberately closed helper allowlist with exact semantics; treat unknown calls before settlement as unproved."
+    },
+    {
+      "id": "HTTP1-V4-04",
+      "class": "publication_dead_clause_false_green",
+      "evidence": "A correct down clause guarded false plus a live clause that never publishes was accepted by both checkers.",
+      "required": "Bind the called function arity to all live clauses and prove success publication and finish ordering on the reachable clause set."
+    },
+    {
+      "id": "HTTP1-V4-05",
+      "class": "control_inventory_not_exact",
+      "evidence": "The evidence matcher accepted same-count substituted and duplicate control names for guardian mutations, scanner self tests, wrapper identity controls, and adversarial controls.",
+      "required": "Pin and validate exact name, type, order, expected value, observed value, uniqueness, and count inventories from tracked authority."
+    },
+    {
+      "id": "HTTP1-V4-06",
+      "class": "runtime_identity_forgeable",
+      "evidence": "Under actual CPython 3.12.14, five reports whose version strings were changed to 3.12.13 assembled with exit 0 and Ready; the Ready bundle itself recorded actual runtime 3.12.14. Executable identity is self-reported and has no trusted mise resolution anchor.",
+      "required": "Resolve and attest the configured mise executable independently, compare exact executable identity and version before and after every phase, and include the current assembler runtime in the Ready predicate."
+    },
+    {
+      "id": "HTTP1-V4-07",
+      "class": "report_structure_and_secrecy_not_strict",
+      "evidence": "A report with duplicate JSON status keys and an extra synthetic secret/path/PID/exception field was accepted; the bundle verifier also returned no findings for a synthetic-secret payload.",
+      "required": "Use duplicate-key-rejecting JSON decoding, exact schemas with no unknown fields, and scan success and failure evidence for forbidden raw values and keys."
+    },
+    {
+      "id": "HTTP1-V4-08",
+      "class": "unexpected_failure_leaks_traceback",
+      "evidence": "RuntimeError injected into guardian analysis, scanner audit, and adversarial module loading escaped each top-level handler and would print the exception payload and local paths in a traceback.",
+      "required": "Catch BaseException at the CLI boundary except process-control exceptions, emit only finite typed classifications, and verify stdout and stderr secrecy for every failure class."
+    },
+    {
+      "id": "HTTP1-V4-09",
+      "class": "hashed_code_not_executed_code",
+      "evidence": "The gate hashes a module path, imports the path later, then hashes it again. A deterministic swap-load-restore test kept equal pre/post hashes while executing substituted module bytes.",
+      "required": "Read one bounded immutable byte snapshot, hash that snapshot, compile and execute that exact snapshot, and revalidate the path independently after execution."
+    },
+    {
+      "id": "HTTP1-V4-10",
+      "class": "publication_and_input_races",
+      "evidence": "Hard-linked inputs are accepted. A replacement immediately after atomic_publish internal readback left a tampered final evidence file while assembly returned exit 0 and Ready. Inputs are not revalidated after final publication and there is no strict final consumer.",
+      "required": "Reject multi-link and reparse inputs, bind operations to opened handles/directories, revalidate every input after publication, and require a separate strict consumer of the final bytes."
+    },
+    {
+      "id": "HTTP1-V4-11",
+      "class": "canonical_clean_checkout_missing_inputs",
+      "evidence": "The assembler requires v2/v3/v4 Red directories, v2/v3 invalidations, and v3 evidence only under build/root-validation. git ls-files returns no entries for them and .gitignore ignores build/, so a clean CI checkout cannot assemble the claimed gate.",
+      "required": "Move immutable audit authorities and invalidation history to a tracked location, pin their exact inventories and digests, and generate only run outputs under build/."
+    },
+    {
+      "id": "HTTP1-V4-12",
+      "class": "red_history_not_anchored",
+      "evidence": "The assembler computes new directory aggregates from mutable ignored directories and checks only weak Red counts/status; tracked manifest.json contains no expected Red digest or exact file/control inventory.",
+      "required": "Track and pin exact Red input file hashes, exact failed-control inventories, runtime classification, run metadata, and the invalidation chain."
+    },
+    {
+      "id": "HTTP1-V4-13",
+      "class": "failure_evidence_pipeline_incomplete",
+      "evidence": "The .mise task is a fail-fast list of unsupervised Python processes. An early failure prevents later reports and final Rejected evidence; there is no initial Running record, common run identity, absolute process deadline, output cap, or child cleanup proof.",
+      "required": "Use one supervised launcher that always attempts bounded phases, writes Running first, records typed failures and completion counts, then atomically publishes and strictly rereads one final result."
+    },
+    {
+      "id": "HTTP1-V4-14",
+      "class": "ci_failure_evidence_not_preserved",
+      "evidence": "PR CI reaches this gate only indirectly through mise run check and has no dedicated if: always() upload for build/root-validation/http1-handler-guardian-v4-static-green. Earlier check failure can prevent execution, and guardian failure evidence is not uploaded.",
+      "required": "Add an independent CI step or job and an unconditional artifact upload that accepts both Ready and Rejected bounded evidence."
+    },
+    {
+      "id": "HTTP1-V4-15",
+      "class": "development_runtime_component_false_ready",
+      "evidence": "Existing 3.12.14 development reports show guardian, wrapper, and adversarial runtime-only failures, but scanner self-test and scanner audit each report Ready under the noncanonical runtime.",
+      "required": "Make every independently consumable report reject a runtime that does not exactly satisfy the configured release runtime authority."
+    }
+  ],
+  "reproduction": {
+    "program": "build/root-validation/http1-handler-guardian-v4-independent-audit/audit.py",
+    "arguments": ["-I", "-B"],
+    "working_directory": ".",
+    "execution_contract": {
+      "window_style": "Hidden",
+      "owned_process": true,
+      "absolute_deadline_seconds": 30,
+      "stdout_limit_bytes": 1048576,
+      "stderr_limit_bytes": 1048576,
+      "exact_pid_cleanup_on_timeout": true
+    },
+    "result": "build/root-validation/http1-handler-guardian-v4-independent-audit/stdout.jsonl",
+    "process_observation": "build/root-validation/http1-handler-guardian-v4-independent-audit/process-observation.json"
+  },
+  "failure_evidence_secrecy": {
+    "shareable_files_contain_no_real_pid": true,
+    "shareable_files_contain_no_real_endpoint_socket_or_exception_payload": true,
+    "synthetic_secret_marker_is_test_data": true,
+    "raw_run_metadata": {
+      "path": "build/root-validation/http1-handler-guardian-v4-independent-audit/run.json",
+      "classification": "private_non_shareable_contains_owned_child_pid",
+      "included_in_shareable_bundle": false
+    }
+  }
+}

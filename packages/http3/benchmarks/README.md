@@ -70,13 +70,19 @@ parser inputs, transactions, push transactions, or QPACK-blocked streams exceed
 their fixed ceilings. This makes lifetime regressions part of every performance
 workload without adding a synchronous diagnostic query to each request.
 
-Each fixed task preserves its complete local log plus canonical CSV and JSON in
-`build/performance/current/`. It also preserves mode-specific host snapshots
-immediately before and after the workload. The schema 3 report binds the result
-to a digest of all three production source trees and validates the
-manifest-owned workload shape, row count, process convergence, final mailbox
-count, median threshold, snapshot ordering, stable runtime identity, probe
-shape, and monotonic host counters.
+Each fixed task preserves validated numeric CSV and JSON in `build/performance/current/`.
+The workload and its before/after host snapshots run in one supervised VM.
+The VM has an absolute mode deadline, an 8 MiB output ceiling, a 64 KiB retained tail, and a 256 MiB per-process heap ceiling including shared binaries.
+Raw output and exception payloads are discarded; continuing output cannot extend the deadline.
+The parent requires the VM's actual exit,
+an exact run nonce, and all expected samples before accepting a result.
+The selected run retains its validated child record and exact runner BEAM files in `build/performance/runner/<nonce>/`.
+Verification checks those files against the embedded child record and freshly compiled runners; missing, substituted,
+or additional files invalidate the proof.
+CI also collects `<mode>-execution-proof.tar`, containing only that selected run's validated child record and runner code, so a downloaded failure artifact can be inspected without collecting unrelated self-test fixtures.
+
+The schema 4 report binds the result to the complete source inventory, fresh compiler output, tools, runtime, and deterministic runner binaries.
+It validates the manifest-owned workload shape, row count, process convergence, final mailbox count, median threshold, snapshot ordering, stable runtime identity, probe shape, and monotonic host counters.
 
 Each row records BEAM runtime milliseconds, reductions, context switches,
 garbage collections and reclaimed words, VM I/O bytes, and run queue before and
@@ -97,8 +103,10 @@ without making macOS or Windows inherently fail. The report derives CPU busy
 time and counter deltas without treating high host pressure as an excuse to
 relax the throughput threshold. Snapshots omit hostnames, command lines,
 process arguments, cgroup names, environment variables, endpoints, and
-payloads. They and the complete logs are local and marked non-shareable; the
-log appears in the report only as a bounded base64 tail. Derived BEAM
+payloads. Host snapshots remain local and marked non-shareable. The shareable
+log summary contains only validated numeric CSV, its digest, and a bounded
+base64 tail of that CSV. Failed or malformed input cannot contribute a raw
+digest, exception reason, or unknown field. Derived BEAM
 utilization, reductions per request, host-pressure deltas, RTT, and
 retransmission values help distinguish scheduling pressure from extra protocol
 work or packet loss.
@@ -115,16 +123,29 @@ volume. Machine-readable counts and violations are written to
 `build/performance/hot-path-profile.json` and `.csv`; those generated files are
 developer/audit evidence, not throughput measurements.
 
+The profiler runs in an owned VM with an absolute two-minute deadline and the same output and heap ceilings as the fixed workloads.
+Only bounded call counts cross the evidence boundary; arguments, return values, runtime process IDs,
+and raw failure output are discarded.
+Schema 2 binds the workload, counters,
+source, fresh build, runtime, and actual VM exit to one nonce.
+Its validated child record and runner code are retained in `build/performance/hot-path-runner/<nonce>/`; `--verify` independently checks these files and the exact CSV projection.
+The idle observer uses the equivalent `build/performance/idle-runner/<nonce>/` proof.
+Self-tests accept an actual retained execution before corrupting or deleting its child record and code,
+and reject every altered proof.
+
 `mise run performance-audit` independently recomputes the manifest-owned
 source digest and verifies the schema, profile digest, source digest, workload
-configuration, transport fields, bounded log, host snapshots, and hot-path
-report. Checked-in historical CSV files are counted for provenance but are not
+configuration, sample sequence, throughput, transport fields, numeric log,
+host snapshots from the same child, and hot-path report. Its adversarial tests
+reject altered rows, missing samples, changed source/build identities, unknown
+fields, private data, and an unobserved or nonzero child exit. Checked-in
+historical CSV files are counted for provenance but are not
 accepted as current qualification merely because they contain a matching
 string. The H3 client/server roles and the mailbox, process, and memory
 and socket-convergence assertions are credited only when all three fixed H3
 reports and the hot-path profile are current and `Ready`. H1/H2 role evidence
-and idle-wakeup evidence remain explicit missing rows until their independent
-workloads exist.
+remain explicit missing rows until their independent workloads exist. Idle
+wakeups have a separate instrumented workload and require its current proof.
 
 For a loaded-run stall investigation, `mise run load-diagnose` runs one warm-up
 and one 32-connection trial while writing one progress CSV per trial under

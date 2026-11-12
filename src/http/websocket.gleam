@@ -8,6 +8,7 @@
 import gleam/bit_array
 import gleam/bool
 import gleam/http
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -215,12 +216,12 @@ pub fn validate_response(
   status: Int,
   headers: List(#(String, String)),
 ) -> Result(Option(String), Error) {
-  let expected_status = case handshake.protocol {
-    Http1 -> 101
-    Http2 | Http3 -> 200
+  let successful_status = case handshake.protocol {
+    Http1 -> status == 101
+    Http2 | Http3 -> status >= 200 && status < 300
   }
   use <- bool.guard(
-    when: status != expected_status,
+    when: !successful_status,
     return: Error(UnexpectedStatus(status)),
   )
   use _ <- result.try(validate_response_mapping(handshake.protocol, headers))
@@ -334,7 +335,7 @@ fn validate_request_mapping(
           || { scheme != "http" && scheme != "https" }
           || extended_protocol != None
           || !headers_contain_token(headers, "connection", "upgrade")
-          || !single_token_header(headers, "upgrade", "websocket"),
+          || !headers_contain_token(headers, "upgrade", "websocket"),
         return: Error(InvalidHandshake),
       )
       Ok(Nil)
@@ -372,7 +373,7 @@ fn validate_response_mapping(
     Http1 ->
       case
         headers_contain_token(headers, "connection", "upgrade")
-        && single_token_header(headers, "upgrade", "websocket")
+        && headers_contain_token(headers, "upgrade", "websocket")
       {
         True -> Ok(Nil)
         False -> Error(InvalidHandshake)
@@ -390,15 +391,22 @@ fn requested_subprotocols(
 ) -> Result(List(String), Error) {
   case header_values(headers, "sec-websocket-protocol") {
     [] -> Ok([])
-    [value] -> {
+    values -> {
       let values =
-        value
-        |> string.split(on: ",")
+        values
+        |> list.flat_map(fn(value) { string.split(value, on: ",") })
         |> list.map(string.trim)
+        // HTTP's list rule permits empty comma members.
+        // They are separators,
+        // not empty WebSocket subprotocol names.
+        |> list.filter(fn(value) { !string.is_empty(value) })
+      use <- bool.guard(
+        when: list.is_empty(values),
+        return: Error(InvalidSubprotocol),
+      )
       use _ <- result.try(validate_subprotocols(values))
       Ok(values)
     }
-    _ -> Error(InvalidSubprotocol)
   }
 }
 
@@ -445,7 +453,8 @@ pub fn session(role: Role, limits: Limits) -> Result(Session, Error) {
   let Limits(maximum_message_bytes, maximum_buffered_bytes) = limits
   case
     maximum_message_bytes > 0
-    && maximum_buffered_bytes >= maximum_message_bytes + frame_overhead_bytes
+    && maximum_buffered_bytes
+    >= int.max(maximum_message_bytes, 125) + frame_overhead_bytes
   {
     True -> Ok(Session(role, limits, <<>>, None, False, False))
     False -> Error(InvalidLimit)
@@ -454,6 +463,7 @@ pub fn session(role: Role, limits: Limits) -> Result(Session, Error) {
 
 /// Append one byte-aligned transport chunk without exceeding retained memory.
 pub fn push(session: Session, bytes: BitArray) -> Result(Session, Error) {
+  use <- bool.guard(when: session.close_received, return: Error(AlreadyClosed))
   use <- bool.guard(
     when: bit_array.bit_size(bytes) % 8 != 0,
     return: Error(NonByteAligned),
@@ -624,11 +634,11 @@ fn decode_payload(
   payload_and_mask: BitArray,
 ) -> Result(ParseProgress, Error) {
   let Limits(maximum_message_bytes, _) = session.limits
+  use _ <- result.try(validate_control(opcode, fin == 1, length))
   use <- bool.guard(
-    when: length > maximum_message_bytes,
+    when: !is_control(opcode) && length > maximum_message_bytes,
     return: Error(PayloadLimitExceeded(maximum_message_bytes)),
   )
-  use _ <- result.try(validate_control(opcode, fin == 1, length))
   use _ <- result.try(validate_mask(session.role, masked == 1))
   let mask_bytes = case masked {
     1 -> 4
@@ -729,7 +739,10 @@ fn handle_close(
   payload: BitArray,
 ) -> Result(Progress, Error) {
   use #(status, reason) <- result.try(parse_close_payload(payload))
-  let received = Session(..session, close_received: True)
+  // A Close terminates application input.
+  // Discard a partial message and any already-read frames so an otherwise finished session retains no peer controlled payload while its owner completes transport shutdown.
+  let received =
+    Session(..session, buffered: <<>>, fragment: None, close_received: True)
   case session.close_sent {
     True -> Ok(EventReady(received, CloseReceived(status, reason), []))
     False -> {
@@ -908,17 +921,6 @@ fn single_header(
       }
     }
     _ -> Error(InvalidHandshake)
-  }
-}
-
-fn single_token_header(
-  headers: List(#(String, String)),
-  name: String,
-  expected: String,
-) -> Bool {
-  case header_values(headers, name) {
-    [value] -> string.lowercase(string.trim(value)) == expected
-    _ -> False
   }
 }
 

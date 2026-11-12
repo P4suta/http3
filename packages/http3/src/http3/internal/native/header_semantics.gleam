@@ -8,11 +8,38 @@ import gleam/result
 import gleam/string
 import http3/internal/qpack/header.{type Header, Header}
 
+const maximum_custom_authority_schemes = 32
+
+const maximum_authority_scheme_bytes = 64
+
 /// Context in which one decoded QPACK field section appears.
 pub type SectionKind {
   RequestSection
   ResponseSection
   TrailerSection
+}
+
+/// RFC 9114 Section 4.3.1 authority rule for a custom URI scheme.
+pub type AuthorityPolicy {
+  MandatoryAuthority
+  OptionalAuthority
+  NoAuthority
+}
+
+/// A bounded, normalized custom-scheme authority policy.
+///
+/// `http` and `https` are intentionally implicit and always require an authority component through either `:authority` or `Host`; callers cannot replace those entries.
+pub opaque type AuthorityPolicies {
+  AuthorityPolicies(entries: List(#(BitArray, AuthorityPolicy)))
+}
+
+/// Invalid custom-scheme policy input.
+pub type AuthorityPolicyError {
+  InvalidAuthorityScheme
+  ReservedAuthorityScheme
+  DuplicateAuthorityScheme
+  AuthoritySchemeTooLong(maximum: Int)
+  AuthorityPolicyLimitExceeded(maximum: Int)
 }
 
 /// Valid request control data.
@@ -78,11 +105,72 @@ pub type Error {
   ForbiddenTrailerField(BitArray)
 }
 
+/// Construct an empty custom-scheme policy.
+///
+/// The mandatory built-in `http` and `https` rules remain active.
+pub fn authority_policies() -> AuthorityPolicies {
+  AuthorityPolicies([])
+}
+
+/// Add one ASCII URI scheme after lower-case normalization.
+pub fn with_custom_scheme_authority_policy(
+  policies: AuthorityPolicies,
+  scheme: String,
+  policy: AuthorityPolicy,
+) -> Result(AuthorityPolicies, AuthorityPolicyError) {
+  let encoded = <<scheme:utf8>>
+  use Nil <- result.try(case bit_array.byte_size(encoded) {
+    size if size > maximum_authority_scheme_bytes ->
+      Error(AuthoritySchemeTooLong(maximum_authority_scheme_bytes))
+    _ -> Ok(Nil)
+  })
+  use normalized <- result.try(
+    normalize_scheme(encoded) |> result.replace_error(InvalidAuthorityScheme),
+  )
+  use Nil <- result.try(case is_http_scheme(normalized) {
+    True -> Error(ReservedAuthorityScheme)
+    False -> Ok(Nil)
+  })
+  let AuthorityPolicies(entries) = policies
+  use Nil <- result.try(
+    case
+      list.any(entries, fn(entry) {
+        let #(configured, _) = entry
+        configured == normalized
+      })
+    {
+      True -> Error(DuplicateAuthorityScheme)
+      False -> Ok(Nil)
+    },
+  )
+  use Nil <- result.try(case list.length(entries) {
+    count if count >= maximum_custom_authority_schemes ->
+      Error(AuthorityPolicyLimitExceeded(maximum_custom_authority_schemes))
+    _ -> Ok(Nil)
+  })
+  Ok(AuthorityPolicies([#(normalized, policy), ..entries]))
+}
+
 /// Validate ordering, characters, pseudo-header semantics, and message framing.
 pub fn validate(
   fields: List(Header),
   section_kind: SectionKind,
   extended_connect_enabled: Bool,
+) -> Result(Validated, Error) {
+  validate_with_authority_policies(
+    fields,
+    section_kind,
+    extended_connect_enabled,
+    authority_policies(),
+  )
+}
+
+/// Validate a field section using one listener's custom-scheme policy.
+pub fn validate_with_authority_policies(
+  fields: List(Header),
+  section_kind: SectionKind,
+  extended_connect_enabled: Bool,
+  authority_policies: AuthorityPolicies,
 ) -> Result(Validated, Error) {
   let pseudo = PseudoFields(None, None, None, None, None, None)
   use #(pseudo, regular, content_length, host) <- result.try(scan(
@@ -102,6 +190,7 @@ pub fn validate(
         content_length,
         host,
         extended_connect_enabled,
+        authority_policies,
       )
     ResponseSection ->
       validate_response(pseudo, list.reverse(regular), content_length)
@@ -260,6 +349,7 @@ fn validate_request(
   content_length: Option(Int),
   host: Option(BitArray),
   extended_connect_enabled: Bool,
+  authority_policies: AuthorityPolicies,
 ) -> Result(Validated, Error) {
   use method <- result.try(require(pseudo.method, <<":method">>))
   use _ <- result.try(case valid_token(method) {
@@ -276,9 +366,17 @@ fn validate_request(
         content_length,
         host,
         extended_connect_enabled,
+        authority_policies,
       )
     _, Some(_) -> Error(InvalidProtocol)
-    _, None -> validate_ordinary_request(pseudo, regular, content_length, host)
+    _, None ->
+      validate_ordinary_request(
+        pseudo,
+        regular,
+        content_length,
+        host,
+        authority_policies,
+      )
   }
 }
 
@@ -314,16 +412,24 @@ fn validate_extended_connect(
   content_length: Option(Int),
   host: Option(BitArray),
   extended_connect_enabled: Bool,
+  authority_policies: AuthorityPolicies,
 ) -> Result(Validated, Error) {
   use _ <- result.try(case extended_connect_enabled {
     True -> Ok(Nil)
     False -> Error(ExtendedConnectNotEnabled)
   })
-  use scheme <- result.try(require(pseudo.scheme, <<":scheme">>))
+  use encoded_scheme <- result.try(require(pseudo.scheme, <<":scheme">>))
+  use #(scheme, authority_policy) <- result.try(resolve_authority_policy(
+    authority_policies,
+    encoded_scheme,
+  ))
+  use Nil <- result.try(case authority_policy {
+    NoAuthority -> Error(InvalidAuthority)
+    MandatoryAuthority | OptionalAuthority -> Ok(Nil)
+  })
   use authority <- result.try(require(pseudo.authority, <<":authority">>))
   use path <- result.try(require(pseudo.path, <<":path">>))
   use protocol <- result.try(require(pseudo.protocol, <<":protocol">>))
-  use _ <- result.try(validate_scheme(scheme))
   use _ <- result.try(validate_authority(authority, is_http_scheme(scheme)))
   use _ <- result.try(validate_request_path(path, scheme, <<"CONNECT">>))
   use _ <- result.try(case valid_token(protocol) {
@@ -349,26 +455,27 @@ fn validate_ordinary_request(
   regular: List(Header),
   content_length: Option(Int),
   host: Option(BitArray),
+  authority_policies: AuthorityPolicies,
 ) -> Result(Validated, Error) {
   use method <- result.try(require(pseudo.method, <<":method">>))
-  use scheme <- result.try(require(pseudo.scheme, <<":scheme">>))
+  use encoded_scheme <- result.try(require(pseudo.scheme, <<":scheme">>))
+  use #(scheme, authority_policy) <- result.try(resolve_authority_policy(
+    authority_policies,
+    encoded_scheme,
+  ))
   use path <- result.try(require(pseudo.path, <<":path">>))
-  use _ <- result.try(validate_scheme(scheme))
   use _ <- result.try(validate_request_path(path, scheme, method))
-  use _ <- result.try(case pseudo.authority {
-    Some(authority) -> validate_authority(authority, is_http_scheme(scheme))
-    None -> Ok(Nil)
-  })
-  use _ <- result.try(validate_host_match(
+  use effective_authority <- result.try(validate_authority_policy(
     pseudo.authority,
     host,
+    authority_policy,
     is_http_scheme(scheme),
   ))
   Ok(Validated(
     RequestControlData(RequestControl(
       method,
       Some(scheme),
-      pseudo.authority,
+      effective_authority,
       Some(path),
       None,
     )),
@@ -393,12 +500,71 @@ fn validate_host_match(
   mandatory: Bool,
 ) -> Result(Nil, Error) {
   case authority, host, mandatory {
-    None, None, True -> Error(MissingPseudoHeader(<<":authority">>))
+    None, _, True -> Error(MissingPseudoHeader(<<":authority">>))
     Some(<<>>), _, _ -> Error(InvalidAuthority)
     _, Some(<<>>), _ -> Error(InvalidAuthority)
     Some(authority), Some(host), _ if authority != host ->
       Error(AuthorityHostMismatch)
     _, _, _ -> Ok(Nil)
+  }
+}
+
+fn validate_authority_policy(
+  authority: Option(BitArray),
+  host: Option(BitArray),
+  policy: AuthorityPolicy,
+  reject_userinfo: Bool,
+) -> Result(Option(BitArray), Error) {
+  case policy, authority, host {
+    NoAuthority, Some(_), _ | NoAuthority, _, Some(_) -> Error(InvalidAuthority)
+    NoAuthority, None, None -> Ok(None)
+    MandatoryAuthority, Some(value), _ | OptionalAuthority, Some(value), _ -> {
+      use Nil <- result.try(validate_authority(value, reject_userinfo))
+      use Nil <- result.try(validate_host_match(
+        authority,
+        host,
+        policy == MandatoryAuthority,
+      ))
+      Ok(Some(value))
+    }
+    MandatoryAuthority, None, None ->
+      Error(MissingPseudoHeader(<<":authority">>))
+    MandatoryAuthority, None, Some(value)
+    | OptionalAuthority, None, Some(value)
+    -> {
+      use Nil <- result.try(validate_authority(value, reject_userinfo))
+      Ok(Some(value))
+    }
+    OptionalAuthority, None, None -> Ok(None)
+  }
+}
+
+fn resolve_authority_policy(
+  policies: AuthorityPolicies,
+  scheme: BitArray,
+) -> Result(#(BitArray, AuthorityPolicy), Error) {
+  use normalized <- result.try(
+    normalize_scheme(scheme) |> result.replace_error(InvalidScheme),
+  )
+  case normalized {
+    <<"http">> | <<"https">> -> Ok(#(normalized, MandatoryAuthority))
+    _ -> {
+      let AuthorityPolicies(entries) = policies
+      find_authority_policy(entries, normalized)
+      |> result.map(fn(policy) { #(normalized, policy) })
+      |> result.replace_error(InvalidScheme)
+    }
+  }
+}
+
+fn find_authority_policy(
+  entries: List(#(BitArray, AuthorityPolicy)),
+  scheme: BitArray,
+) -> Result(AuthorityPolicy, Nil) {
+  case entries {
+    [] -> Error(Nil)
+    [#(configured, policy), ..] if configured == scheme -> Ok(policy)
+    [_, ..rest] -> find_authority_policy(rest, scheme)
   }
 }
 
@@ -424,6 +590,15 @@ fn validate_scheme(scheme: BitArray) -> Result(Nil, Error) {
       }
     _ -> Error(InvalidScheme)
   }
+}
+
+fn normalize_scheme(scheme: BitArray) -> Result(BitArray, Nil) {
+  use Nil <- result.try(validate_scheme(scheme) |> result.replace_error(Nil))
+  use value <- result.try(
+    bit_array.to_string(scheme) |> result.replace_error(Nil),
+  )
+  let normalized = string.lowercase(value)
+  Ok(<<normalized:utf8>>)
 }
 
 fn validate_request_path(

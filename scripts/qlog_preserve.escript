@@ -5,6 +5,7 @@
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
 -include_lib("kernel/include/file.hrl").
+-include("diagnostic_failure.hrl").
 
 -define(MAX_TRACES, 256).
 -define(MAX_TRACE_BYTES, 16777216).
@@ -19,9 +20,8 @@ main(Arguments) ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "qlog preservation failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "qlog preservation failed: ~p~n",
+                      [diagnostic_failure_details(Class, Reason, Stacktrace)]),
             halt(1)
     end.
 

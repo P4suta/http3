@@ -3,6 +3,11 @@
 %% SPDX-FileCopyrightText: 2026 the http contributors
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
+-include("evidence_identity.hrl").
+-include("requirements_reference_tests.hrl").
+-include("requirements_symbols.hrl").
+-include("requirements_symbol_tests.hrl").
+
 -define(MANIFEST, "standards/requirements.json").
 -define(RFC_CATALOG, "standards/rfc-catalog.json").
 -define(OUTPUT, "build/requirements/report.json").
@@ -12,7 +17,7 @@
           "OPTIONAL are excluded.">>).
 -define(LEGACY_NORMATIVE_SCOPE,
         <<"Atomic case-insensitive normative must, should, and recommended "
-          "clauses in pre-BCP 14 prose; may, optional, and need-not "
+          "clauses in specifications without a BCP 14 keyword convention; may, optional, and need-not "
           "permissions are excluded.">>).
 
 main([]) ->
@@ -20,9 +25,10 @@ main([]) ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "requirements audit failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "qualification failed: ~p~n",
+                      [requirements_failure_details(
+                           diagnostic_failure_details(
+                               Class, Reason, Stacktrace))]),
             halt(1)
     end;
 main(["--self-test"]) ->
@@ -30,9 +36,10 @@ main(["--self-test"]) ->
         ok -> ok
     catch
         Class:Reason:Stacktrace ->
-            io:format(standard_error,
-                      "requirements audit self-test failed: ~p:~p~n~p~n",
-                      [Class, Reason, Stacktrace]),
+            io:format(standard_error, "qualification failed: ~p~n",
+                      [requirements_failure_details(
+                           diagnostic_failure_details(
+                               Class, Reason, Stacktrace))]),
             halt(1)
     end;
 main(_) ->
@@ -40,7 +47,50 @@ main(_) ->
               "usage: requirements_audit.escript [--self-test]~n", []),
     halt(2).
 
+requirements_failure_details(Details) ->
+    Details#{
+        audit_phase => requirements_audit_phase(
+            maps:get(stacktrace, Details, <<>>))
+    }.
+
+requirements_audit_phase(Stacktrace)
+  when is_binary(Stacktrace), byte_size(Stacktrace) =< 65536 ->
+    requirements_audit_phase_needles(requirements_audit_phase_table(),
+                                     Stacktrace);
+requirements_audit_phase(_) -> <<"unknown">>.
+
+requirements_audit_phase_needles([], _Stacktrace) -> <<"unknown">>;
+requirements_audit_phase_needles([{Needle, Phase} | Rest], Stacktrace) ->
+    case binary:match(Stacktrace, Needle) of
+        nomatch -> requirements_audit_phase_needles(Rest, Stacktrace);
+        _ -> Phase
+    end.
+
+requirements_audit_phase_table() ->
+    [
+        {<<"\"function\":\"assert_evidence_reference\"">>,
+         <<"evidence_reference">>},
+        {<<"\"function\":\"required_references\"">>,
+         <<"requirement_contract">>},
+        {<<"\"function\":\"audit_requirement\"">>,
+         <<"requirement_contract">>},
+        {<<"\"function\":\"audit_requirements\"">>,
+         <<"requirement_contract">>},
+        {<<"\"function\":\"required_errata_references\"">>,
+         <<"errata_contract">>},
+        {<<"\"function\":\"audit_erratum\"">>, <<"errata_contract">>},
+        {<<"\"function\":\"audit_errata\"">>, <<"errata_contract">>},
+        {<<"\"function\":\"audit_source\"">>, <<"source_identity">>},
+        {<<"\"function\":\"audit_normative_inventory\"">>,
+         <<"normative_inventory">>},
+        {<<"\"function\":\"audit_policy\"">>, <<"policy_contract">>},
+        {<<"\"function\":\"audit_rfc_catalog\"">>, <<"rfc_catalog">>},
+        {<<"\"function\":\"audit_rfc_identity\"">>, <<"rfc_catalog">>},
+        {<<"\"function\":\"write_report\"">>, <<"report_publication">>}
+    ].
+
 run() ->
+    Identity = evidence_begin(?OUTPUT),
     Manifest = decode(?MANIFEST),
     ensure(maps:get(<<"schema">>, Manifest) =:= 4, invalid_schema),
     Baseline = maps:get(<<"baseline_date">>, Manifest),
@@ -97,7 +147,7 @@ run() ->
                rfc_catalog => ?RFC_CATALOG,
                registries => length(Registries),
                snapshots => Snapshots},
-    ok = write_report(Report),
+    ok = write_report(evidence_complete(Report, Identity)),
     case Status of
         <<"Ready">> ->
             io:format("requirement inventory ok (~B RFCs, ~B pinned "
@@ -165,7 +215,8 @@ audit_policy(Policy) ->
     ensure(Levels =:= requirement_levels(),
            invalid_requirement_level_policy),
     ensure(LegacyNormativeProse =:=
-               [<<"RFC1950">>, <<"RFC1951">>, <<"RFC1952">>],
+               [<<"RFC1950">>, <<"RFC1951">>, <<"RFC1952">>,
+                <<"RFC7932">>, <<"RFC9841">>],
            invalid_legacy_normative_prose_policy),
     ReadyRule = maps:get(<<"ready_requires">>, Policy),
     ensure(is_binary(ReadyRule) andalso byte_size(ReadyRule) >= 40,
@@ -399,6 +450,14 @@ incomplete_standard_report(Standard, Policy, Baseline, Resolve) ->
                 end,
     Requirements = maps:get(<<"requirements">>, Standard, []),
     ensure(is_list(Requirements), {invalid_requirement_inventory, Id}),
+    %% Incomplete does not mean unvalidated. A supplied partial inventory
+    %% must use the correct convention and exactly count its listed clauses.
+    case maps:find(<<"normative_inventory">>, Standard) of
+        error -> ok;
+        {ok, Inventory} ->
+            _ = audit_normative_inventory(Id, Inventory, Requirements, Policy),
+            ok
+    end,
     RequirementReports = case Requirements of
                              [] -> [];
                              _ -> audit_requirements(
@@ -452,6 +511,9 @@ audit_normative_inventory(StandardId, Inventory, Requirements, Policy) ->
     Scope = maps:get(<<"scope">>, Inventory),
     case Convention of
         <<"BCP14Uppercase">> ->
+            ensure(not lists:member(StandardId,
+                       maps:get(legacy_normative_prose_standards, Policy, [])),
+                   {legacy_normative_convention_required, StandardId}),
             ensure(Scope =:= ?NORMATIVE_SCOPE,
                    {invalid_normative_inventory_scope, StandardId});
         <<"LegacyNormativeProse">> ->
@@ -469,6 +531,8 @@ audit_normative_inventory(StandardId, Inventory, Requirements, Policy) ->
     Expected = maps:get(<<"expected_total">>, Inventory),
     ensure(is_integer(Expected) andalso Expected >= 0,
            {invalid_normative_requirement_count, StandardId}),
+    ensure(Convention =/= <<"LegacyNormativeProse">> orelse Expected > 0,
+           {empty_legacy_normative_inventory, StandardId}),
     Declared = maps:get(<<"level_counts">>, Inventory),
     ensure(is_map(Declared),
            {invalid_normative_level_counts, StandardId}),
@@ -507,7 +571,8 @@ audit_source(Id, Source, Baseline) ->
            {untrusted_rfc_source, Id}),
     ensure(maps:get(<<"errata_url">>, Source) =:= ExpectedErrata,
            {untrusted_errata_source, Id}),
-    ensure(maps:get(<<"reviewed_on">>, Source) =:= Baseline,
+    ReviewedOn = maps:get(<<"reviewed_on">>, Source),
+    ensure(is_iso_date(ReviewedOn) andalso ReviewedOn >= Baseline,
            {stale_source_review, Id}),
     Digest = maps:get(<<"document_sha256">>, Source),
     ensure(is_sha256(Digest), {invalid_rfc_digest, Id}),
@@ -589,7 +654,8 @@ audit_errata(StandardId, Errata, Baseline, Resolve) ->
     ensure(is_map(Errata), {invalid_errata_inventory, StandardId}),
     ensure(maps:get(<<"inventory_complete">>, Errata) =:= true,
            {incomplete_errata_inventory, StandardId}),
-    ensure(maps:get(<<"checked_on">>, Errata) =:= Baseline,
+    CheckedOn = maps:get(<<"checked_on">>, Errata),
+    ensure(is_iso_date(CheckedOn) andalso CheckedOn >= Baseline,
            {stale_errata_review, StandardId}),
     Entries = maps:get(<<"entries">>, Errata),
     Expected = maps:get(<<"expected_total">>, Errata),
@@ -651,9 +717,7 @@ assert_evidence_reference(Reference) when is_map(Reference) ->
     ensure(re:run(Symbol, <<"^[A-Za-z][A-Za-z0-9_]*(/[0-9]+)?$">>,
                   [{capture, none}]) =:= match,
            {invalid_evidence_symbol, Path, Symbol}),
-    BaseSymbol = hd(binary:split(Symbol, <<"/">>)),
-    {ok, Bytes} = file:read_file(binary_to_list(Path)),
-    ensure(symbol_present(BaseSymbol, Bytes),
+    ensure(requirement_symbol_present(Path, Symbol),
            {missing_evidence_symbol, Path, Symbol});
 assert_evidence_reference(Reference) ->
     erlang:error({invalid_evidence_reference, Reference}).
@@ -703,9 +767,19 @@ length_or_invalid(Value) when is_list(Value) -> length(Value);
 length_or_invalid(_Value) -> invalid.
 
 self_test() ->
+    LegacyStandards = [<<"RFC1950">>, <<"RFC1951">>, <<"RFC1952">>,
+                       <<"RFC7932">>, <<"RFC9841">>],
+    DeclaredPolicy = #{
+        <<"roles">> => [<<"client">>, <<"server">>, <<"proxy">>,
+                         <<"relay">>, <<"gateway">>],
+        <<"levels">> => requirement_levels(),
+        <<"legacy_normative_prose_standards">> => LegacyStandards,
+        <<"ready_requires">> => <<"Every applicable normative clause has executable evidence and a reviewed source.">>
+    },
+    _ = audit_policy(DeclaredPolicy),
     Policy = #{roles => [<<"client">>, <<"server">>],
                levels => requirement_levels(),
-               legacy_normative_prose_standards => [<<"RFC1950">>]},
+               legacy_normative_prose_standards => LegacyStandards},
     Resolve = fun(_Reference) -> ok end,
     Valid = self_test_standard(),
     RfcCatalog = #{
@@ -771,6 +845,48 @@ self_test() ->
         <<"RFC1950">>, LegacyInventory, [LegacyRequirement], Policy),
     ensure(LegacyLevels =:= #{<<"MUST">> => 1},
            self_test_legacy_normative_prose_rejected),
+    lists:foreach(fun(Id) ->
+        #{<<"MUST">> := 1} = audit_normative_inventory(
+            Id, LegacyInventory, [LegacyRequirement], Policy),
+        expect_error(legacy_uppercase_cannot_hide_obligations,
+            {legacy_normative_convention_required, Id}, fun() ->
+                audit_normative_inventory(Id, #{
+                    <<"scope">> => ?NORMATIVE_SCOPE,
+                    <<"expected_total">> => 0, <<"level_counts">> => #{}
+                }, [], Policy)
+            end),
+        expect_error(legacy_empty_inventory_cannot_qualify,
+            {empty_legacy_normative_inventory, Id}, fun() ->
+                audit_normative_inventory(Id, LegacyInventory#{
+                    <<"expected_total">> => 0, <<"level_counts">> => #{}
+                }, [], Policy)
+            end)
+    end, [<<"RFC7932">>, <<"RFC9841">>]),
+    expect_error(unreviewed_legacy_extension,
+        invalid_legacy_normative_prose_policy, fun() ->
+            audit_policy(DeclaredPolicy#{<<"legacy_normative_prose_standards">> =>
+                LegacyStandards ++ [<<"RFC9842">>]})
+        end),
+    Reviewed = maps:get(<<"source">>, Valid),
+    ok = audit_source(<<"RFC7464">>, Reviewed#{<<"reviewed_on">> => <<"2026-09-11">>},
+                      ?BASELINE_DATE),
+    lists:foreach(fun(Date) ->
+        expect_error(invalid_or_stale_review,
+            {stale_source_review, <<"RFC7464">>}, fun() ->
+                audit_source(<<"RFC7464">>, Reviewed#{<<"reviewed_on">> => Date},
+                             ?BASELINE_DATE)
+            end)
+    end, [<<"2026-08-29">>, <<"2026-09-31">>, <<"2026-99-01">>, 20260911]),
+    ReviewedErrata = maps:get(<<"errata">>, Valid),
+    0 = audit_errata(<<"RFC7464">>,
+        ReviewedErrata#{<<"checked_on">> => <<"2026-09-11">>},
+        ?BASELINE_DATE, Resolve),
+    expect_error(invalid_errata_review_date,
+        {stale_errata_review, <<"RFC7464">>}, fun() ->
+            audit_errata(<<"RFC7464">>,
+                ReviewedErrata#{<<"checked_on">> => <<"2026-09-31">>},
+                ?BASELINE_DATE, Resolve)
+        end),
     expect_error(
         legacy_prose_not_allowlisted,
         {legacy_normative_prose_not_allowed, <<"RFC7464">>},
@@ -886,6 +1002,11 @@ self_test() ->
         Policy, ?BASELINE_DATE, Resolve),
     ensure(maps:get(open_requirements, PartialReport) =:= 1,
            self_test_open_requirement_not_counted),
+    expect_error(incomplete_inventory_still_validated,
+        {normative_requirement_count_drift, <<"RFC7464">>, 1, 0}, fun() ->
+            incomplete_standard_report(Valid#{<<"requirements">> => []},
+                                       Policy, ?BASELINE_DATE, Resolve)
+        end),
     ensure(lists:member(<<"open_requirement_evidence">>,
                         maps:get(blockers, PartialReport)),
            self_test_open_requirement_blocker_missing),
@@ -897,10 +1018,48 @@ self_test() ->
             #{blockers => [<<"map_not_complete">>,
                            <<"open_requirement_evidence">>]}
         ]),
+    ok = requirement_reference_self_test(),
+    ok = requirement_symbol_self_test(),
+    PrivateMarker = <<"private-requirements-marker">>,
+    EvidenceFailure = requirements_failure_details(diagnostic_failure_details(
+        error,
+        {invalid_evidence_reference, PrivateMarker},
+        [{?MODULE, assert_evidence_reference, 1, [{file, PrivateMarker}]}]
+    )),
+    <<"evidence_reference">> = maps:get(audit_phase, EvidenceFailure),
+    nomatch = binary:match(
+        iolist_to_binary(json:encode(EvidenceFailure)),
+        PrivateMarker
+    ),
+    UnknownFailure = requirements_failure_details(diagnostic_failure_details(
+        error,
+        {unclassified_failure, PrivateMarker},
+        [{?MODULE, self_test, 0, [{file, PrivateMarker}]}]
+    )),
+    <<"unknown">> = maps:get(audit_phase, UnknownFailure),
+    nomatch = binary:match(
+        iolist_to_binary(json:encode(UnknownFailure)),
+        PrivateMarker
+    ),
+    <<"requirement_contract">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_requirement\"}]">>),
+    <<"errata_contract">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_erratum\"}]">>),
+    <<"source_identity">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_source\"}]">>),
+    <<"normative_inventory">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_normative_inventory\"}]">>),
+    <<"policy_contract">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_policy\"}]">>),
+    <<"rfc_catalog">> = requirements_audit_phase(
+        <<"[{\"function\":\"audit_rfc_catalog\"}]">>),
+    <<"report_publication">> = requirements_audit_phase(
+        <<"[{\"function\":\"write_report\"}]">>),
     io:format(
-      "requirements audit schema self-test ok (13 adversarial cases, two "
-      "alias acceptance cases, one legacy-prose acceptance case, and an "
-      "explicit zero-clause map)~n", []),
+      "requirements audit schema self-test ok (roles, dispositions, counts, "
+      "legacy-prose allowlist and nonempty obligations, validated source/errata "
+      "review dates, explicit uppercase zero-clause maps, and bounded failure "
+      "phases)~n", []),
     ok.
 
 requirement_levels() ->
@@ -997,6 +1156,11 @@ expect_error(Label, Expected, Run) ->
     end.
 
 assert_file(Path) when is_binary(Path) ->
+    %% The report's identity covers this exact authored inventory. Accepting
+    %% an absolute path, alias or generated file would allow unbound evidence
+    %% to change while the report's source identity stayed the same.
+    ensure(sets:is_element(Path, requirement_source_paths()),
+           {unbound_evidence_file, Path}),
     case filelib:is_regular(binary_to_list(Path)) of
         true -> ok;
         false -> erlang:error({missing_evidence_file, Path})
@@ -1004,14 +1168,32 @@ assert_file(Path) when is_binary(Path) ->
 assert_file(Path) ->
     erlang:error({invalid_evidence_path, Path}).
 
+requirement_source_paths() ->
+    case get(requirement_source_inventory) of
+        undefined ->
+            Paths = sets:from_list([
+                binary:replace(unicode:characters_to_binary(Path), <<"\\">>, <<"/">>, [global])
+                || Path <- evidence_source_paths()
+            ]),
+            put(requirement_source_inventory, Paths),
+            Paths;
+        Paths -> Paths
+    end.
+
 is_sha256(Digest) when is_binary(Digest) ->
     re:run(Digest, <<"^[0-9a-f]{64}$">>, [{capture, none}]) =:= match;
 is_sha256(_Digest) ->
     false.
 
-is_iso_date(Date) when is_binary(Date) ->
-    re:run(Date, <<"^[0-9]{4}-[0-9]{2}-[0-9]{2}$">>,
-           [{capture, none}]) =:= match;
+is_iso_date(<<Y:4/binary, "-", M:2/binary, "-", D:2/binary>>) ->
+    try
+        Year = binary_to_integer(Y),
+        Month = binary_to_integer(M),
+        Day = binary_to_integer(D),
+        Year > 0 andalso calendar:valid_date({Year, Month, Day})
+            andalso re:run(<<Y/binary, M/binary, D/binary>>, <<"^[0-9]{8}$">>,
+                          [{capture, none}]) =:= match
+    catch error:badarg -> false end;
 is_iso_date(_Date) ->
     false.
 

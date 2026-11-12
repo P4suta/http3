@@ -13,7 +13,7 @@
 //// connection, so its waiters see `failure.Closed`, never `failure.Quic`.
 
 import gleam/erlang/process.{type Pid, type Subject}
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleeunit/should
 import quic_core
@@ -29,6 +29,30 @@ fn fixture(name: String) -> Result(BitArray, Nil)
 /// The process behind one opaque public handle, found by its fixed role label.
 @external(erlang, "quic_core_test_ffi", "labelled_pid")
 fn labelled_pid(handle: handle, label: String) -> Result(Pid, Nil)
+
+/// Run while the accepted connection actor is parked at a causal loop boundary.
+/// The finite guardian always releases it, including on assertion failure or owner exit.
+@external(erlang, "quic_core_test_ffi", "with_quiescent_connection")
+fn with_quiescent_connection(
+  connection: server.Connection,
+  run: fn(Pid, fn() -> Nil) -> value,
+) -> value
+
+/// Observe only the presence of one allowlisted command constructor in a paused actor's mailbox.
+/// Payloads, subjects and process identities remain inside the projector.
+@external(erlang, "quic_core_test_ffi", "await_mailbox_command")
+fn await_mailbox_command(
+  actor: Pid,
+  command: Int,
+  within_milliseconds: Int,
+) -> Bool
+
+@external(erlang, "quic_client_terminal_test_ffi", "close_both")
+fn close_both(
+  connection: client.Connection,
+  peer: server.Connection,
+  actor: Pid,
+) -> #(Bool, Bool, Bool, Bool)
 
 /// The fixed diagnostic label every per-connection actor carries.
 const connection_label = "quic_core.connection"
@@ -97,44 +121,66 @@ pub fn supervised_server_waits_are_released_when_listener_stops_test() -> Nil {
   let peer = server.accept(listener) |> should.be_ok
   let #(_stream, peer_stream) = opened_stream(connection, peer)
 
-  let ready = process.new_subject()
-  let accepted = process.new_subject()
-  let accept_waiter =
-    process.spawn_unlinked(fn() {
-      process.send(ready, Nil)
-      process.send(accepted, server.accept_stream_next(peer))
-    })
-  let received = process.new_subject()
-  let read_waiter =
-    process.spawn_unlinked(fn() {
-      process.send(ready, Nil)
-      process.send(received, server.receive_next(peer_stream, read_bytes))
-    })
-  let datagram = process.new_subject()
-  let datagram_waiter =
-    process.spawn_unlinked(fn() {
-      process.send(ready, Nil)
-      process.send(datagram, server.receive_datagram_next(peer))
-    })
+  with_quiescent_connection(peer, fn(actor, release) {
+    let accepted = process.new_subject()
+    let accept_waiter =
+      process.spawn_unlinked(fn() {
+        process.send(accepted, server.accept_stream_next(peer))
+      })
+    assert await_mailbox_command(actor, 1, operation_bound_milliseconds)
 
-  assert process.receive(ready, within: operation_bound_milliseconds) == Ok(Nil)
-  assert process.receive(ready, within: operation_bound_milliseconds) == Ok(Nil)
-  assert process.receive(ready, within: operation_bound_milliseconds) == Ok(Nil)
-  process.sleep(poll_interval_milliseconds)
-  assert process.is_alive(accept_waiter)
-  assert process.is_alive(read_waiter)
-  assert process.is_alive(datagram_waiter)
+    let received = process.new_subject()
+    let read_waiter =
+      process.spawn_unlinked(fn() {
+        process.send(received, server.receive_next(peer_stream, read_bytes))
+      })
+    assert await_mailbox_command(actor, 2, operation_bound_milliseconds)
 
-  assert server.stop(listener) == Ok(server.Stopped)
-  assert process.receive(accepted, within: operation_bound_milliseconds)
-    == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
-  assert process.receive(received, within: operation_bound_milliseconds)
-    == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
-  assert process.receive(datagram, within: operation_bound_milliseconds)
-    == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
-  assert settled_exit(accept_waiter, operation_bound_milliseconds)
-  assert settled_exit(read_waiter, operation_bound_milliseconds)
-  assert settled_exit(datagram_waiter, operation_bound_milliseconds)
+    let datagram = process.new_subject()
+    let datagram_waiter =
+      process.spawn_unlinked(fn() {
+        process.send(datagram, server.receive_datagram_next(peer))
+      })
+    assert await_mailbox_command(actor, 3, operation_bound_milliseconds)
+
+    // Queue real transport work before listener shutdown.
+    // Once the listener's shutdown loop rejects `port`, its termination request is also queued.
+    // Keeping the actor parked until both facts are observed makes relay/socket ordering deterministic: a relay closed before connection termination turns this PING into Quic(Peer), while the required order releases every already parked waiter as Closed(Peer).
+    let pinged = process.new_subject()
+    let ping_waiter =
+      process.spawn_unlinked(fn() { process.send(pinged, server.ping(peer)) })
+    assert await_mailbox_command(actor, 4, operation_bound_milliseconds)
+
+    let stopped = process.new_subject()
+    let stop_waiter =
+      process.spawn_unlinked(fn() {
+        process.send(stopped, server.stop(listener))
+      })
+    assert await_listener_shutdown(
+      listener,
+      udp.monotonic_millisecond() + operation_bound_milliseconds,
+    )
+    assert await_mailbox_command(actor, 5, operation_bound_milliseconds)
+    release()
+
+    assert process.receive(stopped, within: operation_bound_milliseconds)
+      == Ok(Ok(server.Stopped))
+    assert process.receive(accepted, within: operation_bound_milliseconds)
+      == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
+    assert process.receive(received, within: operation_bound_milliseconds)
+      == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
+    assert process.receive(datagram, within: operation_bound_milliseconds)
+      == Ok(Error(server.Failure(failure.Closed(failure.Peer, None))))
+    assert result.is_ok(process.receive(
+      pinged,
+      within: operation_bound_milliseconds,
+    ))
+    assert settled_exit(accept_waiter, operation_bound_milliseconds)
+    assert settled_exit(read_waiter, operation_bound_milliseconds)
+    assert settled_exit(datagram_waiter, operation_bound_milliseconds)
+    assert settled_exit(ping_waiter, operation_bound_milliseconds)
+    assert settled_exit(stop_waiter, operation_bound_milliseconds)
+  })
   let _closed = client.close(connection)
   Nil
 }
@@ -196,14 +242,11 @@ pub fn supervised_client_waits_are_released_when_connection_closes_test() -> Nil
   assert server.stop(listener) == Ok(server.Stopped)
 }
 
-// A successful local close acknowledges the API call, not destruction of the
-// QUIC closing state. The actor must retain its socket after its owner exits so
-// it can acknowledge or answer a peer retransmission during the fixed closing
-// period. Otherwise loss of the first CONNECTION_CLOSE can leave the peer
-// waiting for already-consumed response bytes until its much longer
-// application drain deadline.
+// A successful local close now proves the fixed QUIC closing state, qlog writer and cleanup owners, reservation settlement, and connection actor all completed.
+// The caller therefore observes actor DOWN before the typed result,
+// while an idempotent close remains available only after that proof.
 // nolint: unused_exports -- gleeunit discovers public test functions by suffix.
-pub fn locally_closed_client_outlives_its_owner_until_transport_close_test() -> Nil {
+pub fn locally_closed_client_joins_transport_and_diagnostics_test() -> Nil {
   let ca_certificate = fixture("ca.pem") |> should.be_ok
   let deadlines = draining_deadlines()
   let listener = start_listener(deadlines, config.default_limits())
@@ -229,19 +272,14 @@ pub fn locally_closed_client_outlives_its_owner_until_transport_close_test() -> 
   assert process.receive(closed, within: waiter_bound_milliseconds)
     == Ok(Ok(client.Closed))
 
-  // Give the owner time to exit.  The connection actor is nevertheless a
-  // finite closing tombstone with live wire input, not an owner-bound leak.
-  process.sleep(100)
-  let retained_during_close = process.is_alive(actor)
+  let actor_down_before_success = !process.is_alive(actor)
   let duplicate_close = client.close(connection)
-  let exited = settled_exit(actor, close_bound_milliseconds)
 
   let _peer_closed = server.close(peer)
   let stopped = server.stop(listener)
 
-  assert retained_during_close == True
+  assert actor_down_before_success == True
   assert duplicate_close == Ok(client.AlreadyClosed)
-  assert exited == True
   assert stopped == Ok(server.Stopped)
 }
 
@@ -383,6 +421,89 @@ pub fn releasing_one_connection_keeps_its_neighbour_routed_test() -> Nil {
   assert stopped == Ok(server.Stopped)
 }
 
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn explicit_close_releases_peer_terminal_actor_before_operation_deadline_test() -> Nil {
+  close_peer_terminal_actor(False)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn explicit_close_releases_unread_peer_terminal_buffers_test() -> Nil {
+  close_peer_terminal_actor(True)
+}
+
+// nolint: unused_exports -- gleeunit discovers public test functions by suffix.
+pub fn explicit_close_followed_by_peer_close_releases_terminal_actor_test() -> Nil {
+  let ca_certificate = fixture("ca.pem") |> should.be_ok
+  let deadlines = bounded_deadlines(30_000)
+  let listener = start_listener(deadlines, config.default_limits())
+  let port = server.port(listener) |> should.be_ok
+  let connection = connect(port, ca_certificate, deadlines) |> should.be_ok
+  let peer = server.accept(listener) |> should.be_ok
+  let actor = labelled_pid(connection, client_label) |> should.be_ok
+  let observed = close_both(connection, peer, actor)
+  let stopped = server.stop(listener)
+  // Both close commands really ran, in the enforced local-before-peer order.
+  // The actor must not enter another 30-second receive-retention window.
+  assert observed == #(True, True, True, True)
+  assert stopped == Ok(server.Stopped)
+}
+
+fn close_peer_terminal_actor(retain_stream: Bool) -> Nil {
+  let ca_certificate = fixture("ca.pem") |> should.be_ok
+  // The terminal read window must outlast the observed exit bound.
+  // A timeout cannot accidentally satisfy the explicit-close release contract.
+  let deadlines = bounded_deadlines(30_000)
+  let listener = start_listener(deadlines, config.default_limits())
+  let port = server.port(listener) |> should.be_ok
+  let connection = connect(port, ca_certificate, deadlines) |> should.be_ok
+  let peer = server.accept(listener) |> should.be_ok
+  let actor = labelled_pid(connection, client_label) |> should.be_ok
+  let monitor = process.monitor(actor)
+  let exited =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+  case retain_stream {
+    False -> Nil
+    True -> {
+      let #(_, peer_stream) = opened_stream(connection, peer)
+      server.send_and_finish(peer_stream, <<"unread response":utf8>>)
+      |> should.be_ok
+      assert terminal_send_acknowledged(
+        peer_stream,
+        udp.monotonic_millisecond() + operation_bound_milliseconds,
+      )
+    }
+  }
+  let code = quic_core.application_error_code(0x1234) |> should.be_ok
+  assert server.close_with_code(peer, code) == Ok(server.Closed)
+  // The authenticated close response is a mailbox synchronization point;
+  // the next command necessarily reaches the terminal actor.
+  let observed_peer_close =
+    client.receive_datagram(connection)
+    == Error(client.Failure(failure.Closed(failure.Peer, Some(0x1234))))
+  let close_result = client.close(connection)
+  let released =
+    process.selector_receive(exited, within: operation_bound_milliseconds)
+    == Ok(Nil)
+  process.demonitor_process(monitor)
+  let stopped = server.stop(listener)
+  assert observed_peer_close
+  assert close_result == Ok(client.AlreadyClosed)
+  assert released
+  assert stopped == Ok(server.Stopped)
+}
+
+fn terminal_send_acknowledged(stream: server.Stream, deadline: Int) -> Bool {
+  case server.send_finished(stream), udp.monotonic_millisecond() {
+    Ok(True), _ -> True
+    _, now if now >= deadline -> False
+    _, _ -> {
+      process.sleep(poll_interval_milliseconds)
+      terminal_send_acknowledged(stream, deadline)
+    }
+  }
+}
+
 fn bounded_deadlines(operation: Int) -> config.Deadlines {
   config.default_deadlines()
   |> config.with_deadline(failure.Connect, operation_bound_milliseconds)
@@ -490,6 +611,19 @@ fn close_peer(peer: Result(server.Connection, server.Error)) -> Nil {
     }
     // nolint: thrown_away_error -- teardown closes whatever was accepted.
     Error(_reason) -> Nil
+  }
+}
+
+/// Wait for the listener to enter its shutdown command loop.
+/// Because the connection actor is held at a causal barrier, the listener cannot have completed and exited while this observation is made.
+fn await_listener_shutdown(listener: server.Listener, deadline: Int) -> Bool {
+  case server.port(listener), udp.monotonic_millisecond() {
+    Error(server.Failure(failure.Closed(failure.Local, None))), _ -> True
+    _, now if now >= deadline -> False
+    _, _ -> {
+      process.sleep(1)
+      await_listener_shutdown(listener, deadline)
+    }
   }
 }
 

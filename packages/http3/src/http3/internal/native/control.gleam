@@ -22,6 +22,7 @@ pub type Settings {
     enable_connect_protocol: Bool,
     h3_datagram: Bool,
     unknown: List(frame.Setting),
+    present: List(Int),
   )
 }
 
@@ -51,7 +52,6 @@ pub type Error {
   DuplicateSettings
   FrameUnexpected
   InvalidSetting(Int)
-  DatagramTransportNotNegotiated
   InvalidGoAwayIdentifier(Int)
   IncreasingGoAwayIdentifier
   PushControlFromServer
@@ -67,11 +67,9 @@ pub fn new(peer_role: PeerRole) -> State {
 pub fn receive(
   state: State,
   incoming: frame.Frame,
-  quic_datagram_negotiated: Bool,
 ) -> Result(#(State, Event), Error) {
   case state.settings, incoming {
-    None, frame.Settings(settings) ->
-      receive_settings(state, settings, quic_datagram_negotiated)
+    None, frame.Settings(settings) -> receive_settings(state, settings)
     None, _ -> Error(MissingSettings)
     Some(_), frame.Settings(_) -> Error(DuplicateSettings)
     Some(_), frame.GoAway(identifier) -> receive_goaway(state, identifier)
@@ -102,25 +100,17 @@ pub fn settings(state: State) -> Option(Settings) {
 fn receive_settings(
   state: State,
   incoming: List(frame.Setting),
-  quic_datagram_negotiated: Bool,
 ) -> Result(#(State, Event), Error) {
-  use settings <- result.try(validate_settings(
-    incoming,
-    quic_datagram_negotiated,
-  ))
+  // RFC 9297 section 2.1.1: the setting advertises willingness to receive.
+  // Receiving it does not require our transport or application to opt in.
+  // Actual DATAGRAM delivery still requires both settings and QUIC support.
+  use settings <- result.try(validate_settings(incoming))
   Ok(#(State(..state, settings: Some(settings)), SettingsReceived(settings)))
 }
 
-fn validate_settings(
-  incoming: List(frame.Setting),
-  quic_datagram_negotiated: Bool,
-) -> Result(Settings, Error) {
-  let defaults = Settings(0, varint.maximum, 0, False, False, [])
-  use settings <- result.try(apply_settings(incoming, defaults))
-  case settings.h3_datagram && !quic_datagram_negotiated {
-    True -> Error(DatagramTransportNotNegotiated)
-    False -> Ok(settings)
-  }
+fn validate_settings(incoming: List(frame.Setting)) -> Result(Settings, Error) {
+  let defaults = Settings(0, varint.maximum, 0, False, False, [], [])
+  apply_settings(incoming, defaults)
 }
 
 fn apply_settings(
@@ -128,7 +118,14 @@ fn apply_settings(
   settings: Settings,
 ) -> Result(Settings, Error) {
   case incoming {
-    [] -> Ok(Settings(..settings, unknown: list.reverse(settings.unknown)))
+    [] ->
+      Ok(
+        Settings(
+          ..settings,
+          unknown: list.reverse(settings.unknown),
+          present: list.reverse(settings.present),
+        ),
+      )
     [frame.Setting(identifier, value) as setting, ..rest] -> {
       use settings <- result.try(apply_setting(
         settings,
@@ -148,19 +145,48 @@ fn apply_setting(
   original: frame.Setting,
 ) -> Result(Settings, Error) {
   case identifier {
-    1 -> Ok(Settings(..settings, qpack_max_table_capacity: value))
-    6 -> Ok(Settings(..settings, maximum_field_section_size: value))
-    7 -> Ok(Settings(..settings, qpack_blocked_streams: value))
+    1 ->
+      Ok(
+        Settings(..settings, qpack_max_table_capacity: value, present: [
+          identifier,
+          ..settings.present
+        ]),
+      )
+    6 ->
+      Ok(
+        Settings(..settings, maximum_field_section_size: value, present: [
+          identifier,
+          ..settings.present
+        ]),
+      )
+    7 ->
+      Ok(
+        Settings(..settings, qpack_blocked_streams: value, present: [
+          identifier,
+          ..settings.present
+        ]),
+      )
     8 ->
       case boolean_setting(value) {
         Error(_) -> Error(InvalidSetting(identifier))
         Ok(enabled) ->
-          Ok(Settings(..settings, enable_connect_protocol: enabled))
+          Ok(
+            Settings(..settings, enable_connect_protocol: enabled, present: [
+              identifier,
+              ..settings.present
+            ]),
+          )
       }
     0x33 ->
       case boolean_setting(value) {
         Error(_) -> Error(InvalidSetting(identifier))
-        Ok(enabled) -> Ok(Settings(..settings, h3_datagram: enabled))
+        Ok(enabled) ->
+          Ok(
+            Settings(..settings, h3_datagram: enabled, present: [
+              identifier,
+              ..settings.present
+            ]),
+          )
       }
     _ -> Ok(Settings(..settings, unknown: [original, ..settings.unknown]))
   }
