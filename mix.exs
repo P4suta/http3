@@ -31,7 +31,7 @@ defmodule Http.MixProject do
     [
       {:gleam_erlang, "== 1.3.0"},
       {:gleam_http, "== 4.5.0"},
-      {:gleam_stdlib, "== 1.0.5"},
+      {:gleam_stdlib, "== 1.1.0"},
       {:http3, path: "packages/http3"}
     ]
   end
