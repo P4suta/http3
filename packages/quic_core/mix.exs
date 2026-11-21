@@ -30,7 +30,7 @@ defmodule QuicCore.MixProject do
   defp deps do
     [
       {:gleam_erlang, "== 1.3.0"},
-      {:gleam_stdlib, "== 1.0.5"}
+      {:gleam_stdlib, "== 1.1.0"}
     ]
   end
 end
