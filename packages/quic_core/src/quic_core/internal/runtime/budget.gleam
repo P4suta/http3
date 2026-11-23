@@ -216,9 +216,16 @@ pub fn send_allowance(
   buffer_room: Int,
 ) -> Admission {
   let funded = int.max(0, granted_bytes(grant) - held_bytes)
-  case funded < buffer_room {
-    True -> Admission(funded, True)
-    False -> Admission(int.max(0, buffer_room), False)
+  let room = int.max(0, buffer_room)
+  case funded < room, funded {
+    True, _ -> Admission(funded, True)
+    // Neither has room. The endpoint has funded nothing, and that is the
+    // condition the caller can act on: it is endpoint-wide, it is transient,
+    // and it is true whichever of the two bounds happened to reach zero first.
+    // Naming the ceiling here would make the reported cause depend on that
+    // ordering, which the application neither chose nor can observe.
+    False, 0 -> Admission(0, True)
+    False, _ -> Admission(room, False)
   }
 }
 
@@ -233,10 +240,11 @@ pub fn admitted_bytes(admission: Admission) -> Int {
 /// The two are different answers to the caller. A write the `Buffer` ceiling
 /// holds is waiting on its own peer to acknowledge what is already buffered; a
 /// write the grant holds was never going to be funded until the endpoint has
-/// room for it, whether or not a refusal has landed yet. A grant with no room
-/// left and a ceiling with none are both exhausted, and then the ceiling is
-/// what the caller is waiting on, because the endpoint funding more would not
-/// move the write along.
+/// room for it, whether or not a refusal has landed yet. When both are
+/// exhausted the grant is what the caller is told, because an endpoint with
+/// nothing left to fund is the wider condition and the one an application can
+/// do something about; the alternative would report whichever bound reached
+/// zero first, which is a race the application cannot see.
 pub fn grant_bound(admission: Admission) -> Bool {
   admission.grant_bound
 }

@@ -25,6 +25,58 @@ pub fn fragmented_response_preserves_status_reason_headers_and_body_test() -> Ni
   assert remaining == <<"datamore":utf8>>
 }
 
+pub fn obsolete_line_folding_in_a_response_is_unfolded_test() -> Nil {
+  // RFC 9112 section 5.2: a user agent that receives an obs-fold in a response
+  // replaces each one with one or more SP characters before interpreting the
+  // field value. A server receiving one in a request rejects the message
+  // instead, which is why the two directions do not share an answer here.
+  let assert Ok(http1.ResponseReady(head, <<>>)) =
+    parse(
+      <<
+        "HTTP/1.1 200 OK\r\nX-Note: one\r\n two\r\nContent-Length: 0\r\n\r\n":utf8,
+      >>,
+      <<"GET":utf8>>,
+    )
+  let http1.ResponseHead(_, _, headers, _) = head
+  assert headers
+    == [
+      http1.Header(<<"X-Note":utf8>>, <<"one two":utf8>>),
+      http1.Header(<<"Content-Length":utf8>>, <<"0":utf8>>),
+    ]
+
+  // A tab folds the same way, several folds fold into several spaces, and the
+  // whitespace that introduced the continuation is not kept beside the one
+  // space that replaces it.
+  let assert Ok(http1.ResponseReady(folded, <<>>)) =
+    parse(
+      <<"HTTP/1.1 200 OK\r\nX-Note: one\r\n\ttwo\r\n   three  \r\n\r\n":utf8>>,
+      <<"GET":utf8>>,
+    )
+  let http1.ResponseHead(_, _, headers, _) = folded
+  assert headers == [http1.Header(<<"X-Note":utf8>>, <<"one two three":utf8>>)]
+
+  // A fold before any field has nothing to continue, so it is still refused.
+  assert parse(<<"HTTP/1.1 200 OK\r\n bad\r\n\r\n":utf8>>, <<"GET":utf8>>)
+    == Error(http1.ObsoleteLineFolding)
+
+  // A folded framing field cannot smuggle a second message length past the
+  // conflict check, because the field is complete before it is analysed.
+  assert parse(
+      <<
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nTransfer-Encoding:\r\n chunked\r\n\r\n":utf8,
+      >>,
+      <<"GET":utf8>>,
+    )
+    == Error(http1.ConflictingMessageLength)
+
+  // A request is not unfolded: a server rejects the message.
+  let assert Ok(parser) = http1.request_parser(http1.Limits(1024, 8, 256))
+  assert http1.feed_request(parser, <<
+      "GET / HTTP/1.1\r\nHost: a\r\nX-Note: one\r\n two\r\n\r\n":utf8,
+    >>)
+    == Error(http1.ObsoleteLineFolding)
+}
+
 pub fn response_without_explicit_length_is_close_delimited_test() -> Nil {
   let assert Ok(http1.ResponseReady(head, <<>>)) =
     parse(<<"HTTP/1.1 200 OK\r\nDate: now\r\n\r\n":utf8>>, <<"GET":utf8>>)
@@ -111,9 +163,10 @@ pub fn response_reuses_strict_header_and_finite_limit_rules_test() -> Nil {
       <<"GET":utf8>>,
     )
     == Error(http1.DuplicateContentLength)
-  assert parse(<<"HTTP/1.1 200 OK\r\nX-Test: one\r\n two\r\n\r\n":utf8>>, <<
-      "GET":utf8,
-    >>)
+  // A fold with no field before it has nothing to continue and is refused; a
+  // fold that does continue one is replaced with a space, which
+  // obsolete_line_folding_in_a_response_is_unfolded_test covers.
+  assert parse(<<"HTTP/1.1 200 OK\r\n two\r\n\r\n":utf8>>, <<"GET":utf8>>)
     == Error(http1.ObsoleteLineFolding)
 }
 

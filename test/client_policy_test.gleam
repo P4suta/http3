@@ -8,6 +8,7 @@ import http/internal/alt_svc
 import http/internal/cache
 import http/internal/cookie
 import http/internal/hsts
+import http_test_support
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -397,4 +398,129 @@ pub fn an_unsafe_method_invalidates_the_stored_response_test() -> Nil {
   // invalidate another's entry.
   let elsewhere = request.Request(..write, host: "other.example")
   assert cache.invalidated_key(elsewhere, 200) != Some(key)
+}
+
+pub fn the_cookie_field_is_ordered_by_path_length_then_creation_test() -> Nil {
+  // RFC 6265 section 5.4: the cookie-list is sorted with the longer paths
+  // first, and cookies whose paths are equally long by the earlier creation
+  // time. Servers are told not to rely on the order, but the order is still the
+  // user agent's to produce, and without it a server reading the first value of
+  // a repeated name sees whichever cookie happened to be stored last.
+  let set = fn(field, path, now) {
+    let assert Some(entry) =
+      cookie.parse(
+        field,
+        gleam_http.Https,
+        "example.com",
+        path,
+        now,
+        1_700_000_000_000,
+      )
+    entry
+  }
+
+  let shallow = set("sid=shallow; Path=/; Max-Age=60", "/", 1000)
+  let deep = set("sid=deep; Path=/a/b; Max-Age=60", "/a/b", 1000)
+  let middle = set("sid=middle; Path=/a; Max-Age=60", "/a", 1000)
+
+  // Longest path first, whatever order the store hands them over in.
+  assert cookie.request_header(
+      [shallow, middle, deep],
+      gleam_http.Https,
+      "example.com",
+      "/a/b",
+      2000,
+    )
+    == Some("sid=deep; sid=middle; sid=shallow")
+  assert cookie.request_header(
+      [deep, shallow, middle],
+      gleam_http.Https,
+      "example.com",
+      "/a/b",
+      2000,
+    )
+    == Some("sid=deep; sid=middle; sid=shallow")
+
+  // Equal path lengths are broken by the earlier creation time, again in both
+  // input orders.
+  let first = set("a=1; Path=/; Max-Age=60", "/", 1000)
+  let second = set("b=2; Path=/; Max-Age=60", "/", 2000)
+  assert cookie.request_header(
+      [second, first],
+      gleam_http.Https,
+      "example.com",
+      "/",
+      3000,
+    )
+    == Some("a=1; b=2")
+  assert cookie.request_header(
+      [first, second],
+      gleam_http.Https,
+      "example.com",
+      "/",
+      3000,
+    )
+    == Some("a=1; b=2")
+}
+
+pub fn excess_cookies_go_by_domain_share_then_by_last_access_test() -> Nil {
+  // RFC 6265 section 5.3: when excess cookies have to go, the ones that share a
+  // domain with more than a predetermined number of others go before any other
+  // cookie, and within either tier the earliest last-access date goes first.
+  // Expired cookies go before both, which the store already does on every
+  // message it handles.
+  //
+  // The store is driven directly here because it is private to a running
+  // client; the keys come back most recently accessed first.
+  let trace = http_test_support.grouped_policy_store_trace
+  let put = http_test_support.Put
+  let touch = http_test_support.Touch
+
+  // Last access, not last write, decides: "a" was written first and touched
+  // last, so the cookie that goes is "b".
+  assert trace(3, 3, [
+      put("a", ""),
+      put("b", ""),
+      put("c", ""),
+      touch(["a"]),
+      put("d", ""),
+    ])
+    == ["d", "a", "c"]
+
+  // Without the touch the same script evicts "a", which is what makes the
+  // touch the thing being tested rather than the insertion order.
+  assert trace(3, 3, [put("a", ""), put("b", ""), put("c", ""), put("d", "")])
+    == ["d", "c", "b"]
+
+  // A domain over its share loses its own oldest entries before another domain
+  // loses anything. Here the other domain's cookie is the oldest in the store,
+  // so without the tier it is the one that would go.
+  assert trace(3, 2, [
+      put("y1", "y"),
+      put("x1", "x"),
+      put("x2", "x"),
+      put("x3", "x"),
+    ])
+    == ["x3", "x2", "y1"]
+
+  // Only as much as the store is over by is taken from that tier: five cookies
+  // in a store of four cost the over-represented domain one entry, not every
+  // entry above its share.
+  assert trace(4, 2, [
+      put("x1", "x"),
+      put("x2", "x"),
+      put("x3", "x"),
+      put("y1", "y"),
+      put("y2", "y"),
+    ])
+    == ["y2", "y1", "x3", "x2"]
+
+  // The tier does not apply at all while the store is inside its ceiling: two
+  // cookies of one domain in a store of two are both kept even though the share
+  // is one.
+  assert trace(2, 1, [put("a", "d"), put("b", "d")]) == ["b", "a"]
+
+  // An entry that belongs to no group is never over-represented, which is how
+  // every store other than the cookie one behaves.
+  assert trace(2, 1, [put("a", ""), put("b", ""), put("c", "")]) == ["c", "b"]
 }

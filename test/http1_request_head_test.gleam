@@ -156,15 +156,67 @@ pub fn header_count_limit_is_enforced_test() -> Nil {
   assert result == Error(http1.TooManyHeaders(1))
 }
 
+pub fn an_overlong_request_line_is_typed_apart_from_a_header_line_test() -> Nil {
+  // RFC 9112 section 3: a server that receives a request target longer than any
+  // URI it wishes to parse answers 414 rather than a generic framing error. The
+  // first line of a request head is the request line, and its other two parts
+  // are a method token and a fixed version string, so a first line over the
+  // bound is over it because of its target. The parser names that case apart
+  // from an over-long field line so the server can answer it differently.
+  let assert Ok(parser) = http1.request_parser(http1.Limits(1024, 8, 32))
+
+  // A complete head whose request line is too long.
+  assert http1.feed_request(parser, <<
+      "GET /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HTTP/1.1\r\nHost: a\r\n\r\n":utf8,
+    >>)
+    == Error(http1.RequestLineTooLong(32))
+
+  // An incomplete head whose request line has already passed the bound, which
+  // is where a very long target is usually caught.
+  assert http1.feed_request(parser, <<
+      "GET /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":utf8,
+    >>)
+    == Error(http1.RequestLineTooLong(32))
+
+  // A field line over the bound is still the generic error, complete or not.
+  assert http1.feed_request(parser, <<
+      "GET / HTTP/1.1\r\nX-Note: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n":utf8,
+    >>)
+    == Error(http1.LineTooLong(32))
+  assert http1.feed_request(parser, <<
+      "GET / HTTP/1.1\r\nX-Note: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":utf8,
+    >>)
+    == Error(http1.LineTooLong(32))
+
+  // A response's status line is not a request line, so it keeps the generic
+  // error too.
+  let assert Ok(response) =
+    http1.response_parser(http1.Limits(1024, 8, 32), <<"GET":utf8>>)
+  assert http1.feed_response(response, <<
+      "HTTP/1.1 200 OKaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n":utf8,
+    >>)
+    == Error(http1.LineTooLong(32))
+}
+
 pub fn line_limit_is_enforced_on_complete_and_partial_lines_test() -> Nil {
+  // The request line has an error of its own, which
+  // an_overlong_request_line_is_typed_apart_from_a_header_line_test covers;
+  // the bound itself is the same one and applies to a complete line and to one
+  // that has already passed it while the head is still arriving.
   let assert Ok(complete) = http1.request_parser(http1.Limits(1024, 8, 16))
   assert http1.feed_request(complete, <<
       "GET /too-long HTTP/1.1\r\nHost: a\r\n\r\n":utf8,
     >>)
-    == Error(http1.LineTooLong(16))
+    == Error(http1.RequestLineTooLong(16))
 
   let assert Ok(partial) = http1.request_parser(http1.Limits(1024, 8, 16))
   assert http1.feed_request(partial, <<"GET /too-long HTTP/1":utf8>>)
+    == Error(http1.RequestLineTooLong(16))
+
+  let assert Ok(field) = http1.request_parser(http1.Limits(1024, 8, 16))
+  assert http1.feed_request(field, <<
+      "GET / HTTP/1.1\r\nX: aaaaaaaaaaaaaaaa\r\n":utf8,
+    >>)
     == Error(http1.LineTooLong(16))
 }
 

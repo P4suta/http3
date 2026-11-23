@@ -10,6 +10,7 @@
     idle_due/2,
     idle_new/2,
     idle_snapshot/1,
+    material_burst_compression/2,
     idle_stop/1,
     open/4,
     open/5,
@@ -56,6 +57,9 @@
 -define(BUFFERED_PAYLOAD_BYTES, 27).
 
 -define(MATERIAL_BURST_COMPRESSION_MICROSECONDS, 1000).
+%% The owner loop sends one datagram per send command and never
+%% coalesces two, which the snapshot reports as the maximum batch.
+-define(SEND_BATCH_PACKETS, 1).
 
 -define(IDLE_STATE, 1).
 -define(IDLE_TIMEOUT, 2).
@@ -402,7 +406,7 @@ snapshot(Handle) ->
                 counter(Handle, ?DONT_FRAGMENT, 0) =:= 1,
                 counter(Handle, ?NOT_ECT, 0) =:= 1,
                 counter(Handle, ?RELAY_TIMING_SAMPLES, 0),
-                1,
+                ?SEND_BATCH_PACKETS,
                 counter(Handle, ?MAXIMUM_RELAY_DELAY_MICROSECONDS, 0),
                 counter(Handle, ?MAXIMUM_SEND_SERVICE_MICROSECONDS, 0),
                 counter(Handle, ?MATERIAL_BURST_COMPRESSIONS, 0),
@@ -1748,7 +1752,7 @@ record_relay_timing(Counters, Ingress, SendStarted, SendFinished) ->
                 ?MAXIMUM_BURST_COMPRESSION_MICROSECONDS,
                 Compression
             ),
-            case Compression > ?MATERIAL_BURST_COMPRESSION_MICROSECONDS of
+            case material_burst_compression(Compression, ?SEND_BATCH_PACKETS) of
                 true -> saturating_increment(
                     Counters, ?MATERIAL_BURST_COMPRESSIONS
                 );
@@ -1759,6 +1763,24 @@ record_relay_timing(Counters, Ingress, SendStarted, SendFinished) ->
     atomics:put(Counters, ?LAST_RELAY_INGRESS_MICROSECONDS, Ingress),
     atomics:put(Counters, ?LAST_RELAY_EGRESS_MICROSECONDS, SendStarted),
     saturating_increment(Counters, ?RELAY_TIMING_SAMPLES).
+
+%% Whether a measured compression came from coalescing rather than from the
+%% relay's own queue draining.
+%%
+%% For a relay that sends one packet per send, the compression figure reduces
+%% algebraically to the decrease in this relay's per-packet delay between two
+%% consecutive packets: a packet that waited fifteen milliseconds for a
+%% scheduler slot followed by one that waited two hundred microseconds measures
+%% as a fourteen millisecond compression with nothing coalesced. What the
+%% counter's name claims, and what an operator reading it would act on, is that
+%% packets were put on the wire together, and that cannot happen while the batch
+%% is one. So the batch decides, and the microsecond figure beside it keeps
+%% reporting the raw measurement either way.
+-spec material_burst_compression(non_neg_integer(), pos_integer()) ->
+    boolean().
+material_burst_compression(Compression, BatchPackets) ->
+    BatchPackets > 1 andalso
+        Compression > ?MATERIAL_BURST_COMPRESSION_MICROSECONDS.
 
 -spec set_maximum_counter(counters(), pos_integer(), non_neg_integer()) -> ok.
 set_maximum_counter(Counters, Index, Value) ->

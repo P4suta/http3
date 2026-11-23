@@ -15,10 +15,23 @@ client_key() ->
 
 -spec accept(binary()) -> {ok, binary()} | {error, nil}.
 accept(Key) when is_binary(Key) ->
+    %% The decoded value has to be sixteen bytes, and the encoding of it has to
+    %% be the one this key carries. RFC 4648 section 3.5 calls an encoding whose
+    %% final character leaves unused bits set non-canonical, and the decoder here
+    %% accepts one: "AQIDBAUGBwgJCgsMDQ4PEC==" and "AQIDBAUGBwgJCgsMDQ4PEA=="
+    %% decode alike, and RFC 6455 erratum 3150 records that the document's own
+    %% example was the former. A length check alone would admit a nonce that is
+    %% the encoding of nothing, so the round trip is what decides.
     try base64:decode(Key) of
         Decoded when byte_size(Decoded) =:= 16 ->
-            Digest = crypto:hash(sha, <<Key/binary, ?WEBSOCKET_GUID/binary>>),
-            {ok, base64:encode(Digest)};
+            case base64:encode(Decoded) of
+                Key ->
+                    Digest = crypto:hash(
+                        sha, <<Key/binary, ?WEBSOCKET_GUID/binary>>
+                    ),
+                    {ok, base64:encode(Digest)};
+                _ -> {error, nil}
+            end;
         _ -> {error, nil}
     catch
         _:_ -> {error, nil}

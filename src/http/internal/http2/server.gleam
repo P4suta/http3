@@ -13,6 +13,7 @@ import gleam/string
 import http/body
 import http/context
 import http/error
+import http/internal/date
 import http/internal/http2/connection
 import http/internal/http2/header_codec
 import http/internal/http2/header_semantics
@@ -2477,6 +2478,14 @@ fn send_response_head(
   response: Response(body.Body),
   end_stream: Bool,
 ) -> Result(wire.State, error.Error) {
+  let response =
+    Response(
+      ..response,
+      headers: date.with_date(
+        status: response.status,
+        headers: response.headers,
+      ),
+    )
   use written <- result.try(
     wire.send_response_headers(
       state,

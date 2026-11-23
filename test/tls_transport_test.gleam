@@ -124,3 +124,30 @@ pub fn malformed_tls_inputs_are_rejected_before_a_handshake_test() -> Nil {
   let assert Ok(Nil) = transport.stop(listener)
   Nil
 }
+
+pub fn tls_negotiation_is_limited_to_forward_secret_aead_suites_test() -> Nil {
+  // RFC 9325 section 4.1: an implementation SHOULD NOT negotiate a cipher suite
+  // built on non-ephemeral Diffie-Hellman, finite-field or elliptic curve, and
+  // a TLS 1.2 implementation SHOULD NOT negotiate the ephemeral finite-field
+  // suites either; the same section requires forward secrecy to be supported
+  // and preferred. The platform's default TLS 1.2 list carries static ECDH and
+  // TLS_DHE_* suites, so inheriting it offers exactly what those clauses
+  // exclude: the list has to be pinned on both sides.
+  let #(client, server) = http_test_support.tls_option_cipher_profile()
+  let #(client_count, client_exchanges, client_macs) = client
+  let #(server_count, server_exchanges, server_macs) = server
+
+  // A pinned list, not an absent one that would fall back to the default.
+  assert client_count > 0
+  assert server_count > 0
+
+  // `any` is how TLS 1.3 spells its own key schedule, which is always
+  // ephemeral; every TLS 1.2 suite left is an ECDHE one.
+  assert client_exchanges == ["any", "ecdhe_ecdsa", "ecdhe_rsa"]
+  assert server_exchanges == ["any", "ecdhe_ecdsa", "ecdhe_rsa"]
+
+  // Section 4.2: a CBC suite may be used only with encrypt_then_mac, which is
+  // simpler to satisfy by carrying no suite that needs it.
+  assert client_macs == ["aead"]
+  assert server_macs == ["aead"]
+}

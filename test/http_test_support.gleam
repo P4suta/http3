@@ -212,3 +212,65 @@ pub fn server_credentials() -> #(BitArray, BitArray, BitArray)
 /// followed by loopback, restoring the resolver on every exit path.
 @external(erlang, "http_test_ffi", "with_blackhole_first_host")
 pub fn with_blackhole_first_host(body: fn(String) -> value) -> value
+
+/// Return the client and server TLS option cipher profiles: for each side the
+/// number of pinned suites and the distinct key-exchange and MAC names in it.
+@external(erlang, "http_test_ffi", "tls_option_cipher_profile")
+pub fn tls_option_cipher_profile() -> #(
+  #(Int, List(String), List(String)),
+  #(Int, List(String), List(String)),
+)
+
+/// Order destinations by RFC 6724 section 6, given for each one the source
+/// address the kernel would choose, or an empty string when there is none.
+@external(erlang, "http_test_ffi", "sorted_destination_order")
+pub fn sorted_destination_order(pairs: List(#(String, String))) -> List(String)
+
+/// Interleave address families across an already ordered list.
+@external(erlang, "http_test_ffi", "interleaved_destination_order")
+pub fn interleaved_destination_order(addresses: List(String)) -> List(String)
+
+/// Run one concurrent family resolution with each family's answer delayed by
+/// the given milliseconds, where a negative delay makes that query die without
+/// answering. Returns the elapsed milliseconds and which families answered.
+@external(erlang, "http_test_ffi", "family_resolution_trace")
+pub fn family_resolution_trace(
+  ipv6_delay: Int,
+  ipv4_delay: Int,
+  unused: Int,
+) -> #(Int, Bool, Bool)
+
+/// Register one host name with the given IPv4 and IPv6 addresses, resolve it
+/// through the production path, and return the order that came back.
+@external(erlang, "http_test_ffi", "resolved_host_order")
+pub fn resolved_host_order(
+  name: String,
+  ipv4: List(String),
+  ipv6: List(String),
+) -> List(String)
+
+/// One step for a grouped policy store trace: store a key under a group, or
+/// record that the named keys have just been used.
+pub type PolicyStep {
+  Put(key: String, group: String)
+  Touch(keys: List(String))
+}
+
+/// Drive a grouped policy store through the steps and return the keys it kept,
+/// most recently accessed first.
+@external(erlang, "http_test_ffi", "grouped_policy_store_trace")
+pub fn grouped_policy_store_trace(
+  maximum_entries: Int,
+  maximum_per_group: Int,
+  steps: List(PolicyStep),
+) -> List(String)
+
+/// Run `body` with every given name resolving to loopback, restoring the
+/// resolver configuration on every exit path.
+@external(erlang, "http_test_ffi", "with_loopback_hosts")
+pub fn with_loopback_hosts(names: List(String), body: fn() -> value) -> value
+
+/// Which of the given compression and send-batch pairs the relay counts as a
+/// material burst compression.
+@external(erlang, "http_test_ffi", "material_burst_compressions")
+pub fn material_burst_compressions(samples: List(#(Int, Int))) -> List(Bool)

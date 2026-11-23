@@ -227,3 +227,48 @@ pub fn finite_buffers_message_limits_and_close_codes_fail_closed_test() -> Nil {
   assert websocket.close_frame(websocket.Server, None, "reason")
     == Error(websocket.InvalidClose)
 }
+
+pub fn a_sec_websocket_key_must_be_canonical_base64_test() -> Nil {
+  // RFC 6455 section 4.1 asks for a 16-byte nonce that has been base64-encoded,
+  // and erratum 3150 records that the document's own example was not: a base64
+  // encoder that leaves the unused bits of the final character set produces
+  // "AQIDBAUGBwgJCgsMDQ4PEC==" where the canonical encoding is
+  // "...EA==". Both decode to the same sixteen bytes on a lenient decoder, so a
+  // length check alone accepts a value that is not the encoding of anything.
+  // RFC 4648 section 3.5 calls that non-canonical and says a decoder may reject
+  // it; here it is rejected, on the offered key and on the validated one alike.
+  let canonical = "AQIDBAUGBwgJCgsMDQ4PEA=="
+  let non_canonical = "AQIDBAUGBwgJCgsMDQ4PEC=="
+
+  let assert Ok(_) =
+    websocket.client_handshake_with_key(websocket.Http1, canonical, [])
+  assert websocket.client_handshake_with_key(websocket.Http1, non_canonical, [])
+    == Error(websocket.InvalidKey)
+
+  // The server reaches the same value through the offered field.
+  let request = fn(key) {
+    [
+      #("connection", "Upgrade"),
+      #("upgrade", "websocket"),
+      #("sec-websocket-version", "13"),
+      #("sec-websocket-key", key),
+    ]
+  }
+  let accept = fn(key) {
+    websocket.accept_handshake(
+      websocket.Http1,
+      http.Get,
+      "http",
+      "example.test",
+      None,
+      request(key),
+      [],
+    )
+  }
+  let assert Ok(_) = accept(canonical)
+  assert accept(non_canonical) == Error(websocket.InvalidKey)
+
+  // A key of the right shape but the wrong decoded length is still refused, so
+  // the canonical test has not replaced the length one.
+  assert accept("AQIDBAUGBwgJCgsMDQ4PEA==AQ==") == Error(websocket.InvalidKey)
+}

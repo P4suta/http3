@@ -317,6 +317,31 @@ fn policy_store_put(
   retained_bytes: Int,
 ) -> Bool
 
+@external(erlang, "http_client_ffi", "new_grouped_policy_store")
+fn new_grouped_policy_store(
+  maximum_entries: Int,
+  maximum_bytes: Int,
+  maximum_per_group: Int,
+) -> PolicyStore
+
+@external(erlang, "http_client_ffi", "policy_store_put_grouped")
+fn policy_store_put_grouped(
+  store: PolicyStore,
+  partition: String,
+  key: String,
+  value: cookie.Cookie,
+  expires_at: Int,
+  retained_bytes: Int,
+  group: String,
+) -> Bool
+
+@external(erlang, "http_client_ffi", "policy_store_touch")
+fn policy_store_touch(
+  store: PolicyStore,
+  partition: String,
+  keys: List(String),
+) -> Nil
+
 @external(erlang, "http_client_ffi", "policy_store_list")
 fn policy_store_list(
   store: PolicyStore,
@@ -820,9 +845,10 @@ pub fn start(config: Config) -> Result(Client, error.Error) {
         config.pool_limits.maximum_connections_per_origin,
         config.pool_limits.idle_milliseconds,
       ),
-      cookie_store: new_policy_store(
+      cookie_store: new_grouped_policy_store(
         cookie_limits.maximum_entries,
         cookie_limits.maximum_bytes,
+        cookie_domain_ceiling(cookie_limits.maximum_entries),
       ),
       cache_store: new_policy_store(
         cache_limits.maximum_entries,
@@ -899,6 +925,7 @@ fn load_cookie_records(
           record.host_only,
           record.secure,
           record.expires_in_milliseconds,
+          record.age_milliseconds,
           now,
         )
         |> option.to_result(security_policy_error()),
@@ -2028,6 +2055,15 @@ fn map_http3_error(failure: h3_client.Error) -> error.Error {
   }
 }
 
+// RFC 6265 section 5.3 evicts cookies that share a domain with more than a
+// predetermined number of others before it evicts any cookie. The number here is
+// half the store's own entry ceiling, so no single domain can occupy more than
+// half of it while other domains are being dropped, and a store of one entry
+// still admits a cookie.
+fn cookie_domain_ceiling(maximum_entries: Int) -> Int {
+  int.max(1, maximum_entries / 2)
+}
+
 fn apply_cookie_policy(
   client: Client,
   outgoing: Request(body.Body),
@@ -2038,20 +2074,23 @@ fn apply_cookie_policy(
   {
     False, _ | True, Ok(_) -> outgoing
     True, Error(_) -> {
-      let retained =
-        policy_store_list(
-          client.cookie_store,
-          policy_partition(client.config.network_isolation_key),
-        )
-      case
-        cookie.request_header(
-          retained,
+      let partition = policy_partition(client.config.network_isolation_key)
+      let carried =
+        cookie.matching(
+          policy_store_list(client.cookie_store, partition),
           outgoing.scheme,
           outgoing.host,
           outgoing.path,
           transport.monotonic_millisecond(),
         )
-      {
+      // RFC 6265 section 5.4 updates the last-access date of every cookie it
+      // sends, which is what section 5.3 breaks eviction ties by.
+      policy_store_touch(
+        client.cookie_store,
+        partition,
+        list.map(carried, cookie.key),
+      )
+      case cookie.field_value(carried) {
         None -> outgoing
         Some(value) -> request.set_header(outgoing, "cookie", value)
       }
@@ -2285,16 +2324,30 @@ fn capture_cookie_headers(
 }
 
 fn store_cookie_policy(client: Client, entry: cookie.Cookie, now: Int) -> Bool {
+  let partition = policy_partition(client.config.network_isolation_key)
+  // RFC 6265 section 5.3 step 11: replacing a cookie with the same name,
+  // domain, and path keeps the creation time of the one it replaces, so a
+  // server that refreshes a cookie's value does not move it to the end of the
+  // order section 5.4 asks for.
+  let entry = case
+    list.find(policy_store_list(client.cookie_store, partition), fn(retained) {
+      cookie.key(retained) == cookie.key(entry)
+    })
+  {
+    Ok(previous) -> cookie.Cookie(..entry, created_at: previous.created_at)
+    Error(_) -> entry
+  }
   case persist_cookie_policy(client, entry, now) {
     False -> False
     True ->
-      policy_store_put(
+      policy_store_put_grouped(
         client.cookie_store,
-        policy_partition(client.config.network_isolation_key),
+        partition,
         cookie.key(entry),
         entry,
         entry.expires_at,
         entry.retained_bytes,
+        entry.domain,
       )
   }
 }
@@ -2305,6 +2358,10 @@ fn persist_cookie_policy(
   now: Int,
 ) -> Bool {
   case client.config.cookie_store_adapter {
+    // RFC 6265 section 5.3: a cookie with no Expires and no Max-Age does not
+    // outlive the session, and a client is the session here, so it is held in
+    // memory and never handed to an adapter that would outlive one.
+    _ if !entry.persistent -> True
     None -> True
     Some(adapter) -> {
       let operation = case entry.expires_at <= now {
@@ -2328,6 +2385,7 @@ fn persist_cookie_policy(
               host_only: entry.host_only,
               secure: entry.secure,
               expires_in_milliseconds: entry.expires_at - now,
+              age_milliseconds: int.max(0, now - entry.created_at),
             ),
           )
         }
